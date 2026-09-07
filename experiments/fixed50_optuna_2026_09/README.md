@@ -2,12 +2,16 @@
 
 This campaign combines the most useful historical choices with the current
 cleaner pipeline. It covers closing and the six-hour (`T-360`) intermediate
-snapshot for spread error, total points, and line error. Closing total points
-also has a schema-2.0 control.
+snapshot for spread error, total points, and line error. The primary closing
+2.2 cells use `training_data_2_2_20260907_availability_safe.csv`. Closing total
+points also has a schema-2.0 control, and total points plus line error have
+old-2.2 CSV controls.
 
 ## Registered protocol
 
-- Schema 2.2 except the explicit closing total-points 2.0 control.
+- Availability-safe schema 2.2 for the three primary closing cells, schema 2.2
+  unchanged for intermediate, and explicit closing controls on 2.0 plus the
+  old 2.2 CSV for total points/line error.
 - Seed 16, overtime included, playoffs excluded, regular season and Play-In.
 - History admitted from 2019. The intermediate CSV actually starts in 2021.
 - Current preprocessing: at most 300 NaNs per row, global correlation 0.95,
@@ -44,6 +48,16 @@ These are the best-supported target-specific choices from the existing fixed
 or temporal panels. The T-360 spread choice is provisional because its older
 window search predates removal of the rotation-depth leak. A separate fixed-
 parameter X screen is the clean way to revisit these values after this run.
+
+The availability-safe closing CSV has the same 11,543 games as the previous
+2.2 file. It removes 14 rotation/availability columns and also recalculates the
+historical injury/player aggregates: a direct comparison found changes in 194
+shared numeric columns and 497,141 cells at tolerance `1e-12`. Therefore the
+old/new total-points and line-error cells are real dataset controls, not expected
+duplicates. There is no old-2.2 spread control because the old availability
+representation is not a useful modelling candidate for that target.
+Intermediate is unchanged because those injury/availability inputs were not
+present there.
 
 ## Run
 

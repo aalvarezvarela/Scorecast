@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Part 1: four closing-line fixed-50 Optuna experiments, sequential on one GPU.
+# Part 1: six closing-line fixed-50 Optuna experiments, sequential on one GPU.
 set -uo pipefail
 
 cd "$(dirname "$0")/../.." || exit 1
@@ -13,7 +13,9 @@ LOG="$LOG_DIR/campaign.log"
 CONFIGS=(
   "$CONFIG_DIR/a_closing_spread_2_2.yaml"
   "$CONFIG_DIR/b_closing_total_points_2_2.yaml"
+  "$CONFIG_DIR/h_closing_total_points_2_2_old_control.yaml"
   "$CONFIG_DIR/c_closing_line_error_2_2.yaml"
+  "$CONFIG_DIR/i_closing_line_error_2_2_old_control.yaml"
   "$CONFIG_DIR/d_closing_total_points_2_0_control.yaml"
 )
 PY=(poetry run python -u)
@@ -21,7 +23,8 @@ CLI=("${PY[@]}" -m training_pipeline.cli)
 log() { echo "$@" | tee -a "$LOG"; }
 
 log "$CAMPAIGN $PART started $(date)"
-log "Four sequential CUDA runs; 150 complete-budget trials each; seed 16."
+log "Six sequential CUDA runs; 150 requested trials each; seed 16."
+log "Primary 2.2 runs use the availability-safe CSV; old-2.2 controls cover total points and line error."
 log "CV: latest 12 anchors, 50 games per fold, 60-game step. Holdout: daily, 90 days."
 log "Fold-local early stopping; pruning disabled by warmup 13 > 12 folds."
 log "Logs: $LOG_DIR"

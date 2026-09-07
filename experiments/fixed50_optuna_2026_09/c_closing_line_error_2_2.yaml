@@ -1,15 +1,15 @@
-experiment_name: fixed50_closing_line_error_2_2
+experiment_name: fixed50_closing_line_error_2_2_availability_safe
 prediction_strategy: line_error_regressor
 training_version: "2.9-fixed50-fold-early-stop-optuna-20260907"
 comparison_group: fixed50_optuna_2026_09
 hypothesis: Tune closing line error on 12 temporally separated 50-game folds.
-tags: [fixed50_cv, closing_line, line_error, schema_2_2, early_stopping]
+tags: [fixed50_cv, closing_line, line_error, schema_2_2, availability_safe, early_stopping]
 device: cuda
 random_state: 16
 data:
-  csv_path: data/train_data/training_data_2_2_20260901.csv
-  data_version: "20260901-training-2.2-normalized"
-  expected_checksum: "sha256:15a8e5c2ac70c269"
+  csv_path: data/train_data/training_data_2_2_20260907_availability_safe.csv
+  data_version: "20260907-training-2.2-availability-safe"
+  expected_checksum: "sha256:d2a04d2105eb9dbd"
   dataset_type: closing_line
   season_year_floor: 2019
   extend_history_dropping_season_gated_columns: false

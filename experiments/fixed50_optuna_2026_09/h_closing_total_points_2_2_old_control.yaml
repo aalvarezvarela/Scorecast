@@ -1,15 +1,16 @@
-experiment_name: fixed50_closing_spread_2_2_availability_safe
-prediction_strategy: spread_error_regressor
+experiment_name: fixed50_closing_total_points_2_2_old_control
+prediction_strategy: total_points_regressor
+line_col: ODDS_TOTAL_LINE_bet365
 training_version: "2.9-fixed50-fold-early-stop-optuna-20260907"
 comparison_group: fixed50_optuna_2026_09
-hypothesis: Tune leak-free closing spread on 12 temporally separated 50-game folds.
-tags: [fixed50_cv, closing_line, spread_error, schema_2_2, availability_safe, early_stopping]
+hypothesis: Control the old 2.2 closing CSV against the availability-safe total-points run.
+tags: [fixed50_cv, closing_line, total_points, schema_2_2, old_csv_control, early_stopping]
 device: cuda
 random_state: 16
 data:
-  csv_path: data/train_data/training_data_2_2_20260907_availability_safe.csv
-  data_version: "20260907-training-2.2-availability-safe"
-  expected_checksum: "sha256:d2a04d2105eb9dbd"
+  csv_path: data/train_data/training_data_2_2_20260901.csv
+  data_version: "20260901-training-2.2-normalized-old-control"
+  expected_checksum: "sha256:15a8e5c2ac70c269"
   dataset_type: closing_line
   season_year_floor: 2019
   extend_history_dropping_season_gated_columns: false
@@ -22,7 +23,7 @@ walk_forward:
   strategy: test_anchored
   test_games: 50
   step_games_between_tests: 60
-  train_games: 4500
+  train_games: 4000
   train_games_choices: null
   min_train_games: 1250
   max_folds: 12
@@ -49,8 +50,6 @@ optuna:
 betting:
   edge_thresholds: [0.0, 0.1, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0]
   primary_edge_threshold: 0.1
-  home_price_col: ODDS_SPREAD_PRICE_HOME
-  away_price_col: ODDS_SPREAD_PRICE_AWAY
-  comparison_line_cols: [ODDS_SPREAD_LINE_HOME_consensus_opener]
+  comparison_line_cols: [ODDS_TOTAL_LINE_consensus_opener]
 holdout_evaluation: daily_walk_forward
 evaluation_seeds: []
