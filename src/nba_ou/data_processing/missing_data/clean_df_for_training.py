@@ -805,7 +805,7 @@ def clean_dataframe_for_training(
         ):
             redundancy_snapshot = df[repeated_measures.snapshot_col]
 
-    # Rotation-depth leaks go first, before any other step measures the frame.
+    # Legacy rotation-depth leaks go first, before any other step measures the frame.
     # Not merely cosmetic ordering: the correlation step drops a column when it
     # duplicates another, so leaving these in until later lets a leaked column
     # win a pair and evict the legitimate feature it correlates with -- the
@@ -820,8 +820,8 @@ def clean_dataframe_for_training(
     if rotation_leaks:
         if verbose >= 1:
             print(
-                f"Dropping {len(rotation_leaks)} rotation-depth leakage column(s) "
-                "built from the predicted game's own box score: "
+                f"Dropping {len(rotation_leaks)} legacy rotation-depth leakage "
+                "column(s) built from the predicted game's own box score: "
                 f"{rotation_leaks}"
             )
         df = df.drop(columns=rotation_leaks)

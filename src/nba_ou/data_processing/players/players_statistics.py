@@ -71,10 +71,11 @@ def get_top_n_averages_with_names(
         df (pd.DataFrame): DataFrame with player stats including cumulative averages
         date (datetime or str): The target date (usually the current game date)
         stat_col (str): The stat column (e.g., "PTS") for cumulative average lookup
-        injured (bool): If False, consider players who played on `date`.
-                       If there are no same-day rows (e.g., scheduled games),
-                       fallback to each player's latest game prior to `date`.
-                       If True, consider last game prior to `date`.
+        injured (bool): If False, consider every player in the available-roster
+                       frame and use their latest state at or before `date`.
+                       Same-day rows carry shifted, pre-game cumulative values;
+                       current-game MIN/PTS are never used for selection.
+                       If True, consider the last state strictly before `date`.
         lowest (bool): If False (default), return highest averages (descending).
                       If True, return lowest averages (ascending)
         n_players (int): Number of players to return
@@ -98,15 +99,14 @@ def get_top_n_averages_with_names(
         df_last = df_inj.groupby("PLAYER_ID", as_index=False).tail(1).copy()
 
     else:
-        # For non-injured players, keep existing behavior for historical rows.
-        # For scheduled games (no same-day player boxscore yet), fallback to each
-        # player's latest game before `date`.
-        df_same_day = df[df["GAME_DATE"] == date].copy()
-        if df_same_day.empty:
-            df_prior = df[df["GAME_DATE"] < date]
-            df_last = df_prior.groupby("PLAYER_ID", as_index=False).tail(1).copy()
-        else:
-            df_last = df_same_day
+        # Availability is roster membership minus the injury/inactive set.  Take
+        # one state per available player instead of selecting only players who
+        # logged minutes in this game.  The same-day cumulative value is safe:
+        # precompute_cumulative_avg_stat shifts the raw stat before calculating it.
+        df_available = df[df["GAME_DATE"] <= date].sort_values(
+            ["PLAYER_ID", "GAME_DATE"], kind="mergesort"
+        )
+        df_last = df_available.groupby("PLAYER_ID", as_index=False).tail(1).copy()
 
     if df_last.empty:
         return []

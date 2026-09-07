@@ -704,12 +704,12 @@ def assert_no_leaking_features(X: pd.DataFrame) -> None:
     rotation_leaked = rotation_leak_columns(X.columns)
     if rotation_leaked:
         raise ValueError(
-            f"Rotation-depth column(s) {rotation_leaked} reached the feature "
-            "matrix. They aggregate over the players who logged minutes in the "
-            "game being predicted, so they encode how the game went: the count "
-            "correlates +0.55 with the final margin. They are dropped in "
-            "clean_dataframe_for_training -- if one got through, X was built "
-            "from a frame that never went through cleaning."
+            f"Legacy rotation-depth column(s) {rotation_leaked} reached the feature "
+            "matrix. In archived datasets they aggregate over the players who "
+            "logged minutes in the game being predicted, so they encode how the "
+            "game went: the count correlates +0.55 with the final margin. They "
+            "are dropped in clean_dataframe_for_training -- if one got through, "
+            "X was built from a frame that never went through cleaning."
         )
 
 
