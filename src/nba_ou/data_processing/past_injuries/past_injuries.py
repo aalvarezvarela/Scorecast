@@ -100,18 +100,18 @@ def create_player_lookup(df_players, injured_dict=None):
     df_players = df_players.copy()
     df_players["GAME_DATE"] = pd.to_datetime(df_players["GAME_DATE"], errors="coerce")
 
-    # df_valid is for RETURNING data.
-    # Include actual played games (MIN > 0, PTS not null) AND synthetic scheduled-game
-    # placeholder rows created by standardize_and_merge_scheduled_games_to_players_data
-    # (which have MIN=None).  After clear_player_statistics all real rows have MIN >= 0
-    # (never null), so MIN.isna() reliably identifies placeholder rows only.
-    # Including placeholders ensures that for scheduled game queries,
-    # get_top_n_averages_with_names finds a same-day row whose _CUM_AVG already
-    # incorporates the last played game, instead of falling back to a prior-game row
-    # whose _CUM_AVG is one game stale.
-    played_mask = (df_players["MIN"] > 0) & (df_players["PTS"].notna())
-    placeholder_mask = df_players["MIN"].isna()
-    df_valid = df_players[played_mask | placeholder_mask].copy()
+    # Rows returned by this lookup are roster/stat-state evidence, not a list of
+    # players who appeared in the target game.  Keeping MIN=0 box-score rows is
+    # load-bearing: a DNP who is not on the inactive list was available, and
+    # dropping them here makes roster membership depend on the rotation the coach
+    # actually used after tip-off.  The cumulative columns attached to every row
+    # are shifted by precompute_cumulative_avg_stat, so current-game PTS/MIN never
+    # enter the value returned for that game.
+    #
+    # Synthetic scheduled-game placeholders (MIN=None) obey the same contract and
+    # remain included naturally.  Rows without a player id cannot contribute to a
+    # roster and are the only ones discarded.
+    df_valid = df_players[df_players["PLAYER_ID"].notna()].copy()
 
     # Sort for season_team_groups indexing
     df_valid.sort_values(
@@ -217,18 +217,22 @@ def create_player_lookup(df_players, injured_dict=None):
             else None
         )
 
-        # Find players whose last game before date_to_filter was with this team
+        # Find players whose latest roster assignment at the target date is this
+        # team.  A same-game box-score row is used only as assignment evidence --
+        # never through its MIN, PTS or another current-game statistic.  This is
+        # important for a player's first game after a trade and mirrors the
+        # scheduled placeholder contract.
         valid_players = []
         for player_id in candidate_players:
             timeline = player_timeline_by_bucket.get((bucket_key, player_id), [])
             if not timeline:
                 continue
 
-            # Find the last game before date_to_filter
+            # Find the last assignment at or before date_to_filter.
             # timeline is sorted by date
             last_team = None
             for game_date, game_team in timeline:
-                if game_date < date_np:
+                if game_date <= date_np:
                     last_team = game_team
                 else:
                     break

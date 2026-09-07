@@ -12,15 +12,15 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 
-#: Column-name prefixes whose value depends on WHICH PLAYERS APPEARED in the
-#: game being predicted.
+#: Column-name prefixes whose value in legacy generated datasets depends on
+#: WHICH PLAYERS APPEARED in the game being predicted.
 #:
-#: ``get_top_n_averages_with_names`` resolves the non-injured player set as
-#: ``df[df["GAME_DATE"] == date]`` whenever the game has already been played
-#: (falling back to prior games only for a scheduled game), and the frame it
-#: reads has already been filtered to ``MIN > 0``. So the set is "players who
-#: logged minutes tonight", and anything counting or summing over it is a
-#: readout of the rotation the coach actually used.
+#: Files produced before the roster-availability repair resolved the
+#: non-injured set from a frame filtered to ``MIN > 0``. So the set was
+#: "players who logged minutes tonight", and anything counting or summing over
+#: it was a readout of the rotation the coach actually used. New datasets no
+#: longer emit these two aggregate families; this guard remains so archived CSVs
+#: cannot silently reintroduce them.
 #:
 #: Measured on ``training_data_2_2_20260901.csv`` (8,935 games, 2019-2025):
 #:

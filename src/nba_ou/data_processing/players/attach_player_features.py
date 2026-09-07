@@ -328,15 +328,16 @@ def add_player_history_features(
             desc="Adding players data",
         )
     ):
-        # Identify active players using optimized lookup
-        df_active = player_lookup(season_id, team_id, game_date, game_id=game_id)
-        if df_active.empty:
+        # Resolve the roster without consulting who logged minutes in this game.
+        # Availability is defined below solely as roster minus injured/inactive.
+        df_roster = player_lookup(season_id, team_id, game_date, game_id=game_id)
+        if df_roster.empty:
             # Season opener: nobody has an earlier game this season for the
             # lookup to resolve the roster from. See _build_game_roster_lookup.
             fallback_roster = game_roster_lookup(game_id, team_id)
             if fallback_roster is not None:
-                df_active = fallback_roster
-        if df_active.empty:
+                df_roster = fallback_roster
+        if df_roster.empty:
             updates_list.append({})
             continue
 
@@ -344,9 +345,10 @@ def add_player_history_features(
         game_injured_map = injured_dict.get(game_id, {})
         injured_players = set(game_injured_map.get(team_id, []))
 
-        # Separate non-injured and injured players
-        df_non_inj = df_active[~df_active["PLAYER_ID"].isin(injured_players)]
-        df_inj = df_active[df_active["PLAYER_ID"].isin(injured_players)]
+        # No target-game MIN rule: a rostered DNP remains available unless the
+        # injury/inactive feed places them in the injured set.
+        df_non_inj = df_roster[~df_roster["PLAYER_ID"].isin(injured_players)]
+        df_inj = df_roster[df_roster["PLAYER_ID"].isin(injured_players)]
 
         row_update = {}
 
@@ -449,27 +451,23 @@ def add_player_history_features(
 
             # NOT BUILT: TOTAL_NON_INJURED_PLAYER_<stat> and N_ACTIVE_PLAYERS.
             #
-            # Both aggregate over ``all_non_inj``, and for a game that has been
-            # played that list is THIS GAME'S BOX SCORE: the non-injured branch
-            # of get_top_n_averages_with_names selects
-            # ``df[df["GAME_DATE"] == date]``, over a frame already filtered to
-            # ``MIN > 0``. So ``len(all_non_inj)`` is "how many players the coach
-            # actually used tonight", which is a function of how the game went --
-            # it correlates +0.55 with |HOME_MARGIN| (bench-emptying in blowouts)
-            # and is lower in overtime games, which stay close and rotate short.
+            # In archived datasets both aggregated over ``all_non_inj`` after it
+            # had been reduced to THIS GAME'S ``MIN > 0`` box-score rows. Thus
+            # ``len(all_non_inj)`` meant "how many players the coach actually used
+            # tonight", a function of how the game went: it correlates +0.55 with
+            # |HOME_MARGIN| (bench-emptying in blowouts) and is lower in overtime
+            # games, which stay close and rotate short.
             #
             # The per-player VALUES are properly lagged, which is what made this
             # survive review for so long: only the membership of the set leaks.
             # A spread_error regressor given these 14 columns scored 66.7%
             # against the closing spread; without them, 52.4%.
             #
-            # The individual TOP{i}_PLAYER_* columns below are drawn from the
-            # same list and so inherit a weak form of this, but they select the
-            # top few by prior average -- players who essentially always play --
-            # and removing them alone moved nothing measurable. Fixing the
-            # selection in get_top_n_averages_with_names is the real repair;
-            # these two aggregates are removed because no lagged reading of them
-            # exists at all.
+            # The individual TOP{i}_PLAYER_* and bench columns are retained: their
+            # membership is now roster-minus-injured and their values are shifted
+            # pre-game estimates.  These two broad aggregate families remain
+            # absent so archived CSVs carrying their old, leaky meaning stay
+            # distinguishable and can continue to be rejected centrally.
             #
             # Player counts only for PTS to avoid repetition across stat_cols
             if stat_col == "PTS":

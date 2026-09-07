@@ -428,6 +428,13 @@ For each team-game, the pipeline identifies active and injured players using:
 - Scheduled injury-report data for same-day predictions.
 - Roster membership inferred from each player's last team before the game date.
 
+For historical games, a same-game player row may establish roster membership
+(including a first game after a trade), but its `MIN`, `PTS`, and other box-score
+values do not determine availability. The available set is roster minus the
+injury/inactive set. Every statistic attached to that membership is shifted and
+therefore uses prior appearances only. In particular, changing a target game's
+minutes from zero to a positive value cannot change that game's player features.
+
 Feature families added at the team row level include:
 
 - Top six active-player IDs, names, and prior averages by stat.
@@ -445,7 +452,8 @@ After home/away merging, player columns are suffixed by side, for example:
 - `TOTAL_INJURED_PLAYER_PTS_BEFORE_TEAM_HOME`
 - `N_INJURED_PLAYERS_BEFORE_TEAM_AWAY`
 
-> **Removed: `N_ACTIVE_PLAYERS_*` and `TOTAL_NON_INJURED_PLAYER_*`.** Both
+> **Removed from newly generated data: `N_ACTIVE_PLAYERS_*` and
+> `TOTAL_NON_INJURED_PLAYER_*`.** In legacy datasets both
 > aggregated over the *non-injured* player set, which
 > `get_top_n_averages_with_names` resolves as `df[df["GAME_DATE"] == date]` for
 > a game already played — that is, the players who logged minutes in the game
@@ -457,8 +465,10 @@ After home/away merging, player columns are suffixed by side, for example:
 > *values* were correctly lagged — only the membership of the set leaked, which
 > is why the `_BEFORE_` naming looked right. `TOTAL_INJURED_PLAYER_*` and
 > `N_INJURED_PLAYERS_*` are unaffected: they resolve each player's last game
-> *strictly before* this one. Old CSVs stay usable — `clean_dataframe_for_training`
-> drops the columns if it finds them (see `nba_ou.config.leakage`).
+> *strictly before* this one. The individual top-player and bench families now
+> use roster-minus-injured membership and are safe. Old CSVs stay usable —
+> `clean_dataframe_for_training` drops the legacy aggregate columns if it finds
+> them (see `nba_ou.config.leakage`).
 
 Each top-N statistic also produces an id and a name column
 (`TOP1_PLAYER_ID_PTS_BEFORE`, `TOP1_PLAYER_NAME_PTS_BEFORE`). **These are
