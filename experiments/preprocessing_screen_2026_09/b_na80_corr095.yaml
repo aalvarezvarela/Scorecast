@@ -1,0 +1,56 @@
+experiment_name: prep_screen_line_2_2_na80_corr095
+prediction_strategy: line_error_regressor
+training_version: "2.8-fixed-hparams-preprocessing-screen-20260907"
+comparison_group: preprocessing_screen_line_2_2
+hypothesis: Isolate the historical 80-NaN row threshold under current correlation pruning.
+tags: [preprocessing_screen, line_error, modern_2_2, fixed_hyperparameters]
+
+device: cuda
+random_state: 16
+data:
+  csv_path: data/train_data/training_data_2_2_20260901.csv
+  data_version: "20260901-training-2.2-normalized"
+  expected_checksum: "sha256:15a8e5c2ac70c269"
+  dataset_type: closing_line
+  season_year_floor: 2019
+  exclude_overtime_from_training: false
+  exclude_playoffs: true
+  allowed_season_types: ["Regular Season", "Play-In Tournament"]
+cleaning:
+  max_na_per_row: 80
+  corr_threshold: 0.95
+  corr_threshold_overrides: {"ODDS_": 0.99}
+holdout: {test_days: 90}
+walk_forward:
+  strategy: test_anchored
+  test_games: 50
+  step_games_between_tests: 60
+  train_games: 4000
+  min_train_games: 1250
+  max_folds: 12
+  fold_selection: latest
+  eval_span_games: null
+  min_validation_games: null
+  train_games_choices: null
+  exclude_test_months: [5, 6]
+  require_same_season_test: true
+sample_weight: {enabled: false}
+refit: {use_lexicographic_selection: false}
+optuna:
+  fixed_params:
+    max_depth: 4
+    min_child_weight: 64.20327410350946
+    gamma: 70.36672707152594
+    subsample: 0.7842071615794283
+    colsample_bytree: 0.20950745272916876
+    learning_rate: 0.05500444357038095
+    reg_alpha: 0.020587380090831903
+    reg_lambda: 46.767981923186724
+  fixed_n_estimators: 28
+  objective_aggregation: pooled
+betting:
+  edge_thresholds: [0.0, 0.1, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0]
+  primary_edge_threshold: 0.1
+holdout_evaluation: daily_walk_forward
+evaluation_seeds: []
+experiment_root_dir: artifacts/experiments/preprocessing_screen_2026_09

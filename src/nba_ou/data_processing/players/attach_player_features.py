@@ -277,11 +277,14 @@ def add_player_history_features(
                 else []
             ),
             f"AVG_INJURED_{stat_col}",
-            # Aggregation columns: sum of cum avg for ALL players (not just top 3)
+            # Aggregation over the INJURED set only. That set is resolved from
+            # each player's last game strictly BEFORE this one (the
+            # ``injured=True`` branch of get_top_n_averages_with_names), so it
+            # carries no information from tonight's box score. Its non-injured
+            # twin did, and is gone -- see below.
             f"TOTAL_INJURED_PLAYER_{stat_col}",
-            f"TOTAL_NON_INJURED_PLAYER_{stat_col}",
             # Player count columns only for PTS to avoid repetition
-            *(["N_INJURED_PLAYERS", "N_ACTIVE_PLAYERS"] if stat_col == "PTS" else []),
+            *(["N_INJURED_PLAYERS"] if stat_col == "PTS" else []),
         ]
         all_new_cols.extend([_with_before_suffix(c) for c in new_cols])
 
@@ -443,14 +446,34 @@ def add_player_history_features(
             row_update[_with_before_suffix(f"TOTAL_INJURED_PLAYER_{stat_col}")] = sum(
                 val for (_, _, val) in all_inj if val != 0
             )
-            row_update[_with_before_suffix(f"TOTAL_NON_INJURED_PLAYER_{stat_col}")] = (
-                sum(val for (_, _, val) in all_non_inj if val != 0)
-            )
 
+            # NOT BUILT: TOTAL_NON_INJURED_PLAYER_<stat> and N_ACTIVE_PLAYERS.
+            #
+            # Both aggregate over ``all_non_inj``, and for a game that has been
+            # played that list is THIS GAME'S BOX SCORE: the non-injured branch
+            # of get_top_n_averages_with_names selects
+            # ``df[df["GAME_DATE"] == date]``, over a frame already filtered to
+            # ``MIN > 0``. So ``len(all_non_inj)`` is "how many players the coach
+            # actually used tonight", which is a function of how the game went --
+            # it correlates +0.55 with |HOME_MARGIN| (bench-emptying in blowouts)
+            # and is lower in overtime games, which stay close and rotate short.
+            #
+            # The per-player VALUES are properly lagged, which is what made this
+            # survive review for so long: only the membership of the set leaks.
+            # A spread_error regressor given these 14 columns scored 66.7%
+            # against the closing spread; without them, 52.4%.
+            #
+            # The individual TOP{i}_PLAYER_* columns below are drawn from the
+            # same list and so inherit a weak form of this, but they select the
+            # top few by prior average -- players who essentially always play --
+            # and removing them alone moved nothing measurable. Fixing the
+            # selection in get_top_n_averages_with_names is the real repair;
+            # these two aggregates are removed because no lagged reading of them
+            # exists at all.
+            #
             # Player counts only for PTS to avoid repetition across stat_cols
             if stat_col == "PTS":
                 row_update[_with_before_suffix("N_INJURED_PLAYERS")] = len(all_inj)
-                row_update[_with_before_suffix("N_ACTIVE_PLAYERS")] = len(all_non_inj)
 
         updates_list.append(row_update)
 

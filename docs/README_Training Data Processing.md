@@ -433,8 +433,8 @@ Feature families added at the team row level include:
 - Top six active-player IDs, names, and prior averages by stat.
 - Top four injured-player IDs, names, and prior averages by stat.
 - Average top-injured-player value by stat.
-- Total active-player and injured-player prior value by stat.
-- Number of active and injured players.
+- Total injured-player prior value by stat.
+- Number of injured players.
 - Injury streak features for injured players by points.
 - Bench scoring and pace features from players averaging roughly 7 to 21 minutes.
 
@@ -443,7 +443,22 @@ After home/away merging, player columns are suffixed by side, for example:
 - `TOP1_PLAYER_PTS_BEFORE_TEAM_HOME`
 - `TOP1_INJURED_PLAYER_PTS_BEFORE_TEAM_AWAY`
 - `TOTAL_INJURED_PLAYER_PTS_BEFORE_TEAM_HOME`
-- `N_ACTIVE_PLAYERS_BEFORE_TEAM_AWAY`
+- `N_INJURED_PLAYERS_BEFORE_TEAM_AWAY`
+
+> **Removed: `N_ACTIVE_PLAYERS_*` and `TOTAL_NON_INJURED_PLAYER_*`.** Both
+> aggregated over the *non-injured* player set, which
+> `get_top_n_averages_with_names` resolves as `df[df["GAME_DATE"] == date]` for
+> a game already played — that is, the players who logged minutes in the game
+> being predicted. The count therefore tracked rotation depth: it correlates
+> **+0.55 with `|HOME_MARGIN|`** (bench-emptying in blowouts) and runs from 9.7
+> for games decided by ≤5 points to 12.3 for games decided by >30. A
+> `spread_error` regressor given these 14 columns scored 66.7% against the
+> closing spread on a 609-game holdout; without them, 52.4%. The per-player
+> *values* were correctly lagged — only the membership of the set leaked, which
+> is why the `_BEFORE_` naming looked right. `TOTAL_INJURED_PLAYER_*` and
+> `N_INJURED_PLAYERS_*` are unaffected: they resolve each player's last game
+> *strictly before* this one. Old CSVs stay usable — `clean_dataframe_for_training`
+> drops the columns if it finds them (see `nba_ou.config.leakage`).
 
 Each top-N statistic also produces an id and a name column
 (`TOP1_PLAYER_ID_PTS_BEFORE`, `TOP1_PLAYER_NAME_PTS_BEFORE`). **These are

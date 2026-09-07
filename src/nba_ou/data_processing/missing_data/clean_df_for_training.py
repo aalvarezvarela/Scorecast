@@ -11,6 +11,7 @@ This module provides functions to:
 
 import numpy as np
 import pandas as pd
+from nba_ou.config.leakage import rotation_leak_columns
 from nba_ou.config.odds_columns import resolve_main_total_line_col
 from nba_ou.data_processing.missing_data.cleaning_report import CleaningReport
 from nba_ou.data_processing.missing_data.column_redundancy import (
@@ -803,6 +804,35 @@ def clean_dataframe_for_training(
             and repeated_measures.snapshot_col in df.columns
         ):
             redundancy_snapshot = df[repeated_measures.snapshot_col]
+
+    # Rotation-depth leaks go first, before any other step measures the frame.
+    # Not merely cosmetic ordering: the correlation step drops a column when it
+    # duplicates another, so leaving these in until later lets a leaked column
+    # win a pair and evict the legitimate feature it correlates with -- the
+    # frame would then be shaped by a column that is about to be deleted.
+    #
+    # Unconditional, and deliberately NOT rescuable via keep_columns: these are
+    # functions of the game being predicted (see ROTATION_LEAK_COLUMN_PREFIXES),
+    # and a guard a caller can switch off is the arrangement that produced the
+    # 66.7%-against-the-closing-spread run in the first place. Dropping rather
+    # than raising, so the CSVs already built keep working.
+    rotation_leaks = rotation_leak_columns(df.columns)
+    if rotation_leaks:
+        if verbose >= 1:
+            print(
+                f"Dropping {len(rotation_leaks)} rotation-depth leakage column(s) "
+                "built from the predicted game's own box score: "
+                f"{rotation_leaks}"
+            )
+        df = df.drop(columns=rotation_leaks)
+        report.drop_columns(
+            rotation_leaks,
+            step="rotation_leak",
+            reason=(
+                "aggregates over the players who logged minutes in THIS game "
+                "(nba_ou.config.leakage.ROTATION_LEAK_COLUMN_PREFIXES)"
+            ),
+        )
 
     # The exclude patterns used to be applied here AND again inside
     # advanced_column_cleaning. Doing it once here and passing None onward keeps

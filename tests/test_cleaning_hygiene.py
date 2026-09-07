@@ -669,3 +669,97 @@ def test_unequal_repetition_does_not_decide_a_historical_column(capsys):
     )
 
     assert all(column in cleaned.columns for column in pair)
+
+
+# ---------------------------------------------------------------------------
+# rotation-depth leakage
+# ---------------------------------------------------------------------------
+
+
+def _rotation_leak_frame(frame: pd.DataFrame) -> pd.DataFrame:
+    """A frame carrying the leaked families, their innocent look-alikes, and a
+    plain feature that must survive."""
+    out = frame.copy()
+    out["N_ACTIVE_PLAYERS_BEFORE_TEAM_HOME"] = 10.0
+    out["N_ACTIVE_PLAYERS_BEFORE_TEAM_AWAY"] = 11.0
+    out["TOTAL_NON_INJURED_PLAYER_PTS_BEFORE_TEAM_HOME"] = 90.0
+    out["TOTAL_NON_INJURED_PLAYER_TS_PCT_BEFORE_TEAM_AWAY"] = 0.55
+    # Must NOT be dropped: built from each player's last game strictly before
+    # this one, so it carries nothing from tonight's box score.
+    out["TOTAL_INJURED_PLAYER_PTS_BEFORE_TEAM_HOME"] = 12.0
+    out["N_INJURED_PLAYERS_BEFORE_TEAM_HOME"] = 3.0
+    return out
+
+
+def test_cleaning_drops_rotation_depth_leakage_columns(frame):
+    """N_ACTIVE_PLAYERS and TOTAL_NON_INJURED_PLAYER_* aggregate over the players
+    who logged minutes in the game being predicted, so they encode how the game
+    went. They reached the feature matrix for months without erroring."""
+    cleaned = clean_dataframe_for_training(
+        _rotation_leak_frame(frame), verbose=0, keep_all_cols=True
+    )
+
+    assert "N_ACTIVE_PLAYERS_BEFORE_TEAM_HOME" not in cleaned.columns
+    assert "N_ACTIVE_PLAYERS_BEFORE_TEAM_AWAY" not in cleaned.columns
+    assert "TOTAL_NON_INJURED_PLAYER_PTS_BEFORE_TEAM_HOME" not in cleaned.columns
+    assert "TOTAL_NON_INJURED_PLAYER_TS_PCT_BEFORE_TEAM_AWAY" not in cleaned.columns
+
+
+def test_cleaning_keeps_the_lagged_injured_columns(frame):
+    """The prefix must not swallow TOTAL_INJURED_PLAYER_* or N_INJURED_PLAYERS:
+    those resolve each player's last game BEFORE this one and are legitimate."""
+    cleaned = clean_dataframe_for_training(
+        _rotation_leak_frame(frame), verbose=0, keep_all_cols=True
+    )
+
+    assert "TOTAL_INJURED_PLAYER_PTS_BEFORE_TEAM_HOME" in cleaned.columns
+    assert "N_INJURED_PLAYERS_BEFORE_TEAM_HOME" in cleaned.columns
+
+
+def test_keep_columns_cannot_rescue_a_rotation_leak(frame):
+    """keep_columns is a caller-supplied field. A leakage guard it can switch
+    off is the arrangement that let this ship in the first place."""
+    cleaned = clean_dataframe_for_training(
+        _rotation_leak_frame(frame),
+        verbose=0,
+        keep_all_cols=True,
+        keep_columns=["N_ACTIVE_PLAYERS_BEFORE_TEAM_HOME"],
+    )
+
+    assert "N_ACTIVE_PLAYERS_BEFORE_TEAM_HOME" not in cleaned.columns
+
+
+def test_rotation_leak_drop_is_recorded_in_the_report(frame):
+    _, report = clean_dataframe_for_training(
+        _rotation_leak_frame(frame),
+        verbose=0,
+        keep_all_cols=True,
+        return_report=True,
+    )
+
+    entry = report.why_dropped("N_ACTIVE_PLAYERS_BEFORE_TEAM_HOME")
+    assert entry is not None and entry["step"] == "rotation_leak"
+    assert report.why_dropped("TOTAL_INJURED_PLAYER_PTS_BEFORE_TEAM_HOME") is None
+
+
+def test_rotation_leak_runs_before_correlation_pruning(frame):
+    """Ordering is load-bearing: a leaked column that wins a correlation pair
+    evicts the legitimate feature it duplicates, so the surviving frame is
+    shaped by a column that is about to be deleted anyway."""
+    leaky = _rotation_leak_frame(frame)
+    # Independent of every other column, so the only correlation pair in the
+    # frame is (leak, twin) and nothing else can decide the twin's fate.
+    signal = np.random.default_rng(3).normal(10, 2, len(frame))
+    leaky["N_ACTIVE_PLAYERS_BEFORE_TEAM_HOME"] = signal
+    leaky["ROTATION_TWIN_BEFORE_TEAM_HOME"] = signal * 2.0
+
+    cleaned = clean_dataframe_for_training(
+        leaky,
+        corr_threshold=0.95,
+        corr_threshold_overrides={},
+        verbose=0,
+        return_report=False,
+    )
+
+    assert "N_ACTIVE_PLAYERS_BEFORE_TEAM_HOME" not in cleaned.columns
+    assert "ROTATION_TWIN_BEFORE_TEAM_HOME" in cleaned.columns

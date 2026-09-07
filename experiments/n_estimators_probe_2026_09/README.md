@@ -26,6 +26,32 @@ the behavior of the original run, so part 1 passes the explicit preflight flag
 `--allow-short-training-windows` and records a warning instead of silently
 changing the historical geometry.
 
+## Closing spread after the rotation-depth leak (cell `i`)
+
+`i_modern22_spread_early_stop.yaml` is not about `n_estimators`. It rides along
+in part 1 because it needs the same CSV and the same fold geometry, and because
+it is the first `spread_error` run measured after
+`clean_dataframe_for_training` started dropping `N_ACTIVE_PLAYERS_*` and
+`TOTAL_NON_INJURED_PLAYER_*` (see `nba_ou.config.leakage`). Those 14 columns
+aggregate over the players who logged minutes in the game being predicted; the
+count correlates **+0.55 with `|HOME_MARGIN|`**.
+
+It is an exact mirror of cell `b` apart from the target and the spread's own
+price/comparison columns, so `b` and `i` are readable against each other as
+totals-vs-spread on identical geometry.
+
+**Read the cleaning report first.** `cleaning_report.json` must contain a
+`rotation_leak` step naming **14** columns, and `feature_schema.json` must hold
+**1,409** features rather than 1,421. (The two counts differ because the two
+`TOTAL_NON_INJURED_PLAYER_PACE_PER40_*` columns were already being pruned by the
+correlation step, so removing them costs the feature matrix nothing.) If the
+step is absent, the run measured the old feature matrix and its win rate means
+nothing. Every archived spread run
+(`extended_closing_spread_2_2`, `cv15_10d_closing_spread_2_2`, the whole
+`spread_error_2026_08` campaign) predates the fix and reported 62-67% for this
+reason; re-running that geometry through the fixed pipeline gives 52.4%. So a
+high number here is a bug report, not a result.
+
 Run the line-error half and total-points half separately:
 
 ```bash

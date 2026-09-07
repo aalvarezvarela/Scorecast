@@ -14,6 +14,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 from nba_ou.config.constants import SEASON_TYPE_MAP
+from nba_ou.config.leakage import rotation_leak_columns
 from nba_ou.config.market_columns import (
     HOME_MARGIN_COL,
     PTS_AWAY_COL,
@@ -693,6 +694,22 @@ def assert_no_leaking_features(X: pd.DataFrame) -> None:
             "they are functions of the final score and are never features, for any "
             "strategy. They are dropped in prepare_dataset -- if one got through, "
             "a fit site is building X without that drop."
+        )
+
+    # Enforced separately again, and for a third reason: these are dropped
+    # inside clean_dataframe_for_training, which is upstream of every fit site
+    # (training, retrain and the same-day prediction path all route through it).
+    # A survivor here therefore means a frame reached X without being cleaned,
+    # which is a worse fault than the column itself.
+    rotation_leaked = rotation_leak_columns(X.columns)
+    if rotation_leaked:
+        raise ValueError(
+            f"Rotation-depth column(s) {rotation_leaked} reached the feature "
+            "matrix. They aggregate over the players who logged minutes in the "
+            "game being predicted, so they encode how the game went: the count "
+            "correlates +0.55 with the final margin. They are dropped in "
+            "clean_dataframe_for_training -- if one got through, X was built "
+            "from a frame that never went through cleaning."
         )
 
 
