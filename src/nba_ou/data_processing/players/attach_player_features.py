@@ -1,5 +1,7 @@
 import re
+from bisect import bisect_left
 
+import numpy as np
 import pandas as pd
 from tqdm import tqdm
 
@@ -30,6 +32,9 @@ from nba_ou.utils.general_utils import _with_before_suffix
 #: They are dropped at the very end of the pipeline, after the availability-effect
 #: features have consumed the id columns.
 PLAYER_IDENTIFIER_PATTERN = re.compile(r"^TOP\d+_(?:INJURED_)?PLAYER_(?:ID|NAME)_")
+
+EXPECTED_ROTATION_WINDOW = 10
+EXPECTED_ROTATION_MINUTES = 15.0
 
 
 def is_player_identifier_column(column: str) -> bool:
@@ -181,6 +186,66 @@ def _build_bench_stats_lookup(df_players):
     return bench_lookup
 
 
+def _build_expected_rotation_lookup(
+    df_players,
+    *,
+    window=EXPECTED_ROTATION_WINDOW,
+    minutes_threshold=EXPECTED_ROTATION_MINUTES,
+):
+    """Return players whose prior recent minutes indicate an expected appearance."""
+    players = df_players[["PLAYER_ID", "GAME_DATE", "MIN"]].copy()
+    players["GAME_DATE"] = pd.to_datetime(players["GAME_DATE"], errors="coerce")
+    players["MIN"] = pd.to_numeric(players["MIN"], errors="coerce")
+    # NaN minutes identify scheduled placeholders, not an observed DNP. Real DNP
+    # rows have MIN=0 and intentionally count as zero in the recent average.
+    players = players.dropna(subset=["PLAYER_ID", "GAME_DATE", "MIN"]).sort_values(
+        ["PLAYER_ID", "GAME_DATE"], kind="mergesort"
+    )
+
+    histories = {}
+    for player_id, group in players.groupby("PLAYER_ID", sort=False):
+        histories[str(player_id)] = (
+            list(group["GAME_DATE"].to_numpy(dtype="datetime64[ns]")),
+            group["MIN"].to_numpy(dtype=float),
+        )
+
+    def expected_rotation(player_ids, game_date) -> set[str]:
+        game_date_np = np.datetime64(pd.Timestamp(game_date).to_datetime64(), "ns")
+        expected = set()
+        for player_id in player_ids:
+            player_key = str(player_id)
+            history = histories.get(player_key)
+            if history is None:
+                continue
+            dates, minutes = history
+            end = bisect_left(dates, game_date_np)
+            if end == 0:
+                continue
+            recent_minutes = minutes[max(0, end - window) : end]
+            if float(recent_minutes.mean()) > minutes_threshold:
+                expected.add(player_key)
+        return expected
+
+    return expected_rotation
+
+
+def _build_observed_game_players_lookup(df_players):
+    """Index real target-game player rows; scheduled placeholders are excluded."""
+    players = df_players.copy()
+    players["MIN"] = pd.to_numeric(players["MIN"], errors="coerce")
+    observed = players[players["MIN"].notna()]
+    groups = {
+        (str(game_id), str(team_id)): group
+        for (game_id, team_id), group in observed.groupby(["GAME_ID", "TEAM_ID"])
+    }
+    empty = players.iloc[0:0]
+
+    def lookup(game_id, team_id):
+        return groups.get((str(game_id), str(team_id)), empty)
+
+    return lookup
+
+
 def _build_prior_roster_lookup(df_players):
     """Infer a roster from assignments strictly before the target game.
 
@@ -330,6 +395,8 @@ def add_player_history_features(
     )
     bench_lookup = _build_bench_stats_lookup(df_players)
     prior_roster_lookup = _build_prior_roster_lookup(df_players)
+    expected_rotation_lookup = _build_expected_rotation_lookup(df_players)
+    observed_game_players_lookup = _build_observed_game_players_lookup(df_players)
 
     # 3) Iterate over each row in df_team (only needed columns for efficiency)
     cols_needed = ["GAME_ID", "TEAM_ID", "SEASON_ID", "GAME_DATE"]
@@ -344,8 +411,8 @@ def add_player_history_features(
             desc="Adding players data",
         )
     ):
-        # Resolve the roster without consulting who logged minutes in this game.
-        # Availability is defined below solely as roster minus injured/inactive.
+        # Resolve the base roster without consulting who logged minutes in this
+        # game. The DNP rule below may then move an expected player to injured.
         df_roster = player_lookup(season_id, team_id, game_date, game_id=game_id)
         if df_roster.empty:
             # At a season opener, fall back to the latest assignments from the
@@ -353,17 +420,29 @@ def add_player_history_features(
             fallback_roster = prior_roster_lookup(team_id, game_date)
             if fallback_roster is not None:
                 df_roster = fallback_roster
+
         if df_roster.empty:
             updates_list.append({})
             continue
 
-        # Who is injured for this game/team?
-        injured_players = _injured_player_ids_for_team(injured_dict, game_id, team_id)
-        player_ids = df_roster["PLAYER_ID"].astype(str)
+        observed_game_players = observed_game_players_lookup(game_id, team_id)
 
-        # No target-game MIN rule: a rostered DNP remains available unless the
-        # injury/inactive feed places them in the injured set.
-        df_non_inj = df_roster[~player_ids.isin(injured_players)]
+        # Reported injuries stay unchanged. A high-minute expected player with an
+        # observed DNP is classified locally with the injured player features.
+        reported_injured_players = _injured_player_ids_for_team(
+            injured_dict, game_id, team_id
+        )
+        player_ids = df_roster["PLAYER_ID"].astype(str)
+        expected_rotation_players = expected_rotation_lookup(
+            player_ids.unique(), game_date
+        )
+        observed_ids = observed_game_players["PLAYER_ID"].astype(str)
+        dnp_players = set(observed_ids[observed_game_players["MIN"].le(0)].tolist())
+        inferred_dnp_absences = expected_rotation_players & dnp_players
+        injured_players = reported_injured_players | inferred_dnp_absences
+        available_players = set(player_ids) - injured_players
+
+        df_non_inj = df_roster[player_ids.isin(available_players)]
         df_inj = df_roster[player_ids.isin(injured_players)]
 
         row_update = {}

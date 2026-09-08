@@ -434,8 +434,19 @@ current game's box score does not exist yet. A current injury report is valid
 pregame assignment evidence and overrides the player's previously known team,
 including on their first game after a trade. Scheduled player placeholders are
 also safe same-day evidence because they are generated from prior player history
-and contain no current-game statistics. Every player statistic remains shifted,
-so the current game's `MIN`, `PTS`, and other box-score values are excluded.
+and contain no current-game statistics. Every numeric player feature remains
+shifted, so current-game box-score values are excluded from those calculations;
+current-game `MIN = 0` is read only by the DNP classification rule below.
+
+Historical DNP rows provide one additional availability signal. If a player
+averaged more than 15 minutes across their last 10 recorded games before the
+target and then has `MIN = 0`, the pipeline treats that player as injured/absent
+for the target game even when the injury feed missed the late decision. DNPs
+within the prior 10-game window count as zero minutes. Scheduled placeholders
+have `MIN = NaN`, so they do not trigger this rule. The threshold is used only to
+infer this DNP absence; it does not filter any other available player. This local
+classification does not add the player to the injury-report dictionary or alter
+injury streaks, which continue to use the existing report and box-score comments.
 
 Feature families added at the team row level include:
 

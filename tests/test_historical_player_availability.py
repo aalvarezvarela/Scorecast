@@ -48,6 +48,7 @@ def _player_row(
         "MIN": minutes,
         "PTS": points,
         "PACE_PER40": 99.0 if minutes > 0 else None,
+        "COMMENT": comment,
     }
 
 
@@ -99,24 +100,92 @@ def _run(
     return out.loc[out["GAME_ID"].eq(TARGET_GAME)].iloc[0]
 
 
-def test_uninjured_dnp_remains_in_the_available_top() -> None:
-    target = _run()
+def test_expected_rotation_dnp_is_inferred_as_injured() -> None:
+    out, injury_dict = add_player_history_features(
+        _team_rows(),
+        _players(target_star_minutes=0.0, target_star_points=None),
+        pd.DataFrame(columns=["GAME_ID", "TEAM_ID", "PLAYER_ID"]),
+        stat_cols=["PTS"],
+    )
+    target = out.loc[out["GAME_ID"].eq(TARGET_GAME)].iloc[0]
 
-    assert target["TOP1_PLAYER_ID_PTS_BEFORE"] == "star"
-    assert target["TOP1_PLAYER_PTS_BEFORE"] == pytest.approx(30.0)
+    assert target["TOP1_PLAYER_ID_PTS_BEFORE"] == "rotation"
+    assert target["TOP1_INJURED_PLAYER_ID_PTS_BEFORE"] == "star"
+    assert target["TOP1_INJURED_PLAYER_PTS_BEFORE"] == pytest.approx(30.0)
+    assert target["N_INJURED_PLAYERS_BEFORE"] == 1
+    assert injury_dict == {}
 
 
-def test_target_game_minutes_and_points_cannot_change_player_features() -> None:
-    dnp = _run(target_star_minutes=0.0, target_star_points=None)
-    played = _run(target_star_minutes=41.0, target_star_points=55.0)
+def test_boxscore_injury_comment_remains_an_injury_report_source() -> None:
+    players = _players(target_star_minutes=0.0, target_star_points=None)
+    target_star = players["GAME_ID"].eq(TARGET_GAME) & players["PLAYER_ID"].eq("star")
+    players.loc[target_star, "COMMENT"] = "DND - Injury/Illness"
 
-    feature_columns = [column for column in dnp.index if column.endswith("_BEFORE")]
+    _, injury_dict = add_player_history_features(
+        _team_rows(),
+        players,
+        pd.DataFrame(columns=["GAME_ID", "TEAM_ID", "PLAYER_ID"]),
+        stat_cols=["PTS"],
+    )
+
+    assert injury_dict[TARGET_GAME][TEAM] == ["star"]
+
+
+def test_dnp_decision_uses_only_minutes_before_the_target_game() -> None:
+    players = _players(target_star_minutes=0.0, target_star_points=None)
+    prior_star = players["PLAYER_ID"].eq("star") & ~players["GAME_ID"].eq(TARGET_GAME)
+    players.loc[prior_star, "MIN"] = 16.0
+
+    out, _ = add_player_history_features(
+        _team_rows(),
+        players,
+        pd.DataFrame(columns=["GAME_ID", "TEAM_ID", "PLAYER_ID"]),
+        stat_cols=["PTS"],
+    )
+    target = out.loc[out["GAME_ID"].eq(TARGET_GAME)].iloc[0]
+
+    assert target["TOP1_INJURED_PLAYER_ID_PTS_BEFORE"] == "star"
+
+
+def test_target_game_points_cannot_change_player_features() -> None:
+    ordinary = _run(target_star_minutes=41.0, target_star_points=20.0)
+    high_scoring = _run(target_star_minutes=41.0, target_star_points=55.0)
+
+    feature_columns = [
+        column for column in ordinary.index if column.endswith("_BEFORE")
+    ]
     pd.testing.assert_series_equal(
-        dnp[feature_columns],
-        played[feature_columns],
+        ordinary[feature_columns],
+        high_scoring[feature_columns],
         check_names=False,
         check_dtype=False,
     )
+
+
+def test_dnp_at_threshold_remains_available_without_a_minutes_cutoff() -> None:
+    players = _players(target_star_minutes=0.0, target_star_points=None)
+    prior_star = players["PLAYER_ID"].eq("star") & ~players["GAME_ID"].eq(TARGET_GAME)
+    players.loc[prior_star, "MIN"] = 15.0
+
+    out, _ = add_player_history_features(
+        _team_rows(),
+        players,
+        pd.DataFrame(columns=["GAME_ID", "TEAM_ID", "PLAYER_ID"]),
+        stat_cols=["PTS"],
+    )
+    target = out.loc[out["GAME_ID"].eq(TARGET_GAME)].iloc[0]
+
+    available_ids = [target[f"TOP{i}_PLAYER_ID_PTS_BEFORE"] for i in range(1, 7)]
+    injured_ids = [target[f"TOP{i}_INJURED_PLAYER_ID_PTS_BEFORE"] for i in range(1, 5)]
+    assert "star" in available_ids
+    assert "star" not in injured_ids
+
+
+def test_scheduled_placeholder_is_not_treated_as_a_dnp() -> None:
+    target = _run(target_star_minutes=float("nan"), target_star_points=None)
+
+    assert target["TOP1_PLAYER_ID_PTS_BEFORE"] == "star"
+    assert pd.isna(target["TOP1_INJURED_PLAYER_ID_PTS_BEFORE"])
 
 
 def test_injury_membership_overrides_a_same_game_roster_row() -> None:
