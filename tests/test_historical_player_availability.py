@@ -101,11 +101,12 @@ def _run(
 
 
 def test_expected_rotation_dnp_is_inferred_as_injured() -> None:
-    out, injury_dict = add_player_history_features(
+    out, injury_dict, availability_dict = add_player_history_features(
         _team_rows(),
         _players(target_star_minutes=0.0, target_star_points=None),
         pd.DataFrame(columns=["GAME_ID", "TEAM_ID", "PLAYER_ID"]),
         stat_cols=["PTS"],
+        return_availability_dict=True,
     )
     target = out.loc[out["GAME_ID"].eq(TARGET_GAME)].iloc[0]
 
@@ -114,6 +115,8 @@ def test_expected_rotation_dnp_is_inferred_as_injured() -> None:
     assert target["TOP1_INJURED_PLAYER_PTS_BEFORE"] == pytest.approx(30.0)
     assert target["N_INJURED_PLAYERS_BEFORE"] == 1
     assert injury_dict == {}
+    assert availability_dict[TARGET_GAME][TEAM]["injured"] == ["star"]
+    assert "star" not in availability_dict[TARGET_GAME][TEAM]["available"]
 
 
 def test_boxscore_injury_comment_remains_an_injury_report_source() -> None:

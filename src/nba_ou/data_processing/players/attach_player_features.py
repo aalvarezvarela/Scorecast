@@ -284,7 +284,12 @@ def _build_prior_roster_lookup(df_players):
 
 
 def add_player_history_features(
-    df_team, df_players, df_injuries, stat_cols=["PTS"], injury_dict_scheduled=None
+    df_team,
+    df_players,
+    df_injuries,
+    stat_cols=["PTS"],
+    injury_dict_scheduled=None,
+    return_availability_dict: bool = False,
 ):
     """
     Main function to attach top player statistics and injured player stats to team data.
@@ -304,6 +309,9 @@ def add_player_history_features(
     Returns:
         pd.DataFrame: Updated df_team with extra columns for top players and injured players
         dict: Updated injured players dictionary
+        dict, optional: Per-game available/injured roster classification. Returned
+            only when ``return_availability_dict=True`` and kept separate from the
+            injury-report dictionary.
     """
     # Build injuries lookup
     injured_dict = get_injured_players_dict(df_injuries, df_players=df_players)
@@ -403,6 +411,7 @@ def add_player_history_features(
 
     # Collect all updates in a list for bulk assignment
     updates_list = []
+    availability_dict = {}
 
     for _, (game_id, team_id, season_id, game_date) in enumerate(
         tqdm(
@@ -444,6 +453,11 @@ def add_player_history_features(
 
         df_non_inj = df_roster[player_ids.isin(available_players)]
         df_inj = df_roster[player_ids.isin(injured_players)]
+
+        availability_dict.setdefault(str(game_id), {})[str(team_id)] = {
+            "available": sorted(set(df_non_inj["PLAYER_ID"].astype(str))),
+            "injured": sorted(set(df_inj["PLAYER_ID"].astype(str))),
+        }
 
         row_update = {}
 
@@ -584,4 +598,6 @@ def add_player_history_features(
             .astype(int)
         )
 
+    if return_availability_dict:
+        return df_team, injured_dict, availability_dict
     return df_team, injured_dict

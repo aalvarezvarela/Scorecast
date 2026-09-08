@@ -950,10 +950,23 @@ It is called twice:
    `TOP3_INJURED_AVAILABILITY_EFFECT_*`.
 
 For each player, team, and game date, the function looks at the current and
-previous season for that team before the game date. It compares:
+previous season for that team before the game date. Only games where the local
+roster split classified that player as available or injured are included. This
+excludes games before the player joined the team or after they left it. The local
+split can include an expected-rotation DNP as absent without adding that player
+to the injury-report dictionary.
+
+It compares:
 
 - Team `TOTAL_POINTS` when the player was present versus injured.
 - Team `DIFF_FROM_LINE` when the player was present versus injured.
+- Team-oriented `SPREAD_ERROR` when the player was present versus injured. For
+  both home and away teams, a positive value means the team beat the Bet365
+  spread by that many points.
+- Team win rate when the player was present versus injured.
+
+Each effect is `mean(available) - mean(injured)`, so a positive spread or win-rate
+effect means the team historically performed better with the player available.
 
 Raw effects are shrunk toward zero using:
 
@@ -964,18 +977,28 @@ effect_shrunk = effect_raw * n_eff / (n_eff + k)
 where `n_eff` is the smaller of injured-game count and present-game count, and
 `k` defaults to `10.0`.
 
+The pipeline also calculates a p-value for every effect. Continuous outcomes
+(`TOTAL_POINTS`, `DIFF_FROM_LINE`, and `SPREAD_ERROR`) use Welch's independent
+two-sample test. Win rate uses Fisher's exact test. A player needs at least three
+available games and three injured games with a valid outcome; otherwise their
+p-value is `NaN`. The compact group-level p-value takes the smallest valid
+per-player p-value and applies a Bonferroni correction for the number of tested
+players. It remains `NaN` when no selected player reaches the minimum sample.
+
 Aggregate outputs include:
 
 - Home and away mean effects on total points.
 - Home and away mean effects on difference from line.
+- Home and away mean effects on spread error and win rate.
 - Home and away max absolute effects.
+- Home and away Bonferroni-adjusted p-values for all four effects.
 - Home and away total historical sample sizes.
 
-This compact default creates 10 columns per call (20 across active and injured
-players), down from the previous 18 per call. The redundant injured/present
-count split, player counts, and boolean flags are omitted. They remain available
-for diagnostics through `include_detailed_sample_size_features=True`, but the
-training and prediction pipeline explicitly keeps the compact schema.
+This compact default creates 22 columns per call (44 across active and injured
+players). The redundant injured/present count split, player counts, and boolean
+flags are omitted. They remain available for diagnostics through
+`include_detailed_sample_size_features=True`, but the training and prediction
+pipeline explicitly keeps the compact schema.
 
 ## Travel And Schedule Features
 
