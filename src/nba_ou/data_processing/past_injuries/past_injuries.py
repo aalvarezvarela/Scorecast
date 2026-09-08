@@ -118,16 +118,16 @@ def create_player_lookup(df_players, injured_dict=None):
         ["SEASON_ID", "TEAM_ID", "PLAYER_ID", "GAME_DATE"], inplace=True
     )
 
-    # Build index: (season_id, team_id) -> DataFrame slice (for returning data)
-    season_team_groups = {}
-    for (season_id, team_id), group_df in df_valid.groupby(["SEASON_ID", "TEAM_ID"]):
-        season_team_groups[(season_id, team_id)] = group_df
-
-    season_year_team_groups = {}
-    for (season_year, team_id), group_df in df_valid.groupby(
-        ["SEASON_YEAR", "TEAM_ID"]
-    ):
-        season_year_team_groups[(int(season_year), team_id)] = group_df
+    # Returning a reported injured player may require statistics from their prior
+    # team (for example, their first game after a trade). Keep a whole-season
+    # slice as well as the team membership indexes built below.
+    season_groups = {
+        season_id: group_df for season_id, group_df in df_valid.groupby("SEASON_ID")
+    }
+    season_year_groups = {
+        int(season_year): group_df
+        for season_year, group_df in df_valid.groupby("SEASON_YEAR")
+    }
 
     # For tracking player movements, use ALL data (including MIN=0 games)
     # because a player's last game might be a DNP (MIN=0) but they're still on the team
@@ -136,9 +136,10 @@ def create_player_lookup(df_players, injured_dict=None):
     df_all_by_year = df_players.copy()
     df_all_by_year.sort_values(["SEASON_YEAR", "PLAYER_ID", "GAME_DATE"], inplace=True)
 
-    # Pre-compute: for each (season, player), build sorted list of (date, team_id)
-    # This allows finding the last team before a given date
-    # IMPORTANT: Use ALL games (not just MIN>0) to track team membership
+    # Pre-compute each player's assignment history. Real box-score rows are known
+    # only after the game and therefore assign a team starting on the following
+    # game. Scheduled placeholders have MIN=None and are generated from already
+    # known history, so they remain valid same-day pregame evidence.
     player_timeline = defaultdict(
         list
     )  # (season_id, player_id) -> [(date, team_id), ...]
@@ -146,7 +147,10 @@ def create_player_lookup(df_players, injured_dict=None):
         # Sorted by date (chronologically across all teams)
         dates = grp["GAME_DATE"].values
         teams = grp["TEAM_ID"].values
-        player_timeline[(season_id, player_id)] = list(zip(dates, teams, strict=True))
+        placeholders = grp["MIN"].isna().values
+        player_timeline[(season_id, str(player_id))] = list(
+            zip(dates, teams, placeholders, strict=True)
+        )
 
     player_timeline_by_season_year = defaultdict(list)
     for (season_year, player_id), grp in df_all_by_year.groupby(
@@ -154,23 +158,24 @@ def create_player_lookup(df_players, injured_dict=None):
     ):
         dates = grp["GAME_DATE"].values
         teams = grp["TEAM_ID"].values
-        player_timeline_by_season_year[(int(season_year), player_id)] = list(
-            zip(dates, teams, strict=True)
+        placeholders = grp["MIN"].isna().values
+        player_timeline_by_season_year[(int(season_year), str(player_id))] = list(
+            zip(dates, teams, placeholders, strict=True)
         )
 
     # Get unique players per (season, team) - use ALL data for membership tracking
     players_by_season_team = {}
     for (season_id, team_id), group_df in df_all.groupby(["SEASON_ID", "TEAM_ID"]):
-        players_by_season_team[(season_id, team_id)] = set(
-            group_df["PLAYER_ID"].unique()
+        players_by_season_team[(season_id, str(team_id))] = set(
+            group_df["PLAYER_ID"].astype(str).unique()
         )
 
     players_by_season_year_team = {}
     for (season_year, team_id), group_df in df_all_by_year.groupby(
         ["SEASON_YEAR", "TEAM_ID"]
     ):
-        players_by_season_year_team[(int(season_year), team_id)] = set(
-            group_df["PLAYER_ID"].unique()
+        players_by_season_year_team[(int(season_year), str(team_id))] = set(
+            group_df["PLAYER_ID"].astype(str).unique()
         )
 
     empty_df = pd.DataFrame(columns=df_players.columns)
@@ -201,66 +206,73 @@ def create_player_lookup(df_players, injured_dict=None):
         game_id,
         players_by_bucket_team,
         player_timeline_by_bucket,
-        bucket_team_groups,
+        bucket_groups,
     ):
-        # Get players who ever played for this team in this season bucket.
-        candidate_players = players_by_bucket_team.get((bucket_key, team_id))
+        team_key = str(team_id)
+        game_injury_map = (
+            injured_team_by_game_player.get(str(game_id), {})
+            if game_id is not None
+            else {}
+        )
+
+        # Prior box scores provide the ordinary roster candidates. A same-game
+        # injury report is authoritative pregame evidence and can add a player who
+        # has not yet logged a box score for this team.
+        candidate_players = set(
+            players_by_bucket_team.get((bucket_key, team_key), set())
+        )
+        candidate_players.update(
+            player_id
+            for player_id, listed_teams in game_injury_map.items()
+            if team_key in listed_teams
+        )
         if not candidate_players:
             return empty_df
 
         # Convert date_to_filter to numpy datetime64 for comparison
         date_np = np.datetime64(date_to_filter)
-        team_key = str(team_id)
-        game_injury_map = (
-            injured_team_by_game_player.get(str(game_id))
-            if game_id is not None
-            else None
-        )
-
-        # Find players whose latest roster assignment at the target date is this
-        # team.  A same-game box-score row is used only as assignment evidence --
-        # never through its MIN, PTS or another current-game statistic.  This is
-        # important for a player's first game after a trade and mirrors the
-        # scheduled placeholder contract.
+        # A current injury report overrides older assignment evidence. Otherwise,
+        # use the last box-score assignment strictly before the target game. This
+        # mirrors what is available for a real pregame prediction.
         valid_players = []
         for player_id in candidate_players:
+            listed_teams = game_injury_map.get(str(player_id), set())
+            if listed_teams:
+                if listed_teams == {team_key}:
+                    valid_players.append(str(player_id))
+                continue
+
             timeline = player_timeline_by_bucket.get((bucket_key, player_id), [])
             if not timeline:
                 continue
 
-            # Find the last assignment at or before date_to_filter.
-            # timeline is sorted by date
             last_team = None
-            for game_date, game_team in timeline:
-                if game_date <= date_np:
-                    last_team = game_team
+            for game_date, game_team, is_scheduled_placeholder in timeline:
+                if game_date < date_np or (
+                    game_date == date_np and is_scheduled_placeholder
+                ):
+                    last_team = str(game_team)
                 else:
                     break
 
-            if last_team == team_id:
-                if game_injury_map is not None:
-                    listed_teams = game_injury_map.get(str(player_id), set())
-                    if any(listed_team != team_key for listed_team in listed_teams):
-                        # If the player appears injured for another team in this same game,
-                        # treat them as no longer active for this team.
-                        continue
-                valid_players.append(player_id)
+            if last_team == team_key:
+                valid_players.append(str(player_id))
 
         if not valid_players:
             return empty_df
 
-        # Get the pre-filtered data for this season/team
-        df_team_season = bucket_team_groups.get((bucket_key, team_id))
-        if df_team_season is None or df_team_season.empty:
+        df_bucket = bucket_groups.get(bucket_key)
+        if df_bucket is None or df_bucket.empty:
             return empty_df
 
         valid_players_set = set(valid_players)
 
-        # Filter by valid players and date
-        mask = df_team_season["PLAYER_ID"].isin(valid_players_set) & (
-            df_team_season["GAME_DATE"] <= date_to_filter
+        # Keep a player's history across teams so a same-game injury assignment
+        # after a trade can still use their prior, already known statistics.
+        mask = df_bucket["PLAYER_ID"].astype(str).isin(valid_players_set) & (
+            df_bucket["GAME_DATE"] <= date_to_filter
         )
-        result = df_team_season[mask]
+        result = df_bucket[mask]
 
         return result
 
@@ -275,7 +287,7 @@ def create_player_lookup(df_players, injured_dict=None):
             game_id,
             players_by_season_team,
             player_timeline,
-            season_team_groups,
+            season_groups,
         )
         if not result.empty:
             return result
@@ -291,7 +303,7 @@ def create_player_lookup(df_players, injured_dict=None):
             game_id,
             players_by_season_year_team,
             player_timeline_by_season_year,
-            season_year_team_groups,
+            season_year_groups,
         )
 
     return lookup

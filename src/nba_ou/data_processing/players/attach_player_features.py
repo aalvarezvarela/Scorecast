@@ -51,6 +51,19 @@ def drop_player_identifier_columns(df: pd.DataFrame, *, verbose: bool = False):
     return df.drop(columns=identifiers)
 
 
+def _injured_player_ids_for_team(injured_dict, game_id, team_id) -> set[str]:
+    """Return canonical player ids from either historical or scheduled reports."""
+    game_map = next(
+        (value for key, value in injured_dict.items() if str(key) == str(game_id)),
+        {},
+    )
+    player_ids = next(
+        (value for key, value in game_map.items() if str(key) == str(team_id)),
+        [],
+    )
+    return {str(player_id) for player_id in player_ids if pd.notna(player_id)}
+
+
 def _parse_minutes_series(min_series: pd.Series) -> pd.Series:
     def parse_value(value) -> float:
         if pd.isna(value) or value == "":
@@ -168,38 +181,41 @@ def _build_bench_stats_lookup(df_players):
     return bench_lookup
 
 
-def _build_game_roster_lookup(df_players):
-    """Roster for a specific (game, team), used when the season lookup is empty.
+def _build_prior_roster_lookup(df_players):
+    """Infer a roster from assignments strictly before the target game.
 
-    ``create_player_lookup`` resolves a team's players by asking who last played
-    for it *earlier in the same season*. At a team's season opener nobody has such
-    a game, so it returns nothing and every top-N player column on that row stays
-    missing -- roughly 190 numeric columns per opener, enough for the row to be
-    discarded by the downstream NaN-per-row limit.
-
-    This is not "no data exists": those players played last season, and their
-    averages now carry over via ``precompute_cumulative_avg_stat``. What is
-    missing is only the mapping from team to players, which this recovers from
-    the game's own rows.
-
-    Reading the game's roster introduces no target leakage, and no new kind of
-    lookahead either -- it is what the primary path already does, since
-    ``get_top_n_averages_with_names`` selects on ``GAME_DATE == date``. Who dresses
-    is known before tip-off from the injury report, and every *value* attached to
-    those players is a strictly prior-season average.
+    This fallback is mainly needed at season openers, where the season-scoped
+    lookup has no earlier assignment. Player rows from the target game may carry
+    already-shifted statistics, but they never decide who belongs to the team.
     """
-    if "GAME_ID" not in df_players.columns or "TEAM_ID" not in df_players.columns:
-        return lambda game_id, team_id: None
+    required = {"PLAYER_ID", "TEAM_ID", "GAME_DATE"}
+    if not required.issubset(df_players.columns):
+        return lambda team_id, game_date: None
 
-    grouped = {
-        (str(game_id), str(team_id)): group
-        for (game_id, team_id), group in df_players.groupby(["GAME_ID", "TEAM_ID"])
-    }
+    players = df_players.copy()
+    players["GAME_DATE"] = pd.to_datetime(players["GAME_DATE"], errors="coerce")
+    players = players.dropna(subset=list(required)).sort_values(
+        ["PLAYER_ID", "GAME_DATE"], kind="mergesort"
+    )
 
-    def game_roster_lookup(game_id, team_id):
-        return grouped.get((str(game_id), str(team_id)))
+    def prior_roster_lookup(team_id, game_date):
+        prior = players[players["GAME_DATE"] < game_date]
+        if prior.empty:
+            return None
+        last_assignment = prior.groupby("PLAYER_ID", as_index=False).tail(1)
+        roster_ids = set(
+            last_assignment.loc[
+                last_assignment["TEAM_ID"].astype(str).eq(str(team_id)), "PLAYER_ID"
+            ].astype(str)
+        )
+        if not roster_ids:
+            return None
+        return players[
+            players["PLAYER_ID"].astype(str).isin(roster_ids)
+            & players["GAME_DATE"].le(game_date)
+        ]
 
-    return game_roster_lookup
+    return prior_roster_lookup
 
 
 def add_player_history_features(
@@ -313,7 +329,7 @@ def add_player_history_features(
         df_team, injured_dict, max_seasons_back=2
     )
     bench_lookup = _build_bench_stats_lookup(df_players)
-    game_roster_lookup = _build_game_roster_lookup(df_players)
+    prior_roster_lookup = _build_prior_roster_lookup(df_players)
 
     # 3) Iterate over each row in df_team (only needed columns for efficiency)
     cols_needed = ["GAME_ID", "TEAM_ID", "SEASON_ID", "GAME_DATE"]
@@ -332,9 +348,9 @@ def add_player_history_features(
         # Availability is defined below solely as roster minus injured/inactive.
         df_roster = player_lookup(season_id, team_id, game_date, game_id=game_id)
         if df_roster.empty:
-            # Season opener: nobody has an earlier game this season for the
-            # lookup to resolve the roster from. See _build_game_roster_lookup.
-            fallback_roster = game_roster_lookup(game_id, team_id)
+            # At a season opener, fall back to the latest assignments from the
+            # prior season without consulting the opener's box-score membership.
+            fallback_roster = prior_roster_lookup(team_id, game_date)
             if fallback_roster is not None:
                 df_roster = fallback_roster
         if df_roster.empty:
@@ -342,13 +358,13 @@ def add_player_history_features(
             continue
 
         # Who is injured for this game/team?
-        game_injured_map = injured_dict.get(game_id, {})
-        injured_players = set(game_injured_map.get(team_id, []))
+        injured_players = _injured_player_ids_for_team(injured_dict, game_id, team_id)
+        player_ids = df_roster["PLAYER_ID"].astype(str)
 
         # No target-game MIN rule: a rostered DNP remains available unless the
         # injury/inactive feed places them in the injured set.
-        df_non_inj = df_roster[~df_roster["PLAYER_ID"].isin(injured_players)]
-        df_inj = df_roster[df_roster["PLAYER_ID"].isin(injured_players)]
+        df_non_inj = df_roster[~player_ids.isin(injured_players)]
+        df_inj = df_roster[player_ids.isin(injured_players)]
 
         row_update = {}
 

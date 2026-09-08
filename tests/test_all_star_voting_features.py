@@ -99,7 +99,7 @@ def test_trade_in_adds_current_roster_player_from_other_all_star_team():
     assert result.loc[0, "ALL_STAR_FAN_VOTE_SHARE_BEFORE"] == 0.4
 
 
-def test_trade_moves_votes_on_first_recorded_new_team_game():
+def test_trade_moves_votes_only_after_first_recorded_new_team_game():
     all_star = _all_star_df(
         [
             [2025, "p1", "Boston Celtics", 40, 1.5],
@@ -138,18 +138,18 @@ def test_trade_moves_votes_on_first_recorded_new_team_game():
         }
     )
 
-    result = add_all_star_voting_features(
-        team_rows, players, all_star, {}
-    ).set_index("GAME_ID")
+    result = add_all_star_voting_features(team_rows, players, all_star, {}).set_index(
+        "GAME_ID"
+    )
 
     assert result.loc["before-old", "ALL_STAR_FAN_VOTES_BEFORE"] == 40
     assert result.loc["before-new", "ALL_STAR_FAN_VOTES_BEFORE"] == 0
-    assert result.loc["transfer-old", "ALL_STAR_FAN_VOTES_BEFORE"] == 0
-    assert result.loc["new-game", "ALL_STAR_FAN_VOTES_BEFORE"] == 40
+    assert result.loc["transfer-old", "ALL_STAR_FAN_VOTES_BEFORE"] == 40
+    assert result.loc["new-game", "ALL_STAR_FAN_VOTES_BEFORE"] == 0
     assert result.loc["after-old", "ALL_STAR_FAN_VOTES_BEFORE"] == 0
     assert result.loc["after-new", "ALL_STAR_FAN_VOTES_BEFORE"] == 40
-    assert np.isnan(result.loc["transfer-old", "ALL_STAR_MIN_SCORE_BEFORE"])
-    assert result.loc["new-game", "ALL_STAR_MIN_SCORE_BEFORE"] == 1.5
+    assert result.loc["transfer-old", "ALL_STAR_MIN_SCORE_BEFORE"] == 1.5
+    assert np.isnan(result.loc["new-game", "ALL_STAR_MIN_SCORE_BEFORE"])
 
 
 def test_injury_assignment_moves_votes_before_first_new_team_box_score():
@@ -187,10 +187,7 @@ def test_injury_assignment_moves_votes_before_first_new_team_box_score():
     assert result.loc["predict-new", "ALL_STAR_FAN_VOTES_BEFORE"] == 40
     assert result.loc["predict-new", "ALL_STAR_FAN_VOTE_SHARE_BEFORE"] == 0.4
     assert (
-        result.loc[
-            "predict-new", "ALL_STAR_MAX_INJURED_FAN_VOTE_SHARE_BEFORE"
-        ]
-        == 0.4
+        result.loc["predict-new", "ALL_STAR_MAX_INJURED_FAN_VOTE_SHARE_BEFORE"] == 0.4
     )
     assert result.loc["predict-new", "ALL_STAR_MIN_INJURED_SCORE_BEFORE"] == 1.5
 

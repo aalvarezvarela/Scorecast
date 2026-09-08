@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from bisect import bisect_left, bisect_right
+from bisect import bisect_left
 from collections.abc import Callable
 
 import numpy as np
@@ -73,35 +73,6 @@ def build_last_team_before_date_lookup(
         dates, teams = timeline
         date_np = np.datetime64(pd.Timestamp(date).to_datetime64(), "ns")
         idx = bisect_left(dates, date_np) - 1
-        if idx < 0:
-            return None
-        return teams[idx]
-
-    return lookup
-
-
-def build_team_as_of_date_lookup(
-    df_players: pd.DataFrame,
-) -> Callable[[str, pd.Timestamp], str | None]:
-    """Return a player's latest known team on or before a game date.
-
-    Only player identity, date, and team assignment are used. Minutes, points,
-    and other same-game outcomes are not read. All rows are eligible because
-    DNP and scheduled placeholder rows still provide pregame roster membership.
-    """
-    player_timelines = _build_player_team_timelines(
-        df_players,
-        normalize_dates=True,
-    )
-
-    def lookup(player_id: str, date) -> str | None:
-        timeline = player_timelines.get(str(player_id))
-        if timeline is None:
-            return None
-
-        dates, teams = timeline
-        date_np = np.datetime64(pd.Timestamp(date).normalize().to_datetime64(), "ns")
-        idx = bisect_right(dates, date_np) - 1
         if idx < 0:
             return None
         return teams[idx]
@@ -269,20 +240,7 @@ def add_all_star_voting_features(
         )
 
     player_lookup = create_player_lookup(players, injured_dict=injured_dict)
-    team_as_of_date_lookup = build_team_as_of_date_lookup(players)
-    players_for_team_date_index = players.dropna(
-        subset=["TEAM_ID", "GAME_DATE", "PLAYER_ID"]
-    ).assign(
-        _GAME_DAY=lambda frame: frame["GAME_DATE"].dt.normalize()
-    )
-    player_ids_by_team_date = {
-        (str(team_id), pd.Timestamp(game_day).normalize()): set(
-            group["PLAYER_ID"].astype(str)
-        )
-        for (team_id, game_day), group in players_for_team_date_index.groupby(
-            ["TEAM_ID", "_GAME_DAY"], sort=False
-        )
-    }
+    last_team_before_date_lookup = build_last_team_before_date_lookup(players)
 
     updates = []
     team_rows = out[["GAME_ID", "TEAM_ID", "SEASON_ID", "GAME_DATE"]]
@@ -330,28 +288,13 @@ def add_all_star_voting_features(
             if injury_team_ids:
                 return current_team_id in injury_team_ids
 
-            team_as_of_date = team_as_of_date_lookup(player_id, current_game_day)
-            return team_as_of_date == current_team_id or (
-                allow_unknown and team_as_of_date is None
-            )
+            last_team = last_team_before_date_lookup(player_id, current_game_day)
+            return last_team == current_team_id or (allow_unknown and last_team is None)
 
         if team_name is not None:
             for player_id in season_index["team_players"].get(team_name, set()):
                 if is_assigned_to_team(player_id, allow_unknown=True):
                     candidate_ids.add(str(player_id))
-
-        # Same-game player rows are used only as roster-assignment evidence.
-        # This makes a transfer effective for the player's first game with the
-        # new team without using MIN, PTS, or any other postgame value.
-        same_day_player_ids = player_ids_by_team_date.get(
-            (team_id_str, game_day), set()
-        )
-        candidate_ids.update(
-            player_id
-            for player_id in same_day_player_ids
-            if player_id in season_index["all_player_ids"]
-            and is_assigned_to_team(player_id, allow_unknown=False)
-        )
 
         current_players = player_lookup(
             str(season_id),

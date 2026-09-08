@@ -131,7 +131,7 @@ def test_injury_membership_overrides_a_same_game_roster_row() -> None:
     assert target["N_INJURED_PLAYERS_BEFORE"] == 1
 
 
-def test_same_game_assignment_handles_a_healthy_trade_debut_without_minutes() -> None:
+def test_same_game_boxscore_does_not_assign_a_healthy_trade_debut() -> None:
     team_rows = _team_rows()
     players = _players(target_star_minutes=24.0, target_star_points=15.0)
     trade_history = pd.DataFrame(
@@ -166,6 +166,74 @@ def test_same_game_assignment_handles_a_healthy_trade_debut_without_minutes() ->
     target = out.loc[out["GAME_ID"].eq(TARGET_GAME)].iloc[0]
 
     top_ids = [target[f"TOP{i}_PLAYER_ID_PTS_BEFORE"] for i in range(1, 7)]
-    assert "new_star" in top_ids
-    position = top_ids.index("new_star") + 1
-    assert target[f"TOP{position}_PLAYER_PTS_BEFORE"] == pytest.approx(35.0)
+    assert "new_star" not in top_ids
+
+
+def _traded_player_history() -> pd.DataFrame:
+    return pd.DataFrame(
+        [
+            _player_row(
+                "0022400000",
+                "2024-10-18",
+                "new_star",
+                35.0,
+                34.0,
+                team_id=OTHER_TEAM,
+            ),
+            _player_row(
+                "0022400000b",
+                "2024-10-20",
+                "new_star",
+                35.0,
+                34.0,
+                team_id=OTHER_TEAM,
+            ),
+        ]
+    )
+
+
+@pytest.mark.parametrize("scheduled", [False, True], ids=["historical", "scheduled"])
+def test_injury_report_assigns_trade_to_reported_team(scheduled: bool) -> None:
+    players = pd.concat(
+        [
+            _players(target_star_minutes=24.0, target_star_points=15.0),
+            _traded_player_history(),
+        ],
+        ignore_index=True,
+    )
+    injury_entry = {TARGET_GAME: {TEAM: ["new_star"]}}
+    historical_injuries = (
+        pd.DataFrame(columns=["GAME_ID", "TEAM_ID", "PLAYER_ID"])
+        if scheduled
+        else pd.DataFrame(
+            [{"GAME_ID": TARGET_GAME, "TEAM_ID": TEAM, "PLAYER_ID": "new_star"}]
+        )
+    )
+
+    other_team_target = pd.DataFrame(
+        [
+            {
+                "GAME_ID": TARGET_GAME,
+                "TEAM_ID": OTHER_TEAM,
+                "SEASON_ID": SEASON_ID,
+                "SEASON_YEAR": SEASON_YEAR,
+                "GAME_DATE": pd.Timestamp("2024-10-24"),
+            }
+        ]
+    )
+    team_rows = pd.concat([_team_rows(), other_team_target], ignore_index=True)
+
+    out, _ = add_player_history_features(
+        team_rows,
+        players,
+        historical_injuries,
+        stat_cols=["PTS"],
+        injury_dict_scheduled=injury_entry if scheduled else None,
+    )
+    target_game = out.loc[out["GAME_ID"].eq(TARGET_GAME)]
+    target = target_game.loc[target_game["TEAM_ID"].eq(TEAM)].iloc[0]
+    previous_team = target_game.loc[target_game["TEAM_ID"].eq(OTHER_TEAM)].iloc[0]
+
+    assert target["TOP1_INJURED_PLAYER_ID_PTS_BEFORE"] == "new_star"
+    assert target["TOP1_INJURED_PLAYER_PTS_BEFORE"] == pytest.approx(35.0)
+    assert pd.isna(previous_team["TOP1_INJURED_PLAYER_ID_PTS_BEFORE"])

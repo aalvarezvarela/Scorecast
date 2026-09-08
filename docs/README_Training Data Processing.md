@@ -428,12 +428,14 @@ For each team-game, the pipeline identifies active and injured players using:
 - Scheduled injury-report data for same-day predictions.
 - Roster membership inferred from each player's last team before the game date.
 
-For historical games, a same-game player row may establish roster membership
-(including a first game after a trade), but its `MIN`, `PTS`, and other box-score
-values do not determine availability. The available set is roster minus the
-injury/inactive set. Every statistic attached to that membership is shifted and
-therefore uses prior appearances only. In particular, changing a target game's
-minutes from zero to a positive value cannot change that game's player features.
+Historical box-score rows establish roster membership only for later games, not
+for the game recorded by that row. This matches same-day prediction, where the
+current game's box score does not exist yet. A current injury report is valid
+pregame assignment evidence and overrides the player's previously known team,
+including on their first game after a trade. Scheduled player placeholders are
+also safe same-day evidence because they are generated from prior player history
+and contain no current-game statistics. Every player statistic remains shifted,
+so the current game's `MIN`, `PTS`, and other box-score values are excluded.
 
 Feature families added at the team row level include:
 

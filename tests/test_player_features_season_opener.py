@@ -136,13 +136,13 @@ def test_the_player_fallback_reads_the_regular_season_not_the_playoffs():
     assert opener[TOP1_VALUE] != pytest.approx(4.0)
 
 
-def test_a_player_with_no_previous_season_keeps_the_documented_zero():
+def test_opener_without_any_prior_roster_history_stays_missing():
     df_team = _team_games(2024, REGULAR, 3, "2024-11-01")
     df_players = _player_rows(df_team, {"1": 28.0, "2": 12.0})
 
     opener = _run(df_team, df_players).iloc[0]
 
-    assert opener[TOP1_VALUE] == 0
+    assert pd.isna(opener[TOP1_VALUE])
 
 
 def test_the_opener_is_no_emptier_than_a_settled_row():
