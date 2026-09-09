@@ -245,9 +245,12 @@ def process_player_statistics_for_training(
             first-season roster continuity has a prior-season baseline.
         df_team_context (pd.DataFrame, optional): Game metadata covering
             `player_context_seasons`, used to attach dates to those player rows.
+        return_players (bool): When true, also return the cleaned player rows and
+            the local per-game availability map used by historical effects.
 
     Returns:
-        pd.DataFrame: Processed player DataFrame
+        tuple: Team features and injury dictionary, plus cleaned player rows and
+            the separate availability map when ``return_players=True``.
     """
 
     df_players = clear_player_statistics(
@@ -275,16 +278,17 @@ def process_player_statistics_for_training(
     stats = ["PTS", "PACE_PER40", "DEF_RATING", "OFF_RATING", "TS_PCT", "MIN"]
 
     # Attach top player statistics including injury data
-    df, injured_dict = add_player_history_features(
+    df, injured_dict, player_availability_dict = add_player_history_features(
         df_team,
         df_players,
         df_injuries,
         stats,
         injury_dict_scheduled=injury_dict_scheduled,
+        return_availability_dict=True,
     )
 
     if return_players:
-        return df, injured_dict, df_players
+        return df, injured_dict, df_players, player_availability_dict
     return df, injured_dict
 
 
@@ -504,18 +508,20 @@ def create_df_to_predict(
 
     # Add Players Statistics
     print("Processing player statistics...")
-    df, injured_dict, df_players = process_player_statistics_for_training(
-        df_players,
-        df,
-        df_injuries,
-        seasons,
-        recent_limit_to_include,
-        scheduled_games=scheduled_games if todays_prediction else None,
-        injury_dict_scheduled=injury_dict_scheduled if todays_prediction else None,
-        extra_game_ids=extra_game_ids,
-        return_players=True,
-        player_context_seasons=player_context_seasons,
-        df_team_context=df_team_player_context,
+    df, injured_dict, df_players, player_availability_dict = (
+        process_player_statistics_for_training(
+            df_players,
+            df,
+            df_injuries,
+            seasons,
+            recent_limit_to_include,
+            scheduled_games=scheduled_games if todays_prediction else None,
+            injury_dict_scheduled=injury_dict_scheduled if todays_prediction else None,
+            extra_game_ids=extra_game_ids,
+            return_players=True,
+            player_context_seasons=player_context_seasons,
+            df_team_context=df_team_player_context,
+        )
     )
     df = add_roster_continuity_feature(
         df,
@@ -603,7 +609,9 @@ def create_df_to_predict(
     df_training = add_top3_availability_effect_features_for_columns(
         df_training,
         injured_dict,
+        availability_dict=player_availability_dict,
         total_line_book=DEFAULT_TOTAL_LINE_BOOK,
+        spread_line_book=DEFAULT_SPREAD_ML_BOOK,
         home_player_cols=(
             "TOP1_PLAYER_ID_PTS_BEFORE_TEAM_HOME",
             "TOP2_PLAYER_ID_PTS_BEFORE_TEAM_HOME",
@@ -625,7 +633,9 @@ def create_df_to_predict(
     df_training = add_top3_availability_effect_features_for_columns(
         df_training,
         injured_dict,
+        availability_dict=player_availability_dict,
         total_line_book=DEFAULT_TOTAL_LINE_BOOK,
+        spread_line_book=DEFAULT_SPREAD_ML_BOOK,
         home_player_cols=(
             "TOP1_INJURED_PLAYER_ID_PTS_BEFORE_TEAM_HOME",
             "TOP2_INJURED_PLAYER_ID_PTS_BEFORE_TEAM_HOME",

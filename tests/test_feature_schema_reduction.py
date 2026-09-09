@@ -25,7 +25,9 @@ def _availability_input() -> pd.DataFrame:
             "TEAM_ID_TEAM_HOME": [10],
             "TEAM_ID_TEAM_AWAY": [20],
             "TOTAL_POINTS": [220.0],
+            "HOME_MARGIN": [5.0],
             "ODDS_TOTAL_LINE_bet365": [215.5],
+            "ODDS_SPREAD_LINE_HOME_bet365": [3.5],
             "HOME_PLAYER": [101],
             "AWAY_PLAYER": [201],
         }
@@ -50,11 +52,33 @@ def test_availability_defaults_to_compact_aggregate_schema():
         column for column in result.columns if column.startswith("TEST_AVAILABILITY_")
     ]
 
-    assert len(feature_columns) == 10
+    # 3 metrics x (MEAN, MEAN_SE) + 2 MAX_ABS + SUM_N_TOTAL_GAMES, per side.
+    assert len(feature_columns) == 18
     assert "TEST_AVAILABILITY_HOME_SUM_N_TOTAL_GAMES" in feature_columns
+    assert "TEST_AVAILABILITY_HOME_MEAN_SPREAD_ERROR" in feature_columns
+    assert "TEST_AVAILABILITY_HOME_MEAN_SE_TOTAL_POINTS" in feature_columns
+    assert "TEST_AVAILABILITY_HOME_MEAN_SE_DIFF_FROM_LINE" in feature_columns
+    assert "TEST_AVAILABILITY_HOME_MEAN_SE_SPREAD_ERROR" in feature_columns
     assert "TEST_AVAILABILITY_AWAY_SUM_N_TOTAL_GAMES" in feature_columns
     assert "TEST_AVAILABILITY_HOME_SUM_N_INJ_GAMES" not in feature_columns
     assert "TEST_AVAILABILITY_HOME_HAS_PLAYER_EFFECT" not in feature_columns
+
+
+def test_availability_drops_win_rate_and_pvalue_families():
+    """WIN_RATE_DIFF and the p-value families are gone from the schema.
+
+    The p-value was a monotone function of the effect and the group sizes,
+    which are emitted alongside it, and it implied a significance test that a
+    handful of games per player cannot support. MEAN_SE carries the precision
+    instead. WIN_RATE_DIFF was the noisiest metric and duplicated SPREAD_ERROR.
+    """
+    result = _add_availability_features(include_detailed=True)
+    feature_columns = [
+        column for column in result.columns if column.startswith("TEST_AVAILABILITY_")
+    ]
+
+    assert not [c for c in feature_columns if "PVALUE" in c]
+    assert not [c for c in feature_columns if "WIN_RATE" in c]
 
 
 def test_availability_detailed_diagnostics_can_be_restored():
@@ -63,7 +87,7 @@ def test_availability_detailed_diagnostics_can_be_restored():
         column for column in result.columns if column.startswith("TEST_AVAILABILITY_")
     ]
 
-    assert len(feature_columns) == 18
+    assert len(feature_columns) == 26
     assert "TEST_AVAILABILITY_HOME_SUM_N_INJ_GAMES" in feature_columns
     assert "TEST_AVAILABILITY_AWAY_HAS_PLAYER_EFFECT" in feature_columns
 
@@ -213,7 +237,7 @@ def test_overtime_history_features_are_selected_for_both_teams():
 
 
 def test_availability_aggregates_use_the_estimators_zero_prior_when_blank():
-    """`_shrink_effect` computes raw * n/(n+k), which is 0 at n=0 -- so a row with
+    """The shrinkage weight is 0 at n=0 -- so a row with
     no evidence for any player has a fully shrunk estimate of zero, not "unknown".
     Leaving NaN made the feature discontinuous exactly where the shrinkage was
     meant to be smooth: one weak game gives ~0, no games gave missing, and the
@@ -229,8 +253,130 @@ def test_availability_aggregates_use_the_estimators_zero_prior_when_blank():
         "TEST_AVAILABILITY_AWAY_MEAN_DIFF_FROM_LINE",
         "TEST_AVAILABILITY_HOME_MAX_ABS_DIFF_FROM_LINE",
         "TEST_AVAILABILITY_AWAY_MAX_ABS_DIFF_FROM_LINE",
+        "TEST_AVAILABILITY_HOME_MEAN_SPREAD_ERROR",
+        "TEST_AVAILABILITY_AWAY_MEAN_SPREAD_ERROR",
     ]
     for column in aggregates:
         assert column in result.columns, column
         assert not result[column].isna().any(), column
         assert result[column].iloc[0] == 0.0, column
+
+
+def _availability_effect_history() -> tuple[pd.DataFrame, dict]:
+    game_ids = list(range(1, 9))
+    # Game 4 deliberately has an extreme result but no roster classification for
+    # either player. It must be excluded rather than treated as "available".
+    total_points = [220.0, 222.0, 224.0, 1000.0, 200.0, 202.0, 204.0, 999.0]
+    home_margin = [10.0, 12.0, 14.0, 500.0, -4.0, -6.0, -8.0, 999.0]
+    frame = pd.DataFrame(
+        {
+            "GAME_ID": game_ids,
+            "GAME_DATE": pd.date_range("2025-01-01", periods=len(game_ids), freq="D"),
+            "SEASON_YEAR": [2025] * len(game_ids),
+            "TEAM_ID_TEAM_HOME": [10] * len(game_ids),
+            "TEAM_ID_TEAM_AWAY": [20] * len(game_ids),
+            "TOTAL_POINTS": total_points,
+            "HOME_MARGIN": home_margin,
+            "ODDS_TOTAL_LINE_bet365": [210.0] * len(game_ids),
+            "ODDS_SPREAD_LINE_HOME_bet365": [2.0] * len(game_ids),
+            "HOME_PLAYER": [101] * len(game_ids),
+            "AWAY_PLAYER": [201] * len(game_ids),
+        }
+    )
+    availability = {
+        str(game_id): {
+            "10": {
+                "available": ["101"] if game_id <= 3 else [],
+                "injured": ["101"] if 5 <= game_id <= 7 else [],
+            },
+            "20": {
+                "available": ["201"] if 5 <= game_id <= 7 else [],
+                "injured": ["201"] if game_id <= 3 else [],
+            },
+        }
+        for game_id in game_ids
+    }
+    return frame, availability
+
+
+def test_availability_adds_spread_effects_and_standard_errors():
+    frame, availability = _availability_effect_history()
+
+    result = add_top3_availability_effect_features_for_columns(
+        frame,
+        injured_dict={},
+        availability_dict=availability,
+        total_line_book="bet365",
+        spread_line_book="bet365",
+        home_player_cols=("HOME_PLAYER",),
+        away_player_cols=("AWAY_PLAYER",),
+        out_prefix="TEST_AVAILABILITY",
+        shrinkage_k=0.0,
+    )
+    target = result.iloc[-1]
+
+    assert target["TEST_AVAILABILITY_HOME_MEAN_TOTAL_POINTS"] == pytest.approx(20.0)
+    assert target["TEST_AVAILABILITY_HOME_MEAN_DIFF_FROM_LINE"] == pytest.approx(20.0)
+    assert target["TEST_AVAILABILITY_HOME_MEAN_SPREAD_ERROR"] == pytest.approx(18.0)
+    assert target["TEST_AVAILABILITY_AWAY_MEAN_SPREAD_ERROR"] == pytest.approx(18.0)
+
+    # Present [8, 10, 12] and injured [-6, -8, -10] both have sample variance 4,
+    # so the Welch standard error is sqrt(4/3 + 4/3).
+    expected_se = (4.0 / 3.0 + 4.0 / 3.0) ** 0.5
+    for metric in ("TOTAL_POINTS", "DIFF_FROM_LINE", "SPREAD_ERROR"):
+        standard_error = target[f"TEST_AVAILABILITY_HOME_MEAN_SE_{metric}"]
+        assert pd.notna(standard_error), metric
+        assert standard_error > 0.0, metric
+    assert target["TEST_AVAILABILITY_HOME_MEAN_SE_SPREAD_ERROR"] == pytest.approx(
+        expected_se
+    )
+
+
+def test_availability_standard_errors_are_nan_below_two_games_in_either_group():
+    """A single game gives a difference of means but no spread around it."""
+    frame, availability = _availability_effect_history()
+    availability["6"]["10"] = {"available": [], "injured": []}
+    availability["7"]["10"] = {"available": [], "injured": []}
+
+    result = add_top3_availability_effect_features_for_columns(
+        frame,
+        injured_dict={},
+        availability_dict=availability,
+        total_line_book="bet365",
+        spread_line_book="bet365",
+        home_player_cols=("HOME_PLAYER",),
+        away_player_cols=("AWAY_PLAYER",),
+        out_prefix="TEST_AVAILABILITY",
+        shrinkage_k=0.0,
+    )
+    target = result.iloc[-1]
+
+    # Present [8, 10, 12] against a single injured game at -6.
+    assert target["TEST_AVAILABILITY_HOME_MEAN_SPREAD_ERROR"] == pytest.approx(16.0)
+    for metric in ("TOTAL_POINTS", "DIFF_FROM_LINE", "SPREAD_ERROR"):
+        assert pd.isna(target[f"TEST_AVAILABILITY_HOME_MEAN_SE_{metric}"]), metric
+
+
+def test_each_standard_error_requires_two_valid_games_for_its_own_metric():
+    """Losing the spread line on two games must not blank the other metrics."""
+    frame, availability = _availability_effect_history()
+    frame.loc[frame["GAME_ID"].isin([6, 7]), "ODDS_SPREAD_LINE_HOME_bet365"] = float(
+        "nan"
+    )
+
+    result = add_top3_availability_effect_features_for_columns(
+        frame,
+        injured_dict={},
+        availability_dict=availability,
+        total_line_book="bet365",
+        spread_line_book="bet365",
+        home_player_cols=("HOME_PLAYER",),
+        away_player_cols=("AWAY_PLAYER",),
+        out_prefix="TEST_AVAILABILITY",
+        shrinkage_k=0.0,
+    )
+    target = result.iloc[-1]
+
+    assert pd.isna(target["TEST_AVAILABILITY_HOME_MEAN_SE_SPREAD_ERROR"])
+    assert pd.notna(target["TEST_AVAILABILITY_HOME_MEAN_SE_TOTAL_POINTS"])
+    assert pd.notna(target["TEST_AVAILABILITY_HOME_MEAN_SE_DIFF_FROM_LINE"])
