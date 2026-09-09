@@ -1,3 +1,4 @@
+import re
 from collections import defaultdict
 from functools import lru_cache
 
@@ -8,6 +9,41 @@ import pandas as pd
 N_TOP_PLAYERS_NON_INJURED = 6
 N_TOP_PLAYERS_INJURED = 4
 
+#: Box-score absence reasons that count as unavailable.
+#:
+#: The selection rule is NOT "was this absence meaningful" but "would this
+#: absence have been visible on the pre-game NBA injury report". The box score
+#: records the reason after the fact, but the decision behind every category
+#: below was made and published before tip-off, so a training label built from
+#: them stays reproducible from the report at prediction time.
+#:
+#: ``DNP - Coach's Decision`` is the one category deliberately excluded: it is
+#: never published pre-game, so counting it would teach the model to react to
+#: information production never receives. It is also why membership must not be
+#: decided by target-game ``MIN`` -- minutes cannot tell a late scratch apart
+#: from a coach's decision, and reading them makes the roster split a function
+#: of the game being predicted (see ``nba_ou.config.leakage``).
+#:
+#: ``NWT - G League`` is NOT here. A two-way player on assignment is a roster
+#: fact, not an absence: they were never part of the rotation this feature is
+#: measuring, so counting them would inflate the injured-player aggregates with
+#: players whose absence costs the team nothing.
+#:
+#: Matched case-insensitively against the ``COMMENT`` field, whose values look
+#: like ``DNP - Injury/Illness - Left Knee; Soreness``, ``DND - Rest`` or
+#: ``NWT - Trade Pending``.
+UNAVAILABLE_COMMENT_PATTERN = re.compile(
+    r"""
+    injur | injry            # DNP/DND/NWT - Injury/Illness (injry: feed typo)
+    | illness
+    | \brest\b              # DNP - Rest; word-bounded so "restriction" misses
+    | personal               # DNP - Personal Reasons
+    | suspen                 # suspension / suspended, league or team
+    | trade \s* pending      # NWT - Trade Pending
+    """,
+    re.IGNORECASE | re.VERBOSE,
+)
+
 
 def get_injured_players_dict(df_injuries, df_players=None):
     """
@@ -15,7 +51,10 @@ def get_injured_players_dict(df_injuries, df_players=None):
 
     Injured players are collected from:
     - `df_injuries` (inactive/injury feed)
-    - `df_players` comments when injury wording appears (e.g. "DND - Injury/Illness")
+    - `df_players` comments naming an absence reason that the pre-game injury
+      report would also have carried (e.g. "DND - Injury/Illness", "DNP - Rest",
+      "NWT - Trade Pending"). See `UNAVAILABLE_COMMENT_PATTERN`;
+      "DNP - Coach's Decision" and "NWT - G League" are excluded.
 
     Args:
         df_injuries (pd.DataFrame): Injury data with GAME_ID, TEAM_ID, PLAYER_ID
@@ -60,7 +99,7 @@ def get_injured_players_dict(df_injuries, df_players=None):
                 df_players[comment_col]
                 .fillna("")
                 .astype(str)
-                .str.contains(r"injur|injry", case=False, regex=True)
+                .str.contains(UNAVAILABLE_COMMENT_PATTERN, regex=True)
             )
             valid_comment_injuries = df_players.loc[
                 injury_mask

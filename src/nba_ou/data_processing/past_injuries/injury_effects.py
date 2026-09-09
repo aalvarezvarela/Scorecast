@@ -9,15 +9,28 @@ from nba_ou.config.odds_columns import (
     spread_line_home_col,
     total_line_col,
 )
-from scipy.stats import fisher_exact, ttest_ind
 from tqdm import tqdm
 
-MIN_SIGNIFICANCE_GAMES = 3
+#: Minimum games per group before a standard error is reported. The mean
+#: difference itself needs one game per side; a spread around it needs two.
+MIN_SE_GAMES = 2
+
+#: Prior weight used by the fallback ``n_eff / (n_eff + k)`` shrinkage, applied
+#: only to rows too early in the history to fit anything. It is a guess, which
+#: is precisely why it is no longer the primary estimator.
+DEFAULT_SHRINKAGE_K = 10.0
+
+#: Player-effect observations required before the empirical-Bayes variances are
+#: trusted. Below this the fallback prior is used instead.
+MIN_SHRINKAGE_FIT_SAMPLES = 200
+
+#: Effects computed per player. ``WIN_RATE_DIFF`` was dropped: a binary outcome
+#: over a handful of games is the noisiest of the four and measures nearly what
+#: ``SPREAD_ERROR`` measures on a continuous scale.
 EFFECT_METRICS = (
     "TOTAL_POINTS",
     "DIFF_FROM_LINE",
     "SPREAD_ERROR",
-    "WIN_RATE_DIFF",
 )
 
 
@@ -112,75 +125,55 @@ def _get_recent_history_df(
     return df_hist.loc[mask]
 
 
-def _continuous_effect_and_pvalue(
+def _continuous_effect_and_se(
     present_values: pd.Series,
     injured_values: pd.Series,
     *,
-    min_significance_games: int = MIN_SIGNIFICANCE_GAMES,
+    min_se_games: int = MIN_SE_GAMES,
 ) -> tuple[float, float, int, int]:
+    """Present-minus-injured mean difference and its Welch standard error.
+
+    The standard error replaces the p-value this function used to return. A
+    p-value is a monotone function of the effect size and the two group sizes,
+    all of which are already emitted as features, so it carried almost no
+    information the model could not reconstruct -- while implying a
+    significance test that a handful of games cannot support, over a family of
+    per-player, per-metric comparisons that invites false positives. The
+    standard error keeps effect magnitude and estimate precision on separate
+    axes and leaves the trust rule to the model.
+    """
     present = pd.to_numeric(present_values, errors="coerce").dropna().to_numpy()
     injured = pd.to_numeric(injured_values, errors="coerce").dropna().to_numpy()
     n_injured = len(injured)
     n_present = len(present)
-    if len(present) == 0 or len(injured) == 0:
+    if n_present == 0 or n_injured == 0:
         return np.nan, np.nan, n_injured, n_present
 
     effect = float(present.mean() - injured.mean())
-    if len(present) < min_significance_games or len(injured) < min_significance_games:
+    if n_present < min_se_games or n_injured < min_se_games:
         return effect, np.nan, n_injured, n_present
 
-    present_var = float(np.var(present))
-    injured_var = float(np.var(injured))
-    if present_var == 0.0 and injured_var == 0.0:
-        return effect, 1.0 if effect == 0.0 else 0.0, n_injured, n_present
-
-    pvalue = float(ttest_ind(present, injured, equal_var=False).pvalue)
+    # Welch: no equal-variance assumption, matching the test this replaces.
+    standard_error = float(
+        np.sqrt(
+            np.var(present, ddof=1) / n_present + np.var(injured, ddof=1) / n_injured
+        )
+    )
     return (
         effect,
-        pvalue if np.isfinite(pvalue) else np.nan,
-        n_injured,
-        n_present,
-    )
-
-
-def _win_rate_effect_and_pvalue(
-    present_values: pd.Series,
-    injured_values: pd.Series,
-    *,
-    min_significance_games: int = MIN_SIGNIFICANCE_GAMES,
-) -> tuple[float, float, int, int]:
-    present = pd.to_numeric(present_values, errors="coerce").dropna().to_numpy()
-    injured = pd.to_numeric(injured_values, errors="coerce").dropna().to_numpy()
-    n_injured = len(injured)
-    n_present = len(present)
-    if len(present) == 0 or len(injured) == 0:
-        return np.nan, np.nan, n_injured, n_present
-
-    effect = float(present.mean() - injured.mean())
-    if len(present) < min_significance_games or len(injured) < min_significance_games:
-        return effect, np.nan, n_injured, n_present
-
-    table = np.array(
-        [
-            [int(present.sum()), int(len(present) - present.sum())],
-            [int(injured.sum()), int(len(injured) - injured.sum())],
-        ]
-    )
-    pvalue = float(fisher_exact(table).pvalue)
-    return (
-        effect,
-        pvalue if np.isfinite(pvalue) else np.nan,
+        standard_error if np.isfinite(standard_error) else np.nan,
         n_injured,
         n_present,
     )
 
 
 def _empty_effect_result(n_inj=0, n_present=0, n_total=0):
+    n_metrics = len(EFFECT_METRICS)
     return (
-        (np.nan,) * 4,
-        (np.nan,) * 4,
-        (0,) * 4,
-        (0,) * 4,
+        (np.nan,) * n_metrics,
+        (np.nan,) * n_metrics,
+        (0,) * n_metrics,
+        (0,) * n_metrics,
         int(n_inj),
         int(n_present),
         int(n_total),
@@ -193,7 +186,7 @@ def _compute_player_availability_effect(
     available_games_for_player: set | None = None,
 ):
     """
-    Return four present-minus-injured effects, their p-values, and sample sizes.
+    Return the present-minus-injured effects, their standard errors, and sizes.
 
     ``available_games_for_player`` makes membership explicit, so games before a
     player joined or after they left the team are excluded. ``None`` preserves
@@ -222,50 +215,121 @@ def _compute_player_availability_effect(
     if n_inj == 0 or n_present == 0:
         return _empty_effect_result(n_inj, n_present, n_total)
 
-    total_effect, total_pvalue, total_n_inj, total_n_present = (
-        _continuous_effect_and_pvalue(
-            df_present["TOTAL_POINTS"], df_inj["TOTAL_POINTS"]
+    effects, standard_errors, injured_counts, present_counts = [], [], [], []
+    for metric in EFFECT_METRICS:
+        effect, standard_error, metric_n_inj, metric_n_present = (
+            _continuous_effect_and_se(df_present[metric], df_inj[metric])
         )
-    )
-    line_effect, line_pvalue, line_n_inj, line_n_present = (
-        _continuous_effect_and_pvalue(
-            df_present["DIFF_FROM_LINE"], df_inj["DIFF_FROM_LINE"]
-        )
-    )
-    spread_effect, spread_pvalue, spread_n_inj, spread_n_present = (
-        _continuous_effect_and_pvalue(
-            df_present["SPREAD_ERROR"], df_inj["SPREAD_ERROR"]
-        )
-    )
-    win_effect, win_pvalue, win_n_inj, win_n_present = _win_rate_effect_and_pvalue(
-        df_present["WIN"], df_inj["WIN"]
-    )
+        effects.append(effect)
+        standard_errors.append(standard_error)
+        injured_counts.append(metric_n_inj)
+        present_counts.append(metric_n_present)
 
     return (
-        (total_effect, line_effect, spread_effect, win_effect),
-        (total_pvalue, line_pvalue, spread_pvalue, win_pvalue),
-        (total_n_inj, line_n_inj, spread_n_inj, win_n_inj),
-        (total_n_present, line_n_present, spread_n_present, win_n_present),
+        tuple(effects),
+        tuple(standard_errors),
+        tuple(injured_counts),
+        tuple(present_counts),
         n_inj,
         n_present,
         n_total,
     )
 
 
-def _shrink_effect(
-    raw_effect: float, n_inj_games: int, n_present_games: int, k: float
-) -> float:
+def _expanding_empirical_bayes_weights(
+    date_ordinals: np.ndarray,
+    raw: np.ndarray,
+    standard_errors: np.ndarray,
+    inverse_n: np.ndarray,
+    *,
+    min_samples: int = MIN_SHRINKAGE_FIT_SAMPLES,
+) -> tuple[np.ndarray, dict[str, float]]:
+    """Per-observation shrinkage weights ``tau2 / (tau2 + se2)``, fitted on history.
+
+    This replaces a hand-picked ``k``. The observed spread of player effects is
+    the sum of real player-to-player variation and sampling noise:
+
+        var(effect) = tau2 + mean(se2)
+
+    so ``tau2 = var(effect) - mean(se2)`` is the signal variance, and the
+    posterior weight on a single player's estimate is ``tau2 / (tau2 + se2)``.
+    That is the same shape as ``n/(n+k)`` -- since ``se2`` falls like ``1/n`` --
+    but with the constant measured rather than assumed, per metric, and using
+    each player's own precision instead of their game count alone.
+
+    Both variances are estimated ONLY from observations whose game is strictly
+    earlier than the one being shrunk. A single global fit would let a March
+    game set the shrinkage applied to an October row; the expanding window keeps
+    the feature reproducible at prediction time.
+
+    ``inverse_n`` is ``1/n_present + 1/n_injured``, used to impute ``se2`` for
+    players with a single game on one side, where no standard error exists:
+    ``se2 ~= sigma2 * inverse_n`` with ``sigma2`` pooled from the fitted window.
+
+    A ``tau2`` of zero is a real answer, not a failure: it says the spread
+    between players is fully explained by sampling noise, and the honest
+    estimate of every effect is then zero. The returned diagnostics report it.
     """
-    Empirical-Bayes style shrinkage toward zero.
-    """
-    if pd.isna(raw_effect):
-        return np.nan
-    n_eff = min(int(n_inj_games), int(n_present_games))
-    if n_eff <= 0:
-        return np.nan
-    if k <= 0:
-        return float(raw_effect)
-    return float(raw_effect * (n_eff / (n_eff + k)))
+    weights = np.full(raw.shape, np.nan, dtype="float64")
+    diagnostics = {"tau2": np.nan, "sigma2": np.nan, "implied_k": np.nan, "n_fit": 0.0}
+
+    informative = (
+        np.isfinite(raw)
+        & np.isfinite(standard_errors)
+        & np.isfinite(inverse_n)
+        & (inverse_n > 0)
+    )
+    if int(informative.sum()) < min_samples:
+        return weights, diagnostics
+
+    order = np.flatnonzero(informative)
+    order = order[np.argsort(date_ordinals[order], kind="mergesort")]
+    fit_dates = date_ordinals[order]
+    fit_raw = raw[order]
+    fit_se2 = standard_errors[order] ** 2
+    # se2 = sigma2 * (1/n_present + 1/n_injured), so this inverts to sigma2.
+    fit_sigma2 = fit_se2 / inverse_n[order]
+
+    counts = np.arange(1, fit_raw.size + 1, dtype="float64")
+    cumulative_raw = np.cumsum(fit_raw)
+    cumulative_raw2 = np.cumsum(fit_raw**2)
+    cumulative_se2 = np.cumsum(fit_se2)
+    cumulative_sigma2 = np.cumsum(fit_sigma2)
+
+    # Observations strictly earlier than each row's game date.
+    prior_counts = np.searchsorted(fit_dates, date_ordinals, side="left")
+    fittable = prior_counts >= min_samples
+    if not fittable.any():
+        return weights, diagnostics
+
+    last = prior_counts[fittable] - 1
+    n_prior = counts[last]
+    mean_raw = cumulative_raw[last] / n_prior
+    var_raw = np.maximum(cumulative_raw2[last] / n_prior - mean_raw**2, 0.0)
+    mean_se2 = cumulative_se2[last] / n_prior
+    sigma2 = cumulative_sigma2[last] / n_prior
+    tau2 = np.maximum(var_raw - mean_se2, 0.0)
+
+    observed_se2 = standard_errors[fittable] ** 2
+    imputed_se2 = sigma2 * inverse_n[fittable]
+    se2 = np.where(np.isfinite(observed_se2), observed_se2, imputed_se2)
+
+    usable = np.isfinite(raw[fittable]) & np.isfinite(se2) & ((tau2 + se2) > 0.0)
+    fitted = np.full(se2.shape, np.nan, dtype="float64")
+    fitted[usable] = tau2[usable] / (tau2[usable] + se2[usable])
+    weights[fittable] = fitted
+
+    final_tau2 = float(tau2[-1])
+    final_sigma2 = float(sigma2[-1])
+    diagnostics = {
+        "tau2": final_tau2,
+        "sigma2": final_sigma2,
+        "implied_k": (
+            float(final_sigma2 / final_tau2) if final_tau2 > 0.0 else float("inf")
+        ),
+        "n_fit": float(n_prior[-1]),
+    }
+    return weights, diagnostics
 
 
 def add_top3_availability_effect_features_for_columns(
@@ -286,7 +350,8 @@ def add_top3_availability_effect_features_for_columns(
     home_player_cols: tuple[str, ...],
     away_player_cols: tuple[str, ...],
     out_prefix: str,
-    shrinkage_k: float = 10.0,
+    shrinkage_k: float = DEFAULT_SHRINKAGE_K,
+    fit_shrinkage: bool = True,
     include_per_player_columns: bool = False,
     include_detailed_sample_size_features: bool = False,
 ) -> pd.DataFrame:
@@ -296,11 +361,15 @@ def add_top3_availability_effect_features_for_columns(
     Changes vs previous version:
       - DIFF_FROM_LINE is always computed against TOTAL_LINE_<main book> selected by
         total_line_book (or configured main book from config).
-      - Effects are shrunk toward zero with:
-        eff_shrunk = eff_raw * n_eff/(n_eff + k), where n_eff=min(n_inj, n_present).
-      - Adds team-oriented spread-error and win-rate effects.
-      - Welch p-values are computed for continuous effects and Fisher exact
-        p-values for win rate. Both groups require at least three games.
+      - Effects are shrunk toward zero by an empirical-Bayes weight fitted per
+        metric on strictly earlier games: tau2/(tau2 + se2), where tau2 is the
+        between-player effect variance net of sampling noise. `shrinkage_k` is
+        now only the fallback prior for rows with too little history to fit,
+        and `shrinkage_k=0` still disables shrinkage entirely.
+      - Adds team-oriented spread-error effects.
+      - Each effect carries a Welch standard error instead of a p-value, so
+        magnitude and precision stay on separate axes; it needs two games per
+        group. See ``_continuous_effect_and_se`` for why the p-value went.
       - A separate availability map limits history to games where the player was
         actually classified on that team's roster. It does not mutate injuries.
       - Compact aggregate summaries include mean and max-abs effects plus total
@@ -346,15 +415,6 @@ def add_top3_availability_effect_features_for_columns(
     df[internal_spread_col] = home_margin_values - pd.to_numeric(
         df[selected_spread_line_col], errors="coerce"
     )
-    internal_home_win_col = "__HOME_WIN_INTERNAL__"
-    internal_away_win_col = "__AWAY_WIN_INTERNAL__"
-    internal_team_win_col = "__TEAM_WIN_INTERNAL__"
-    df[internal_home_win_col] = np.where(
-        home_margin_values.notna(), (home_margin_values > 0).astype(float), np.nan
-    )
-    df[internal_away_win_col] = np.where(
-        home_margin_values.notna(), (home_margin_values < 0).astype(float), np.nan
-    )
 
     required = [
         home_team_id_col,
@@ -389,16 +449,10 @@ def add_top3_availability_effect_features_for_columns(
             total_points_col,
             internal_diff_col,
             internal_spread_col,
-            internal_home_win_col,
             game_id_col,
         ]
     ].copy()
-    hist_home = hist_home.rename(
-        columns={
-            home_team_id_col: "TEAM_ID",
-            internal_home_win_col: internal_team_win_col,
-        }
-    )
+    hist_home = hist_home.rename(columns={home_team_id_col: "TEAM_ID"})
 
     hist_away = df[
         [
@@ -408,16 +462,10 @@ def add_top3_availability_effect_features_for_columns(
             total_points_col,
             internal_diff_col,
             internal_spread_col,
-            internal_away_win_col,
             game_id_col,
         ]
     ].copy()
-    hist_away = hist_away.rename(
-        columns={
-            away_team_id_col: "TEAM_ID",
-            internal_away_win_col: internal_team_win_col,
-        }
-    )
+    hist_away = hist_away.rename(columns={away_team_id_col: "TEAM_ID"})
     hist_away[internal_spread_col] = -hist_away[internal_spread_col]
 
     df_hist = pd.concat([hist_home, hist_away], ignore_index=True)
@@ -428,7 +476,6 @@ def add_top3_availability_effect_features_for_columns(
             total_points_col: "TOTAL_POINTS",
             internal_diff_col: "DIFF_FROM_LINE",
             internal_spread_col: "SPREAD_ERROR",
-            internal_team_win_col: "WIN",
             game_id_col: "GAME_ID",
         }
     )
@@ -473,7 +520,6 @@ def add_top3_availability_effect_features_for_columns(
         "TOTAL_POINTS": "TOTAL_POINTS",
         "DIFF_FROM_LINE": diff_from_line_col,
         "SPREAD_ERROR": "SPREAD_ERROR",
-        "WIN_RATE_DIFF": "WIN_RATE_DIFF",
     }
 
     n = len(df)
@@ -488,14 +534,33 @@ def add_top3_availability_effect_features_for_columns(
         metric: np.full((n, n_away_players), np.nan, dtype="float64")
         for metric in EFFECT_METRICS
     }
-    home_pvalues = {
+    home_ses = {
         metric: np.full((n, n_home_players), np.nan, dtype="float64")
         for metric in EFFECT_METRICS
     }
-    away_pvalues = {
+    away_ses = {
         metric: np.full((n, n_away_players), np.nan, dtype="float64")
         for metric in EFFECT_METRICS
     }
+    # Per-metric counts, because a metric with missing outcomes on some games
+    # has a smaller effective sample than the player's overall game counts.
+    home_metric_n_inj = {
+        metric: np.zeros((n, n_home_players), dtype="float64")
+        for metric in EFFECT_METRICS
+    }
+    home_metric_n_present = {
+        metric: np.zeros((n, n_home_players), dtype="float64")
+        for metric in EFFECT_METRICS
+    }
+    away_metric_n_inj = {
+        metric: np.zeros((n, n_away_players), dtype="float64")
+        for metric in EFFECT_METRICS
+    }
+    away_metric_n_present = {
+        metric: np.zeros((n, n_away_players), dtype="float64")
+        for metric in EFFECT_METRICS
+    }
+    row_date_ordinals = np.full(n, -1, dtype="int64")
     home_n_inj = np.zeros((n, n_home_players), dtype="float64")
     home_n_present = np.zeros((n, n_home_players), dtype="float64")
     home_n_total = np.zeros((n, n_home_players), dtype="float64")
@@ -526,6 +591,7 @@ def add_top3_availability_effect_features_for_columns(
 
         date_ts = pd.Timestamp(date)
         date_ord = date_ts.toordinal()
+        row_date_ordinals[i] = date_ord
 
         try:
             season_year_int = int(season_year)
@@ -548,25 +614,27 @@ def add_top3_availability_effect_features_for_columns(
             seen_home_pids.add(pid_int)
             (
                 raw_effects,
-                pvalues,
+                standard_errors,
                 metric_injured_counts,
                 metric_present_counts,
                 n_inj,
                 n_present,
                 n_total,
             ) = _cached_effect(home_team_int, season_year_int, date_ord, pid_int)
-            for metric, raw_effect, pvalue, injured_count, present_count in zip(
+            for metric, raw_effect, standard_error, injured_count, present_count in zip(
                 EFFECT_METRICS,
                 raw_effects,
-                pvalues,
+                standard_errors,
                 metric_injured_counts,
                 metric_present_counts,
                 strict=True,
             ):
-                home_effects[metric][i, j] = _shrink_effect(
-                    raw_effect, injured_count, present_count, shrinkage_k
-                )
-                home_pvalues[metric][i, j] = pvalue
+                # Raw for now. Shrinkage needs the population of effects,
+                # so it is applied once the loop has produced all of them.
+                home_effects[metric][i, j] = raw_effect
+                home_ses[metric][i, j] = standard_error
+                home_metric_n_inj[metric][i, j] = injured_count
+                home_metric_n_present[metric][i, j] = present_count
             home_n_inj[i, j] = n_inj
             home_n_present[i, j] = n_present
             home_n_total[i, j] = n_total
@@ -585,37 +653,132 @@ def add_top3_availability_effect_features_for_columns(
             seen_away_pids.add(pid_int)
             (
                 raw_effects,
-                pvalues,
+                standard_errors,
                 metric_injured_counts,
                 metric_present_counts,
                 n_inj,
                 n_present,
                 n_total,
             ) = _cached_effect(away_team_int, season_year_int, date_ord, pid_int)
-            for metric, raw_effect, pvalue, injured_count, present_count in zip(
+            for metric, raw_effect, standard_error, injured_count, present_count in zip(
                 EFFECT_METRICS,
                 raw_effects,
-                pvalues,
+                standard_errors,
                 metric_injured_counts,
                 metric_present_counts,
                 strict=True,
             ):
-                away_effects[metric][i, j] = _shrink_effect(
-                    raw_effect, injured_count, present_count, shrinkage_k
-                )
-                away_pvalues[metric][i, j] = pvalue
+                # Raw for now. Shrinkage needs the population of effects,
+                # so it is applied once the loop has produced all of them.
+                away_effects[metric][i, j] = raw_effect
+                away_ses[metric][i, j] = standard_error
+                away_metric_n_inj[metric][i, j] = injured_count
+                away_metric_n_present[metric][i, j] = present_count
             away_n_inj[i, j] = n_inj
             away_n_present[i, j] = n_present
             away_n_total[i, j] = n_total
+
+    # ---- shrinkage -------------------------------------------------------
+    # Applied here rather than inside the loop because the empirical-Bayes
+    # weight depends on the spread of effects across the whole player
+    # population, which is only known once every effect has been computed.
+    if shrinkage_k > 0.0:
+        shrinkage_report: dict[str, dict[str, float]] = {}
+        for metric in EFFECT_METRICS:
+            sides = (
+                (
+                    "HOME",
+                    home_effects,
+                    home_ses,
+                    home_metric_n_inj,
+                    home_metric_n_present,
+                ),
+                (
+                    "AWAY",
+                    away_effects,
+                    away_ses,
+                    away_metric_n_inj,
+                    away_metric_n_present,
+                ),
+            )
+            # Home and away effects estimate the same thing -- a player's impact
+            # on their own team, with the away spread already sign-flipped to be
+            # team-oriented -- so they are pooled into one fit.
+            flat_raw, flat_se, flat_inv_n, flat_dates, shapes = [], [], [], [], []
+            for _, effects, standard_errors, metric_n_inj, metric_n_present in sides:
+                raw = effects[metric]
+                n_present = metric_n_present[metric]
+                n_injured = metric_n_inj[metric]
+                with np.errstate(divide="ignore", invalid="ignore"):
+                    inverse_n = np.where(
+                        (n_present > 0) & (n_injured > 0),
+                        1.0 / np.maximum(n_present, 1.0)
+                        + 1.0 / np.maximum(n_injured, 1.0),
+                        np.nan,
+                    )
+                shapes.append(raw.shape)
+                flat_raw.append(raw.ravel())
+                flat_se.append(standard_errors[metric].ravel())
+                flat_inv_n.append(inverse_n.ravel())
+                flat_dates.append(
+                    np.repeat(row_date_ordinals, raw.shape[1]).astype("int64")
+                )
+
+            if fit_shrinkage:
+                weights, diagnostics = _expanding_empirical_bayes_weights(
+                    np.concatenate(flat_dates),
+                    np.concatenate(flat_raw),
+                    np.concatenate(flat_se),
+                    np.concatenate(flat_inv_n),
+                )
+            else:
+                weights = np.full(
+                    sum(a.size for a in flat_raw), np.nan, dtype="float64"
+                )
+                diagnostics = {"n_fit": 0.0}
+            shrinkage_report[metric] = diagnostics
+
+            offset = 0
+            for (_, effects, _, metric_n_inj, metric_n_present), shape in zip(
+                sides, shapes, strict=True
+            ):
+                size = shape[0] * shape[1]
+                metric_weights = weights[offset : offset + size].reshape(shape)
+                offset += size
+
+                # Rows too early to fit anything fall back to the n/(n+k) prior.
+                n_eff = np.minimum(metric_n_inj[metric], metric_n_present[metric])
+                fallback = np.where(n_eff > 0, n_eff / (n_eff + shrinkage_k), np.nan)
+                factor = np.where(np.isfinite(metric_weights), metric_weights, fallback)
+                effects[metric] = effects[metric] * factor
+
+        for metric, diagnostics in shrinkage_report.items():
+            if diagnostics["n_fit"] > 0:
+                print(
+                    f"  availability shrinkage [{out_prefix} {metric}]: "
+                    f"tau2={diagnostics['tau2']:.4g} sigma2={diagnostics['sigma2']:.4g} "
+                    f"implied k={diagnostics['implied_k']:.3g} "
+                    f"(n={int(diagnostics['n_fit'])})"
+                )
+            elif fit_shrinkage:
+                print(
+                    f"  availability shrinkage [{out_prefix} {metric}]: "
+                    f"too little history to fit; using k={shrinkage_k}"
+                )
+            else:
+                print(
+                    f"  availability shrinkage [{out_prefix} {metric}]: "
+                    f"fitting disabled; using k={shrinkage_k}"
+                )
 
     if include_per_player_columns:
         for j in range(n_home_players):
             for metric in EFFECT_METRICS:
                 output_metric = metric_output_names[metric]
                 df[_out_col("HOME", j + 1, output_metric)] = home_effects[metric][:, j]
-                df[_out_col("HOME", j + 1, f"PVALUE_{output_metric}")] = home_pvalues[
-                    metric
-                ][:, j]
+                df[_out_col("HOME", j + 1, f"SE_{output_metric}")] = home_ses[metric][
+                    :, j
+                ]
             df[_out_col("HOME", j + 1, "N_INJ_GAMES")] = home_n_inj[:, j]
             df[_out_col("HOME", j + 1, "N_PRESENT_GAMES")] = home_n_present[:, j]
             df[_out_col("HOME", j + 1, "N_TOTAL_GAMES")] = home_n_total[:, j]
@@ -624,9 +787,9 @@ def add_top3_availability_effect_features_for_columns(
             for metric in EFFECT_METRICS:
                 output_metric = metric_output_names[metric]
                 df[_out_col("AWAY", j + 1, output_metric)] = away_effects[metric][:, j]
-                df[_out_col("AWAY", j + 1, f"PVALUE_{output_metric}")] = away_pvalues[
-                    metric
-                ][:, j]
+                df[_out_col("AWAY", j + 1, f"SE_{output_metric}")] = away_ses[metric][
+                    :, j
+                ]
             df[_out_col("AWAY", j + 1, "N_INJ_GAMES")] = away_n_inj[:, j]
             df[_out_col("AWAY", j + 1, "N_PRESENT_GAMES")] = away_n_present[:, j]
             df[_out_col("AWAY", j + 1, "N_TOTAL_GAMES")] = away_n_total[:, j]
@@ -648,27 +811,27 @@ def add_top3_availability_effect_features_for_columns(
             out[valid] = np.nanmax(abs_arr[valid], axis=1)
         return out
 
-    def _bonferroni_pvalue_axis1(arr: np.ndarray) -> np.ndarray:
-        """Correct the smallest valid per-player p-value within each row."""
-        mask = ~np.isnan(arr)
-        n_tests = mask.sum(axis=1)
-        out = np.full(arr.shape[0], np.nan, dtype="float64")
-        valid = n_tests > 0
-        if valid.any():
-            out[valid] = np.minimum(1.0, np.nanmin(arr[valid], axis=1) * n_tests[valid])
-        return out
-
-    for side, effects, pvalues in (
-        ("HOME", home_effects, home_pvalues),
-        ("AWAY", away_effects, away_pvalues),
+    # The row-level uncertainty channel, replacing the Bonferroni-corrected
+    # p-value that used to sit here. Averaging the per-player standard errors
+    # says how precisely this row's effects are pinned down without collapsing
+    # effect size and sample size into a single number, and without a multiple
+    # -comparison correction over a family of tests that were never powered.
+    #
+    # Left NaN when no player has evidence, exactly as the p-value aggregate
+    # was: "no evidence" means unbounded uncertainty, and filling it with zero
+    # would assert the opposite. Only the effect aggregates get filled below,
+    # where zero is the correct limit of a shrinkage estimator.
+    for side, effects, standard_errors in (
+        ("HOME", home_effects, home_ses),
+        ("AWAY", away_effects, away_ses),
     ):
         for metric in EFFECT_METRICS:
             output_metric = metric_output_names[metric]
             df[f"{out_prefix}_{side}_MEAN_{output_metric}"] = _nanmean_axis1(
                 effects[metric]
             )
-            df[f"{out_prefix}_{side}_BONFERRONI_PVALUE_{output_metric}"] = (
-                _bonferroni_pvalue_axis1(pvalues[metric])
+            df[f"{out_prefix}_{side}_MEAN_SE_{output_metric}"] = _nanmean_axis1(
+                standard_errors[metric]
             )
 
     for side, effects in (("HOME", home_effects), ("AWAY", away_effects)):
@@ -679,8 +842,8 @@ def add_top3_availability_effect_features_for_columns(
             )
 
     # No evidence for any of the players means the fully shrunk estimate, which
-    # for an estimator that shrinks toward zero is zero -- `_shrink_effect`
-    # computes raw * n/(n+k), and that is 0 at n=0. Leaving NaN made the feature
+    # for an estimator that shrinks toward zero is zero -- the weight is
+    # n/(n+k) or tau2/(tau2+se2), both 0 at n=0. Leaving NaN made the feature
     # discontinuous at exactly the point the shrinkage was designed to handle
     # smoothly: one weak game gives ~0, and no games gave "unknown".
     #
@@ -694,7 +857,6 @@ def add_top3_availability_effect_features_for_columns(
             "MEAN_TOTAL_POINTS",
             f"MEAN_{diff_from_line_col}",
             "MEAN_SPREAD_ERROR",
-            "MEAN_WIN_RATE_DIFF",
             "MAX_ABS_TOTAL_POINTS",
             f"MAX_ABS_{diff_from_line_col}",
         )
@@ -727,8 +889,6 @@ def add_top3_availability_effect_features_for_columns(
         columns=[
             internal_diff_col,
             internal_spread_col,
-            internal_home_win_col,
-            internal_away_win_col,
         ],
         errors="ignore",
     )

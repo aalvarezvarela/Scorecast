@@ -435,18 +435,32 @@ pregame assignment evidence and overrides the player's previously known team,
 including on their first game after a trade. Scheduled player placeholders are
 also safe same-day evidence because they are generated from prior player history
 and contain no current-game statistics. Every numeric player feature remains
-shifted, so current-game box-score values are excluded from those calculations;
-current-game `MIN = 0` is read only by the DNP classification rule below.
+shifted, so current-game box-score values are excluded from those calculations.
+No target-game box-score quantity takes part in the roster split at all.
 
-Historical DNP rows provide one additional availability signal. If a player
-averaged more than 15 minutes across their last 10 recorded games before the
-target and then has `MIN = 0`, the pipeline treats that player as injured/absent
-for the target game even when the injury feed missed the late decision. DNPs
-within the prior 10-game window count as zero minutes. Scheduled placeholders
-have `MIN = NaN`, so they do not trigger this rule. The threshold is used only to
-infer this DNP absence; it does not filter any other available player. This local
-classification does not add the player to the injury-report dictionary or alter
-injury streaks, which continue to use the existing report and box-score comments.
+Availability is the roster minus the injured/inactive set, and that set is built
+from reasons rather than from minutes. Two sources feed it: the inactive-players
+table published with the box score, and the box-score `COMMENT` field whenever it
+names an absence reason that the pre-game NBA injury report would also have
+carried. `UNAVAILABLE_COMMENT_PATTERN` holds that list: Injury/Illness, Rest,
+Personal Reasons, suspensions, Trade Pending, and G League assignments.
+
+`DNP - Coach's Decision` is deliberately excluded and leaves the player
+available. This is the selection rule for the whole family: a category counts
+only if the same absence would have been visible on the pre-game report, because
+anything else teaches the model to react to information that is not available at
+prediction time.
+
+Target-game `MIN` is not consulted. Minutes cannot distinguish a late scratch
+from a coach's decision, so a minutes rule buys label coverage at the cost of
+making roster membership a function of the game being predicted -- the failure
+recorded in `nba_ou.config.leakage` and re-checked by
+`test_target_game_minutes_cannot_move_a_player_between_buckets`.
+
+> The remaining gap is the source, not the rule: training reads the box score
+> while production reads the pre-game injury report PDF. Archiving those reports
+> is what closes it, and it is the prerequisite for using `Questionable` and
+> `Doubtful` statuses rather than the current `Out`/`Doubtful` set.
 
 Feature families added at the team row level include:
 
@@ -952,9 +966,7 @@ It is called twice:
 For each player, team, and game date, the function looks at the current and
 previous season for that team before the game date. Only games where the local
 roster split classified that player as available or injured are included. This
-excludes games before the player joined the team or after they left it. The local
-split can include an expected-rotation DNP as absent without adding that player
-to the injury-report dictionary.
+excludes games before the player joined the team or after they left it.
 
 It compares:
 
@@ -963,38 +975,72 @@ It compares:
 - Team-oriented `SPREAD_ERROR` when the player was present versus injured. For
   both home and away teams, a positive value means the team beat the Bet365
   spread by that many points.
-- Team win rate when the player was present versus injured.
 
-Each effect is `mean(available) - mean(injured)`, so a positive spread or win-rate
-effect means the team historically performed better with the player available.
+Each effect is `mean(available) - mean(injured)`, so a positive spread effect
+means the team historically performed better with the player available.
 
-Raw effects are shrunk toward zero using:
+Team win rate was previously a fourth effect. It was dropped: a binary outcome
+over a handful of games is the noisiest of the four and measures nearly what
+`SPREAD_ERROR` measures on a continuous scale.
+
+Raw effects are shrunk toward zero by an empirical-Bayes weight that is fitted
+rather than assumed:
 
 ```text
-effect_shrunk = effect_raw * n_eff / (n_eff + k)
+effect_shrunk = effect_raw * tau2 / (tau2 + se2)
 ```
 
-where `n_eff` is the smaller of injured-game count and present-game count, and
-`k` defaults to `10.0`.
+The observed spread of player effects is real player-to-player variation plus
+sampling noise, `var(effect) = tau2 + mean(se2)`, so `tau2 = var(effect) -
+mean(se2)` is the signal variance and `tau2 / (tau2 + se2)` is the posterior
+weight on one player's estimate. This is the same shape as `n_eff / (n_eff + k)`
+-- `se2` falls like `1/n` -- but the constant is measured instead of guessed, it
+is measured separately per metric, and it uses each player's own precision
+rather than their game count alone. A player with one game on either side has no
+standard error, so `se2` is imputed as `sigma2 * (1/n_present + 1/n_injured)`
+from the pooled within-team variance.
 
-The pipeline also calculates a p-value for every effect. Continuous outcomes
-(`TOTAL_POINTS`, `DIFF_FROM_LINE`, and `SPREAD_ERROR`) use Welch's independent
-two-sample test. Win rate uses Fisher's exact test. A player needs at least three
-available games and three injured games with a valid outcome; otherwise their
-p-value is `NaN`. The compact group-level p-value takes the smallest valid
-per-player p-value and applies a Bonferroni correction for the number of tested
-players. It remains `NaN` when no selected player reaches the minimum sample.
+Both variances are estimated only from games strictly earlier than the row being
+shrunk. A single global fit would let a March game set the shrinkage applied to
+an October row.
+
+`shrinkage_k` survives as the fallback prior for rows too early in the history to
+fit anything (fewer than `MIN_SHRINKAGE_FIT_SAMPLES` prior observations), and
+`shrinkage_k=0` still disables shrinkage entirely. `fit_shrinkage=False` forces
+the old fixed-`k` behaviour for comparison.
+
+Each call prints the fitted `tau2`, `sigma2` and the implied `k = sigma2 / tau2`
+per metric. A `tau2` of zero is a real answer, not a failure: it says the spread
+between players is fully explained by sampling noise, and the honest estimate of
+every effect for that metric is then zero. Watch that line -- it is the fastest
+way to see whether a metric carries any player-level signal at all.
+
+Every effect carries a Welch standard error, `sqrt(var_present/n_present +
+var_injured/n_injured)`, which needs two valid games in each group and is `NaN`
+otherwise. The group-level value is the mean of the per-player standard errors,
+and stays `NaN` when no selected player has evidence: no evidence means unbounded
+uncertainty, so filling it with zero would assert the opposite. Only the effect
+aggregates are filled with zero, where that is the correct limit of a shrinkage
+estimator.
+
+The standard error replaced a Welch/Fisher p-value and its Bonferroni-corrected
+group summary. A p-value is a monotone function of the effect size and the two
+group sizes, all already emitted, so it added little the model could not
+reconstruct -- while implying a significance test that a handful of games per
+player cannot support, across a family of comparisons that invites false
+positives. The standard error keeps magnitude and precision on separate axes and
+leaves the trust rule to the model.
 
 Aggregate outputs include:
 
 - Home and away mean effects on total points.
 - Home and away mean effects on difference from line.
-- Home and away mean effects on spread error and win rate.
+- Home and away mean effects on spread error.
+- Home and away mean standard errors for all three effects.
 - Home and away max absolute effects.
-- Home and away Bonferroni-adjusted p-values for all four effects.
 - Home and away total historical sample sizes.
 
-This compact default creates 22 columns per call (44 across active and injured
+This compact default creates 18 columns per call (36 across active and injured
 players). The redundant injured/present count split, player counts, and boolean
 flags are omitted. They remain available for diagnostics through
 `include_detailed_sample_size_features=True`, but the training and prediction
