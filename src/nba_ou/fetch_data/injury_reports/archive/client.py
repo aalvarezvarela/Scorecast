@@ -25,6 +25,7 @@ from dataclasses import dataclass
 from enum import Enum
 
 import requests
+from tqdm.auto import tqdm
 
 USER_AGENT = "nba-ou-injury-archiver/0.1 (+https://github.com/panchojasen; research)"
 
@@ -109,8 +110,10 @@ class ArchiveClient:
         time.sleep(self.delay_s + random.uniform(0.0, self.jitter_s))
 
     def _log(self, msg: str) -> None:
+        # tqdm.write keeps these from shredding an active progress bar, and
+        # behaves like print() when there is no bar.
         if self.verbose:
-            print(msg, flush=True)
+            tqdm.write(msg)
 
     def _canary_is_up(self) -> bool:
         try:

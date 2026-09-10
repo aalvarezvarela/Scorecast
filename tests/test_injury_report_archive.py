@@ -250,3 +250,64 @@ def test_header_matches_derived_time_for_every_era():
     for day, label, era, header in cases:
         derived = U.et_datetime(day, label, era).replace(tzinfo=None)
         assert parse_header_datetime(header) == derived
+
+
+# --------------------------------------------------------------------------- #
+# Offseason skip
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.parametrize(
+    "day",
+    [
+        date(2022, 8, 15),
+        date(2023, 8, 1),
+        date(2023, 9, 1),
+        date(2024, 9, 20),
+        date(2026, 8, 10),
+    ],
+)
+def test_deep_offseason_is_skipped(day):
+    assert U.is_offseason_gap(day) is True
+    assert U.candidates_for_date(day) == []
+
+
+@pytest.mark.parametrize(
+    "day",
+    [
+        date(2020, 8, 15),  # bubble ran 30 Jul - 11 Oct 2020
+        date(2020, 9, 20),
+        date(2021, 8, 10),  # delayed calendar: live block 6-15 Aug 2021
+    ],
+)
+def test_covid_years_are_exempt_from_the_skip(day):
+    assert U.is_offseason_gap(day) is False
+    assert len(U.candidates_for_date(day)) > 0
+
+
+@pytest.mark.parametrize(
+    "day",
+    [
+        date(2024, 7, 22),  # latest Summer League activity observed
+        date(2025, 7, 19),
+        date(2019, 9, 29),  # earliest post-summer activity observed
+        date(2022, 10, 19),
+    ],
+)
+def test_skip_never_covers_an_observed_active_date(day):
+    """The window is set strictly inside the measured active bounds; if someone
+    widens it, these dates are the ones that start silently disappearing."""
+    assert U.is_offseason_gap(day) is False
+
+
+def test_skip_boundaries_are_inclusive():
+    assert U.is_offseason_gap(date(2023, 7, 24)) is False
+    assert U.is_offseason_gap(date(2023, 7, 25)) is True
+    assert U.is_offseason_gap(date(2023, 9, 22)) is True
+    assert U.is_offseason_gap(date(2023, 9, 23)) is False
+
+
+def test_skip_can_be_turned_off():
+    day = date(2023, 8, 15)
+    assert U.candidates_for_date(day) == []
+    assert len(U.candidates_for_date(day, skip_offseason=False)) == 24

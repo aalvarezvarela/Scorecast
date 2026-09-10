@@ -65,6 +65,7 @@ from nba_ou.fetch_data.injury_reports.archive.storage import (
     ManifestSync,
     S3Storage,
     Storage,
+    StorageAccessError,
 )
 
 DEFAULT_MANIFEST_ROOT = Path("data/injury_reports/manifest")
@@ -124,10 +125,18 @@ def _list_seasons(store: mf.ManifestStore) -> int:
     return 0
 
 
-def _report_only(store: mf.ManifestStore, windows: list[tuple[str, date, date]]) -> int:
+def _report_only(
+    store: mf.ManifestStore,
+    windows: list[tuple[str, date, date]],
+    *,
+    skip_offseason: bool = True,
+) -> int:
     grand_c = grand_known = grand_exists = grand_stored = 0
     for label, lo, hi in windows:
-        candidates = sum(len(U.candidates_for_date(d)) for d in U.date_range(lo, hi))
+        candidates = sum(
+            len(U.candidates_for_date(d, skip_offseason=skip_offseason))
+            for d in U.date_range(lo, hi)
+        )
         season = label if label in set(U.all_seasons()) else None
         df = store.load(season) if season else mf.empty_frame()
         known = len(df)
@@ -187,6 +196,14 @@ def main() -> int:
     mode.add_argument("--max-requests", type=int, default=None)
     mode.add_argument("--max-files", type=int, default=None)
     mode.add_argument("--quiet", action="store_true")
+    mode.add_argument(
+        "--no-offseason-skip",
+        action="store_true",
+        help=(
+            "also probe the deep offseason (25 Jul - 22 Sep). Off by default "
+            "because nothing is published then; 2020 and 2021 are always probed."
+        ),
+    )
 
     dest = parser.add_argument_group("where it goes")
     dest.add_argument(
@@ -195,6 +212,14 @@ def main() -> int:
         help="write PDFs to this directory instead of S3 (e.g. data/injury_reports)",
     )
     dest.add_argument("--bucket", default=None, help="override the configured bucket")
+    dest.add_argument(
+        "--s3-prefix",
+        default=DEFAULT_S3_PREFIX,
+        help=(
+            f"top-level S3 prefix (default: {DEFAULT_S3_PREFIX}). Point this at a "
+            "prefix your IAM user can already write if you cannot change the policy."
+        ),
+    )
     dest.add_argument("--manifest-root", default=str(DEFAULT_MANIFEST_ROOT))
     dest.add_argument(
         "--no-manifest-sync",
@@ -214,7 +239,7 @@ def main() -> int:
 
     windows = _resolve_windows(args)
     if args.report_only:
-        return _report_only(store, windows)
+        return _report_only(store, windows, skip_offseason=not args.no_offseason_skip)
 
     client = ArchiveClient(
         delay_s=args.delay, cooldown_s=args.cooldown, verbose=not args.quiet
@@ -225,10 +250,18 @@ def main() -> int:
     needs_storage = args.phase in ("download", "both") or not args.local_root
     storage = _make_storage(args) if needs_storage else None
     sync = (
-        ManifestSync(storage=storage)
+        ManifestSync(storage=storage, prefix=args.s3_prefix)
         if isinstance(storage, S3Storage) and not args.no_manifest_sync
         else None
     )
+
+    # Prove we can write before spending hours discovering.
+    if isinstance(storage, S3Storage) and not args.dry_run:
+        try:
+            storage.preflight(args.s3_prefix)
+        except StorageAccessError as exc:
+            print(f"\nS3 preflight failed.\n\n{exc}\n")
+            return 1
 
     print(f"Manifest : {store.root}" + ("  (mirrored to S3)" if sync else ""))
     if storage is not None:
@@ -255,6 +288,8 @@ def main() -> int:
                 start=lo,
                 end=hi,
                 max_requests=args.max_requests,
+                skip_offseason=not args.no_offseason_skip,
+                s3_prefix=args.s3_prefix,
                 dry_run=args.dry_run,
                 verbose=not args.quiet,
             )
@@ -291,6 +326,12 @@ def main() -> int:
                 key = sync.push(season, store.path_for(season))
                 if key:
                     print(f"  manifest -> s3://{storage.bucket}/{key}")
+                elif sync.last_error:
+                    print(
+                        f"  ! manifest not mirrored for {season} "
+                        f"({sync.last_error.splitlines()[0][:120]})\n"
+                        f"    the local copy at {store.path_for(season)} is intact"
+                    )
         print()
 
     print(f"HTTP requests made: {client.requests_made}")
@@ -302,4 +343,10 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    try:
+        sys.exit(main())
+    except KeyboardInterrupt:
+        # Ctrl-C is a normal way to stop a multi-hour backfill, not a crash.
+        # Whatever was discovered is already checkpointed in the manifest.
+        print("\nInterrupted. Re-run the same command to continue.")
+        sys.exit(130)

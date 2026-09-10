@@ -48,6 +48,19 @@ HOURLY_24_START = Date(2021, 10, 18)
 #: This day is a crossover: it carries 9 old-format *and* 60 new-format files.
 QUARTER_96_START = Date(2025, 12, 22)
 
+#: The deep offseason, when nothing is published and probing is pure waste.
+#: Measured Jun-Oct across every year: Summer League runs into mid/late July
+#: (latest observed activity 2024-07-22) and the feed does not wake again until
+#: late September at the earliest (earliest observed 2019-09-29). This window
+#: sits strictly inside those bounds, so it cannot clip a real report.
+OFFSEASON_SKIP_START = (7, 25)
+OFFSEASON_SKIP_END = (9, 22)
+
+#: Years the skip must not apply to. 2020's bubble ran 30 Jul - 11 Oct, and the
+#: delayed 2021 calendar put a live block in 6-15 Aug 2021 -- both sit squarely
+#: inside the window above.
+OFFSEASON_EXEMPT_YEARS = frozenset({2020, 2021})
+
 ERA_WP_MEDIA = "wp_media"
 ERA_LEGACY_3 = "legacy_3"
 ERA_BUBBLE_3 = "bubble_3"
@@ -71,6 +84,17 @@ def season_label(day: Date) -> str:
     """``2024-12-11`` -> ``'2024-25'``."""
     year = get_season_year_from_date(datetime(day.year, day.month, day.day))
     return f"{year}-{str(year + 1)[-2:]}"
+
+
+def is_offseason_gap(day: Date) -> bool:
+    """True when ``day`` falls in the dead offseason and can be skipped.
+
+    Never true for :data:`OFFSEASON_EXEMPT_YEARS`, where basketball ran through
+    the window.
+    """
+    if day.year in OFFSEASON_EXEMPT_YEARS:
+        return False
+    return OFFSEASON_SKIP_START <= (day.month, day.day) <= OFFSEASON_SKIP_END
 
 
 def eras_for_date(day: Date) -> tuple[str, ...]:
@@ -181,12 +205,15 @@ class Candidate:
         return s3_key(self.report_datetime_et)
 
 
-def candidates_for_date(day: Date) -> list[Candidate]:
+def candidates_for_date(day: Date, *, skip_offseason: bool = True) -> list[Candidate]:
     """Every plausible URL for ``day``, DST-filtered.
 
     24 candidates in the hourly eras, 96 in the quarter-hourly era, 120 on the
-    single crossover day, 0 before the CDN path begins.
+    single crossover day, 0 before the CDN path begins -- and 0 in the deep
+    offseason unless ``skip_offseason`` is False.
     """
+    if skip_offseason and is_offseason_gap(day):
+        return []
     out: list[Candidate] = []
     for era in eras_for_date(day):
         if era == ERA_WP_MEDIA:

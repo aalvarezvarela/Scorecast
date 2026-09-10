@@ -45,10 +45,38 @@ class LocalStorage:
         return f"local:{self.root}"
 
 
+class StorageAccessError(RuntimeError):
+    """We cannot write where we were told to write."""
+
+
 class S3Storage:
     def __init__(self, *, bucket: str, profile: str | None, region: str) -> None:
         self.bucket = bucket
         self.client = make_s3_client(profile=profile, region=region)
+
+    def preflight(self, prefix: str) -> None:
+        """Fail now, not after hours of discovery.
+
+        IAM on this bucket is a prefix allowlist, so a perfectly valid run can
+        spend two hours discovering and then die on the first PutObject. One
+        tiny write up front turns that into an immediate, actionable error.
+        """
+        key = f"{prefix.rstrip('/')}/_preflight_check"
+        try:
+            self.client.put_object(Bucket=self.bucket, Key=key, Body=b"ok")
+        except Exception as exc:  # noqa: BLE001 - re-raised with guidance
+            raise StorageAccessError(
+                f"cannot write to s3://{self.bucket}/{prefix.rstrip('/')}/\n"
+                f"  {exc}\n\n"
+                "Fix one of:\n"
+                "  * grant s3:PutObject/GetObject on that prefix to this IAM user\n"
+                f"  * point somewhere you can already write: --s3-prefix train_data/injury_reports\n"
+                "  * skip S3 entirely:                       --local-root data/injury_reports"
+            ) from exc
+        try:
+            self.client.delete_object(Bucket=self.bucket, Key=key)
+        except Exception:
+            pass  # the write succeeded, which is all preflight needed to prove
 
     def exists(self, key: str) -> int | None:
         try:
@@ -82,13 +110,14 @@ class ManifestSync:
     def __init__(self, *, storage: S3Storage, prefix: str = "injury_reports") -> None:
         self.storage = storage
         self.prefix = prefix
+        self.last_error: str | None = None
 
     def key_for(self, season: str) -> str:
         return f"{self.prefix}/manifest/season={season}/manifest.parquet"
 
     def pull(self, season: str, local_path: Path) -> bool:
         """Fetch the remote manifest if we have no local copy. Returns True if
-        something was restored."""
+        something was restored. Never raises -- a missing mirror is normal."""
         if local_path.exists():
             return False
         key = self.key_for(season)
@@ -101,13 +130,24 @@ class ManifestSync:
         return True
 
     def push(self, season: str, local_path: Path) -> str | None:
+        """Mirror the manifest up. Returns the key, or ``None`` if it could not
+        be written.
+
+        Deliberately does not raise: the manifest on disk is the authoritative
+        resume state, and losing the mirror must never destroy a finished run --
+        least of all by turning a Ctrl-C into a traceback.
+        """
         if not local_path.exists():
             return None
         key = self.key_for(season)
-        self.storage.client.put_object(
-            Bucket=self.storage.bucket,
-            Key=key,
-            Body=local_path.read_bytes(),
-            ContentType="application/octet-stream",
-        )
+        try:
+            self.storage.client.put_object(
+                Bucket=self.storage.bucket,
+                Key=key,
+                Body=local_path.read_bytes(),
+                ContentType="application/octet-stream",
+            )
+        except Exception as exc:  # noqa: BLE001 - reported, never fatal
+            self.last_error = str(exc)
+            return None
         return key

@@ -18,6 +18,7 @@ from nba_ou.fetch_data.injury_reports.archive.client import (
     ThrottledError,
     Verdict,
 )
+from tqdm.auto import tqdm
 
 
 @dataclass
@@ -57,7 +58,7 @@ _VERDICT_TO_AVAILABILITY = {
 }
 
 
-def _row(candidate: U.Candidate, probe, attempts: int) -> dict:
+def _row(candidate: U.Candidate, probe, attempts: int, s3_prefix: str) -> dict:
     return {
         "report_key": candidate.report_key,
         "season": candidate.season,
@@ -78,7 +79,7 @@ def _row(candidate: U.Candidate, probe, attempts: int) -> dict:
         "discovery_timestamp": datetime.now(UTC),
         "discovery_attempts": attempts,
         "download_status": mf.DOWNLOAD_PENDING,
-        "s3_key": candidate.s3_key,
+        "s3_key": U.s3_key(candidate.report_datetime_et, prefix=s3_prefix),
         "notes": probe.note,
     }
 
@@ -92,12 +93,36 @@ def discover(
     max_requests: int | None = None,
     checkpoint_every: int = 500,
     retry_unknown: bool = True,
+    skip_offseason: bool = True,
+    s3_prefix: str = "injury_reports",
     dry_run: bool = False,
     verbose: bool = True,
 ) -> DiscoveryStats:
     stats = DiscoveryStats()
     pending: dict[str, list[dict]] = {}
     since_checkpoint = 0
+
+    # Count first so the bar has a real total. This is pure arithmetic over the
+    # candidate space plus the manifest -- no network -- so it is cheap even for
+    # a whole-archive run.
+    days = U.date_range(start, end)
+    to_probe = 0
+    for day in days:
+        cands = U.candidates_for_date(day, skip_offseason=skip_offseason)
+        if not cands:
+            continue
+        resolved = store.resolved_keys(U.season_label(day)) if not dry_run else set()
+        to_probe += sum(1 for c in cands if c.report_key not in resolved)
+    if max_requests is not None:
+        to_probe = min(to_probe, max_requests)
+
+    bar = tqdm(
+        total=to_probe,
+        desc="discover",
+        unit="url",
+        disable=None if verbose else True,
+        smoothing=0.05,
+    )
 
     def flush() -> None:
         if dry_run:
@@ -109,8 +134,8 @@ def discover(
         pending.clear()
 
     try:
-        for day in U.date_range(start, end):
-            candidates = U.candidates_for_date(day)
+        for day in days:
+            candidates = U.candidates_for_date(day, skip_offseason=skip_offseason)
             if not candidates:
                 continue
             stats.dates += 1
@@ -121,7 +146,6 @@ def discover(
             if not todo:
                 continue
 
-            day_found = 0
             for cand in todo:
                 if max_requests is not None and stats.probed >= max_requests:
                     stats.stopped_early = True
@@ -132,27 +156,26 @@ def discover(
                 probe = client.probe(cand.url)
                 stats.probed += 1
                 since_checkpoint += 1
+                bar.update(1)
                 if probe.verdict is Verdict.EXISTS:
                     stats.found += 1
-                    day_found += 1
                     stats.per_season[season] = stats.per_season.get(season, 0) + 1
                 elif probe.verdict is Verdict.MISSING:
                     stats.missing += 1
                 else:
                     stats.unknown += 1
 
-                pending.setdefault(season, []).append(_row(cand, probe, 1))
+                pending.setdefault(season, []).append(_row(cand, probe, 1, s3_prefix))
+                bar.set_postfix_str(
+                    f"{day} | found {stats.found} missing {stats.missing}"
+                    + (f" unknown {stats.unknown}" if stats.unknown else ""),
+                    refresh=False,
+                )
 
                 if since_checkpoint >= checkpoint_every:
                     flush()
                     since_checkpoint = 0
 
-            if verbose:
-                print(
-                    f"  {day}  {day_found:3d}/{len(candidates):3d} present "
-                    f"({season})",
-                    flush=True,
-                )
     except ThrottledError as exc:
         stats.stopped_early = True
         stats.reason = str(exc)
@@ -163,6 +186,8 @@ def discover(
         stats.reason = "interrupted by user"
         flush()
         return stats
+    finally:
+        bar.close()
 
     flush()
     return stats

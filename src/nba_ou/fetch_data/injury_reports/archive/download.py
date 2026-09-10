@@ -21,6 +21,7 @@ from nba_ou.fetch_data.injury_reports.archive.client import (
 )
 from nba_ou.fetch_data.injury_reports.archive.storage import Storage
 from nba_ou.fetch_data.injury_reports.archive.validation import validate
+from tqdm.auto import tqdm
 
 
 @dataclass
@@ -72,6 +73,15 @@ def download_rows(
     since_checkpoint = 0
     seen_keys: dict[str, str] = {}
 
+    total = len(rows) if max_files is None else min(len(rows), max_files)
+    bar = tqdm(
+        total=total,
+        desc="download",
+        unit="pdf",
+        disable=None if verbose else True,
+        smoothing=0.05,
+    )
+
     def flush() -> None:
         if dry_run:
             updates.clear()
@@ -89,6 +99,7 @@ def download_rows(
                 break
 
             stats.considered += 1
+            bar.update(1)
             key = str(row.s3_key)
             expected_et = _parse_et(str(row.report_datetime_et))
 
@@ -181,21 +192,22 @@ def download_rows(
             updates.setdefault(str(row.season), []).append(update)
 
             since_checkpoint += 1
+            bar.set_postfix_str(
+                f"{stats.stored} stored, {stats.bytes_stored / 1024**2:.1f} MiB"
+                + (f", {stats.invalid} invalid" if stats.invalid else ""),
+                refresh=False,
+            )
             if since_checkpoint >= checkpoint_every:
                 flush()
                 since_checkpoint = 0
-                if verbose:
-                    print(
-                        f"  .. {stats.stored} stored "
-                        f"({stats.bytes_stored / 1024**2:.0f} MiB)",
-                        flush=True,
-                    )
     except ThrottledError as exc:
         stats.stopped_early = True
         stats.reason = str(exc)
     except KeyboardInterrupt:
         stats.stopped_early = True
         stats.reason = "interrupted by user"
+    finally:
+        bar.close()
 
     flush()
     return stats
