@@ -4,8 +4,8 @@ Handle missing data in NBA prediction DataFrames using a deterministic, quality-
 Core idea: make the NA policy explicit and auditable by categorizing columns upfront into:
 
 1) DROP ROWS if any of these are missing (high-signal, non-imputable, or indicates pipeline failure)
-2) KEEP NaN + add __is_missing flags (structurally missing market features for tree models)
-3) ZERO-FILL + add __is_missing flags (neutral constructs where 0 means "no effect")
+2) KEEP NaN (structurally missing market features and explicit uncertainty estimates)
+3) ZERO-FILL without flags (neutral constructs where 0 means "no effect")
 4) INFER from season averages when possible (rolling-window features)
 5) FINAL FALLBACK to training medians (optional, recommended, excludes market columns)
 
@@ -78,6 +78,19 @@ MARKET_KEEP_NA_SUBSTRINGS = [
 def _is_market_keep_na(col: str) -> bool:
     c = col.lower()
     return any(s in c for s in MARKET_KEEP_NA_SUBSTRINGS)
+
+
+def _is_availability_uncertainty_keep_na(col: str) -> bool:
+    """Keep a missing availability standard error distinct from zero.
+
+    The availability-effect builder emits ``MEAN_SE`` only when both the
+    available and injured samples are large enough to estimate uncertainty.
+    NaN therefore means "precision is unknown". These columns can also contain
+    ``INJURED_`` in their prefix, so the broad injury zero-fill policy below
+    must not turn that state into 0.0 (which means perfect precision).
+    """
+    upper = col.upper()
+    return "AVAILABILITY_EFFECT" in upper and "_MEAN_SE_" in upper
 
 
 # ------------------------------------------------------------------------------
@@ -175,8 +188,13 @@ def resolve_policy(
     if mode == "train":
         drop_cols += _existing(df, [TARGET_COL])
 
-    # 2) keep-na market cols (only those that exist)
-    keep_na_cols = [c for c in df.columns if _is_market_keep_na(c)]
+    # 2) Keep structural market NaNs and explicit uncertainty NaNs. The latter
+    # must take precedence over the broad ``INJURED_`` zero-fill rule.
+    market_keep_na_cols = [c for c in df.columns if _is_market_keep_na(c)]
+    uncertainty_keep_na_cols = [
+        c for c in df.columns if _is_availability_uncertainty_keep_na(c)
+    ]
+    keep_na_cols = market_keep_na_cols + uncertainty_keep_na_cols
 
     # 3) zero-fill cols (injury/absence - no flags)
     zero_fill_cols = [c for c in df.columns if _is_zero_fill_no_flag(c)]
@@ -194,11 +212,16 @@ def resolve_policy(
         if fb and fb in df.columns:
             infer_pairs.append((c, fb))
 
-    # 5) missing flags: ONLY for market keep-na cols
-    flag_cols = sorted(set(keep_na_cols))
+    # 5) Missing flags remain limited to market columns. The feature name
+    # already identifies an uncertainty channel, and XGBoost handles its NaN.
+    flag_cols = sorted(set(market_keep_na_cols))
 
-    # remove drop cols from other sets
-    zero_fill_cols = [c for c in zero_fill_cols if c not in drop_set]
+    # Remove higher-priority categories from the broad zero-fill family. A
+    # keep-NaN column may contain ``INJURED_`` in its name, but must still keep
+    # its missing state.
+    zero_fill_cols = [
+        c for c in zero_fill_cols if c not in drop_set and c not in keep_na_set
+    ]
     keep_na_cols = [c for c in keep_na_cols if c not in drop_set]
     infer_pairs = [(c, fb) for (c, fb) in infer_pairs if c not in drop_set]
 

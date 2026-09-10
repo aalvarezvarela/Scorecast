@@ -1,0 +1,54 @@
+experiment_name: schema23_line_error_6folds_100games
+prediction_strategy: line_error_regressor
+training_version: "2.11-schema23-cv-followup-20260910"
+comparison_group: fixed50_optuna_2_3_followup_2026_09
+hypothesis: Test whether fewer, wider validation blocks select line-error hyperparameters that transfer better to the daily holdout.
+tags: [closing_line, line_error, schema_2_3, fixed100_cv, 6_folds, early_stopping]
+device: cuda
+random_state: 16
+data:
+  csv_path: data/train_data/training_data_2_3_20260909.csv
+  data_version: "20260909-training-2.3-pregame-roster-safe"
+  expected_checksum: "sha256:1d74d01716ce8756"
+  dataset_type: closing_line
+  season_year_floor: 2019
+  extend_history_dropping_season_gated_columns: false
+  exclude_overtime_from_training: false
+  exclude_playoffs: true
+  allowed_season_types: ["Regular Season", "Play-In Tournament"]
+cleaning: {max_na_per_row: 300, corr_threshold: 0.95, corr_threshold_overrides: {"ODDS_": 0.99}}
+holdout: {test_size: null, test_games: null, test_days: 90}
+walk_forward:
+  strategy: test_anchored
+  test_games: 100
+  step_games_between_tests: 120
+  train_games: 6250
+  train_games_choices: null
+  min_train_games: 1250
+  max_folds: 6
+  fold_selection: latest
+  exclude_test_months: [5, 6]
+  require_same_season_test: true
+  eval_span_games: null
+  min_validation_games: null
+sample_weight: {enabled: false, lambda_: null, tune_lambda: false, allow_unweighted: false}
+refit: {use_lexicographic_selection: true}
+optuna:
+  n_trials: 150
+  timeout: null
+  persistent_storage: false
+  tune_n_estimators: false
+  objective_aggregation: pooled
+  pruner_warmup_steps: 7
+  tie_tolerance: quantile
+  tie_max_fraction: 0.15
+  tie_tolerance_floor: 0.001
+  tie_tolerance_cap: 0.04
+  tie_warn_fraction: 0.25
+  search_space: {n_estimators: 1000, early_stopping_rounds: 70, n_estimators_range: null}
+betting:
+  edge_thresholds: [0.0, 0.1, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0]
+  primary_edge_threshold: 0.1
+  comparison_line_cols: [ODDS_TOTAL_LINE_consensus_opener]
+holdout_evaluation: daily_walk_forward
+evaluation_seeds: []

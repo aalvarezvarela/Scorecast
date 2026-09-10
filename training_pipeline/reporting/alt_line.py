@@ -46,6 +46,7 @@ the caller can report it instead of assuming it was 100%.
 
 from __future__ import annotations
 
+import textwrap
 from pathlib import Path
 from typing import Any, NamedTuple
 
@@ -61,11 +62,14 @@ from training_pipeline.reporting import coverage
 from training_pipeline.reporting.loaders import settle_bets
 from training_pipeline.reporting.theme import (
     BREAK_EVEN,
+    CRITICAL,
     DECIMAL_ODDS,
     GRID,
     INK,
     INK_2,
     MUTED,
+    STRATEGY_COLOR,
+    SURFACE,
 )
 
 #: Which raw column of the source CSV carries the realised outcome for each
@@ -79,6 +83,7 @@ OUTCOME_COL_BY_MARKET: dict[Market, str] = {
 #: here are two prices for one model, not two models.
 CLOSING_COLOR = "#244a6b"
 ALT_COLOR = "#8a5a9b"
+
 
 
 class AlternativeLineError(RuntimeError):
@@ -176,6 +181,61 @@ def attach_game_ids(
     }
 
 
+def read_snapshot_lines(
+    snapshot_csv: str | Path,
+    *,
+    line_col: str,
+    game_id_col: str = "GAME_ID",
+    snapshot_col: str = SNAPSHOT_COLUMN,
+) -> pd.DataFrame:
+    """The three columns a settlement swap needs, every horizon, in ONE read.
+
+    The intermediate dataset is ~2,500 columns and over a gigabyte, so reading
+    it once per horizon is the difference between a few seconds and a few
+    minutes. Callers that want several horizons read here and then take a
+    lookup per horizon from the result.
+    """
+    snapshot_csv = Path(snapshot_csv)
+    if not snapshot_csv.exists():
+        raise AlternativeLineError(
+            f"Snapshot dataset {snapshot_csv} not found, so no alternative "
+            "line is available."
+        )
+    return pd.read_csv(
+        snapshot_csv,
+        usecols=[game_id_col, snapshot_col, line_col],
+        dtype={game_id_col: str},
+    )
+
+
+def _lookup_at_horizon(
+    frame: pd.DataFrame,
+    *,
+    snapshot_minutes: int,
+    line_col: str,
+    source_name: str,
+    game_id_col: str = "GAME_ID",
+    snapshot_col: str = SNAPSHOT_COLUMN,
+) -> pd.Series:
+    """``game_id -> line`` at one horizon of an already-read snapshot frame."""
+    at_horizon = frame[frame[snapshot_col] == snapshot_minutes]
+    if at_horizon.empty:
+        raise AlternativeLineError(
+            f"No rows at {snapshot_col}={snapshot_minutes} in {source_name}. "
+            f"Available: {sorted(frame[snapshot_col].dropna().unique())}."
+        )
+    if at_horizon[game_id_col].duplicated().any():
+        raise AlternativeLineError(
+            f"{source_name} holds more than one row per game at "
+            f"{snapshot_col}={snapshot_minutes}; the lookup would be ambiguous."
+        )
+    return (
+        at_horizon.set_index(game_id_col)[line_col]
+        .pipe(pd.to_numeric, errors="coerce")
+        .dropna()
+    )
+
+
 def snapshot_line_lookup(
     snapshot_csv: str | Path,
     *,
@@ -190,33 +250,64 @@ def snapshot_line_lookup(
     row per game, so this is a genuine lookup rather than an aggregate. A game
     missing that horizon simply does not appear.
     """
-    snapshot_csv = Path(snapshot_csv)
-    if not snapshot_csv.exists():
-        raise AlternativeLineError(
-            f"Snapshot dataset {snapshot_csv} not found, so no alternative "
-            "line is available."
-        )
-    frame = pd.read_csv(
+    frame = read_snapshot_lines(
         snapshot_csv,
-        usecols=[game_id_col, snapshot_col, line_col],
-        dtype={game_id_col: str},
+        line_col=line_col,
+        game_id_col=game_id_col,
+        snapshot_col=snapshot_col,
     )
-    at_horizon = frame[frame[snapshot_col] == snapshot_minutes]
-    if at_horizon.empty:
-        raise AlternativeLineError(
-            f"No rows at {snapshot_col}={snapshot_minutes} in {snapshot_csv.name}. "
-            f"Available: {sorted(frame[snapshot_col].dropna().unique())}."
-        )
-    if at_horizon[game_id_col].duplicated().any():
-        raise AlternativeLineError(
-            f"{snapshot_csv.name} holds more than one row per game at "
-            f"{snapshot_col}={snapshot_minutes}; the lookup would be ambiguous."
-        )
-    return (
-        at_horizon.set_index(game_id_col)[line_col]
-        .pipe(pd.to_numeric, errors="coerce")
-        .dropna()
+    return _lookup_at_horizon(
+        frame,
+        snapshot_minutes=snapshot_minutes,
+        line_col=line_col,
+        source_name=Path(snapshot_csv).name,
+        game_id_col=game_id_col,
+        snapshot_col=snapshot_col,
     )
+
+
+def available_horizons(
+    frame: pd.DataFrame,
+    *,
+    line_col: str,
+    snapshot_col: str = SNAPSHOT_COLUMN,
+) -> list[int]:
+    """Horizons of ``frame`` that actually carry a line, ascending.
+
+    A horizon whose ``line_col`` is entirely null is not available even though
+    its rows exist: re-settling against it would drop every game.
+    """
+    with_line = frame[pd.to_numeric(frame[line_col], errors="coerce").notna()]
+    return sorted(
+        int(value) for value in with_line[snapshot_col].dropna().unique()
+    )
+
+
+def resolve_horizons(
+    requested: Any,
+    available: Any,
+    *,
+    tolerance_minutes: int = 45,
+) -> dict[int, int]:
+    """``requested -> nearest available`` horizon, dropping what is too far.
+
+    A survey asks for round hours (1h, 4h, 8h, 12h) while a dataset carries
+    whatever snapshots were collected, so each request is snapped to its
+    closest available horizon. A request with nothing within
+    ``tolerance_minutes`` is **dropped rather than raised**: a missing snapshot
+    is a gap in the data, not a mistake by the caller, and the remaining
+    horizons still answer the question. Two requests snapping to the same
+    horizon collapse into one.
+    """
+    candidates = sorted({int(value) for value in available})
+    resolved: dict[int, int] = {}
+    for want in sorted({int(value) for value in requested}):
+        if not candidates:
+            break
+        nearest = min(candidates, key=lambda value: (abs(value - want), value))
+        if abs(nearest - want) <= tolerance_minutes and nearest not in resolved.values():
+            resolved[want] = nearest
+    return resolved
 
 
 def swap_settlement_line(frame: pd.DataFrame, alt_line: pd.Series) -> pd.DataFrame:
@@ -487,13 +578,220 @@ def plot_settlement_summary(
     return ax
 
 
+def horizon_label(minutes: float) -> str:
+    """``360 -> "6h"``, ``0 -> "close"`` -- the x axis of the horizon sweep."""
+    if minutes <= 0:
+        return "close"
+    if minutes % 60:
+        return f"{minutes:g}m"
+    return f"{minutes / 60:g}h"
+
+
+def _fitted_win_rate_limits(
+    win_rates: Any, *, pad: float = 0.12, minimum_span: float = 0.02
+) -> tuple[float, float]:
+    """A y window fitted to the win rates, always keeping break-even in view.
+
+    The counterpart to :func:`coverage.win_rate_limits`, which treats a fixed
+    35-70% window as a floor. Here the difference the panels exist to show is a few
+    points tall, so the axis follows the data instead -- but break-even is kept
+    on the axis, because a win-rate panel that hides the line the numbers are
+    measured against invites reading a losing series as a winning one.
+    """
+    finite = pd.to_numeric(pd.Series(win_rates), errors="coerce").dropna()
+    if finite.empty:
+        return coverage.WIN_RATE_YLIM
+    low = min(float(finite.min()), BREAK_EVEN)
+    high = max(float(finite.max()), BREAK_EVEN)
+    span = max(high - low, minimum_span)
+    return low - pad * span, high + pad * span
+
+
+def plot_settlement_horizons(
+    comparisons: pd.DataFrame,
+    *,
+    coverage_level: float = 1.0,
+    label_map: Any = None,
+    strategy_map: Any = None,
+    ncols: int = 2,
+    ylim: tuple[float, float] | None = None,
+    show_ci: bool = True,
+) -> Any:
+    """Win rate against how early the price was taken -- one panel per run.
+
+    The same comparison as :func:`plot_settlement_summary`, swept across every
+    horizon in ``comparisons`` instead of a single one, so the shape of the
+    curve is readable: a gain that grows steadily as the price gets earlier
+    says something different from one that appears only at a single snapshot.
+
+    Faceted rather than overlaid, for the reason
+    :func:`coverage.plot_coverage_small_multiples` is: the runs sit within two
+    or three points of each other on a base near 52%, several share a strategy
+    colour, and the confidence bands overlap almost everywhere -- overlaid,
+    seven of them are a thicket exactly where they cross. Every panel keeps the
+    same y limits, which is what makes the panels comparable at a glance.
+
+    In each panel the dotted horizontal line is that run's own closing-line win
+    rate, and the shaded wedge between it and the curve is the gain: above the
+    line the earlier price paid better. ``x = 0`` is that same closing number,
+    drawn with a hollow marker because it comes from the run's own dataset
+    rather than from the snapshot file.
+
+    Held at ONE coverage (1.0 by default, every game) for the same reason the
+    summary chart is: at full coverage both prices score the same games, so a
+    vertical gap is the settlement line and nothing else. Each run's horizons
+    also share one cohort by construction in :func:`settlement_report`, which
+    is what makes the points on a curve comparable to each other.
+
+    ``show_ci`` draws the 95% Wilson interval of each re-settled point. It is
+    the interval on ONE series, not on the gap, and at these volumes it spans
+    far more than the gap does -- which is the honest headline of the section,
+    so it is on by default.
+
+    ``ylim`` defaults to the data rather than to ``coverage.WIN_RATE_YLIM``:
+    the quantity these panels exist to show is a wedge three or four points
+    tall, and on the notebook's standard 35-70% axis it is a hairline. The
+    scale is shared across panels and always includes break-even, so the
+    panels stay comparable and the zoom stays legible -- read the size of a
+    gain off the annotation, not off the height of the wedge. Pass an explicit
+    window to go back to a fixed axis.
+    """
+    if comparisons.empty or "horizon_minutes" not in comparisons.columns:
+        raise ValueError(
+            "plot_settlement_horizons needs a comparisons frame carrying "
+            "horizon_minutes; call settlement_report first."
+        )
+    view = comparisons[np.isclose(comparisons["target_coverage"], coverage_level)]
+    if view.empty:
+        raise ValueError(
+            f"No rows at coverage {coverage_level:.0%}; the frame holds "
+            f"{sorted(comparisons['target_coverage'].unique())}."
+        )
+    is_closing = view["settled_at"] == "closing line"
+    alternatives = view[~is_closing]
+    if alternatives.empty:
+        raise ValueError("No re-settled rows to plot; every row is the closing line.")
+
+    labels = list(dict.fromkeys(alternatives["label"]))
+    nrows = int(np.ceil(len(labels) / ncols))
+    fig, axes = plt.subplots(
+        nrows, ncols, figsize=(5.2 * ncols, 2.4 * nrows),
+        sharex=True, sharey=True, constrained_layout=True, squeeze=False,
+    )
+    has_ci = show_ci and {"win_rate_ci_low", "win_rate_ci_high"} <= set(view.columns)
+    # Win rates only, never the bands: a 95% interval on 600 bets spans some
+    # fifteen points, and scaling to it flattens every curve into a line. The
+    # bands are allowed to run off the top and bottom instead.
+    limits = (
+        coverage.win_rate_limits(view["win_rate"], ylim) if ylim is not None
+        else _fitted_win_rate_limits(view["win_rate"])
+    )
+    ticks = [0.0, *sorted(alternatives["horizon_minutes"].unique())]
+
+    for ax, label in zip(axes.flat, labels, strict=False):
+        group = alternatives[alternatives["label"] == label].sort_values(
+            "horizon_minutes"
+        )
+        colour = (
+            STRATEGY_COLOR.get(str(strategy_map.get(label)), MUTED)
+            if strategy_map is not None else ALT_COLOR
+        )
+        # Every horizon of a run shares one cohort, so its closing baseline is
+        # one number; mean() collapses the per-horizon copies of it.
+        baseline = view[is_closing & (view["label"] == label)]["win_rate"].mean()
+        x = np.r_[0.0, group["horizon_minutes"].to_numpy(dtype=float)]
+        y = np.r_[baseline, group["win_rate"].to_numpy(dtype=float)]
+
+        if has_ci:
+            # Thin verticals, not a filled band: the axis is zoomed to a wedge
+            # a few points tall, so a band wide enough to hold a 95% interval
+            # covers the whole panel and reads as background rather than as
+            # uncertainty. The caps are clipped by the axis on purpose.
+            closing_row = view[is_closing & (view["label"] == label)]
+            low = np.r_[closing_row["win_rate_ci_low"].mean(),
+                        group["win_rate_ci_low"].to_numpy()]
+            high = np.r_[closing_row["win_rate_ci_high"].mean(),
+                         group["win_rate_ci_high"].to_numpy()]
+            ax.vlines(x, low, high, color=colour, alpha=0.40, linewidth=1.1, zorder=3)
+        # The wedge between the curve and the run's own close: this is the
+        # quantity the section is about, and an area reads faster than the
+        # distance between two lines.
+        ax.fill_between(
+            x, baseline, y, where=y >= baseline, interpolate=True,
+            color=colour, alpha=0.30, linewidth=0, zorder=2,
+        )
+        ax.fill_between(
+            x, baseline, y, where=y < baseline, interpolate=True,
+            color=CRITICAL, alpha=0.22, linewidth=0, zorder=2,
+        )
+        ax.axhline(
+            baseline, color=colour, linewidth=1.1, linestyle=(0, (1, 2)), zorder=3
+        )
+        ax.plot(x, y, color=colour, marker="o", markersize=5, zorder=4)
+        # The close is a different price source, not a snapshot: hollow it out.
+        ax.plot(
+            [0.0], [baseline], color=colour, marker="o", markersize=6.5,
+            markerfacecolor=SURFACE, linestyle="none", zorder=5,
+        )
+        ax.axhline(BREAK_EVEN, color=INK, linewidth=1.1, linestyle=(0, (4, 3)), zorder=3)
+
+        widest = group.iloc[-1]
+        ax.annotate(
+            f"{widest['win_rate'] - baseline:+.1%} at "
+            f"{horizon_label(widest['horizon_minutes'])}",
+            xy=(widest["horizon_minutes"], widest["win_rate"]),
+            xytext=(6, 6), textcoords="offset points",
+            fontsize=8, color=INK_2, zorder=6,
+        )
+        name = str(label_map.get(label, label)) if label_map is not None else str(label)
+        ax.set_title(textwrap.fill(name, 44), loc="left", fontsize=8.5)
+        ax.set_ylim(*limits)
+        ax.set_xticks(ticks, [horizon_label(tick) for tick in ticks])
+        ax.invert_xaxis()
+        ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda v, _: f"{v:.0%}"))
+
+    for ax in axes.flat[len(labels):]:
+        ax.set_visible(False)
+
+    # sharex hides tick labels on every row but the last, which strands a
+    # column whose bottom cell is one of the hidden panels. Give the lowest
+    # VISIBLE axis in each column its labels back.
+    for column in range(ncols):
+        visible = [
+            axes[row][column] for row in range(nrows)
+            if axes[row][column].get_visible()
+        ]
+        if visible:
+            visible[-1].tick_params(labelbottom=True)
+
+    n_games = int(alternatives["n_bets"].max())
+    fig.suptitle(
+        "Same picks, priced earlier and earlier\n"
+        f"{coverage_level:.0%} of games · up to {n_games} per run · dotted line "
+        f"and hollow marker are the run's own close · dashed is break-even "
+        f"{BREAK_EVEN:.1%}"
+        + ("\nthe vertical through each point is its 95% Wilson interval"
+           if has_ci else ""),
+        fontsize=9.5, color=INK, ha="left", x=0.01,
+    )
+    fig.supxlabel("when the price was taken, before tip-off", fontsize=9, color=INK_2)
+    fig.supylabel("holdout win rate", fontsize=9, color=INK_2)
+    return fig, axes
+
+
 class SettlementReport(NamedTuple):
     """Everything section 6 displays, built in one pass over the runs."""
 
-    #: Per run and settlement line, win rate and ROI at every coverage level.
+    #: Per run, settlement line and horizon, win rate and ROI at every
+    #: coverage level. ``horizon_minutes`` is the alternative horizon the row
+    #: belongs to -- carried on the ``closing line`` rows too, so each horizon's
+    #: own baseline travels with it.
     comparisons: pd.DataFrame
-    #: Per run, how the join went and how far the line moved.
+    #: Per run and horizon, how the join went and how far the line moved.
     joins: pd.DataFrame
+    #: Which requested horizons were found, and which were dropped for having
+    #: no snapshot within tolerance.
+    horizons: pd.DataFrame = pd.DataFrame()
 
 
 def closing_line_runs(runs: pd.DataFrame) -> list[tuple[Any, dict[str, Any]]]:
@@ -519,40 +817,86 @@ def _run_market(run: Any) -> Market:
     return PredictionStrategy(str(run["prediction_strategy"])).market
 
 
+def _snapshot_line_col(market: Market, snapshot_book: str) -> str:
+    return (
+        spread_line_home_col(snapshot_book) if market is Market.SPREAD
+        else total_line_col(snapshot_book)
+    )
+
+
 def settlement_report(
     runs: pd.DataFrame,
     prediction_cache: dict[str, dict[str, pd.DataFrame]],
     *,
     project_root: Path,
     snapshot_csv: str | Path,
-    snapshot_minutes: int,
+    snapshot_minutes: int | Any,
     snapshot_book: str = "bet365",
     coverage_grid: tuple[float, ...] = coverage.COVERAGE_GRID,
+    horizon_tolerance_minutes: int = 45,
 ) -> SettlementReport:
-    """Re-settle every closing-line run's holdout at one earlier horizon.
+    """Re-settle every closing-line run's holdout at one or more earlier horizons.
+
+    ``snapshot_minutes`` takes a single horizon or several (e.g. 60, 240, 480,
+    720 for 1h/4h/8h/12h before tip). Each request is snapped to the closest
+    horizon the dataset actually carries, and a request with nothing within
+    ``horizon_tolerance_minutes`` is **dropped, not raised** -- which horizons
+    were collected is a property of the data, and the rest of the sweep is
+    still worth reading. :attr:`SettlementReport.horizons` records what
+    happened to each request.
 
     Handles both markets from the one snapshot dataset: a totals run is
     re-settled against ``ODDS_TOTAL_LINE_<snapshot_book>`` and a spread run
     against ``ODDS_SPREAD_LINE_HOME_<snapshot_book>``. Each market's snapshot
-    lookup is read once, lazily, and only for the markets actually present
-    among ``runs`` -- not once per run: the intermediate dataset is 2,500
-    columns wide.
-    """
-    alt_name = f"T-{snapshot_minutes}"
-    alt_lines_by_market: dict[Market, pd.Series] = {}
+    columns are read once, lazily, and only for the markets actually present
+    among ``runs`` -- not once per run and NOT once per horizon: the
+    intermediate dataset is 2,500 columns wide and over a gigabyte, so a read
+    per horizon would dominate the runtime of the whole notebook.
 
-    def alt_lines_for(market: Market) -> pd.Series:
-        if market not in alt_lines_by_market:
-            line_col = (
-                spread_line_home_col(snapshot_book) if market is Market.SPREAD
-                else total_line_col(snapshot_book)
-            )
-            alt_lines_by_market[market] = snapshot_line_lookup(
-                Path(project_root) / snapshot_csv,
-                snapshot_minutes=snapshot_minutes,
+    Within a run, every horizon is scored on the games that hold a line at
+    EVERY resolved horizon, and each horizon's closing-line baseline is
+    restricted to that same cohort. Without it the curve across horizons would
+    mix the price moving with the cohort shrinking -- the 12h snapshot covers
+    fewer games than the 1h one -- and the two are the same size.
+    """
+    requested = (
+        [int(snapshot_minutes)]
+        if isinstance(snapshot_minutes, (int, np.integer))
+        else [int(value) for value in snapshot_minutes]
+    )
+    lookups_by_market: dict[Market, dict[int, pd.Series]] = {}
+    horizon_rows: list[dict[str, Any]] = []
+
+    def lookups_for(market: Market) -> dict[int, pd.Series]:
+        """``{horizon -> (game_id -> line)}`` for the resolvable requests."""
+        if market in lookups_by_market:
+            return lookups_by_market[market]
+        line_col = _snapshot_line_col(market, snapshot_book)
+        path = Path(project_root) / snapshot_csv
+        frame = read_snapshot_lines(path, line_col=line_col)
+        available = available_horizons(frame, line_col=line_col)
+        resolved = resolve_horizons(
+            requested, available, tolerance_minutes=horizon_tolerance_minutes
+        )
+        horizon_rows.extend(
+            {
+                "market": market.value if hasattr(market, "value") else str(market),
+                "requested_minutes": want,
+                "resolved_minutes": resolved.get(want),
+                "status": "used" if want in resolved else "no snapshot in range",
+            }
+            for want in requested
+        )
+        lookups_by_market[market] = {
+            horizon: _lookup_at_horizon(
+                frame,
+                snapshot_minutes=horizon,
                 line_col=line_col,
+                source_name=path.name,
             )
-        return alt_lines_by_market[market]
+            for horizon in sorted(set(resolved.values()))
+        }
+        return lookups_by_market[market]
 
     comparisons, joins = [], []
     for run, config in closing_line_runs(runs):
@@ -560,30 +904,101 @@ def settlement_report(
         if holdout is None or holdout.empty:
             continue
         market = _run_market(run)
+        lookups = lookups_for(market)
+        if not lookups:
+            continue
         matched, report = attach_game_ids(
             holdout,
             Path(project_root) / str(config["data.csv_path"]),
             line_col=target_line_column(config, market=market),
             outcome_col=OUTCOME_COL_BY_MARKET[market],
         )
-        swapped = swap_settlement_line(matched, alt_lines_for(market))
-        joins.append({
-            "label": run["label"], **report,
-            f"n_with_{alt_name}_line": len(swapped),
-            **side_flip_summary(swapped),
-        })
-        comparisons.append(
-            compare_settlement_lines(
-                matched, swapped, label=run["label"], alt_name=alt_name,
-                coverage_grid=coverage_grid,
+        swapped_by_horizon = {
+            horizon: swap_settlement_line(matched, alt_lines)
+            for horizon, alt_lines in lookups.items()
+        }
+        swapped_by_horizon = {
+            horizon: frame for horizon, frame in swapped_by_horizon.items()
+            if not frame.empty
+        }
+        if not swapped_by_horizon:
+            continue
+        # The cohort every horizon shares. Intersecting is what makes the
+        # horizons comparable to each other rather than only to the close.
+        cohort = set.intersection(*(
+            set(frame["game_id"]) for frame in swapped_by_horizon.values()
+        ))
+        for horizon, swapped in sorted(swapped_by_horizon.items()):
+            swapped = swapped[swapped["game_id"].isin(cohort)].reset_index(drop=True)
+            if swapped.empty:
+                continue
+            joins.append({
+                "label": run["label"], "horizon_minutes": horizon, **report,
+                "n_with_alt_line": len(swapped),
+                **side_flip_summary(swapped),
+            })
+            comparison = compare_settlement_lines(
+                matched, swapped, label=run["label"],
+                alt_name=f"T-{horizon}", coverage_grid=coverage_grid,
             )
-        )
+            comparisons.append(comparison.assign(horizon_minutes=horizon))
 
     return SettlementReport(
         comparisons=(
             pd.concat(comparisons, ignore_index=True) if comparisons else pd.DataFrame()
         ),
         joins=pd.DataFrame(joins),
+        horizons=pd.DataFrame(horizon_rows).drop_duplicates(),
+    )
+
+
+def horizon_gap_table(
+    comparisons: pd.DataFrame,
+    *,
+    coverage_level: float = 1.0,
+    label_map: Any = None,
+) -> pd.DataFrame:
+    """One row per run and horizon: the close, that horizon, and the gain.
+
+    The numeric companion to :func:`plot_settlement_horizons`, at one coverage.
+    ``settled_at`` names a different column per horizon, so the two series are
+    normalised to ``closing``/``alt`` first -- which is what lets every horizon
+    share one table.
+    """
+    if comparisons.empty or "horizon_minutes" not in comparisons.columns:
+        return pd.DataFrame()
+    view = comparisons[
+        np.isclose(comparisons["target_coverage"], coverage_level)
+    ].copy()
+    if view.empty:
+        return pd.DataFrame()
+    view["side"] = np.where(view["settled_at"] == "closing line", "closing", "alt")
+    wide = view.pivot_table(
+        index=["label", "horizon_minutes"], columns="side",
+        values=["win_rate", "roi", "n_bets"],
+    )
+    out = pd.DataFrame({
+        "run": [
+            str(label_map.get(label, label)) if label_map is not None else str(label)
+            for label, _ in wide.index
+        ],
+        "priced at": [
+            horizon_label(minutes) for _, minutes in wide.index
+        ],
+        "n_bets": wide[("n_bets", "alt")].to_numpy(),
+        "win_rate_close": wide[("win_rate", "closing")].to_numpy(),
+        "win_rate_early": wide[("win_rate", "alt")].to_numpy(),
+        "roi_close": wide[("roi", "closing")].to_numpy(),
+        "roi_early": wide[("roi", "alt")].to_numpy(),
+    })
+    out["win_rate_gain"] = out["win_rate_early"] - out["win_rate_close"]
+    out["roi_gain"] = out["roi_early"] - out["roi_close"]
+    minutes = [minutes for _, minutes in wide.index]
+    return (
+        out.assign(_minutes=minutes)
+        .sort_values(["run", "_minutes"])
+        .drop(columns="_minutes")
+        .reset_index(drop=True)
     )
 
 

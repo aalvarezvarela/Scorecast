@@ -21,6 +21,9 @@ from nba_ou.data_processing.missing_data.cleaning_report import CleaningReport
 from nba_ou.data_processing.missing_data.column_redundancy import (
     RepeatedMeasuresRedundancy,
 )
+from nba_ou.data_processing.missing_data.handle_missing_data import (
+    apply_missing_policy,
+)
 
 
 @pytest.fixture
@@ -714,6 +717,26 @@ def test_cleaning_keeps_the_lagged_injured_columns(frame):
 
     assert "TOTAL_INJURED_PLAYER_PTS_BEFORE_TEAM_HOME" in cleaned.columns
     assert "N_INJURED_PLAYERS_BEFORE_TEAM_HOME" in cleaned.columns
+
+
+def test_injured_availability_standard_error_keeps_unknown_precision_as_nan():
+    """An unknown standard error is not a neutral zero-sized injury effect."""
+    effect_col = "TOP3_INJURED_AVAILABILITY_EFFECT_HOME_MEAN_TOTAL_POINTS"
+    uncertainty_col = "TOP3_INJURED_AVAILABILITY_EFFECT_HOME_MEAN_SE_TOTAL_POINTS"
+    raw = pd.DataFrame(
+        {
+            "TOTAL_POINTS": [220.0, 221.0],
+            "ODDS_TOTAL_LINE_bet365": [219.5, 220.5],
+            effect_col: [np.nan, 2.0],
+            uncertainty_col: [np.nan, 3.0],
+        }
+    )
+
+    cleaned = apply_missing_policy(raw)
+
+    assert cleaned[effect_col].tolist() == [0.0, 2.0]
+    assert pd.isna(cleaned.loc[0, uncertainty_col])
+    assert cleaned.loc[1, uncertainty_col] == 3.0
 
 
 def test_keep_columns_cannot_rescue_a_rotation_leak(frame):

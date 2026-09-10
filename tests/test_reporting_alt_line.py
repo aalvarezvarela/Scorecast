@@ -376,3 +376,115 @@ class TestSideFlipSummary:
         summary = alt_line.side_flip_summary(swapped)
         assert summary["n_side_flips"] == 0
         assert summary["share_line_moved"] == pytest.approx(0.0)
+
+
+class TestAvailableHorizons:
+    def test_a_horizon_with_no_line_is_not_available(self) -> None:
+        """Its rows exist, but re-settling against it would drop every game."""
+        frame = pd.DataFrame({
+            "GAME_ID": ["A", "B", "C"],
+            "TIME_TO_MATCH_MIN": [60, 360, 720],
+            LINE_COL: [218.0, 219.0, np.nan],
+        })
+        assert alt_line.available_horizons(frame, line_col=LINE_COL) == [60, 360]
+
+
+class TestResolveHorizons:
+    AVAILABLE = [0, 30, 60, 120, 180, 240, 300, 360, 480, 720]
+
+    def test_snaps_each_request_to_the_closest_horizon(self) -> None:
+        resolved = alt_line.resolve_horizons([65, 250], self.AVAILABLE)
+        assert resolved == {65: 60, 250: 240}
+
+    def test_a_request_with_nothing_in_range_is_dropped_not_raised(self) -> None:
+        """A horizon nobody collected is a gap in the data, not a caller error:
+        the remaining horizons still answer the question."""
+        resolved = alt_line.resolve_horizons([60, 1440], self.AVAILABLE)
+        assert resolved == {60: 60}
+
+    def test_two_requests_never_collapse_onto_one_horizon(self) -> None:
+        resolved = alt_line.resolve_horizons([60, 70], [60, 480])
+        assert list(resolved.values()) == [60]
+
+    def test_nothing_available_resolves_nothing(self) -> None:
+        assert alt_line.resolve_horizons([60], []) == {}
+
+
+class TestHorizonLabel:
+    def test_reads_as_hours_with_the_close_at_zero(self) -> None:
+        assert alt_line.horizon_label(0) == "close"
+        assert alt_line.horizon_label(60) == "1h"
+        assert alt_line.horizon_label(720) == "12h"
+        assert alt_line.horizon_label(90) == "90m"
+
+
+class TestHorizonGapTable:
+    def _comparisons(self) -> pd.DataFrame:
+        rows = []
+        for horizon, win_rate in ((60, 0.51), (720, 0.57)):
+            rows += [
+                {"label": "a", "horizon_minutes": horizon,
+                 "settled_at": "closing line", "target_coverage": 1.0,
+                 "win_rate": 0.53, "roi": 0.01, "n_bets": 100},
+                {"label": "a", "horizon_minutes": horizon,
+                 "settled_at": f"T-{horizon} line", "target_coverage": 1.0,
+                 "win_rate": win_rate, "roi": 0.04, "n_bets": 100},
+            ]
+        return pd.DataFrame(rows)
+
+    def test_one_row_per_horizon_with_the_gain_against_the_close(self) -> None:
+        table = alt_line.horizon_gap_table(self._comparisons())
+        assert list(table["priced at"]) == ["1h", "12h"]
+        assert list(table["win_rate_gain"]) == pytest.approx([-0.02, 0.04])
+
+    def test_a_frame_without_horizons_gives_an_empty_table(self) -> None:
+        assert alt_line.horizon_gap_table(pd.DataFrame()).empty
+
+
+class TestPlotSettlementHorizons:
+    def _comparisons(self) -> pd.DataFrame:
+        rows = []
+        for label in ("a", "b"):
+            for horizon, win_rate in ((60, 0.515), (240, 0.545), (720, 0.562)):
+                rows += [
+                    {"label": label, "horizon_minutes": horizon,
+                     "settled_at": "closing line", "target_coverage": 1.0,
+                     "win_rate": 0.523, "roi": 0.0, "n_bets": 600,
+                     "win_rate_ci_low": 0.45, "win_rate_ci_high": 0.60},
+                    {"label": label, "horizon_minutes": horizon,
+                     "settled_at": f"T-{horizon} line", "target_coverage": 1.0,
+                     "win_rate": win_rate, "roi": 0.03, "n_bets": 600,
+                     "win_rate_ci_low": win_rate - 0.04,
+                     "win_rate_ci_high": win_rate + 0.04},
+                ]
+        return pd.DataFrame(rows)
+
+    def _figure(self, **kwargs: object) -> tuple[object, object]:
+        import matplotlib
+
+        matplotlib.use("Agg")
+        return alt_line.plot_settlement_horizons(self._comparisons(), **kwargs)
+
+    def test_one_panel_per_run(self) -> None:
+        _, axes = self._figure()
+        assert sum(ax.get_visible() for ax in axes.flat) == 2
+
+    def test_the_y_axis_fits_the_win_rates_and_keeps_break_even_in_view(self) -> None:
+        """A wedge three points tall is a hairline on a 35-70% axis, so this
+        chart fits the data -- but never at the price of hiding break-even."""
+        _, axes = self._figure()
+        low, high = axes.flat[0].get_ylim()
+        assert low < alt_line.BREAK_EVEN < high
+        # Fitted, not the notebook's standard window, and the confidence
+        # verticals are allowed to run off the top and bottom.
+        assert high - low < 0.10
+        assert low > 0.45
+
+    def test_an_explicit_window_is_honoured(self) -> None:
+        _, axes = self._figure(ylim=(0.35, 0.70))
+        low, high = axes.flat[0].get_ylim()
+        assert (low, high) == pytest.approx((0.35, 0.70))
+
+    def test_a_frame_without_horizons_is_rejected(self) -> None:
+        with pytest.raises(ValueError, match="horizon_minutes"):
+            alt_line.plot_settlement_horizons(pd.DataFrame({"label": ["a"]}))
