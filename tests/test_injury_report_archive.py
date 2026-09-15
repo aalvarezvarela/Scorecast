@@ -114,9 +114,30 @@ def test_era_for_date(day, expected):
 
 
 def test_crossover_day_carries_both_formats():
-    """2025-12-22 has 9 old-format and 60 new-format files; probe both spaces."""
-    assert U.eras_for_date(date(2025, 12, 22)) == (U.ERA_HOURLY_24, U.ERA_QUARTER_96)
-    assert len(U.candidates_for_date(date(2025, 12, 22))) == 24 + 96
+    """2025-12-22 has 9 old-format files (00:30-08:30 ET) and 60 new-format files
+    (from 09:00 ET); each shape is probed only over its own half of the day."""
+    day = date(2025, 12, 22)
+    assert U.eras_for_date(day) == (U.ERA_HOURLY_24, U.ERA_QUARTER_96)
+    cands = U.candidates_for_date(day)
+    hourly = [c for c in cands if c.era == U.ERA_HOURLY_24]
+    quarter = [c for c in cands if c.era == U.ERA_QUARTER_96]
+    assert (len(hourly), len(quarter)) == (9, 60)
+    assert max(c.report_datetime_et.time() for c in hourly).isoformat() == "08:30:00"
+    assert min(c.report_datetime_et.time() for c in quarter).isoformat() == "09:00:00"
+
+
+def test_crossover_day_keys_do_not_collide():
+    """Regression: hourly ``12AM`` and quarter ``12_30AM`` both decoded to 00:30.
+    The quarter URL's 403 overwrote the real hourly file's manifest row, so the
+    nine morning reports were never downloaded."""
+    keys = [c.report_key for c in U.candidates_for_date(date(2025, 12, 22))]
+    assert len(keys) == len(set(keys))
+
+
+@pytest.mark.parametrize("day", U.date_range(date(2025, 12, 15), date(2025, 12, 29)))
+def test_keys_are_unique_around_the_crossover(day):
+    keys = [c.report_key for c in U.candidates_for_date(day)]
+    assert len(keys) == len(set(keys))
 
 
 def test_ordinary_day_counts():
@@ -311,3 +332,235 @@ def test_skip_can_be_turned_off():
     day = date(2023, 8, 15)
     assert U.candidates_for_date(day) == []
     assert len(U.candidates_for_date(day, skip_offseason=False)) == 24
+
+
+# --------------------------------------------------------------------------- #
+# Header-time tolerance and publication time (2025-12-19 :45 stamping)
+# --------------------------------------------------------------------------- #
+
+import pymupdf  # noqa: E402
+from nba_ou.fetch_data.injury_reports.archive import discovery as D  # noqa: E402
+from nba_ou.fetch_data.injury_reports.archive import download as DL  # noqa: E402
+from nba_ou.fetch_data.injury_reports.archive import validation as V  # noqa: E402
+from nba_ou.fetch_data.injury_reports.archive.client import (  # noqa: E402
+    Probe,
+    Verdict,
+)
+
+
+def _report_pdf(header: str) -> bytes:
+    """A real PDF whose text carries ``header`` and enough body to not look scanned."""
+    doc = pymupdf.open()
+    for page_no in range(4):
+        page = doc.new_page()
+        rows = [
+            f"Game Date Game Time Matchup Team Player Name {page_no}-{i:02d}"
+            for i in range(30)
+        ]
+        body = ([header] if page_no == 0 else []) + rows
+        page.insert_text((40, 40), "\n".join(body), fontsize=8)
+    data = doc.tobytes(deflate=False)
+    assert len(data) >= V.MIN_PDF_BYTES
+    doc.close()
+    return data
+
+
+def _expected(day, label, era):
+    return U.et_datetime(day, label, era)
+
+
+def test_strict_validation_still_rejects_a_shifted_header():
+    data = _report_pdf("Injury Report: 12/19/25 04:45 PM")
+    result = V.validate(data, _expected(date(2025, 12, 19), "04PM", U.ERA_HOURLY_24))
+    assert result.status == V.MISMATCH and not result.ok
+
+
+@pytest.mark.parametrize(
+    ("header", "day", "label", "era", "status"),
+    [
+        # hourly file stamped :45 instead of :30 (2025-12-19 16:45 onward)
+        (
+            "Injury Report: 12/19/25 04:45 PM",
+            date(2025, 12, 19),
+            "04PM",
+            U.ERA_HOURLY_24,
+            V.OK_OFFSET,
+        ),
+        # bubble 05PM stamped 17:30 instead of 17:00
+        (
+            "Injury Report: 08/05/20 05:30 PM",
+            date(2020, 8, 5),
+            "05PM",
+            U.ERA_BUBBLE_3,
+            V.OK_OFFSET,
+        ),
+        # 2020-21 file 30 minutes early
+        (
+            "Injury Report: 01/10/21 05:00 PM",
+            date(2021, 1, 10),
+            "05PM",
+            U.ERA_LEGACY_3,
+            V.OK_OFFSET,
+        ),
+        # 85 minutes out is a different report, not a restamp
+        (
+            "Injury Report: 01/10/21 06:55 PM",
+            date(2021, 1, 10),
+            "05PM",
+            U.ERA_LEGACY_3,
+            V.MISMATCH,
+        ),
+        # quarter-hourly: published a few minutes late
+        (
+            "Injury Report: 04/30/26 01:20 PM",
+            date(2026, 4, 30),
+            "01_15PM",
+            U.ERA_QUARTER_96,
+            V.OK_OFFSET,
+        ),
+        # quarter-hourly: 15 minutes out would be the next slot
+        (
+            "Injury Report: 04/30/26 01:30 PM",
+            date(2026, 4, 30),
+            "01_15PM",
+            U.ERA_QUARTER_96,
+            V.MISMATCH,
+        ),
+        # exact match keeps plain ok
+        (
+            "Injury Report: 12/11/24 08:30 PM",
+            date(2024, 12, 11),
+            "08PM",
+            U.ERA_HOURLY_24,
+            V.OK,
+        ),
+    ],
+)
+def test_era_tolerance_accepts_restamps_but_not_other_reports(
+    header, day, label, era, status
+):
+    result = V.validate(
+        _report_pdf(header),
+        _expected(day, label, era),
+        max_offset_minutes=U.validation_tolerance_minutes(era),
+    )
+    assert result.status == status
+    assert result.ok is (status != V.MISMATCH)
+
+
+def test_tolerance_never_reaches_a_neighbouring_slot():
+    assert U.validation_tolerance_minutes(U.ERA_HOURLY_24) < 60 / 2 + 30
+    assert U.validation_tolerance_minutes(U.ERA_QUARTER_96) < 15
+    assert U.validation_tolerance_minutes("unknown_era") == 0
+
+
+def test_published_utc_prefers_the_header_and_falls_back_to_the_filename():
+    df = pd.DataFrame(
+        {
+            "report_datetime_utc": pd.to_datetime(
+                ["2025-12-19T21:30Z", "2024-12-12T01:30Z"]
+            ),
+            "report_published_utc": pd.to_datetime(
+                ["2025-12-19T21:45Z", None], utc=True
+            ),
+        }
+    )
+    assert list(mf.published_utc(df)) == [
+        pd.Timestamp("2025-12-19T21:45Z"),
+        pd.Timestamp("2024-12-12T01:30Z"),
+    ]
+    assert list(mf.published_utc(df.drop(columns="report_published_utc"))) == list(
+        pd.to_datetime(df.report_datetime_utc, utc=True)
+    )
+
+
+class _FakeClient:
+    def __init__(
+        self, bodies: dict[str, bytes] | None = None, existing: set[str] | None = None
+    ):
+        self.bodies = bodies or {}
+        self.existing = existing or set()
+        self.probed: list[str] = []
+
+    def probe(self, url):
+        self.probed.append(url)
+        if url in self.existing:
+            return Probe(Verdict.EXISTS, status=200, content_length=100)
+        return Probe(Verdict.MISSING, status=403)
+
+    def fetch(self, url):
+        return self.bodies[url], Probe(Verdict.EXISTS, status=200)
+
+
+class _FakeStorage:
+    def __init__(self):
+        self.objects: dict[str, bytes] = {}
+        self.meta: dict[str, dict] = {}
+
+    def exists(self, key):
+        return len(self.objects[key]) if key in self.objects else None
+
+    def get(self, key):
+        return self.objects.get(key)
+
+    def put(self, key, data, metadata):
+        self.objects[key] = data
+        self.meta[key] = metadata
+
+    def describe(self):
+        return "fake"
+
+
+def test_discovery_skips_on_url_so_a_shared_key_cannot_block_a_real_file(tmp_path):
+    """A 403 on one URL must not stop another URL with the same key being probed."""
+    day = date(2025, 12, 22)
+    hourly = next(c for c in U.candidates_for_date(day) if c.label == "12AM")
+    store = mf.ManifestStore(root=tmp_path)
+    store.upsert(
+        "2025-26",
+        [
+            {
+                "report_key": hourly.report_key,  # same derived instant, other URL
+                "season": "2025-26",
+                "report_datetime_utc": hourly.report_datetime_utc,
+                "original_url": U.build_url(day, "12_30AM"),
+                "source_era": U.ERA_QUARTER_96,
+                "nba_available": mf.AVAILABLE_FALSE,
+                "download_status": mf.DOWNLOAD_PENDING,
+            }
+        ],
+    )
+    client = _FakeClient(existing={hourly.url})
+    D.discover(store=store, client=client, start=day, end=day, verbose=False)
+
+    assert hourly.url in client.probed
+    row = store.load("2025-26").set_index("report_key").loc[hourly.report_key]
+    assert row.original_url == hourly.url
+    assert row.nba_available == mf.AVAILABLE_TRUE
+
+
+def test_download_stores_a_restamped_report_at_its_header_time(tmp_path):
+    day = date(2025, 12, 19)
+    cand = next(c for c in U.candidates_for_date(day) if c.label == "04PM")
+    store = mf.ManifestStore(root=tmp_path)
+    row = D._row(cand, Probe(Verdict.EXISTS, status=200), 1, "injury_reports")
+    store.upsert("2025-26", [row])
+    body = _report_pdf("Injury Report: 12/19/25 04:45 PM")
+    storage = _FakeStorage()
+
+    stats = DL.download_rows(
+        rows=store.pending_downloads("2025-26"),
+        store=store,
+        client=_FakeClient(bodies={cand.url: body}),
+        storage=storage,
+        verbose=False,
+    )
+
+    assert (stats.stored, stats.invalid) == (1, 0)
+    saved = store.load("2025-26").iloc[0]
+    assert saved.download_status == mf.DOWNLOAD_STORED
+    assert saved.validation_status == V.OK_OFFSET
+    # 16:45 EST == 21:45 UTC, fifteen minutes after the filename-derived 21:30
+    assert saved.report_published_utc == pd.Timestamp("2025-12-19T21:45Z")
+    assert saved.report_datetime_utc == pd.Timestamp("2025-12-19T21:30Z")
+    assert cand.s3_key in storage.objects

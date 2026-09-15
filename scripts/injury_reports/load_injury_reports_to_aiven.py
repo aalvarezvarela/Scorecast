@@ -15,6 +15,14 @@ download phase has to have run.
 
 Seasons are loaded whole because a span may only be built from a contiguous run
 of reports; see ``src/nba_ou/postgre_db/injury_report_aiven/ingest.py``.
+
+    # reload a season after new reports were downloaded into it
+    python scripts/injury_reports/load_injury_reports_to_aiven.py \
+        --season 2025-26 --replace-season
+
+Without ``--replace-season`` a reload keeps the old spans (inserts are
+``ON CONFLICT DO NOTHING``), and their end times go stale around every added
+report.
 """
 
 from __future__ import annotations
@@ -65,6 +73,15 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--dry-run", action="store_true", help="shape everything, write nothing"
     )
+    p.add_argument(
+        "--replace-season",
+        action="store_true",
+        help=(
+            "delete each season's spans, filing spans, reports and unresolved "
+            "counts before loading it. Required when reports were added to an "
+            "already-loaded season (spans insert with ON CONFLICT DO NOTHING)."
+        ),
+    )
     p.add_argument("--limit", type=int, help="parse at most N reports per season")
     p.add_argument("--quiet", action="store_true")
     p.add_argument("--manifest-root", default="data/injury_reports/manifest")
@@ -78,6 +95,11 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main() -> int:
     args = build_parser().parse_args()
+    if args.replace_season and args.limit:
+        print(
+            "--replace-season with --limit would delete a season and reload part of it"
+        )
+        return 2
     store = ManifestStore(Path(args.manifest_root))
 
     if args.list_seasons:
@@ -132,6 +154,7 @@ def main() -> int:
                 limit=args.limit,
                 dry_run=args.dry_run,
                 quiet=args.quiet,
+                replace=args.replace_season,
             )
             print(summary.describe())
             if summary.resolution.unresolved and not args.quiet:

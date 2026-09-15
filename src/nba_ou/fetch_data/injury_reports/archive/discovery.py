@@ -111,8 +111,8 @@ def discover(
         cands = U.candidates_for_date(day, skip_offseason=skip_offseason)
         if not cands:
             continue
-        resolved = store.resolved_keys(U.season_label(day)) if not dry_run else set()
-        to_probe += sum(1 for c in cands if c.report_key not in resolved)
+        resolved = store.resolved_urls(U.season_label(day)) if not dry_run else set()
+        to_probe += sum(1 for c in cands if c.url not in resolved)
     if max_requests is not None:
         to_probe = min(to_probe, max_requests)
 
@@ -140,8 +140,8 @@ def discover(
                 continue
             stats.dates += 1
             season = U.season_label(day)
-            resolved = store.resolved_keys(season) if not dry_run else set()
-            todo = [c for c in candidates if c.report_key not in resolved]
+            resolved = store.resolved_urls(season) if not dry_run else set()
+            todo = [c for c in candidates if c.url not in resolved]
             stats.skipped += len(candidates) - len(todo)
             if not todo:
                 continue

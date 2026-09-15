@@ -35,6 +35,41 @@ def _to_native(value):
     return value
 
 
+#: Delete order for :func:`clear_season`: facts before the reports they
+#: reference. Aliases are kept -- they are stable name decisions, not counts.
+CLEAR_SEASON_STATEMENTS: tuple[tuple[str, str], ...] = (
+    ("ir_status_span", "DELETE FROM {schema}.ir_status_span WHERE season_year = %s"),
+    ("ir_filing_span", "DELETE FROM {schema}.ir_filing_span WHERE season_year = %s"),
+    ("ir_unresolved", "DELETE FROM {schema}.ir_unresolved WHERE season_year = %s"),
+    (
+        "ir_report",
+        "DELETE FROM {schema}.ir_report r WHERE r.season_year = %s "
+        "AND NOT EXISTS (SELECT 1 FROM {schema}.ir_status_span s "
+        "WHERE s.first_report_id = r.report_id)",
+    ),
+)
+
+
+def clear_season(conn: psycopg.Connection, season_year: int) -> dict[str, int]:
+    """Remove one season's loaded facts so it can be rebuilt from scratch.
+
+    One transaction: either every table is cleared or none is. ``ir_unresolved``
+    is cleared because a reload re-counts occurrences, and ``ir_report`` rows
+    still referenced by another season's spans are left in place.
+    """
+    deleted: dict[str, int] = {}
+    try:
+        with conn.cursor() as cur:
+            for table, statement in CLEAR_SEASON_STATEMENTS:
+                cur.execute(_q(statement), (int(season_year),))
+                deleted[table] = cur.rowcount
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    return deleted
+
+
 def upsert_teams(conn: psycopg.Connection, teams: pd.DataFrame) -> dict[str, int]:
     """Register clubs; returns ``report_name -> team_id``."""
     with conn.cursor() as cur:

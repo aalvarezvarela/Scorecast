@@ -14,6 +14,7 @@ from datetime import UTC, datetime
 
 import pandas as pd
 from nba_ou.fetch_data.injury_reports.archive import manifest as mf
+from nba_ou.fetch_data.injury_reports.archive import urls as U
 from nba_ou.fetch_data.injury_reports.archive.client import (
     ArchiveClient,
     ThrottledError,
@@ -55,6 +56,14 @@ class DownloadStats:
 
 def _parse_et(value: str) -> datetime:
     return datetime.fromisoformat(value)
+
+
+def _header_to_utc(header_et: datetime | None) -> datetime | None:
+    """Naive ET header time -> aware UTC, resolving a fall-back hour to its
+    first occurrence exactly as ``urls.et_datetime`` does."""
+    if header_et is None:
+        return None
+    return header_et.replace(tzinfo=U.ET, fold=0).astimezone(UTC)
 
 
 def download_rows(
@@ -145,7 +154,12 @@ def download_rows(
                 )
                 continue
 
-            result = validate(body, expected_et)
+            result = validate(
+                body,
+                expected_et,
+                max_offset_minutes=U.validation_tolerance_minutes(str(row.source_era)),
+            )
+            published = _header_to_utc(result.header_datetime_et)
             update = {
                 "report_key": row.report_key,
                 "sha256": result.sha256,
@@ -156,6 +170,7 @@ def download_rows(
                     if result.header_datetime_et
                     else None
                 ),
+                "report_published_utc": published,
             }
 
             if not result.ok:
@@ -175,6 +190,7 @@ def download_rows(
                     "original-filename": str(row.original_filename),
                     "report-datetime-et": str(row.report_datetime_et),
                     "report-datetime-utc": str(row.report_datetime_utc),
+                    "report-published-utc": str(published or row.report_datetime_utc),
                     "source-era": str(row.source_era),
                     "sha256": result.sha256,
                 },

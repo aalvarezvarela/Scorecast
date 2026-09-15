@@ -1585,3 +1585,57 @@ stored objects. `pytest tests/test_injury_report_archive.py` -- **34 passed**.
 * **Parsing into `processed/`** -- out of scope by the brief.
 * **The Wayback CDX audit (§12.2)** -- one request, worth adding as a seasonal
   job; it is the tripwire that catches the next naming change.
+
+### 17.6 Restamped reports and the 2025-12-22 crossover (fixed 2026-09)
+
+A coverage check against games with betting data found 26 games with no usable
+report coverage outside the legacy era: every game on 2025-12-20 and 2025-12-21,
+plus 10 games in 2020-21 and 2023 with thin coverage. Two archive bugs, both
+silent:
+
+1. **Strict header check.** `validation.validate` required the PDF header to
+   equal the time derived from the filename. The feed does not stamp that
+   regularly, and 164 real reports were rejected as `date_mismatch` and never
+   stored:
+
+   | Season | Rejected | Header minus derived |
+   |---|---|---|
+   | 2018-19 | 2 | −11, −24 min |
+   | 2019-20 | 75 | +30 min (73: every bubble `05PM` is stamped 17:30) |
+   | 2020-21 | 24 | −30 min (22) |
+   | 2021-22 | 1 | −30 min |
+   | 2025-26 | 62 | +15 min (56: from 2025-12-19 16:45 ET the hourly files are stamped :45) |
+
+   Fix: a per-era tolerance (`urls.VALIDATION_TOLERANCE_MINUTES`: 45 min for the
+   3/day and hourly eras, 14 min for quarter-hourly -- always under half the gap
+   to the next report). Accepted files get `validation_status = ok_offset`.
+
+2. **Crossover key collision.** On 2025-12-22 hourly `12AM` and quarter
+   `12_30AM` both decode to 00:30, so they shared a `report_key`. The quarter
+   URL's 403 overwrote the hourly row, which was then terminal and never
+   downloaded. Fix: `candidates_for_date` probes hourly labels only before
+   09:00 ET and quarter labels only from 09:00 ET on that day (9 + 60, matching
+   §1.5), and discovery skips on the source URL rather than the key.
+
+**Publication time.** A restamped report became public at its *header* time.
+The manifest now carries `report_published_utc` (from the header), and the
+loader orders reports by `manifest.published_utc()` -- header time, falling
+back to the filename-derived time for rows stored before the column existed.
+Reading a 16:45 report as 16:30 would be a 15-minute look-ahead.
+
+**Recovery run** (writes to S3, the manifests and Aiven):
+
+```bash
+# 1. probe the 2025-12-22 morning hourly URLs (also restores manifests from S3)
+python scripts/injury_reports/backfill_injury_reports.py \
+    --start-date 2025-12-22 --end-date 2025-12-22 --phase discover
+# 2. retry every available-but-not-stored report (rejected rows are still pending)
+python scripts/injury_reports/backfill_injury_reports.py --phase download \
+    --season 2018-19 --season 2019-20 --season 2020-21 \
+    --season 2021-22 --season 2025-26
+# 3. rebuild the affected seasons; --replace-season is required because spans
+#    insert with ON CONFLICT DO NOTHING and old span end times would go stale
+python scripts/injury_reports/load_injury_reports_to_aiven.py \
+    --season 2019-20 --season 2020-21 --season 2021-22 --season 2025-26 \
+    --replace-season
+```

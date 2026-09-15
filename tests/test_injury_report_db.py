@@ -317,3 +317,142 @@ class TestFilings:
         filings = build_filing_observations(listed, nys, report_times, self.TEAMS)
         late = filings.loc[filings["observed_at"] == _t(240)]
         assert set(late["team_id"]) == {10, 20} and late["submitted"].all()
+
+
+# --------------------------------------------------------------------------- #
+# Publication time and season replacement (2025-12 restamp recovery)
+# --------------------------------------------------------------------------- #
+
+from nba_ou.postgre_db.injury_report_aiven import ingest as ingest_module  # noqa: E402
+from nba_ou.postgre_db.injury_report_aiven import load as load_module  # noqa: E402
+from nba_ou.postgre_db.injury_report_aiven.parse import ParsedReport  # noqa: E402
+
+
+class _Storage:
+    def __init__(self, keys):
+        self.keys = set(keys)
+
+    def get(self, key):
+        return b"%PDF" if key in self.keys else None
+
+
+def _manifest_rows(rows):
+    return pd.DataFrame(
+        [
+            {
+                "report_key": key,
+                "season_year": 2025,
+                "source_era": "hourly_24",
+                "nba_available": "true",
+                "s3_key": key,
+                "download_status": status,
+                "report_datetime_utc": pd.Timestamp(derived),
+                "report_published_utc": (
+                    pd.Timestamp(published) if published else pd.NaT
+                ),
+            }
+            for key, derived, published, status in rows
+        ]
+    )
+
+
+def _capture_parse(monkeypatch):
+    seen = []
+
+    def fake_parse(data, observed_at):
+        seen.append(observed_at)
+        empty = pd.DataFrame()
+        return ParsedReport(observed_at, empty, empty)
+
+    monkeypatch.setattr(ingest_module, "parse_report", fake_parse)
+    return seen
+
+
+def test_reports_are_read_at_their_publication_time(monkeypatch):
+    """A report stamped 16:45 must not be observed at the filename's 16:30."""
+    seen = _capture_parse(monkeypatch)
+    manifest = _manifest_rows(
+        [
+            ("a", "2025-12-19T21:30Z", "2025-12-19T21:45Z", "stored"),
+            ("b", "2025-12-19T20:30Z", None, "stored"),
+        ]
+    )
+    parsed, _, _ = ingest_module.read_reports(
+        manifest, _Storage({"a", "b"}), quiet=True
+    )
+    assert [p.report.observed_at for p in parsed] == seen
+    assert [pd.Timestamp(t) for t in seen] == [
+        pd.Timestamp("2025-12-19T20:30Z"),
+        pd.Timestamp("2025-12-19T21:45Z"),
+    ]
+
+
+def test_two_files_at_one_publication_instant_keep_the_stored_later_one(monkeypatch):
+    seen = _capture_parse(monkeypatch)
+    manifest = _manifest_rows(
+        [
+            ("early_label", "2025-12-19T21:30Z", "2025-12-19T22:00Z", "stored"),
+            ("late_label", "2025-12-19T22:00Z", None, "stored"),
+            ("never_downloaded", "2025-12-19T22:15Z", "2025-12-19T22:00Z", "invalid"),
+        ]
+    )
+    parsed, _, _ = ingest_module.read_reports(
+        manifest, _Storage({"early_label", "late_label"}), quiet=True
+    )
+    assert len(parsed) == 1
+    assert pd.Timestamp(seen[0]) == pd.Timestamp("2025-12-19T22:00Z")
+
+
+class _Cursor:
+    def __init__(self, log, fail_on=None):
+        self.log, self.fail_on, self.rowcount = log, fail_on, 0
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def execute(self, statement, params=None):
+        text = (
+            statement.as_string(None)
+            if hasattr(statement, "as_string")
+            else str(statement)
+        )
+        if self.fail_on and self.fail_on in text:
+            raise RuntimeError("boom")
+        self.log.append((text, params))
+        self.rowcount = 7
+
+
+class _Conn:
+    def __init__(self, fail_on=None):
+        self.log, self.fail_on = [], fail_on
+        self.committed = self.rolled_back = False
+
+    def cursor(self):
+        return _Cursor(self.log, self.fail_on)
+
+    def commit(self):
+        self.committed = True
+
+    def rollback(self):
+        self.rolled_back = True
+
+
+def test_clear_season_deletes_facts_before_reports_for_one_season():
+    conn = _Conn()
+    deleted = load_module.clear_season(conn, 2025)
+    tables = [t for t, _ in load_module.CLEAR_SEASON_STATEMENTS]
+    assert list(deleted) == tables
+    assert tables.index("ir_status_span") < tables.index("ir_report")
+    assert all(params == (2025,) for _, params in conn.log)
+    assert "ir_player_alias" not in " ".join(text for text, _ in conn.log)
+    assert conn.committed and not conn.rolled_back
+
+
+def test_clear_season_rolls_back_everything_on_failure():
+    conn = _Conn(fail_on="ir_report")
+    with pytest.raises(RuntimeError):
+        load_module.clear_season(conn, 2025)
+    assert conn.rolled_back and not conn.committed

@@ -5,17 +5,19 @@ Thin on purpose. The table extraction itself lives in
 module only splits the reason into ``(category, detail)``, maps status labels to
 ids, and decides what to skip.
 
-Two things are skipped, both deliberately:
+Two layouts, one output:
 
-* **The legacy 9-column layout** (2018-12-17 -> 2019-12-17). It carries an extra
-  ``Category`` and ``Previous Status`` column *and* prints status/reason in the
-  opposite order, so parsing it with the modern reader puts a wrong status on
-  ~48% of rows. Out of scope; see plan section 6. The skip keys on the page text
+* **Legacy layouts** (2018-12-17 -> 2019-12-17) carry ``Previous Status`` and,
+  depending on the month, a ``Category`` column or status/reason in the other
+  order. The modern pattern reader puts a wrong status on ~48% of those rows, so
+  they go through ``legacy_injury_report.read_legacy_injury_report``, which reads
+  columns by position under each page's header. Routing keys on the page text
   containing ``Previous Status``, never on the cutover date, so a stray
-  legacy-format file can never be silently mis-parsed.
-* **``NOT YET SUBMITTED`` rows.** They carry no player and mean "this team has
-  not filed yet", which is *unknown*, not "nobody is injured". They are routed
-  to the filing table instead of the status table.
+  legacy-format file can never reach the modern reader. A legacy file with no
+  readable header (a scanned image) raises :class:`LegacyLayoutError`.
+* **``NOT YET SUBMITTED`` rows** carry no player and mean "this team has not
+  filed yet", which is *unknown*, not "nobody is injured". They are routed to
+  the filing table instead of the status table.
 """
 
 from __future__ import annotations
@@ -43,7 +45,7 @@ GAME_COLUMNS = ["game_date", "team_away", "team_home", "game_time_raw"]
 
 
 class LegacyLayoutError(RuntimeError):
-    """Raised for the 9-column era, which this module does not parse."""
+    """Raised for a legacy-layout report that has no readable table header."""
 
 
 @dataclass(frozen=True)
@@ -131,18 +133,26 @@ def parse_report(data: bytes, observed_at: datetime) -> ParsedReport:
     pipeline uses.
     """
     if is_legacy_layout(data):
-        raise LegacyLayoutError(
-            f"report at {observed_at:%Y-%m-%d %H:%M%z} uses the 9-column layout, "
-            "which is out of scope (see docs/injury_report_db_plan.md section 6)"
+        from nba_ou.fetch_data.injury_reports.legacy_injury_report import (
+            LegacyHeaderNotFound,
+            read_legacy_injury_report,
         )
 
-    # Local import: the parser module pulls in requests/bs4, which the DB layer
-    # has no business requiring at import time.
-    from nba_ou.fetch_data.injury_reports.get_latest_injury_report import (
-        read_injury_report,
-    )
+        try:
+            frame = read_legacy_injury_report(data)
+        except LegacyHeaderNotFound as exc:
+            raise LegacyLayoutError(
+                f"legacy report at {observed_at:%Y-%m-%d %H:%M%z} has no readable "
+                "table header"
+            ) from exc
+    else:
+        # Local import: the parser module pulls in requests/bs4, which the DB
+        # layer has no business requiring at import time.
+        from nba_ou.fetch_data.injury_reports.get_latest_injury_report import (
+            read_injury_report,
+        )
 
-    frame = read_injury_report(data)
+        frame = read_injury_report(data)
     if frame.empty:
         empty = pd.DataFrame()
         return ParsedReport(observed_at, empty, empty)

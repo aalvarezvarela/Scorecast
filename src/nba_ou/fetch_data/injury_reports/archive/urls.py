@@ -27,7 +27,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date as Date
-from datetime import datetime, timedelta
+from datetime import datetime, time, timedelta
 from zoneinfo import ZoneInfo
 
 from nba_ou.utils.general_utils import get_season_year_from_date
@@ -47,6 +47,28 @@ HOURLY_24_START = Date(2021, 10, 18)
 #: The filename gained a minute field and the cadence went to every 15 minutes.
 #: This day is a crossover: it carries 9 old-format *and* 60 new-format files.
 QUARTER_96_START = Date(2025, 12, 22)
+#: On the crossover day the old hourly files run 00:30-08:30 ET and the new
+#: quarter-hourly files start at 09:00 ET. Splitting the day here keeps the two
+#: shapes from producing the same derived instant: hourly ``12AM`` and quarter
+#: ``12_30AM`` both decode to 00:30, and when both were candidates the 403 on the
+#: quarter URL overwrote the real hourly file's manifest row, so the nine
+#: morning reports were never downloaded.
+QUARTER_96_FIRST_REPORT_ET = time(9, 0)
+
+#: How far a report's own header time may sit from the time derived from its
+#: filename before the file is rejected. The feed does not stamp as regularly as
+#: the era model assumes: from 2025-12-19 16:45 ET the hourly files were stamped
+#: :45 rather than :30, every bubble ``05PM`` file is stamped 17:30, and some
+#: 2020-21 files sit 30 minutes early. A strict equality check rejected 164 real
+#: reports, including every report from 2025-12-19 16:45 to 2025-12-21 23:45.
+#: The bound stays below half the gap to the next report of the same era, so a
+#: header can never be accepted for a neighbouring slot.
+VALIDATION_TOLERANCE_MINUTES: dict[str, int] = {
+    "legacy_3": 45,
+    "bubble_3": 45,
+    "hourly_24": 45,
+    "quarter_96": 14,
+}
 
 #: The deep offseason, when nothing is published and probing is pure waste.
 #: Measured Jun-Oct across every year: Summer League runs into mid/late July
@@ -154,6 +176,11 @@ def et_datetime(day: Date, label: str, era: str) -> datetime | None:
     return aware
 
 
+def validation_tolerance_minutes(era: str) -> int:
+    """Largest accepted gap between a report's header time and its derived time."""
+    return VALIDATION_TOLERANCE_MINUTES.get(era, 0)
+
+
 def canonical_stem(moment: datetime) -> str:
     """``2024-12-11 20:30 EST`` -> ``'2024-12-11T2030-0500'``.
 
@@ -208,13 +235,15 @@ class Candidate:
 def candidates_for_date(day: Date, *, skip_offseason: bool = True) -> list[Candidate]:
     """Every plausible URL for ``day``, DST-filtered.
 
-    24 candidates in the hourly eras, 96 in the quarter-hourly era, 120 on the
-    single crossover day, 0 before the CDN path begins -- and 0 in the deep
-    offseason unless ``skip_offseason`` is False.
+    24 candidates in the hourly eras, 96 in the quarter-hourly era, 69 on the
+    single crossover day (9 hourly before 09:00 ET, 60 quarter-hourly from it),
+    0 before the CDN path begins -- and 0 in the deep offseason unless
+    ``skip_offseason`` is False. Report keys are unique within a day.
     """
     if skip_offseason and is_offseason_gap(day):
         return []
     out: list[Candidate] = []
+    crossover = day == QUARTER_96_START
     for era in eras_for_date(day):
         if era == ERA_WP_MEDIA:
             continue  # listing-driven, see wp_media.py
@@ -222,6 +251,10 @@ def candidates_for_date(day: Date, *, skip_offseason: bool = True) -> list[Candi
         for label in labels:
             moment = et_datetime(day, label, era)
             if moment is None:
+                continue
+            if crossover and (moment.time() >= QUARTER_96_FIRST_REPORT_ET) != (
+                era == ERA_QUARTER_96
+            ):
                 continue
             out.append(
                 Candidate(

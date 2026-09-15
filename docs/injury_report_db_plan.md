@@ -480,6 +480,28 @@ this schema.
 
 ## 6. Scope: the legacy era is excluded
 
+> **Superseded (2026-09): the legacy era is now parsed.** It holds betting-data
+> games the feature pipeline needs (406 in Oct–Dec 2019 and the 2019 playoffs),
+> so `fetch_data/injury_reports/legacy_injury_report.py` reads it by column
+> position under each page header instead of by token pattern. A scan of all 788
+> archived reports up to 2019-12-18 found **four** legacy layouts, not one:
+>
+> | Layout | Columns after Player Name | Reports | Dates |
+> |---|---|---|---|
+> | A | Category, Reason, Current Status, Previous Status | 685 | 2018-12-17 → 2019-11-14 |
+> | B | Reason, Current Status, Previous Status | 16 | 2019-11-13, 11-15 → 11-19 |
+> | C | Current Status, Reason, Previous Status | 80 | 2019-11-20 → 12-16 |
+> | D | Current Status, Reason, Previous Status, Previous Reason | 4 | 2019-12-16 → 12-17 |
+>
+> Validation: every status parsed is in the closed vocabulary; on 60 modern
+> reports the geometric reader matches the modern reader on 98.5% of rows (every
+> difference is reason text the modern reader truncates); and against box scores,
+> 0.1% of 9,355 legacy `Out` rows played (Questionable 42–59%, Probable 84–91%),
+> the same profile as the modern era. Layout A's `Category` is folded into
+> `Reason` as `Category - Reason`, and `G League Team` maps to `G League`.
+> Previous-status columns are dropped. The original decision is kept below for
+> the record.
+
 **Decision: the archive loads from 2019-12-18 onward.** The 9-column era
 (2018-12-17 → 2019-12-17) is left in S3, parsed by nobody, and is not in scope.
 

@@ -32,6 +32,8 @@ import pandas as pd
 import psycopg
 from tqdm import tqdm
 
+from nba_ou.fetch_data.injury_reports.archive import manifest as mf
+
 from . import load as loader
 from . import resolve as R
 from .parse import LegacyLayoutError, ParsedReport, category_code, parse_report
@@ -57,12 +59,14 @@ class IngestSummary:
     #: Listed "games" that are not NBA games at all: Summer League, postponed
     #: dates, and "if necessary" playoff games that were never played.
     listed_non_games: int = 0
+    #: Rows deleted per table when the season was reloaded with ``replace``.
+    replaced: dict[str, int] = field(default_factory=dict)
     resolution: R.ResolutionReport = field(default_factory=R.ResolutionReport)
 
     def describe(self) -> str:
         return (
             f"{self.season}: {self.reports_read} reports "
-            f"({self.reports_legacy} legacy skipped, {self.reports_failed} failed) -> "
+            f"({self.reports_legacy} unreadable legacy skipped, {self.reports_failed} failed) -> "
             f"{self.observations:,} observations (+{self.removals:,} removals) -> "
             f"{self.spans:,} spans (+{self.filing_spans:,} filing); "
             f"{self.resolution.summary()}"
@@ -82,6 +86,12 @@ class IngestSummary:
                 if self.listed_non_games
                 else ""
             )
+            + (
+                "; replaced existing rows: "
+                + ", ".join(f"{t}={n:,}" for t, n in self.replaced.items())
+                if self.replaced
+                else ""
+            )
         )
 
 
@@ -98,11 +108,22 @@ def read_reports(
     """Parse every downloaded report in ``manifest``, oldest first.
 
     Reports missing from storage are skipped silently -- the manifest records
-    what was *discovered*, which is a superset of what was downloaded (e.g. the
-    164 ``date_mismatch`` reports were rejected and never uploaded).
+    what was *discovered*, which is a superset of what was downloaded (reports
+    whose header sits outside the era tolerance are rejected and never uploaded).
+
+    Each report is placed at its *publication* instant (``mf.published_utc``:
+    the PDF header when it differs from the filename, else the derived time).
+    If two files claim the same instant, only the later-labelled one is kept, so
+    ``observed_at`` stays unique.
     """
     rows = manifest.loc[manifest["nba_available"] == "true"].copy()
-    rows = rows.sort_values("report_datetime_utc")
+    rows["published_at"] = mf.published_utc(rows)
+    # On a tie a downloaded file beats one that never reached storage.
+    rows["is_stored"] = rows.get("download_status", pd.Series(index=rows.index)).eq(
+        mf.DOWNLOAD_STORED
+    )
+    rows = rows.sort_values(["published_at", "is_stored", "report_datetime_utc"])
+    rows = rows.drop_duplicates(subset=["published_at"], keep="last")
     if limit:
         rows = rows.head(limit)
 
@@ -123,7 +144,7 @@ def read_reports(
             data = storage.get(key)
             if data is None:
                 continue
-            observed_at = pd.Timestamp(row.report_datetime_utc).to_pydatetime()
+            observed_at = pd.Timestamp(row.published_at).to_pydatetime()
             try:
                 report = parse_report(data, observed_at)
             except LegacyLayoutError:
@@ -339,8 +360,17 @@ def ingest_season(
     limit: int | None = None,
     dry_run: bool = False,
     quiet: bool = False,
+    replace: bool = False,
 ) -> IngestSummary:
-    """Run all four phases for one season."""
+    """Run all four phases for one season.
+
+    ``replace`` deletes the season's existing spans, filing spans, reports and
+    unresolved-name counts before writing. It is required whenever reports are
+    added to a season that is already loaded: spans are inserted with
+    ``ON CONFLICT DO NOTHING``, so a reload over old rows would keep each old
+    span's ``valid_to`` and leave it overlapping the new, shorter spans. The
+    delete runs only after every report has been parsed and resolved.
+    """
     summary = IngestSummary(season=season)
     parsed, summary.reports_legacy, summary.reports_failed = read_reports(
         manifest, storage, limit=limit, quiet=quiet
@@ -430,6 +460,10 @@ def ingest_season(
         observations = pd.concat([observations, removals], ignore_index=True)
 
     # --- reports, reasons, ids ------------------------------------------------
+    if replace and not dry_run:
+        # Only the season being reloaded. Listings can reach into a neighbouring
+        # season, whose rows this run does not rebuild and must not delete.
+        summary.replaced = loader.clear_season(aiven, int(season.split("-")[0]))
     report_map = (
         dict(zip(reports["observed_at"], reports["observed_at"], strict=True))
         if dry_run

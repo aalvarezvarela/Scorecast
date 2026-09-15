@@ -54,12 +54,30 @@ COLUMNS: dict[str, str] = {
     "download_timestamp": "datetime64[ns, UTC]",
     "pdf_page_count": "Int32",
     "pdf_header_datetime_et": "string",
+    #: When the report was actually published, from its own header. Differs from
+    #: ``report_datetime_utc`` (derived from the filename) for ``ok_offset``
+    #: reports; empty for rows downloaded before this column existed, where the
+    #: two agreed by construction. Read it through :func:`published_utc`.
+    "report_published_utc": "datetime64[ns, UTC]",
     "validation_status": "string",
     "notes": "string",
 }
 
 #: A verdict we never re-probe. Anything else is the retry queue.
 TERMINAL_AVAILABILITY = {AVAILABLE_TRUE, AVAILABLE_FALSE}
+
+
+def published_utc(df: pd.DataFrame) -> pd.Series:
+    """The instant each report became public: header time, else derived time.
+
+    This, not ``report_datetime_utc``, is the ordering key for anything built on
+    the reports. A report stamped 16:45 read as 16:30 would be visible fifteen
+    minutes before it existed.
+    """
+    derived = pd.to_datetime(df["report_datetime_utc"], utc=True)
+    if "report_published_utc" not in df.columns:
+        return derived
+    return pd.to_datetime(df["report_published_utc"], utc=True).fillna(derived)
 
 
 def empty_frame() -> pd.DataFrame:
@@ -158,6 +176,19 @@ class ManifestStore:
             return set()
         done = df[df.nba_available.isin(TERMINAL_AVAILABILITY)]
         return set(done.report_key.dropna())
+
+    def resolved_urls(self, season: str) -> set[str]:
+        """Source URLs with a terminal availability verdict.
+
+        Discovery skips on the URL, not the key: two URLs can derive the same
+        key (the 2025-12-22 crossover did), and a verdict on one must never stop
+        the other from being probed.
+        """
+        df = self.load(season)
+        if not len(df):
+            return set()
+        done = df[df.nba_available.isin(TERMINAL_AVAILABILITY)]
+        return set(done.original_url.dropna())
 
     def pending_downloads(self, season: str) -> pd.DataFrame:
         df = self.load(season)

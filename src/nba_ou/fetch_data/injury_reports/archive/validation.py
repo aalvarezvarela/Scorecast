@@ -25,6 +25,10 @@ _HEADER_RE = re.compile(
 )
 
 OK = "ok"
+#: The header names the same report but stamps a different minute than the era
+#: model derives (e.g. :45 instead of :30). Accepted; the header time is the
+#: publication instant and is what downstream ordering must use.
+OK_OFFSET = "ok_offset"
 NO_MAGIC = "pdf_magic_missing"
 TOO_SMALL = "too_small"
 UNOPENABLE = "unopenable"
@@ -44,7 +48,7 @@ class Validation:
     @property
     def ok(self) -> bool:
         # image_only is a known, accepted 2018 condition, not a failure.
-        return self.status in (OK, IMAGE_ONLY)
+        return self.status in (OK, OK_OFFSET, IMAGE_ONLY)
 
 
 def parse_header_datetime(text: str) -> datetime | None:
@@ -56,7 +60,15 @@ def parse_header_datetime(text: str) -> datetime | None:
     return datetime(2000 + int(yy), int(mm), int(dd), hour, int(mi))
 
 
-def validate(data: bytes, expected_et: datetime) -> Validation:
+def validate(
+    data: bytes, expected_et: datetime, *, max_offset_minutes: int = 0
+) -> Validation:
+    """Check ``data`` is the report derived for ``expected_et``.
+
+    ``max_offset_minutes`` is the era's tolerance for a header stamped at a
+    different minute (see ``urls.VALIDATION_TOLERANCE_MINUTES``). Zero keeps the
+    strict equality check.
+    """
     sha = hashlib.sha256(data).hexdigest()
 
     if not data.startswith(PDF_MAGIC):
@@ -80,6 +92,15 @@ def validate(data: bytes, expected_et: datetime) -> Validation:
         return Validation(NO_HEADER, sha, page_count=pages)
 
     naive_expected = expected_et.replace(tzinfo=None)
+    offset_minutes = abs((header - naive_expected).total_seconds()) / 60
+    if header != naive_expected and offset_minutes <= max_offset_minutes:
+        return Validation(
+            OK_OFFSET,
+            sha,
+            page_count=pages,
+            header_datetime_et=header,
+            detail=f"header={header.isoformat()} expected={naive_expected.isoformat()}",
+        )
     if header != naive_expected:
         return Validation(
             MISMATCH,
