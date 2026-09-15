@@ -994,6 +994,37 @@ dependency entirely, and at these sizes is a perfectly defensible "just take
 everything". Both are fine; C is the thriftier one that still cannot lose a
 horizon.
 
+### 9.4 The deep offseason is skipped by default
+
+Probing August is pure waste — measured Jun–Oct across every year, the feed is
+dead from late July until late September. The active spans found were:
+
+| Year | Summer League ends | Next activity |
+|---|---|---|
+| 2019 | 07-13 | **09-29** |
+| 2021 | 07-19 | **08-06** (delayed calendar) |
+| 2022 | 07-16 | mid-Oct |
+| 2023 | 07-16 | mid-Oct |
+| 2024 | **07-22** | mid-Oct |
+| 2025 | 07-19 | mid-Oct |
+| 2026 | 07-19 | mid-Oct |
+
+**Skip window: 25 July – 22 September**, set strictly inside those bounds so it
+cannot clip a real report — the tightest constraints are 2024-07-22 at the start
+and 2019-09-29 at the end. Verified against every observed active span: it covers
+none of them.
+
+**2020 and 2021 are exempt.** The bubble ran 30 Jul – 11 Oct 2020, and the delayed
+2021 calendar left a live block on 6–15 Aug 2021 — both sit squarely inside the
+window.
+
+Note the boundary is *not* "skip from 10 July": **Summer League publishes reports
+every year from roughly 4–22 July**, so a 10 July cut would lose half of it
+annually, not just in COVID seasons.
+
+Effect: **86,749 → 74,941 candidates (−13.6%, ~2.7 h)**. Override with
+`--no-offseason-skip`.
+
 **Playoffs, play-in and preseason are all included** in every option above — the
 day sets are built from the full schedule feed (`game_id` prefixes `001`/`002`/
 `004`/`005`), not from regular season alone.
@@ -1415,7 +1446,101 @@ python scripts/injury_reports/backfill_injury_reports.py \
 
 `--season` is repeatable. Other flags: `--phase discover|download|both`,
 `--dry-run`, `--max-requests`, `--max-files`, `--bucket`, `--manifest-root`,
-`--delay`, `--cooldown`, `--quiet`.
+`--no-manifest-sync`, `--no-offseason-skip`, `--s3-prefix`, `--delay`, `--cooldown`,
+`--quiet`.
+
+### 17.2.1 S3 permissions
+
+IAM on `adrian-nba-model-registry-eu-west-1` is a **prefix allowlist**, measured
+with the `adrian-personal-cli` user:
+
+| Prefix | ListBucket | PutObject |
+|---|---|---|
+| `models/` | ✅ | ✅ |
+| `train_data/` | ✅ | ✅ |
+| `backups/` | ✅ | ✅ |
+| `prediction_snapshots/` | ❌ | ❌ |
+| **`injury_reports/`** | ❌ | ❌ |
+| *(whole bucket)* | ❌ | — |
+
+So the default prefix is **not writable today**. The run now **preflights** a
+one-byte write before doing any discovery, and exits `1` with the three options
+rather than dying hours later on the first upload.
+
+To grant it, add to the `adrian-personal-cli` user's policy. This covers
+**both** the new archive and `prediction_snapshots/`, which is denied today and is
+live code (see below):
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "InjuryReportAndSnapshotObjects",
+      "Effect": "Allow",
+      "Action": ["s3:PutObject", "s3:GetObject", "s3:DeleteObject"],
+      "Resource": [
+        "arn:aws:s3:::adrian-nba-model-registry-eu-west-1/injury_reports/*",
+        "arn:aws:s3:::adrian-nba-model-registry-eu-west-1/prediction_snapshots/*"
+      ]
+    },
+    {
+      "Sid": "InjuryReportAndSnapshotList",
+      "Effect": "Allow",
+      "Action": "s3:ListBucket",
+      "Resource": "arn:aws:s3:::adrian-nba-model-registry-eu-west-1",
+      "Condition": {
+        "StringLike": {
+          "s3:prefix": ["injury_reports/*", "prediction_snapshots/*"]
+        }
+      }
+    }
+  ]
+}
+```
+
+Add these statements to the existing policy rather than replacing it — `models/`,
+`train_data/` and `backups/` are already granted somewhere and must keep working.
+
+### 17.2.2 `prediction_snapshots/` is denied too — worth checking separately
+
+Not part of this task, but it surfaced while diagnosing the above and is easy to
+miss:
+
+* `prediction_snapshots/` is **denied for `adrian-personal-cli`**, both read and write.
+* It is **live code**: `s3_prediction_snapshots.py` is called from
+  `scripts/predict_nba_games.py` at four points, which runs on two daily
+  workflows (`nba_predictor_daily.yml`, `nba_predictor_daily_tabpfn_client.yml`).
+* Those uploads are wrapped in `try/except` and explicitly **non-fatal** — on
+  failure the script prints `Failed to upload ... snapshot` and carries on. So a
+  permission problem here loses the snapshots **silently**; predictions still
+  succeed.
+
+**This does not necessarily mean CI is broken.** The workflows authenticate with
+**OIDC role assumption** (`secrets.AWS_ROLE_TO_ASSUME`, with `S3_AWS_PROFILE: ""`),
+which is a *different* identity from the local CLI user — that role may well have
+the grant. I could not verify it: assuming the role is not possible from here, and
+listing the prefix is denied to me, so I cannot see whether snapshots are landing.
+
+To check, either look at `prediction_snapshots/` in the S3 console, or grep a
+recent workflow run for `Failed to upload`. Either way, adding the statements
+above fixes the **local** path.
+
+
+
+**Progress** is shown with `tqdm` — one bar per phase, per window:
+
+```
+discover:  38%|███████▌            | 3 340/8 783 [45:12<1:13:40, 1.23url/s, 2026-01-15 | found 3 312 missing 28]
+download:  12%|██▍                 |   402/3 312 [08:31<1:01:44, 0.79pdf/s, 402 stored, 28.4 MiB]
+```
+
+The discovery total is computed up front from the candidate space minus what the
+manifest has already resolved, so the ETA is real rather than a guess. Bars write
+to stderr and **auto-disable when output is not a TTY**, so redirecting to a log
+file leaves a clean log rather than megabytes of carriage returns. `--quiet`
+disables them explicitly. Throttle and error messages go through `tqdm.write`, so
+they appear above the bar instead of shredding it.
 
 ### 17.3 Behaviour worth knowing
 

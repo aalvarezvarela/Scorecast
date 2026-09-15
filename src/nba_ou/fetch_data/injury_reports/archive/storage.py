@@ -18,6 +18,9 @@ class Storage(Protocol):
     def exists(self, key: str) -> int | None:
         """Size in bytes if the object is present, else ``None``."""
 
+    def get(self, key: str) -> bytes | None:
+        """Object body, or ``None`` if it is not there."""
+
     def put(self, key: str, data: bytes, metadata: dict[str, str]) -> None: ...
 
     def describe(self) -> str: ...
@@ -33,6 +36,10 @@ class LocalStorage:
     def exists(self, key: str) -> int | None:
         p = self._path(key)
         return p.stat().st_size if p.exists() else None
+
+    def get(self, key: str) -> bytes | None:
+        p = self._path(key)
+        return p.read_bytes() if p.exists() else None
 
     def put(self, key: str, data: bytes, metadata: dict[str, str]) -> None:
         p = self._path(key)
@@ -84,6 +91,12 @@ class S3Storage:
         except Exception:
             return None
         return int(head["ContentLength"])
+
+    def get(self, key: str) -> bytes | None:
+        try:
+            return self.client.get_object(Bucket=self.bucket, Key=key)["Body"].read()
+        except Exception:
+            return None
 
     def put(self, key: str, data: bytes, metadata: dict[str, str]) -> None:
         self.client.put_object(
