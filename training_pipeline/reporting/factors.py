@@ -31,6 +31,7 @@ they can be shown and excluded rather than silently averaged in.
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any
 
@@ -114,6 +115,10 @@ DERIVED_FACTORS: tuple[str, ...] = (
     "exclude_overtime",
     "keep_playoffs",
     "drop_consensus",
+    #: Which referee feature groups a run excluded. The referee campaign varies
+    #: only ``exclude_cols_containing``, which ``drop_consensus`` cannot see, so
+    #: without this its cells would all match as one experiment.
+    "referee_features",
     "sample_weighting",
     "train_games_tuned",
     "n_estimators_range",
@@ -167,6 +172,29 @@ def _market_for_strategy(strategy: Any) -> str | None:
         return None
 
 
+#: Exclusion substrings that target referee features.
+_REFEREE_PATTERN_PREFIXES: tuple[str, ...] = ("REF_", "STYLE_FTA_REFEREE")
+
+
+def _referee_feature_exclusions(excluded: Any) -> str:
+    """The referee-related exclusion patterns as stable text, ``"all"`` if none.
+
+    Only referee patterns are read, so a run that also drops consensus columns
+    still contrasts with its twin on ``drop_consensus`` alone.
+    """
+    # load_config_flat renders lists as JSON text.
+    if isinstance(excluded, str):
+        try:
+            excluded = json.loads(excluded)
+        except ValueError:
+            excluded = [excluded]
+    patterns = excluded if isinstance(excluded, (list, tuple)) else []
+    referee = sorted(
+        {str(p).upper() for p in patterns if str(p).upper().startswith(_REFEREE_PATTERN_PREFIXES)}
+    )
+    return "drop:" + ",".join(referee) if referee else "all"
+
+
 def _derived_factors(config: dict[str, Any], row: Any) -> dict[str, Any]:
     """The factors that are not a single field read straight out of the config.
 
@@ -193,6 +221,9 @@ def _derived_factors(config: dict[str, Any], row: Any) -> dict[str, Any]:
         ),
         "keep_playoffs": not bool(config.get("data.exclude_playoffs", True)),
         "drop_consensus": "consensus" in excluded,
+        "referee_features": _referee_feature_exclusions(
+            config.get("cleaning.exclude_cols_containing")
+        ),
         "sample_weighting": bool(config.get("sample_weight.enabled", False)),
         # A run that TUNED the window is not comparable with one that fixed it,
         # even when train_games happens to read the same: the fixed run's value
@@ -247,6 +278,7 @@ _DEVIATION_TAGS: dict[str, Any] = {
     "exclude_overtime": "no-OT",
     "keep_playoffs": "+playoffs",
     "drop_consensus": "no-consensus",
+    "referee_features": lambda value: "refs-all" if value == "all" else "refs-subset",
     "sample_weighting": "weighted",
     "is_diagnostic": "DIAGNOSTIC",
     "planted_variance": lambda value: f"planted{value:.3f}",

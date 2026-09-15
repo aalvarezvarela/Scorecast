@@ -378,7 +378,9 @@ each team's season-before offensive tendency with the opponent's season-before
 allowed tendency. It creates expected home and away rates for threes, free
 throws, turnovers, and offensive rebounds; game-level expected counts scaled
 by `EXPECTED_POSS_FROM_PACE_BEFORE`; and a free-throw-rate interaction with
-`REF_AVG_TOTAL_PF_DIFF_BEFORE`.
+`REF_AVG_TOTAL_PF_DIFF_BEFORE`. The newer crew-tendency combinations with these
+expected values are added separately by `add_referee_interaction_features()`
+(see Referee Crew Tendency Features).
 
 The home/away historical source columns are removed after those interactions
 are built. Only the 13 compact matchup features remain in the final model
@@ -946,9 +948,108 @@ Exact trio features also exist in the implementation, but
 `include_ref_trio_features=False`.
 
 For same-day prediction, scheduled referee assignments are appended before
-feature computation. If a scheduled referee has no historical match in the
-database, the pipeline raises an error rather than silently producing unknown
-referee features.
+feature computation. A scheduled referee with no historical match is logged as
+a warning and contributes nothing to these legacy features; it no longer stops
+the day's predictions.
+
+These legacy features are kept so they can be compared against the tendency
+features below. Their history is limited to the output seasons, so in
+same-day prediction (two seasons loaded) they see less history than in
+training.
+
+### Referee Crew Tendency Features
+
+`add_referee_tendency_features()` in
+`data_processing/referees/referee_tendencies.py` replaces the
+with-minus-without comparison with a recency-weighted, shrunk estimate per
+official. For an official and a per-game quantity `y`, the tendency at game
+`j` is
+
+```text
+est_j = sum_i w_ij * y_i / (sum_i w_ij + k),   w_ij = 0.5 ** (age_days / half_life)
+```
+
+over the official's games on dates strictly before `j` and within
+`max_history_days` (6 seasons by default). The crew feature is the sum of its
+officials' estimates. An official without history gets 0, the estimator's own
+"no evidence" value; an empty crew slot is treated the same way (0, counted in
+`REF_CREW_UNKNOWN_COUNT_BEFORE`, minimum prior games 0) rather than
+extrapolated from the officials present. Only crews above three officials
+(in-game replacements) are scaled down to a three-official equivalent.
+
+The build raises if the referee source returns nothing, or if more than 1% of
+completed games end up without a crew (measured 2014-2025: every non-preseason
+game has one), since either means a broken or lagging referee source. Scheduled
+games without an assignment only warn.
+
+History is loaded by `_load_referee_history_inputs()` in
+`create_df_to_predict.py`, independently of the output seasons:
+`referee_history_seasons` (default 6) seasons before the first output season,
+reusing games and odds already in memory. Combined with the date window, the
+same game gets identical features whether it is built for training or for
+same-day prediction.
+
+`build_referee_game_history()` builds one row per completed game. Every
+quantity is centred on the league's season-to-date mean over strictly earlier
+dates, so league-wide rule or officiating-emphasis changes are not credited to
+the officials who happened to work that season. Team expectations are
+season-to-date means over strictly earlier dates as well, so two rows on the
+same date can never see each other. Free throws, fouls and possessions are
+scaled to regulation for overtime games.
+
+| Feature | Quantity (per game, before centring) | Half-life / k | Track |
+|---|---|---|---|
+| `REF_CREW_FTA_TENDENCY_BEFORE` | total FTA - expected FTA from both teams' season-to-date FTA earned/allowed | 548d / 100 | totals |
+| `REF_CREW_PF_TENDENCY_BEFORE` | total fouls - expected fouls | 365d / 100 | totals |
+| `REF_CREW_POSS_TENDENCY_BEFORE` | possessions - expected possessions | 365d / 600 | totals |
+| `REF_CREW_LINE_ERR_TENDENCY_BEFORE` | `TOTAL_POINTS - total_<book>_line_over` | 1460d / 250 | totals |
+| `REF_CREW_SPREAD_ERROR_TENDENCY_BEFORE` | `SPREAD_ERROR` (home-signed) | 1460d / 600 | spread |
+| `REF_CREW_FAV_SPREAD_ERROR_TENDENCY_BEFORE` | `SPREAD_ERROR` from the favourite's side | 730d / 250 | spread |
+| `REF_CREW_HOME_FTA_EDGE_TENDENCY_BEFORE` | (home FTA - away FTA) - expected edge (home-signed) | 1460d / 600 | spread |
+| `REF_CREW_HOME_PF_EDGE_TENDENCY_BEFORE` | (away fouls - home fouls) - expected edge (home-signed) | 730d / 100 | spread |
+| `REF_CREW_MIN_PRIOR_GAMES_BEFORE` | fewest prior games (in window) among the crew | - | both |
+| `REF_CREW_UNKNOWN_COUNT_BEFORE` | officials with no prior games | - | both |
+
+Spread lines are converted with `spread_line_home_from_handicap()`, so the
+spread quantities follow the `SPREAD_ERROR = HOME_MARGIN - SPREAD_LINE_HOME`
+convention of `config/market_columns.py`. Home-signed features negate when home
+and away are swapped; every other feature is unchanged by the swap (pinned by
+`tests/test_referee_tendencies.py`).
+
+With `include_same_season_referee_variants=True`, `REF_CREW_SS_*` same-season-only
+versions are also emitted, used to measure the value of multi-season history
+in-model.
+
+After style-matchup features exist, `add_referee_interaction_features()` adds:
+
+- `REF_CREW_FTA_X_STYLE_EXPECTED_TOTAL_FTA_BEFORE`
+- `REF_CREW_FTA_X_ABS_SPREAD_BEFORE`
+- `REF_CREW_POSS_X_ABS_SPREAD_BEFORE`
+- `REF_CREW_FTA_X_EXPECTED_HOME_FTA_RATE_EDGE_BEFORE`
+
+Scheduled crews carry only names. They are resolved to `OFFICIAL_ID` through
+the historical name index; an unresolvable name becomes `UNMATCHED:<name>`,
+is neutral, is counted in `REF_CREW_UNKNOWN_COUNT_BEFORE` and triggers a
+warning.
+
+What the parameters rest on (measured 2026-09 on 2007-2025, shrinkage chosen
+on 2012-2016 and tested forward on 2017+):
+
+- Crews move whistle volume persistently: fouls r ~0.18, free throws r ~0.12
+  against the residual.
+- The best totals signal is the free-throw tendency against line error
+  (r ~0.048), above the crew's own past line error (~0.036).
+- Decayed multi-season history beats same-season history, mostly at season
+  openers; an equal-weight career average is worse than both.
+- No spread-side quantity showed a stable forward signal (all |r| <= 0.024,
+  inconsistent between periods, including referee-by-team history). The spread
+  track exists so `spread_error_regressor` can confirm that in-model.
+- Crew roles (chief/referee/umpire) added nothing, and `nba_refs` only encodes
+  roles by row order from 2021-22 on. Crews are unordered sets.
+
+`process_scheduled_referee_assignments()` also archives each scrape of the
+assignments page, with roles and first-seen time, into
+`<refs schema>.nba_ref_assignments` (best effort, never blocks prediction).
 
 ## Availability Effect Features
 
@@ -1264,7 +1365,9 @@ The pipeline uses several controls to avoid target leakage:
 
 - Rolling team features use `shift(1)` to exclude the current game.
 - Player EWMA features use shifted prior appearances.
-- Referee features use only games before the current game date.
+- Referee features use only games before the current game date; crew
+  tendencies additionally cap history at `max_history_days` so training and
+  same-day prediction see the same window.
 - Global market features aggregate games from strictly earlier calendar dates.
 - Injury availability effects use only games before the current game date.
 - Same-day prediction uses a cutoff date before the scheduled games.

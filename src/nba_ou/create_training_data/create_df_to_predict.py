@@ -67,6 +67,11 @@ from nba_ou.data_processing.players.roster_continuity import (
 from nba_ou.data_processing.referees.add_referee_features import (
     add_referee_features_to_training_data,
 )
+from nba_ou.data_processing.referees.referee_tendencies import (
+    DEFAULT_REFEREE_HISTORY_SEASONS,
+    add_referee_interaction_features,
+    add_referee_tendency_features,
+)
 from nba_ou.data_processing.scheduled_games.merge_scheduled_with_existing_data import (
     standardize_and_merge_scheduled_games_to_players_data,
     standardize_and_merge_scheduled_games_to_team_data,
@@ -99,9 +104,13 @@ from nba_ou.postgre_db.all_star_voting.fetch_data_from_db.fetch_all_star_voting_
 )
 from nba_ou.postgre_db.games.fetch_data_from_db.fetch_data_from_games_db import (
     get_historical_game_ids_for_home_away_matchups,
+    load_games_from_db,
 )
 from nba_ou.postgre_db.injuries_refs.fetch_injury_db.get_injury_data_from_db import (
     get_injury_data_from_db,
+)
+from nba_ou.postgre_db.injuries_refs.fetch_refs_db.get_refs_db import (
+    get_refs_data_from_db,
 )
 from nba_ou.postgre_db.odds.merge_odds_data import (
     load_and_merge_odds_yahoo_sportsbookreview,
@@ -113,6 +122,89 @@ warnings.simplefilter(action="ignore", category=FutureWarning)
 
 DEFAULT_SPREAD_ML_BOOK = get_main_book()
 DEFAULT_TOTAL_LINE_BOOK = get_main_book()
+
+
+def _load_referee_history_inputs(
+    *,
+    seasons: list[str],
+    recent_limit_to_include: pd.Timestamp,
+    history_seasons: int,
+    df_games_loaded: pd.DataFrame,
+    games_loaded_seasons: list[str],
+    df_odds_loaded: pd.DataFrame,
+    extra_game_ids: list[str],
+    odds_kwargs: dict,
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    """Officiating history reaching ``history_seasons`` before the first output season.
+
+    Loaded independently of the output seasons so a game's referee tendencies
+    see the same window whether it is built for training (many seasons loaded)
+    or for same-day prediction (two seasons loaded). Anything already in memory
+    is reused; only the missing seasons are fetched.
+    """
+    first_season_year = int(seasons[0].split("-")[0])
+    history_start = pd.Timestamp(
+        year=first_season_year - history_seasons, month=10, day=1
+    )
+    history_season_list = get_seasons_between_dates(
+        history_start, recent_limit_to_include
+    )
+
+    game_frames = [df_games_loaded]
+    missing_game_seasons = [
+        s for s in history_season_list if s not in games_loaded_seasons
+    ]
+    if missing_game_seasons:
+        df_extra_games = load_games_from_db(seasons=missing_game_seasons)
+        if df_extra_games is None:
+            raise RuntimeError(
+                f"Could not load games for referee history seasons {missing_game_seasons}."
+            )
+        df_extra_games.columns = df_extra_games.columns.str.upper()
+        game_frames.insert(0, df_extra_games)
+    df_team_games = pd.concat(game_frames, ignore_index=True)
+
+    odds_columns = [
+        "game_id",
+        f"total_{DEFAULT_TOTAL_LINE_BOOK}_line_over",
+        f"spread_{DEFAULT_SPREAD_ML_BOOK}_line_home",
+    ]
+    odds_frames = []
+    missing_odds_seasons = [s for s in history_season_list if s not in seasons]
+    if missing_odds_seasons:
+        df_extra_odds = load_and_merge_odds_yahoo_sportsbookreview(
+            season_years=missing_odds_seasons, **odds_kwargs
+        )
+        if not df_extra_odds.empty:
+            odds_frames.append(
+                df_extra_odds[[c for c in odds_columns if c in df_extra_odds.columns]]
+            )
+    if df_odds_loaded is not None and not df_odds_loaded.empty:
+        odds_frames.append(
+            df_odds_loaded[[c for c in odds_columns if c in df_odds_loaded.columns]]
+        )
+    df_odds_history = (
+        pd.concat(odds_frames, ignore_index=True).drop_duplicates(
+            "game_id", keep="last"
+        )
+        if odds_frames
+        else pd.DataFrame(columns=odds_columns)
+    )
+
+    df_refs = get_refs_data_from_db(history_season_list, extra_game_ids=extra_game_ids)
+    # get_refs_data_from_db returns an empty frame, not None, when the query fails.
+    if df_refs is None or df_refs.empty:
+        raise RuntimeError(
+            f"Could not load referee assignments for seasons {history_season_list}."
+        )
+
+    print(
+        f"Referee history: {len(history_season_list)} seasons "
+        f"({history_season_list[0]}..{history_season_list[-1]}), "
+        f"{df_team_games['GAME_ID'].nunique()} games, "
+        f"{df_odds_history['game_id'].nunique()} with odds, {len(df_refs)} official-games"
+    )
+    return df_team_games, df_odds_history, df_refs
 
 
 def _infer_recent_limit_for_scheduled_games(
@@ -304,6 +396,8 @@ def create_df_to_predict(
     null_extreme_spread_prices: bool = True,
     exclude_caesars: bool = False,
     combine_fanatics_and_caesars: bool | None = None,
+    referee_history_seasons: int = DEFAULT_REFEREE_HISTORY_SEASONS,
+    include_same_season_referee_variants: bool = False,
 ) -> pd.DataFrame:
     """
     Create prediction dataset for NBA over/under prediction models.
@@ -344,6 +438,13 @@ def create_df_to_predict(
             "combine unless an exclusion was explicitly asked for" -- so the
             merged book is what you get out of the box. See
             nba_ou.data_processing.odds.book_combination.
+        referee_history_seasons (int, optional): Seasons of officiating
+            history loaded before the first output season for the
+            ``REF_CREW_*`` tendency features. Loaded the same way for training
+            and same-day prediction. Default 6.
+        include_same_season_referee_variants (bool, optional): Also emit
+            ``REF_CREW_SS_*`` same-season-only tendencies, used to measure
+            the value of multi-season history in-model. Default False.
 
     Returns:
         pd.DataFrame: Complete training dataset with all features
@@ -432,6 +533,9 @@ def create_df_to_predict(
 
     # Ensure GAME_DATE column is pandas Timestamp for df (df_players doesn't have it yet)
     df["GAME_DATE"] = pd.to_datetime(df["GAME_DATE"])
+    # Raw box scores before any filtering or overtime normalisation: the
+    # referee history computes its own per-regulation rates.
+    df_games_for_referee_history = df.copy()
 
     # Preserve the extra season only as player/injury membership context. It is
     # excluded from team feature rows and therefore from the returned dataset.
@@ -595,6 +699,35 @@ def create_df_to_predict(
         extra_game_ids=extra_game_ids,
         include_ref_trio_features=False,
     )
+
+    df_ref_team_games, df_ref_odds, df_ref_assignments = _load_referee_history_inputs(
+        seasons=seasons,
+        recent_limit_to_include=recent_limit_to_include,
+        history_seasons=referee_history_seasons,
+        df_games_loaded=df_games_for_referee_history,
+        games_loaded_seasons=player_context_seasons,
+        df_odds_loaded=df_odds,
+        extra_game_ids=extra_game_ids,
+        odds_kwargs=dict(
+            normalize_total_lines=normalize_total_lines,
+            normalize_spread_lines=normalize_spread_lines,
+            null_extreme_spread_prices=null_extreme_spread_prices,
+            exclude_caesars=exclude_caesars,
+            combine_fanatics_and_caesars=combine_fanatics_and_caesars,
+        ),
+    )
+    df_merged = add_referee_tendency_features(
+        df_merged,
+        df_team_games=df_ref_team_games,
+        df_refs=df_ref_assignments,
+        df_odds=df_ref_odds,
+        total_line_book=DEFAULT_TOTAL_LINE_BOOK,
+        spread_book=DEFAULT_SPREAD_ML_BOOK,
+        df_referees_scheduled=df_referees_scheduled if todays_prediction else None,
+        max_history_days=referee_history_seasons * 365,
+        include_same_season_variants=include_same_season_referee_variants,
+    )
+    del df_ref_team_games, df_ref_odds, df_ref_assignments, df_games_for_referee_history
     print("✓ Referee features added")
 
     df_training = select_training_columns(
@@ -659,6 +792,9 @@ def create_df_to_predict(
     df_training = compute_travel_features(df_training, log_scale=True)
     df_training = add_high_value_features_for_team_points(df_training)
     df_training = add_style_matchup_features(df_training)
+    df_training = add_referee_interaction_features(
+        df_training, spread_book=DEFAULT_SPREAD_ML_BOOK
+    )
     df_training = add_game_date_features(df_training)
     print("✓ Travel and temporal features added")
 

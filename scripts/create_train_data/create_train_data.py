@@ -13,6 +13,9 @@ from pathlib import Path
 import pandas as pd
 from nba_ou.config.dataset_versions import TRAINING_DATA_SCHEMA_VERSION
 from nba_ou.create_training_data.create_df_to_predict import create_df_to_predict
+from nba_ou.data_processing.referees.referee_tendencies import (
+    DEFAULT_REFEREE_HISTORY_SEASONS,
+)
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
@@ -24,6 +27,8 @@ def main(
     normalize_total_lines: bool = True,
     normalize_spread_lines: bool = True,
     null_extreme_spread_prices: bool = True,
+    referee_history_seasons: int = DEFAULT_REFEREE_HISTORY_SEASONS,
+    include_same_season_referee_variants: bool = False,
 ) -> None:
     """Create training data up to `limit_date_to_train`.
 
@@ -40,6 +45,8 @@ def main(
         normalize_total_lines=normalize_total_lines,
         normalize_spread_lines=normalize_spread_lines,
         null_extreme_spread_prices=null_extreme_spread_prices,
+        referee_history_seasons=referee_history_seasons,
+        include_same_season_referee_variants=include_same_season_referee_variants,
     )
 
     if output is None:
@@ -102,6 +109,17 @@ if __name__ == "__main__":
         action="store_true",
         help="Keep extreme spread price cells instead of setting them to NaN.",
     )
+    parser.add_argument(
+        "--referee-history-seasons",
+        type=int,
+        default=DEFAULT_REFEREE_HISTORY_SEASONS,
+        help="Seasons of officiating history behind the REF_CREW_* features.",
+    )
+    parser.add_argument(
+        "--referee-same-season-variants",
+        action="store_true",
+        help="Also emit REF_CREW_SS_* same-season-only tendencies (history ablation).",
+    )
 
     args = parser.parse_args()
     main(
@@ -111,4 +129,6 @@ if __name__ == "__main__":
         normalize_total_lines=not args.no_normalize_total_lines,
         normalize_spread_lines=not args.no_normalize_spread_lines,
         null_extreme_spread_prices=not args.keep_extreme_spread_prices,
+        referee_history_seasons=args.referee_history_seasons,
+        include_same_season_referee_variants=args.referee_same_season_variants,
     )

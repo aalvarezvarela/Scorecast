@@ -54,9 +54,22 @@ History
     * Effect values change again through shrinkage: the fixed ``k = 10`` is
       replaced by an empirical-Bayes weight fitted per metric on strictly
       earlier games.
+
+``2_4``
+    Adds the referee crew tendency family; every 2_3 column is unchanged.
+
+    * ``REF_CREW_*_TENDENCY_BEFORE`` for free throws, fouls, possessions and
+      line error (totals track) and for spread error, favourite spread error,
+      home free-throw edge and home foul edge (spread track), plus
+      ``REF_CREW_MIN_PRIOR_GAMES_BEFORE`` and ``REF_CREW_UNKNOWN_COUNT_BEFORE``.
+    * ``REF_CREW_*_X_*_BEFORE`` combinations with expected free throws,
+      absolute spread and expected home free-throw-rate edge.
+    * Optional ``REF_CREW_SS_*`` same-season-only variants when built with
+      ``include_same_season_referee_variants=True``.
+    * The legacy ``REF_AVG/STD/SUM_*`` columns stay for comparison.
 """
 
 from __future__ import annotations
 
 #: Current schema version for both generated training datasets.
-TRAINING_DATA_SCHEMA_VERSION = "2_3"
+TRAINING_DATA_SCHEMA_VERSION = "2_4"

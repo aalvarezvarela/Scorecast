@@ -1,10 +1,14 @@
 import re
+import warnings
 
 import pandas as pd
 from nba_ou.config.constants import TEAM_ID_MAP, TEAM_NAME_STANDARDIZATION
 from nba_ou.config.settings import SETTINGS
 from nba_ou.fetch_data.referees.fetch_refs_data import (
     fetch_nba_referee_assignments_today,
+)
+from nba_ou.postgre_db.injuries_refs.ref_assignments_archive import (
+    archive_referee_assignments,
 )
 
 
@@ -20,6 +24,7 @@ def _canonicalize_referee_name(name: str) -> str:
 
 def process_scheduled_referee_assignments(
     df_scheduled_games_original: pd.DataFrame,
+    archive: bool = True,
 ) -> pd.DataFrame:
     df_scheduled_games = df_scheduled_games_original.copy()
 
@@ -40,6 +45,15 @@ def process_scheduled_referee_assignments(
     ).dt.date
 
     df_refs = fetch_nba_referee_assignments_today(SETTINGS.nba_official_assignments_url)
+
+    if archive:
+        # Best effort: the archive exists to accumulate role-labelled crews and
+        # must never block the day's predictions.
+        try:
+            archived = archive_referee_assignments(df_refs)
+            print(f"Archived {archived} referee assignment rows")
+        except Exception as exc:  # noqa: BLE001
+            warnings.warn(f"Could not archive referee assignments: {exc}", stacklevel=2)
 
     df_refs[["away_team", "home_team"]] = (
         df_refs["Game"].str.split("@", expand=True).apply(lambda c: c.str.strip())
