@@ -22,6 +22,27 @@ FEATURE_COLUMNS = [
     "ALL_STAR_SEASON_YEAR_BEFORE",
 ]
 
+#: Emitted only when a questionable group is supplied: the same two star-quality
+#: measures for the availability group between injured and available.
+QUESTIONABLE_FEATURE_COLUMNS = [
+    "ALL_STAR_MAX_QUESTIONABLE_FAN_VOTE_SHARE_BEFORE",
+    "ALL_STAR_MIN_QUESTIONABLE_SCORE_BEFORE",
+]
+
+#: "Nobody in this group" for a MIN-score column. The score is rank-like -- 1 is
+#: the biggest star -- so the true limit of a minimum over an empty group is
+#: +infinity; this stands in for it, above every score the voting table produces
+#: (max observed 178.8 over 2019-2025). Only the ordering matters to a tree, and
+#: a single constant keeps "nobody at risk" worse than every real player in every
+#: season, which a per-season maximum would not.
+#:
+#: ``ALL_STAR_MIN_INJURED_SCORE_BEFORE`` deliberately keeps its NaN instead: it
+#: predates the report, and the schema 2_3 control build has to reproduce it
+#: value for value. The questionable twin has no such history, and its group is
+#: empty on ~87% of team-games -- NaN there would put the column straight over
+#: the cleaner's 5% threshold.
+NO_CANDIDATE_IN_GROUP_SCORE = 1000.0
+
 
 def all_star_season_year_for_game_date(game_date) -> int:
     d = pd.Timestamp(game_date)
@@ -182,6 +203,7 @@ def add_all_star_voting_features(
     df_players: pd.DataFrame,
     all_star_voting_df: pd.DataFrame,
     injured_dict: dict,
+    questionable_dict: dict | None = None,
 ) -> pd.DataFrame:
     """Adds per-team-game all-star fan-vote share columns.
 
@@ -190,6 +212,12 @@ def add_all_star_voting_features(
         ALL_STAR_MIN_SCORE_BEFORE          float
         ALL_STAR_MAX_INJURED_FAN_VOTE_SHARE_BEFORE float
         ALL_STAR_MIN_INJURED_SCORE_BEFORE  float
+
+    ``questionable_dict``, when given, adds the same two measures for the
+    questionable availability group as
+    ALL_STAR_MAX_QUESTIONABLE_FAN_VOTE_SHARE_BEFORE and
+    ALL_STAR_MIN_QUESTIONABLE_SCORE_BEFORE. A team-game it does not cover keeps
+    them NaN, since "no star at risk" and "no report" are different facts.
         ALL_STAR_FAN_VOTES_BEFORE          float
         ALL_STAR_CANDIDATE_COUNT_BEFORE    int
         ALL_STAR_SEASON_YEAR_BEFORE        int (audit; ok to keep)
@@ -204,6 +232,12 @@ def add_all_star_voting_features(
     all_star = _normalize_all_star_voting_df(all_star_voting_df)
     all_star_indexes = _precompute_all_star_indexes(all_star)
     injured_dict_normalized = _normalize_injured_dict(injured_dict)
+    questionable_normalized = (
+        _normalize_injured_dict(questionable_dict) if questionable_dict else None
+    )
+    feature_columns = list(FEATURE_COLUMNS) + (
+        QUESTIONABLE_FEATURE_COLUMNS if questionable_normalized is not None else []
+    )
     game_day_by_game_id = {
         str(game_id): pd.Timestamp(game_date).normalize()
         for game_id, game_date in out[["GAME_ID", "GAME_DATE"]]
@@ -357,7 +391,34 @@ def add_all_star_voting_features(
         ]
         if injured_scores:
             row_update["ALL_STAR_MIN_INJURED_SCORE_BEFORE"] = min(injured_scores)
+
+        if questionable_normalized is not None:
+            team_questionable = questionable_normalized.get(str(game_id))
+            if team_questionable is not None and team_id_str in team_questionable:
+                questionable_ids = team_questionable[team_id_str]
+                row_update["ALL_STAR_MIN_QUESTIONABLE_SCORE_BEFORE"] = (
+                    NO_CANDIDATE_IN_GROUP_SCORE
+                )
+                questionable_votes = [
+                    season_index["player_votes"][player_id]
+                    for player_id in questionable_ids
+                    if player_id in season_index["player_votes"]
+                ]
+                row_update["ALL_STAR_MAX_QUESTIONABLE_FAN_VOTE_SHARE_BEFORE"] = (
+                    max(questionable_votes) / season_index["total_fan_votes"]
+                    if questionable_votes
+                    else 0.0
+                )
+                questionable_scores = [
+                    season_index["player_scores"][player_id]
+                    for player_id in questionable_ids
+                    if player_id in season_index["player_scores"]
+                ]
+                if questionable_scores:
+                    row_update["ALL_STAR_MIN_QUESTIONABLE_SCORE_BEFORE"] = min(
+                        questionable_scores
+                    )
         updates.append(row_update)
 
-    updates_df = pd.DataFrame(updates, index=out.index, columns=FEATURE_COLUMNS)
+    updates_df = pd.DataFrame(updates, index=out.index, columns=feature_columns)
     return pd.concat([out, updates_df], axis=1)

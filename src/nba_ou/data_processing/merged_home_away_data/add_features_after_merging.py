@@ -14,6 +14,40 @@ MAIN_SPREAD_COL = spread_col()
 MAIN_MONEYLINE_COL = moneyline_col()
 
 
+def add_fresh_absence_sums(df: pd.DataFrame) -> pd.DataFrame:
+    """Create HOME + AWAY **sums** for the fresh-absence features.
+
+    The betting rollups below get a home-minus-away difference because they
+    measure relative strength. Absences on a totals market are the opposite
+    case: a star missing on either side moves the same total, so the two sides
+    add rather than cancel, and a difference would net them to zero in exactly
+    the games where the news is biggest (both teams missing someone).
+
+    Emits ``<name>_SUM_BEFORE`` for every fresh-absence column that has both a
+    ``_TEAM_HOME`` and a ``_TEAM_AWAY`` side. Idempotent: an existing sum column
+    is refreshed in place.
+    """
+    new_features = {}
+    for home_col in [col for col in df.columns if col.endswith("_BEFORE_TEAM_HOME")]:
+        if not home_col.startswith("INJ_"):
+            continue
+        away_col = home_col.replace("_TEAM_HOME", "_TEAM_AWAY")
+        if away_col not in df.columns:
+            continue
+        sum_col = home_col.replace("_BEFORE_TEAM_HOME", "_SUM_BEFORE")
+        new_features[sum_col] = df[home_col] + df[away_col]
+
+    if not new_features:
+        return df
+
+    cols_to_drop = [col for col in new_features if col in df.columns]
+    if cols_to_drop:
+        df = df.drop(columns=cols_to_drop)
+    df = pd.concat([df, pd.DataFrame(new_features, index=df.index)], axis=1)
+    print(f"Created {len(new_features)} fresh-absence sum feature(s)")
+    return df
+
+
 def add_betting_stats_differences(df: pd.DataFrame) -> pd.DataFrame:
     """
     Create difference features (HOME - AWAY) for all betting-related rolling statistics.

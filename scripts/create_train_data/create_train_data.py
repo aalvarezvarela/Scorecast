@@ -5,7 +5,7 @@ Create training dataset up to 2026-01-10 (no date-to-predict / scheduled games).
 This script calls `create_df_to_predict` without providing a prediction date
 or scheduled-game data. It saves the resulting DataFrame to
 `data/train_data/training_data_<schema_version>_YYYYMMDD.csv`
-(currently schema 2_2; see nba_ou.config.dataset_versions).
+(see nba_ou.config.dataset_versions for the current schema).
 """
 
 from pathlib import Path
@@ -13,6 +13,9 @@ from pathlib import Path
 import pandas as pd
 from nba_ou.config.dataset_versions import TRAINING_DATA_SCHEMA_VERSION
 from nba_ou.create_training_data.create_df_to_predict import create_df_to_predict
+from nba_ou.data_processing.referees.referee_tendencies import (
+    DEFAULT_REFEREE_HISTORY_SEASONS,
+)
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
@@ -24,6 +27,10 @@ def main(
     normalize_total_lines: bool = True,
     normalize_spread_lines: bool = True,
     null_extreme_spread_prices: bool = True,
+    injury_report_features: bool = True,
+    status_top_n: dict[str, int] | None = None,
+    referee_history_seasons: int = DEFAULT_REFEREE_HISTORY_SEASONS,
+    include_same_season_referee_variants: bool = False,
 ) -> None:
     """Create training data up to `limit_date_to_train`.
 
@@ -40,6 +47,10 @@ def main(
         normalize_total_lines=normalize_total_lines,
         normalize_spread_lines=normalize_spread_lines,
         null_extreme_spread_prices=null_extreme_spread_prices,
+        injury_report_features=injury_report_features,
+        status_top_n=status_top_n,
+        referee_history_seasons=referee_history_seasons,
+        include_same_season_referee_variants=include_same_season_referee_variants,
     )
 
     if output is None:
@@ -48,10 +59,12 @@ def main(
         # Schema version in the name, never overwritten in place: spread and
         # moneyline additions, then spread-normalization semantics, must land beside
         # older files that pinned checksums still refer to.
+        # Both variants use the current schema; the suffix distinguishes a
+        # build without report-derived availability from the default build.
+        variant = "" if injury_report_features else "_without_injury_reports"
         output = (
-            output_path
-            / f"training_data_{TRAINING_DATA_SCHEMA_VERSION}_"
-            f"{pd.to_datetime(limit_date_to_train).strftime('%Y%m%d')}.csv"
+            output_path / f"training_data_{TRAINING_DATA_SCHEMA_VERSION}_"
+            f"{pd.to_datetime(limit_date_to_train).strftime('%Y%m%d')}{variant}.csv"
         )
     else:
         output.parent.mkdir(parents=True, exist_ok=True)
@@ -102,6 +115,33 @@ if __name__ == "__main__":
         action="store_true",
         help="Keep extreme spread price cells instead of setting them to NaN.",
     )
+    parser.add_argument(
+        "--referee-history-seasons",
+        type=int,
+        default=DEFAULT_REFEREE_HISTORY_SEASONS,
+        help="Seasons of officiating history behind the REF_CREW_* features.",
+    )
+    parser.add_argument(
+        "--referee-same-season-variants",
+        action="store_true",
+        help="Also emit REF_CREW_SS_* same-season-only tendencies (history ablation).",
+    )
+
+    parser.add_argument(
+        "--no-injury-report-features",
+        action="store_true",
+        help=(
+            "Use inactive-list availability without report-derived columns. "
+            "The current schema version is retained with a distinct filename suffix."
+        ),
+    )
+    for status, default in (("questionable", 2), ("probable", 1), ("doubtful", 1)):
+        parser.add_argument(
+            f"--n-top-{status}",
+            type=int,
+            default=default,
+            help=f"{status.title()} players per side with per-player columns (default {default}).",
+        )
 
     args = parser.parse_args()
     main(
@@ -111,4 +151,12 @@ if __name__ == "__main__":
         normalize_total_lines=not args.no_normalize_total_lines,
         normalize_spread_lines=not args.no_normalize_spread_lines,
         null_extreme_spread_prices=not args.keep_extreme_spread_prices,
+        injury_report_features=not args.no_injury_report_features,
+        status_top_n={
+            "questionable": args.n_top_questionable,
+            "probable": args.n_top_probable,
+            "doubtful": args.n_top_doubtful,
+        },
+        referee_history_seasons=args.referee_history_seasons,
+        include_same_season_referee_variants=args.referee_same_season_variants,
     )

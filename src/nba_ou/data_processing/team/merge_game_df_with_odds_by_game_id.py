@@ -183,7 +183,9 @@ def merge_odds_percentages_and_prices_by_game_id(
                     )
 
     # Spread prices: assign based on home/away
-    spread_books = list(
+    # Sorted: set order depends on the per-process hash seed, which made the
+    # output column order differ between otherwise identical builds.
+    spread_books = sorted(
         set(
             [
                 c.replace("spread_", "")
@@ -204,7 +206,9 @@ def merge_odds_percentages_and_prices_by_game_id(
             df_merged = df_merged.drop(columns=[home_col, away_col], errors="ignore")
 
     # ML prices: assign based on home/away
-    ml_books = list(
+    # Sorted: set order depends on the per-process hash seed, which made the
+    # output column order differ between otherwise identical builds.
+    ml_books = sorted(
         set(
             [
                 c.replace("ml_", "")
