@@ -236,6 +236,29 @@ def _build_prior_roster_lookup(df_players):
     return prior_roster_lookup
 
 
+def _restrict_snapshot_membership(
+    membership_dict: dict,
+    snapshot_game_ids: set[str],
+    report_out_overrides: dict | None,
+    questionable_dict: dict,
+    report_listed_players: dict | None,
+) -> dict:
+    """Keep only as-of report evidence for current-game roster additions."""
+    reported = union_membership_dicts(
+        nested_status_dict(report_out_overrides),
+        questionable_dict,
+        report_listed_players or {},
+    )
+    ids = {str(game) for game in snapshot_game_ids}
+    out = {
+        str(game): teams
+        for game, teams in membership_dict.items()
+        if str(game) not in ids
+    }
+    out.update({str(game): teams for game, teams in reported.items() if str(game) in ids})
+    return out
+
+
 def add_player_history_features(
     df_team,
     df_players,
@@ -246,6 +269,8 @@ def add_player_history_features(
     report_out_overrides: dict[tuple[str, str], list[str]] | None = None,
     report_questionable_sets: dict[tuple[str, str], list[str]] | None = None,
     include_available_roster_count: bool = False,
+    snapshot_game_ids: set[str] | None = None,
+    snapshot_report_listed_players: dict | None = None,
 ):
     """
     Main function to attach top player statistics and injured player stats to team data.
@@ -277,6 +302,11 @@ def add_player_history_features(
         include_available_roster_count (bool): Emit
             ``N_AVAILABLE_ROSTER_PLAYERS_BEFORE``. Off by default for builds
             without injury-report features.
+        snapshot_game_ids (set, optional): Current games whose roster
+            supplementation may use only the as-of report. Settled injuries
+            remain available as history for later games.
+        snapshot_report_listed_players (dict, optional): All players named by
+            the as-of report, including Probable and Available designations.
 
     Returns:
         pd.DataFrame: Updated df_team with extra columns for top players and injured players
@@ -308,6 +338,18 @@ def add_player_history_features(
     else:
         pregame_dict = injured_dict
         membership_dict = injured_dict
+    if snapshot_game_ids:
+        # The normal union includes the settled inactive list and comments.
+        # Those are valid history later, but future information for an earlier
+        # snapshot of this game. Current-game roster supplementation can only
+        # read players explicitly named by the as-of report.
+        membership_dict = _restrict_snapshot_membership(
+            membership_dict,
+            snapshot_game_ids,
+            report_out_overrides,
+            questionable_dict,
+            snapshot_report_listed_players,
+        )
     pregame_index = _index_injured_dict(pregame_dict)
     realized_index = _index_injured_dict(injured_dict)
     questionable_index = {

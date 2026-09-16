@@ -5,11 +5,11 @@ uses -- not a copy of them, and not a modification. Every function called here i
 imported from its existing home, so the two datasets cannot drift apart in how a
 shared feature is computed.
 
-Three stages are deliberately absent, and none of them is an oversight:
+Three stages are deliberately absent from this base stage:
 
-* **Player-level statistics and injury status** -- there is no trustworthy
-  timestamped injury history, so a snapshot at T-12h would be given knowledge
-  that only existed at T-1h. Train and inference would disagree.
+* **Player-level statistics and injury status** -- attached after the base game
+  build using the latest report strictly before each snapshot. The base stage
+  only computes team history and supplies the player context for that step.
 * **Referees** -- attached after the base game build, then masked per snapshot
   until 09:00 Eastern on game day.
 * **``engineer_odds_features``** -- close-time by its own docstring. Its useful
@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import warnings
 from collections import defaultdict
+from dataclasses import dataclass
 from zoneinfo import ZoneInfo
 
 import pandas as pd
@@ -100,6 +101,17 @@ from nba_ou.utils.seasons import get_seasons_between_dates
 warnings.simplefilter(action="ignore", category=FutureWarning)
 
 DEFAULT_BOOK = get_main_book()
+
+
+@dataclass
+class BaseInjuryContext:
+    """Inputs already loaded for snapshot-specific player and report features."""
+
+    team_games: pd.DataFrame
+    players: pd.DataFrame
+    seasons: list[str]
+    player_context_seasons: list[str]
+
 
 #: ``merge_home_away_data`` derives two "star player" ratios inline and indexes
 #: these columns directly, so it raises if the player stage never ran. They are
@@ -263,8 +275,9 @@ def create_base_game_features(
     roster_injury_reports: str = "lagged",
     exclude_caesars: bool = False,
     combine_fanatics_and_caesars: bool | None = None,
+    return_injury_context: bool = False,
     verbose: bool = True,
-) -> pd.DataFrame:
+) -> pd.DataFrame | tuple[pd.DataFrame, BaseInjuryContext]:
     """One row per game, carrying only leakage-safe pre-game team features.
 
     The returned frame still contains this game's closing-odds columns -- they
@@ -370,6 +383,16 @@ def create_base_game_features(
         spread_ml_book=DEFAULT_BOOK,
         total_line_book=DEFAULT_BOOK,
     )
+    injury_context = (
+        BaseInjuryContext(
+            team_games=df.copy(),
+            players=df_players.copy(),
+            seasons=seasons,
+            player_context_seasons=player_context_seasons,
+        )
+        if return_injury_context
+        else None
+    )
 
     if include_all_star:
         if verbose:
@@ -444,4 +467,6 @@ def create_base_game_features(
             f"✓ Base game features: {df_training.shape[0]} games, "
             f"{df_training.shape[1]} columns"
         )
+    if injury_context is not None:
+        return df_training, injury_context
     return df_training

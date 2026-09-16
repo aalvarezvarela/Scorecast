@@ -96,6 +96,15 @@ SCHEDULE_COLUMN_PREFIXES: tuple[str, ...] = (
 #: ticks at or before the snapshot horizon.
 SNAPSHOT_COLUMN_PREFIXES: tuple[str, ...] = ("ODDS_SNAP_", "ODDS_LINE_HIST_")
 
+# The closing pipeline's availability-effect estimator names these columns
+# without a _BEFORE suffix. In the intermediate dataset they are built from
+# reports selected strictly before each snapshot and from earlier games only.
+SNAPSHOT_INJURY_EFFECT_PREFIXES: tuple[str, ...] = (
+    "TOP3_AVAILABILITY_EFFECT_",
+    "TOP3_INJURED_AVAILABILITY_EFFECT_",
+    "TOP2_QUESTIONABLE_AVAILABILITY_EFFECT_",
+)
+
 #: Outcome columns and derived targets that survive the intermediate gate.
 #:
 #: HOME_MARGIN / PTS_TEAM_HOME / PTS_TEAM_AWAY are outcome facts carried so the
@@ -161,7 +170,11 @@ def is_kept_column(column: str) -> bool:
         return True
     if column in SAFE_ODDS_COLUMNS:
         return True
-    if _is_snapshot_column(column) or _is_schedule_column(column):
+    if (
+        _is_snapshot_column(column)
+        or _is_schedule_column(column)
+        or column.startswith(SNAPSHOT_INJURY_EFFECT_PREFIXES)
+    ):
         return True
     return "_BEFORE" in column
 

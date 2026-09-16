@@ -142,7 +142,10 @@ History
 
     In intermediate-line snapshots these referee columns are populated only at
     or after 09:00 Eastern on the game's date; earlier snapshots carry NaN.
-    The intermediate pipeline keeps the ``2_5`` schema version for this change.
+    Injury features use the most recent filed report strictly before each
+    snapshot's UTC timestamp. An unfiled team gets a coverage flag of 0 and
+    NaN for its injury-derived values. The intermediate pipeline keeps the
+    ``2_5`` schema version for these changes.
 """
 
 from __future__ import annotations

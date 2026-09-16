@@ -48,6 +48,9 @@ from nba_ou.config.odds_columns import (
 from nba_ou.create_training_data.create_base_game_features import (
     create_base_game_features,
 )
+from nba_ou.create_training_data.intermediate_injuries import (
+    add_snapshot_injury_features,
+)
 from nba_ou.create_training_data.intermediate_referees import (
     add_intermediate_referee_features,
     add_snapshot_referee_interactions,
@@ -584,7 +587,7 @@ def create_intermediate_line_df(
             "The extra season(s) carry team and player history but no odds, so "
             "they lengthen the build without warming any odds rollup."
         )
-    base = create_base_game_features(
+    base, injury_context = create_base_game_features(
         recent_limit_to_include=recent_limit_to_include,
         season_start_date=pd.Timestamp(year=base_start_year, month=10, day=1),
         categorical_team_encoding=categorical_team_encoding,
@@ -593,6 +596,7 @@ def create_intermediate_line_df(
         null_extreme_spread_prices=null_extreme_spread_prices,
         exclude_caesars=exclude_caesars,
         combine_fanatics_and_caesars=combine_books,
+        return_injury_context=True,
         verbose=verbose,
     )
     base["GAME_ID"] = base["GAME_ID"].astype(str)
@@ -606,6 +610,10 @@ def create_intermediate_line_df(
         exclude_caesars=exclude_caesars,
         combine_fanatics_and_caesars=combine_books,
     )
+    # Availability-effect history reads completed games' closing lines. Keep
+    # this per-game frame before the current game's closing columns are renamed
+    # into the scoring-only namespace below.
+    injury_base = base
 
     # Closing lines are renamed, not kept: they leave in the scoring sidecar so
     # they cannot reach the feature matrix. The opener is deliberately NOT swept
@@ -686,6 +694,7 @@ def create_intermediate_line_df(
     merged["SNAPSHOT_TS_UTC"] = merged["TIPOFF_UTC"] - pd.to_timedelta(
         merged["TIME_TO_MATCH_MIN"], unit="m"
     )
+    merged = add_snapshot_injury_features(merged, injury_base, injury_context)
     # ---- targets -------------------------------------------------------
     main_line_column = total_line_col(anchor)
     # The main-book column now holds the SNAPSHOT line, so the derived target
