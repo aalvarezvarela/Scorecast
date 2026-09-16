@@ -5,9 +5,12 @@ from functools import lru_cache
 import numpy as np
 import pandas as pd
 
-# Constants for top player statistics
+# Constants for top player statistics, one per availability group.
 N_TOP_PLAYERS_NON_INJURED = 6
 N_TOP_PLAYERS_INJURED = 4
+#: The questionable group is small -- 13% of covered team-games have one at all
+#: and 8.5% have more than two -- so two slots cover nearly every team-game.
+N_TOP_PLAYERS_QUESTIONABLE = 2
 
 #: Box-score absence reasons that count as unavailable.
 #:
@@ -24,10 +27,11 @@ N_TOP_PLAYERS_INJURED = 4
 #: from a coach's decision, and reading them makes the roster split a function
 #: of the game being predicted (see ``nba_ou.config.leakage``).
 #:
-#: ``NWT - G League`` is NOT here. A two-way player on assignment is a roster
-#: fact, not an absence: they were never part of the rotation this feature is
-#: measuring, so counting them would inflate the injured-player aggregates with
-#: players whose absence costs the team nothing.
+#: ``NWT - G League`` is NOT matched here. A two-way player on assignment is a
+#: roster fact, not an absence: they were never part of the rotation this
+#: feature is measuring. Note this only governs the comment source -- the
+#: inactive list (``nba_injuries``) does carry G League assignees, about 25% of
+#: the injured set in 2019-2025, and so does the pre-game injury report as Out.
 #:
 #: Matched case-insensitively against the ``COMMENT`` field, whose values look
 #: like ``DNP - Injury/Illness - Left Knee; Soreness``, ``DND - Rest`` or
@@ -427,7 +431,9 @@ def _season_year_from_value(season_value):
         return None
 
 
-def create_injury_streak_lookup(df_team, injured_dict, max_seasons_back=2):
+def create_injury_streak_lookup(
+    df_team, injured_dict, max_seasons_back=2, current_game_injured_dict=None
+):
     """
     Build a lookup for consecutive injured-game streaks.
 
@@ -436,6 +442,11 @@ def create_injury_streak_lookup(df_team, injured_dict, max_seasons_back=2):
 
     Streak is counted for consecutive team games up to and including `game_id`.
     Search is limited to the current + previous `max_seasons_back - 1` seasons.
+
+    ``current_game_injured_dict`` decides the game being looked up only; every
+    earlier game is read from ``injured_dict``. That is the split between the
+    pre-game report (what was known before this tip) and realized absences
+    (settled for games already played). ``None`` uses ``injured_dict`` for both.
     """
     if df_team is None or df_team.empty:
         return lambda game_id, team_id, player_id: 0
@@ -467,9 +478,9 @@ def create_injury_streak_lookup(df_team, injured_dict, max_seasons_back=2):
         game_pos_by_team[team_key] = pos_map
         season_year_by_team_game[team_key] = season_map
 
-    injured_sets = {}
-    if injured_dict:
-        for game_id, team_map in injured_dict.items():
+    def _as_sets(mapping):
+        sets = {}
+        for game_id, team_map in (mapping or {}).items():
             game_key = str(game_id)
             per_team = {}
             for team_id, player_ids in team_map.items():
@@ -479,7 +490,15 @@ def create_injury_streak_lookup(df_team, injured_dict, max_seasons_back=2):
                     for pid in player_ids
                     if not pd.isna(pid) and str(pid) not in {"", "0", "None"}
                 }
-            injured_sets[game_key] = per_team
+            sets[game_key] = per_team
+        return sets
+
+    injured_sets = _as_sets(injured_dict)
+    current_sets = (
+        injured_sets
+        if current_game_injured_dict is None
+        else _as_sets(current_game_injured_dict)
+    )
 
     @lru_cache(maxsize=300_000)
     def lookup(game_id, team_id, player_id):
@@ -517,7 +536,8 @@ def create_injury_streak_lookup(df_team, injured_dict, max_seasons_back=2):
                 ):
                     break
 
-            injured_for_team = injured_sets.get(hist_game_key, {}).get(team_key, set())
+            source = current_sets if idx == current_pos else injured_sets
+            injured_for_team = source.get(hist_game_key, {}).get(team_key, set())
             if player_key in injured_for_team:
                 streak += 1
             else:

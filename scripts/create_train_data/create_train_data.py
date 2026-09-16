@@ -5,7 +5,7 @@ Create training dataset up to 2026-01-10 (no date-to-predict / scheduled games).
 This script calls `create_df_to_predict` without providing a prediction date
 or scheduled-game data. It saves the resulting DataFrame to
 `data/train_data/training_data_<schema_version>_YYYYMMDD.csv`
-(currently schema 2_2; see nba_ou.config.dataset_versions).
+(see nba_ou.config.dataset_versions for the current schema).
 """
 
 from pathlib import Path
@@ -16,6 +16,9 @@ from nba_ou.create_training_data.create_df_to_predict import create_df_to_predic
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
+#: Schema reproduced by ``--no-injury-report-features``.
+CONTROL_SCHEMA_VERSION = "2_3"
+
 
 def main(
     limit_date_to_train: str = "2026-01-10",
@@ -24,6 +27,8 @@ def main(
     normalize_total_lines: bool = True,
     normalize_spread_lines: bool = True,
     null_extreme_spread_prices: bool = True,
+    injury_report_features: bool = True,
+    status_top_n: dict[str, int] | None = None,
 ) -> None:
     """Create training data up to `limit_date_to_train`.
 
@@ -40,6 +45,8 @@ def main(
         normalize_total_lines=normalize_total_lines,
         normalize_spread_lines=normalize_spread_lines,
         null_extreme_spread_prices=null_extreme_spread_prices,
+        injury_report_features=injury_report_features,
+        status_top_n=status_top_n,
     )
 
     if output is None:
@@ -48,10 +55,17 @@ def main(
         # Schema version in the name, never overwritten in place: spread and
         # moneyline additions, then spread-normalization semantics, must land beside
         # older files that pinned checksums still refer to.
+        # Without the injury report the build is the schema 2_3 control, so it
+        # is named as a 2_3 rebuild rather than as a 2_4 variant.
+        schema, variant = (
+            (TRAINING_DATA_SCHEMA_VERSION, "")
+            if injury_report_features
+            else (CONTROL_SCHEMA_VERSION, "_rebuild")
+        )
         output = (
             output_path
-            / f"training_data_{TRAINING_DATA_SCHEMA_VERSION}_"
-            f"{pd.to_datetime(limit_date_to_train).strftime('%Y%m%d')}.csv"
+            / f"training_data_{schema}_"
+            f"{pd.to_datetime(limit_date_to_train).strftime('%Y%m%d')}{variant}.csv"
         )
     else:
         output.parent.mkdir(parents=True, exist_ok=True)
@@ -103,6 +117,22 @@ if __name__ == "__main__":
         help="Keep extreme spread price cells instead of setting them to NaN.",
     )
 
+    parser.add_argument(
+        "--no-injury-report-features",
+        action="store_true",
+        help=(
+            "Schema 2_3 control: out set from the inactive list only, no injury "
+            "report or listed-status columns. Written as training_data_2_3_*_rebuild.csv."
+        ),
+    )
+    for status, default in (("questionable", 2), ("probable", 1), ("doubtful", 1)):
+        parser.add_argument(
+            f"--n-top-{status}",
+            type=int,
+            default=default,
+            help=f"{status.title()} players per side with per-player columns (default {default}).",
+        )
+
     args = parser.parse_args()
     main(
         args.limit,
@@ -111,4 +141,10 @@ if __name__ == "__main__":
         normalize_total_lines=not args.no_normalize_total_lines,
         normalize_spread_lines=not args.no_normalize_spread_lines,
         null_extreme_spread_prices=not args.keep_extreme_spread_prices,
+        injury_report_features=not args.no_injury_report_features,
+        status_top_n={
+            "questionable": args.n_top_questionable,
+            "probable": args.n_top_probable,
+            "doubtful": args.n_top_doubtful,
+        },
     )

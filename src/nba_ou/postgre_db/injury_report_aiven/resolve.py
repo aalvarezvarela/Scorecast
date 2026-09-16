@@ -45,8 +45,33 @@ METHOD_GAME_ROSTER = "game_roster"
 METHOD_GAME_INITIAL = "game_roster_initial"
 METHOD_SEASON_ROSTER = "season_roster"
 METHOD_SEASON_INITIAL = "season_roster_initial"
+METHOD_CURATED_ALIAS = "curated_alias"
 
 _SUFFIXES = {"jr", "sr", "ii", "iii", "iv", "v"}
+
+#: Report names the four roster tiers cannot resolve, mapped to ``player_id`` by
+#: hand. Each was checked against box scores and inactive lists (2026-09-15).
+#: Keys are :func:`normalise_name` output. Only the case this table exists for:
+#: the report and our rosters spell the player differently, or the surname +
+#: initial collides within the team. Traded or waived players listed by a club
+#: they never played for are NOT here -- they stay unresolved, correctly.
+#:
+#: The alias is still scoped: it applies only when that ``player_id`` is on the
+#: listing team's roster that season, so a stale entry cannot attach a player to
+#: a team he never belonged to.
+CURATED_PLAYER_ALIASES: dict[str, int] = {
+    # Legal name on the report; box scores carry "B. Carrington" / "Bub".
+    "carrington|carlton": 1642267,
+    # HOU 2024-25 box scores abbreviate both Jalen and Jeff Green to "J. Green",
+    # so the initial tier refuses the match as ambiguous.
+    "green|jalen": 1630224,
+    # Reported under his old surname; our tables carry "Enes Freedom".
+    "kanter|enes": 202683,
+    # Reported by full legal name; our tables carry "Didi Louzada".
+    "louzadasilva|marcos": 1629712,
+    # Reported without his second surname; our tables carry "Jones Garcia".
+    "jones|david": 1642357,
+}
 
 
 def normalise_name(raw: object) -> str:
@@ -430,6 +455,46 @@ def _match_tier(
     return matched.reset_index(drop=True), still
 
 
+def _match_curated_alias(
+    pending: pd.DataFrame,
+    rosters: pd.DataFrame,
+    aliases: dict[str, int] | None = None,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Resolve through :data:`CURATED_PLAYER_ALIASES`, scoped to the team-season.
+
+    Returns ``(matched, still_pending)`` like :func:`_match_tier`.
+    """
+    aliases = CURATED_PLAYER_ALIASES if aliases is None else aliases
+    if pending.empty or not aliases:
+        return pending.iloc[0:0], pending
+
+    candidate = pending["norm_name"].map(aliases)
+    members = set(
+        zip(
+            rosters["season_year"].astype(int),
+            rosters["nba_team_id"].astype(int),
+            rosters["player_id"].astype(int),
+            strict=True,
+        )
+    )
+    hit = pd.Series(
+        [
+            pd.notna(pid)
+            and pd.notna(season)
+            and pd.notna(team)
+            and (int(season), int(team), int(pid)) in members
+            for pid, season, team in zip(
+                candidate, pending["season_year"], pending["nba_team_id"], strict=True
+            )
+        ],
+        index=pending.index,
+    )
+    matched = pending.loc[hit].copy()
+    matched["player_id"] = candidate.loc[hit].astype("int64")
+    matched["method"] = METHOD_CURATED_ALIAS
+    return matched.reset_index(drop=True), pending.loc[~hit].reset_index(drop=True)
+
+
 def resolve_players(
     rows: pd.DataFrame, rosters: pd.DataFrame, report: ResolutionReport
 ) -> pd.DataFrame:
@@ -462,6 +527,11 @@ def resolve_players(
             matched_frames.append(found)
         if pending.empty:
             break
+
+    # Last, so a curated alias can never override a roster match.
+    found, pending = _match_curated_alias(pending, rosters)
+    if not found.empty:
+        matched_frames.append(found)
 
     for _, row in pending.iterrows():
         report.unresolved.append(

@@ -456,3 +456,74 @@ def test_clear_season_rolls_back_everything_on_failure():
     with pytest.raises(RuntimeError):
         load_module.clear_season(conn, 2025)
     assert conn.rolled_back and not conn.committed
+
+
+# --------------------------------------------------------------------------------
+# Curated player aliases
+# --------------------------------------------------------------------------------
+
+from nba_ou.postgre_db.injury_report_aiven.resolve import (  # noqa: E402
+    CURATED_PLAYER_ALIASES,
+    METHOD_CURATED_ALIAS,
+    ResolutionReport,
+    resolve_players,
+)
+
+_HOU = 1610612745
+
+
+def _roster(rows):
+    frame = pd.DataFrame(
+        rows, columns=["game_id", "nba_team_id", "player_id", "season_year", "name"]
+    )
+    frame["norm_name"] = frame["name"].map(normalise_name)
+    frame["norm_initial"] = frame["norm_name"].map(initial_key)
+    return frame.drop(columns=["name"])
+
+
+def _listing(raw_name, team=_HOU, season=2024, game="0022400001"):
+    return pd.DataFrame(
+        {
+            "raw_name": [raw_name],
+            "raw_team": ["Houston Rockets"],
+            "nba_team_id": [team],
+            "season_year": [season],
+            "game_id": [game],
+        }
+    )
+
+
+def test_curated_alias_resolves_an_initial_collision_on_the_team():
+    # Jalen and Jeff Green are both "J. Green" in HOU 2024-25 box scores.
+    rosters = _roster(
+        [
+            ("0022400001", _HOU, 1630224, 2024, "Green, J"),
+            ("0022400001", _HOU, 201145, 2024, "Green, J"),
+        ]
+    )
+    report = ResolutionReport()
+    out = resolve_players(_listing("Green, Jalen"), rosters, report)
+    assert out["player_id"].tolist() == [CURATED_PLAYER_ALIASES["green|jalen"]]
+    assert out["method"].tolist() == [METHOD_CURATED_ALIAS]
+    assert not report.unresolved
+
+
+def test_curated_alias_requires_the_player_on_that_team_season():
+    # Same alias, but 1630224 is not on this team's roster that season.
+    rosters = _roster([("0022400001", _HOU, 201935, 2024, "Harden, James")])
+    report = ResolutionReport()
+    out = resolve_players(_listing("Green, Jalen"), rosters, report)
+    assert out.empty
+    assert len(report.unresolved) == 1
+
+
+def test_a_roster_match_wins_over_a_curated_alias():
+    rosters = _roster(
+        [
+            ("0022400001", _HOU, 1630224, 2024, "Green, Jalen"),
+            ("0022400001", _HOU, 999, 2024, "Jones, David"),
+        ]
+    )
+    out = resolve_players(_listing("Jones, David"), rosters, ResolutionReport())
+    assert out["player_id"].tolist() == [999]
+    assert out["method"].tolist() != [METHOD_CURATED_ALIAS]

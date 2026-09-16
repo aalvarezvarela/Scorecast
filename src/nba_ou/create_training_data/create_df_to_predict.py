@@ -53,6 +53,21 @@ from nba_ou.data_processing.odds.book_combination import (
 from nba_ou.data_processing.odds.merge_scheduled_odds import (
     merge_and_validate_scheduled_odds,
 )
+from nba_ou.data_processing.injury_status.features import (
+    add_injury_report_features,
+    mask_uncovered_group_columns,
+)
+from nba_ou.data_processing.injury_status.status_history import (
+    load_player_box_history,
+)
+from nba_ou.data_processing.injury_status.report_state import (
+    InjuryReportState,
+    apply_report_out_overrides,
+    load_injury_report_state,
+    nested_status_dict,
+    report_out_overrides,
+    report_questionable_sets,
+)
 from nba_ou.data_processing.past_injuries.injury_effects import (
     add_top3_availability_effect_features_for_columns,
 )
@@ -220,6 +235,9 @@ def process_player_statistics_for_training(
     return_players: bool = False,
     player_context_seasons=None,
     df_team_context=None,
+    report_out_overrides=None,
+    report_questionable_sets=None,
+    include_available_roster_count: bool = False,
 ):
     """
     Process player statistics and prepare for training.
@@ -247,6 +265,12 @@ def process_player_statistics_for_training(
             `player_context_seasons`, used to attach dates to those player rows.
         return_players (bool): When true, also return the cleaned player rows and
             the local per-game availability map used by historical effects.
+        report_out_overrides (dict, optional): Pre-game out sets from the last
+            injury report before tip; see ``add_player_history_features``.
+        report_questionable_sets (dict, optional): The questionable group per
+            covered team-game; see ``add_player_history_features``.
+        include_available_roster_count (bool): Emit
+            ``N_AVAILABLE_ROSTER_PLAYERS`` (schema 2_4 only).
 
     Returns:
         tuple: Team features and injury dictionary, plus cleaned player rows and
@@ -285,6 +309,9 @@ def process_player_statistics_for_training(
         stats,
         injury_dict_scheduled=injury_dict_scheduled,
         return_availability_dict=True,
+        report_out_overrides=report_out_overrides,
+        report_questionable_sets=report_questionable_sets,
+        include_available_roster_count=include_available_roster_count,
     )
 
     if return_players:
@@ -304,6 +331,9 @@ def create_df_to_predict(
     null_extreme_spread_prices: bool = True,
     exclude_caesars: bool = False,
     combine_fanatics_and_caesars: bool | None = None,
+    injury_report_features: bool = True,
+    status_top_n: dict[str, int] | None = None,
+    injury_report_state: InjuryReportState | None = None,
 ) -> pd.DataFrame:
     """
     Create prediction dataset for NBA over/under prediction models.
@@ -344,6 +374,19 @@ def create_df_to_predict(
             "combine unless an exclusion was explicitly asked for" -- so the
             merged book is what you get out of the box. See
             nba_ou.data_processing.odds.book_combination.
+        injury_report_features (bool, optional): If True (default), read the
+            last injury report before each tipoff from ``injury_report`` (Aiven).
+            Covered team-games take their out set from it (Out, Doubtful,
+            Questionable) and gain per-status counters, the form of the players
+            listed Questionable, Probable or Doubtful, and play-probability and
+            effect columns for the first two. Team-games without a report
+            keep the legacy inactive-list set, with those columns NaN. Also
+            gates ``N_AVAILABLE_ROSTER_PLAYERS``. False reproduces the schema
+            2_3 build: same columns, same out sets.
+        status_top_n (dict, optional): Per-player slots per side for each
+            listed status. Default Questionable 2, Probable 1, Doubtful 1.
+        injury_report_state (InjuryReportState, optional): Pre-loaded report
+            state, mainly for tests; loaded from Aiven when omitted.
 
     Returns:
         pd.DataFrame: Complete training dataset with all features
@@ -506,6 +549,19 @@ def create_df_to_predict(
     )
     print(f"✓ Loaded {len(df_injuries)} injury records")
 
+    overrides = None
+    questionable_sets = None
+    if injury_report_features:
+        print("Loading last injury reports before tipoff...")
+        if injury_report_state is None:
+            # Every loaded season: history features need more than this window.
+            injury_report_state = load_injury_report_state()
+        overrides = report_out_overrides(injury_report_state)
+        questionable_sets = report_questionable_sets(injury_report_state)
+        print(
+            f"✓ {len(injury_report_state.covered):,} team-games covered by a report"
+        )
+
     # Add Players Statistics
     print("Processing player statistics...")
     df, injured_dict, df_players, player_availability_dict = (
@@ -521,6 +577,9 @@ def create_df_to_predict(
             return_players=True,
             player_context_seasons=player_context_seasons,
             df_team_context=df_team_player_context,
+            report_out_overrides=overrides,
+            report_questionable_sets=questionable_sets,
+            include_available_roster_count=injury_report_features,
         )
     )
     df = add_roster_continuity_feature(
@@ -531,6 +590,19 @@ def create_df_to_predict(
         scheduled_game_ids=scheduled_game_ids,
     )
     print("✓ Player statistics processed")
+
+    # The game being built reads its out set from the report where one exists;
+    # roster continuity above keeps realized absences, as it is roster history.
+    pregame_injured_dict = apply_report_out_overrides(injured_dict, overrides)
+    if injury_report_features:
+        print("Adding injury report counters and listed-status features...")
+        df = add_injury_report_features(
+            df,
+            injury_report_state,
+            load_player_box_history(),
+            status_top_n=status_top_n,
+        )
+        print("✓ Injury report features added")
 
     required_all_star_season_years = sorted(
         {all_star_season_year_for_game_date(d) for d in df["GAME_DATE"]}
@@ -549,7 +621,10 @@ def create_df_to_predict(
         df_team=df,
         df_players=df_players,
         all_star_voting_df=all_star_voting_df,
-        injured_dict=injured_dict,
+        injured_dict=pregame_injured_dict,
+        questionable_dict=nested_status_dict(questionable_sets)
+        if questionable_sets
+        else None,
     )
     print("✓ All-star fan-vote share features added")
 
@@ -566,6 +641,8 @@ def create_df_to_predict(
         and not col.startswith("ALL_STAR_MIN_SCORE_BEFORE_")
         and not col.startswith("ALL_STAR_MAX_INJURED_FAN_VOTE_SHARE_BEFORE_")
         and not col.startswith("ALL_STAR_MIN_INJURED_SCORE_BEFORE_")
+        and not col.startswith("ALL_STAR_MAX_QUESTIONABLE_FAN_VOTE_SHARE_BEFORE_")
+        and not col.startswith("ALL_STAR_MIN_QUESTIONABLE_SCORE_BEFORE_")
     ]
     if all_star_aux_cols:
         df_merged = df_merged.drop(columns=all_star_aux_cols)
@@ -653,6 +730,39 @@ def create_df_to_predict(
         include_per_player_columns=False,
         include_detailed_sample_size_features=False,
     )
+
+    # The third availability group. Same estimator, same history (each player's
+    # own present-versus-absent games), different set of players: the ones the
+    # report leaves genuinely uncertain. Only the ids differ, because the effect
+    # is a property of the player, not of the group he is in tonight.
+    if injury_report_features:
+        df_training = add_top3_availability_effect_features_for_columns(
+            df_training,
+            injured_dict,
+            availability_dict=player_availability_dict,
+            total_line_book=DEFAULT_TOTAL_LINE_BOOK,
+            spread_line_book=DEFAULT_SPREAD_ML_BOOK,
+            home_player_cols=(
+                "TOP1_QUESTIONABLE_PLAYER_ID_PTS_BEFORE_TEAM_HOME",
+                "TOP2_QUESTIONABLE_PLAYER_ID_PTS_BEFORE_TEAM_HOME",
+                "TOP1_QUESTIONABLE_PLAYER_ID_MIN_BEFORE_TEAM_HOME",
+            ),
+            away_player_cols=(
+                "TOP1_QUESTIONABLE_PLAYER_ID_PTS_BEFORE_TEAM_AWAY",
+                "TOP2_QUESTIONABLE_PLAYER_ID_PTS_BEFORE_TEAM_AWAY",
+                "TOP1_QUESTIONABLE_PLAYER_ID_MIN_BEFORE_TEAM_AWAY",
+            ),
+            out_prefix="TOP2_QUESTIONABLE_AVAILABILITY_EFFECT",
+            shrinkage_k=10.0,
+            include_per_player_columns=False,
+            include_detailed_sample_size_features=False,
+        )
+        # The builder is coverage-blind and fills "no players" with the shrunk
+        # limit, 0. That reading is only true where the report says nobody is
+        # Questionable, so uncovered sides go back to NaN.
+        df_training = mask_uncovered_group_columns(
+            df_training, "TOP2_QUESTIONABLE_AVAILABILITY_EFFECT"
+        )
     print("✓ Injury availability effects computed")
 
     print("Adding travel and temporal features...")
