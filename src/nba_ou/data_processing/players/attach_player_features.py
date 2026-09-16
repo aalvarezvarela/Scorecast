@@ -3,6 +3,11 @@ import re
 import pandas as pd
 from tqdm import tqdm
 
+from nba_ou.data_processing.injury_status.report_state import (
+    apply_report_out_overrides,
+    nested_status_dict,
+    union_membership_dicts,
+)
 from nba_ou.data_processing.past_injuries.past_injuries import (
     N_TOP_PLAYERS_INJURED,
     N_TOP_PLAYERS_NON_INJURED,
@@ -11,10 +16,10 @@ from nba_ou.data_processing.past_injuries.past_injuries import (
     create_player_lookup,
     get_injured_players_dict,
 )
-from nba_ou.data_processing.injury_status.report_state import (
-    apply_report_out_overrides,
-    nested_status_dict,
-    union_membership_dicts,
+from nba_ou.data_processing.players.feature_profile import ACTIVE_PROFILE
+from nba_ou.data_processing.players.fresh_absence import (
+    STREAK_STAT_COLS,
+    add_fresh_absence_features,
 )
 from nba_ou.data_processing.players.players_statistics import (
     get_top_n_averages_with_names,
@@ -235,7 +240,7 @@ def add_player_history_features(
     df_team,
     df_players,
     df_injuries,
-    stat_cols=["PTS"],
+    stat_cols=("PTS",),
     injury_dict_scheduled=None,
     return_availability_dict: bool = False,
     report_out_overrides: dict[tuple[str, str], list[str]] | None = None,
@@ -270,8 +275,8 @@ def add_player_history_features(
             set, and given the same family of top-N columns as both. Omit it
             (the default) and the roster splits in two exactly as before.
         include_available_roster_count (bool): Emit
-            ``N_AVAILABLE_ROSTER_PLAYERS_BEFORE``. Off by default so a build
-            without the injury report reproduces the schema 2_3 columns.
+            ``N_AVAILABLE_ROSTER_PLAYERS_BEFORE``. Off by default for builds
+            without injury-report features.
 
     Returns:
         pd.DataFrame: Updated df_team with extra columns for top players and injured players
@@ -321,95 +326,140 @@ def add_player_history_features(
         df_players = precompute_cumulative_avg_stat(df_players, stat_col=stat_col)
 
         # 2) Dynamically name new columns based on `stat_col`
+        profile = ACTIVE_PROFILE
         new_cols = [
-            # Top 3 non-injured player columns
+            # Top-N non-injured player columns. The id/name pair is bookkeeping
+            # for the availability-effect features and is dropped at the end of
+            # the pipeline; only the slots those features read are produced.
             *[
                 f"TOP{i}_PLAYER_ID_{stat_col}"
                 for i in range(1, N_TOP_PLAYERS_NON_INJURED + 1)
+                if profile.emits_identifier(stat_col, i)
             ],
             *[
                 f"TOP{i}_PLAYER_NAME_{stat_col}"
                 for i in range(1, N_TOP_PLAYERS_NON_INJURED + 1)
+                if profile.emits_identifier(stat_col, i)
             ],
             *[
                 f"TOP{i}_PLAYER_{stat_col}"
                 for i in range(1, N_TOP_PLAYERS_NON_INJURED + 1)
+                if profile.emits_value(stat_col, i, injured=False)
             ],
-            # Top 3 injured player columns
+            # Top-N injured player columns
             *[
                 f"TOP{i}_INJURED_PLAYER_ID_{stat_col}"
                 for i in range(1, N_TOP_PLAYERS_INJURED + 1)
+                if profile.emits_identifier(stat_col, i)
             ],
             *[
                 f"TOP{i}_INJURED_PLAYER_NAME_{stat_col}"
                 for i in range(1, N_TOP_PLAYERS_INJURED + 1)
+                if profile.emits_identifier(stat_col, i)
             ],
             *[
                 f"TOP{i}_INJURED_PLAYER_{stat_col}"
                 for i in range(1, N_TOP_PLAYERS_INJURED + 1)
+                if profile.emits_value(stat_col, i, injured=True)
             ],
-            # Streak columns only for PTS to avoid repetition
+            # Streak columns only for the statistics that rank a player's
+            # importance (see STREAK_STAT_COLS); the rest would repeat the same
+            # absence over a differently sorted top-N list.
             *(
                 [
                     f"TOP{i}_INJURED_STREAK_{stat_col}"
                     for i in range(1, N_TOP_PLAYERS_INJURED + 1)
                 ]
-                if stat_col == "PTS"
+                if stat_col in STREAK_STAT_COLS
                 else []
             ),
-            # The questionable group: the same three flavours, the same
-            # aggregates, its own slot count.
+            *(
+                [f"AVG_INJURED_{stat_col}"]
+                if stat_col in profile.avg_injured_stats
+                else []
+            ),
+            # Questionable players remain a separate group and follow the
+            # same reduced profile as injured players.
             *(
                 [
                     *[
                         f"TOP{i}_QUESTIONABLE_PLAYER_ID_{stat_col}"
                         for i in range(1, N_TOP_PLAYERS_QUESTIONABLE + 1)
+                        if profile.emits_identifier(stat_col, i)
                     ],
                     *[
                         f"TOP{i}_QUESTIONABLE_PLAYER_NAME_{stat_col}"
                         for i in range(1, N_TOP_PLAYERS_QUESTIONABLE + 1)
+                        if profile.emits_identifier(stat_col, i)
                     ],
                     *[
                         f"TOP{i}_QUESTIONABLE_PLAYER_{stat_col}"
                         for i in range(1, N_TOP_PLAYERS_QUESTIONABLE + 1)
+                        if profile.emits_value(stat_col, i, injured=True)
                     ],
                     *(
                         [
                             f"TOP{i}_QUESTIONABLE_STREAK_{stat_col}"
                             for i in range(1, N_TOP_PLAYERS_QUESTIONABLE + 1)
                         ]
-                        if stat_col == "PTS"
+                        if stat_col in STREAK_STAT_COLS
                         else []
                     ),
-                    f"AVG_QUESTIONABLE_{stat_col}",
-                    f"TOTAL_QUESTIONABLE_PLAYER_{stat_col}",
+                    *(
+                        [f"AVG_QUESTIONABLE_{stat_col}"]
+                        if stat_col in profile.avg_injured_stats
+                        else []
+                    ),
+                    *(
+                        [f"TOTAL_QUESTIONABLE_PLAYER_{stat_col}"]
+                        if stat_col in profile.total_injured_stats
+                        else []
+                    ),
                     *(["N_QUESTIONABLE_PLAYERS"] if stat_col == "PTS" else []),
                 ]
                 if build_questionable_group
                 else []
             ),
-            f"AVG_INJURED_{stat_col}",
             # Aggregation over the INJURED set only. That set is resolved from
             # each player's last game strictly BEFORE this one (the
             # ``injured=True`` branch of get_top_n_averages_with_names), so it
             # carries no information from tonight's box score. Its non-injured
             # twin did, and is gone -- see below.
-            f"TOTAL_INJURED_PLAYER_{stat_col}",
+            #
+            # Emitted only for counting statistics: summing a RATE over players
+            # is not a quantity, and measurably just re-counts the injured
+            # players (r = 0.98 with N_INJURED_PLAYERS). See feature_profile.py.
+            *(
+                [f"TOTAL_INJURED_PLAYER_{stat_col}"]
+                if stat_col in profile.total_injured_stats
+                else []
+            ),
             # Player count columns only for PTS to avoid repetition
             *(["N_INJURED_PLAYERS"] if stat_col == "PTS" else []),
         ]
         all_new_cols.extend([_with_before_suffix(c) for c in new_cols])
 
     # Bench player columns (stat-independent, added once)
-    bench_cols = [
-        *([N_AVAILABLE_ROSTER_PLAYERS_COL] if include_available_roster_count else []),
-        "BENCH_AVG_PTS_PER_MIN",
-        "BENCH_MAX_PTS_PER_MIN",
-        "BENCH_AVG_PACE_PER40",
-        "BENCH_MAX_PACE_PER40",
-        "N_BENCH_PLAYERS",
-    ]
-    all_new_cols.extend([_with_before_suffix(c) for c in bench_cols])
+    if include_available_roster_count:
+        all_new_cols.append(_with_before_suffix(N_AVAILABLE_ROSTER_PLAYERS_COL))
+    all_new_cols.extend([_with_before_suffix(c) for c in ACTIVE_PROFILE.bench_cols])
+
+    # Minutes-weighted rate aggregates, one per side per rate statistic. These
+    # replace the per-slot rate columns: ranking rotation players by a rate
+    # returns nearly the same value in every slot (r = 0.97 between slots 2 and
+    # 3), while the weighted aggregate says what the per-slot columns were
+    # reaching for and stays defined when a slot is empty.
+    all_new_cols.extend(
+        [
+            _with_before_suffix(f"{group}_WEIGHTED_{stat_col}")
+            for group in (
+                ("ACTIVE", "INJURED", "QUESTIONABLE")
+                if build_questionable_group
+                else ("ACTIVE", "INJURED")
+            )
+            for stat_col in ACTIVE_PROFILE.weighted_rate_stats
+        ]
+    )
 
     # Create all columns at once to avoid fragmentation
     new_cols_df = pd.DataFrame(None, index=df_team.index, columns=all_new_cols)
@@ -536,15 +586,22 @@ def add_player_history_features(
         if bench_players:
             pts_pm_vals = [b[0] for b in bench_players]
             pace_vals = [b[1] for b in bench_players]
-            row_update[_with_before_suffix("BENCH_AVG_PTS_PER_MIN")] = sum(
-                pts_pm_vals
-            ) / len(pts_pm_vals)
-            row_update[_with_before_suffix("BENCH_MAX_PTS_PER_MIN")] = max(pts_pm_vals)
-            row_update[_with_before_suffix("BENCH_AVG_PACE_PER40")] = sum(
-                pace_vals
-            ) / len(pace_vals)
-            row_update[_with_before_suffix("BENCH_MAX_PACE_PER40")] = max(pace_vals)
-        row_update[_with_before_suffix("N_BENCH_PLAYERS")] = len(bench_players)
+            bench_values = {
+                "BENCH_AVG_PTS_PER_MIN": sum(pts_pm_vals) / len(pts_pm_vals),
+                "BENCH_MAX_PTS_PER_MIN": max(pts_pm_vals),
+                "BENCH_AVG_PACE_PER40": sum(pace_vals) / len(pace_vals),
+                "BENCH_MAX_PACE_PER40": max(pace_vals),
+            }
+            for col, value in bench_values.items():
+                if col in ACTIVE_PROFILE.bench_cols:
+                    row_update[_with_before_suffix(col)] = value
+        if "N_BENCH_PLAYERS" in ACTIVE_PROFILE.bench_cols:
+            row_update[_with_before_suffix("N_BENCH_PLAYERS")] = len(bench_players)
+
+        # Per-player values for this row, keyed by statistic, so the
+        # minutes-weighted rate aggregates can pair a player's rate with their
+        # own minutes after the per-statistic loop below.
+        per_player_values: dict[str, dict] = {}
 
         for stat_col in stat_cols:
             n_players_noninj = N_TOP_PLAYERS_NON_INJURED
@@ -597,30 +654,48 @@ def add_player_history_features(
             while len(topn_questionable) < N_TOP_PLAYERS_QUESTIONABLE:
                 topn_questionable.append((None, None, 0))
 
-            # Store top 3 non-injured individual columns
-            for i in range(n_players_noninj):
-                row_update[_with_before_suffix(f"TOP{i + 1}_PLAYER_ID_{stat_col}")] = (
-                    topn_non_inj[i][0]
-                )
-                row_update[
-                    _with_before_suffix(f"TOP{i + 1}_PLAYER_NAME_{stat_col}")
-                ] = topn_non_inj[i][1]
-                row_update[_with_before_suffix(f"TOP{i + 1}_PLAYER_{stat_col}")] = (
-                    topn_non_inj[i][2]
-                )
+            # Keep every player's value for this statistic, so the weighted
+            # aggregates below can pair a rate with the same player's minutes.
+            per_player_values[stat_col] = {
+                "active": {
+                    pid: val for (pid, _, val) in all_non_inj if pid is not None
+                },
+                "injured": {pid: val for (pid, _, val) in all_inj if pid is not None},
+                "questionable": {
+                    pid: val for (pid, _, val) in all_questionable if pid is not None
+                },
+            }
 
-            # Store top 3 injured individual columns + streaks (streaks only for PTS)
+            # Store top-N non-injured individual columns
+            for i in range(n_players_noninj):
+                slot = i + 1
+                if ACTIVE_PROFILE.emits_identifier(stat_col, slot):
+                    row_update[
+                        _with_before_suffix(f"TOP{slot}_PLAYER_ID_{stat_col}")
+                    ] = topn_non_inj[i][0]
+                    row_update[
+                        _with_before_suffix(f"TOP{slot}_PLAYER_NAME_{stat_col}")
+                    ] = topn_non_inj[i][1]
+                if ACTIVE_PROFILE.emits_value(stat_col, slot, injured=False):
+                    row_update[_with_before_suffix(f"TOP{slot}_PLAYER_{stat_col}")] = (
+                        topn_non_inj[i][2]
+                    )
+
+            # Store top-N injured individual columns + streaks
             for i in range(n_players_inj):
-                row_update[
-                    _with_before_suffix(f"TOP{i + 1}_INJURED_PLAYER_ID_{stat_col}")
-                ] = topn_inj[i][0]
-                row_update[
-                    _with_before_suffix(f"TOP{i + 1}_INJURED_PLAYER_NAME_{stat_col}")
-                ] = topn_inj[i][1]
-                row_update[
-                    _with_before_suffix(f"TOP{i + 1}_INJURED_PLAYER_{stat_col}")
-                ] = topn_inj[i][2]
-                if stat_col == "PTS":
+                slot = i + 1
+                if ACTIVE_PROFILE.emits_identifier(stat_col, slot):
+                    row_update[
+                        _with_before_suffix(f"TOP{slot}_INJURED_PLAYER_ID_{stat_col}")
+                    ] = topn_inj[i][0]
+                    row_update[
+                        _with_before_suffix(f"TOP{slot}_INJURED_PLAYER_NAME_{stat_col}")
+                    ] = topn_inj[i][1]
+                if ACTIVE_PROFILE.emits_value(stat_col, slot, injured=True):
+                    row_update[
+                        _with_before_suffix(f"TOP{slot}_INJURED_PLAYER_{stat_col}")
+                    ] = topn_inj[i][2]
+                if stat_col in STREAK_STAT_COLS:
                     injured_pid = topn_inj[i][0]
                     row_update[
                         _with_before_suffix(f"TOP{i + 1}_INJURED_STREAK_{stat_col}")
@@ -633,27 +708,32 @@ def add_player_history_features(
             # The questionable group's own slots, streaks and aggregates.
             if build_questionable_group and questionable_covered:
                 for i in range(N_TOP_PLAYERS_QUESTIONABLE):
-                    row_update[
-                        _with_before_suffix(
-                            f"TOP{i + 1}_QUESTIONABLE_PLAYER_ID_{stat_col}"
-                        )
-                    ] = topn_questionable[i][0]
-                    row_update[
-                        _with_before_suffix(
-                            f"TOP{i + 1}_QUESTIONABLE_PLAYER_NAME_{stat_col}"
-                        )
-                    ] = topn_questionable[i][1]
-                    row_update[
-                        _with_before_suffix(f"TOP{i + 1}_QUESTIONABLE_PLAYER_{stat_col}")
-                    ] = topn_questionable[i][2]
-                    if stat_col == "PTS":
+                    slot = i + 1
+                    if ACTIVE_PROFILE.emits_identifier(stat_col, slot):
+                        row_update[
+                            _with_before_suffix(
+                                f"TOP{slot}_QUESTIONABLE_PLAYER_ID_{stat_col}"
+                            )
+                        ] = topn_questionable[i][0]
+                        row_update[
+                            _with_before_suffix(
+                                f"TOP{slot}_QUESTIONABLE_PLAYER_NAME_{stat_col}"
+                            )
+                        ] = topn_questionable[i][1]
+                    if ACTIVE_PROFILE.emits_value(stat_col, slot, injured=True):
+                        row_update[
+                            _with_before_suffix(
+                                f"TOP{slot}_QUESTIONABLE_PLAYER_{stat_col}"
+                            )
+                        ] = topn_questionable[i][2]
+                    if stat_col in STREAK_STAT_COLS:
                         questionable_pid = topn_questionable[i][0]
                         # Games missed in a row coming in: a Questionable player
                         # on a five-game absence streak is a different
                         # proposition from one who played last night.
                         row_update[
                             _with_before_suffix(
-                                f"TOP{i + 1}_QUESTIONABLE_STREAK_{stat_col}"
+                                f"TOP{slot}_QUESTIONABLE_STREAK_{stat_col}"
                             )
                         ] = (
                             questionable_streak_lookup(
@@ -662,32 +742,37 @@ def add_player_history_features(
                             if questionable_pid is not None
                             else 0
                         )
-                questionable_values = [
-                    val for (_, _, val) in topn_questionable if val != 0
-                ]
-                row_update[_with_before_suffix(f"AVG_QUESTIONABLE_{stat_col}")] = (
-                    sum(questionable_values) / len(questionable_values)
-                    if questionable_values
-                    else 0
-                )
-                row_update[
-                    _with_before_suffix(f"TOTAL_QUESTIONABLE_PLAYER_{stat_col}")
-                ] = sum(val for (_, _, val) in all_questionable if val != 0)
+                if stat_col in ACTIVE_PROFILE.avg_injured_stats:
+                    questionable_values = [
+                        val for (_, _, val) in topn_questionable if val != 0
+                    ]
+                    row_update[_with_before_suffix(f"AVG_QUESTIONABLE_{stat_col}")] = (
+                        sum(questionable_values) / len(questionable_values)
+                        if questionable_values
+                        else 0
+                    )
+                if stat_col in ACTIVE_PROFILE.total_injured_stats:
+                    row_update[
+                        _with_before_suffix(f"TOTAL_QUESTIONABLE_PLAYER_{stat_col}")
+                    ] = sum(val for (_, _, val) in all_questionable if val != 0)
                 if stat_col == "PTS":
                     row_update[_with_before_suffix("N_QUESTIONABLE_PLAYERS")] = len(
                         all_questionable
                     )
 
             # Average of top 3 injured players
-            inj_values = [val for (_, _, val) in topn_inj if val != 0]
-            row_update[_with_before_suffix(f"AVG_INJURED_{stat_col}")] = (
-                sum(inj_values) / len(inj_values) if inj_values else 0
-            )
+            if stat_col in ACTIVE_PROFILE.avg_injured_stats:
+                inj_values = [val for (_, _, val) in topn_inj if val != 0]
+                row_update[_with_before_suffix(f"AVG_INJURED_{stat_col}")] = (
+                    sum(inj_values) / len(inj_values) if inj_values else 0
+                )
 
-            # Aggregation: sum of cum avg for ALL players (not just top 3)
-            row_update[_with_before_suffix(f"TOTAL_INJURED_PLAYER_{stat_col}")] = sum(
-                val for (_, _, val) in all_inj if val != 0
-            )
+            # Aggregation: sum of cum avg for ALL players (not just top 3).
+            # Counting statistics only -- a sum of rates is not a quantity.
+            if stat_col in ACTIVE_PROFILE.total_injured_stats:
+                row_update[_with_before_suffix(f"TOTAL_INJURED_PLAYER_{stat_col}")] = (
+                    sum(val for (_, _, val) in all_inj if val != 0)
+                )
 
             # NOT BUILT: TOTAL_NON_INJURED_PLAYER_<stat> and N_ACTIVE_PLAYERS.
             #
@@ -712,6 +797,38 @@ def add_player_history_features(
             # Player counts only for PTS to avoid repetition across stat_cols
             if stat_col == "PTS":
                 row_update[_with_before_suffix("N_INJURED_PLAYERS")] = len(all_inj)
+
+        # Minutes-weighted rate aggregates, replacing the per-slot rate columns.
+        # Weighting by each player's own minutes is what makes this a team
+        # quantity rather than an average over a ranking: a 34-minute starter
+        # and a 6-minute reserve do not shape the game equally.
+        minutes_by_player = per_player_values.get("MIN", {})
+        for group in (
+            ("ACTIVE", "INJURED", "QUESTIONABLE")
+            if build_questionable_group
+            else ("ACTIVE", "INJURED")
+        ):
+            if group == "QUESTIONABLE" and not questionable_covered:
+                continue
+            key = group.lower()
+            weights = minutes_by_player.get(key, {})
+            for stat_col in ACTIVE_PROFILE.weighted_rate_stats:
+                values = per_player_values.get(stat_col, {}).get(key, {})
+                weighted = sum(
+                    values[pid] * weights.get(pid, 0.0)
+                    for pid in values
+                    if values[pid] != 0
+                )
+                total_minutes = sum(
+                    weights.get(pid, 0.0) for pid in values if values[pid] != 0
+                )
+                # 0 is the right no-evidence value: with nobody on this side of
+                # the split (no injuries, or no history yet) there is no rate to
+                # report, and the column sits alongside N_INJURED_PLAYERS which
+                # says which of the two it is.
+                row_update[_with_before_suffix(f"{group}_WEIGHTED_{stat_col}")] = (
+                    weighted / total_minutes if total_minutes > 0 else 0
+                )
 
         updates_list.append(row_update)
 
@@ -738,6 +855,8 @@ def add_player_history_features(
         df_team[questionable_streak_cols] = df_team[questionable_streak_cols].apply(
             pd.to_numeric, errors="coerce"
         )
+
+    df_team = add_fresh_absence_features(df_team)
 
     if return_availability_dict:
         return df_team, injured_dict, availability_dict

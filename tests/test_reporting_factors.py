@@ -174,6 +174,28 @@ def test_contrast_isolates_a_single_factor(tmp_path):
     assert table["contrast"].nunique() == 1
 
 
+def test_referee_exclusion_cells_are_distinct_experiments(tmp_path):
+    """The referee campaign varies only exclude_cols_containing. Without a
+    factor for it every cell matched as a replicate of every other."""
+    runs = runs_frame(tmp_path, {
+        "no_refs": {"exclude_cols": ("REF_AVG_", "REF_CREW_")},
+        "legacy": {"exclude_cols": ("REF_CREW_",)},
+        "everything": {"exclude_cols": ()},
+    })
+    design = factors.design_matrix(runs).set_index("run_name")
+    assert design["design"].nunique() == 3
+    assert design.loc["everything", "referee_features"] == "all"
+    assert factors.contrasts(runs, "referee_features")["run_name"].nunique() == 3
+
+
+def test_referee_factor_leaves_consensus_contrasts_intact(tmp_path):
+    runs = runs_frame(tmp_path, {
+        "base": {"exclude_cols": ("fanatics_sportsbook",)},
+        "no_consensus": {"exclude_cols": ("fanatics_sportsbook", "consensus_pct")},
+    })
+    assert set(factors.contrasts(runs, "drop_consensus")["run_name"]) == {"base", "no_consensus"}
+
+
 def test_run_changing_two_things_at_once_forms_no_contrast(tmp_path):
     """The whole guarantee. A cell that moved two knobs cannot answer for
     either of them, and must not be quietly attributed to one."""

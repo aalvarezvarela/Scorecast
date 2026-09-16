@@ -49,7 +49,9 @@ def _state(statuses=(), filings=(), ages=(), events=(), listed=()):
                 "season_year",
             ],
         ),
-        filings=pd.DataFrame(list(filings), columns=["game_id", "team_id", "submitted"]),
+        filings=pd.DataFrame(
+            list(filings), columns=["game_id", "team_id", "submitted"]
+        ),
         report_age=pd.DataFrame(list(ages), columns=["game_id", "report_age_minutes"]),
         status_events=pd.DataFrame(
             list(events),
@@ -180,7 +182,10 @@ def _players(target_star_minutes=30.0):
         ("0022400002", "2024-10-22", 0.0),
         (TARGET, "2024-10-24", target_star_minutes),
     ]:
-        for player, pts, minutes in [("star", 30.0, star_min), ("rotation", 15.0, 24.0)]:
+        for player, pts, minutes in [
+            ("star", 30.0, star_min),
+            ("rotation", 15.0, 24.0),
+        ]:
             rows.append(
                 {
                     "GAME_ID": game,
@@ -201,7 +206,9 @@ def _players(target_star_minutes=30.0):
 
 def _injuries():
     # star was on the inactive list for game 2 only.
-    return pd.DataFrame([{"GAME_ID": "0022400002", "TEAM_ID": TEAM, "PLAYER_ID": "star"}])
+    return pd.DataFrame(
+        [{"GAME_ID": "0022400002", "TEAM_ID": TEAM, "PLAYER_ID": "star"}]
+    )
 
 
 def _run(overrides=None, questionable=None):
@@ -259,6 +266,25 @@ def test_a_questionable_star_forms_the_third_group():
     assert "star" in availability[TARGET][TEAM]["available"]
 
 
+def test_questionable_group_uses_the_reduced_player_profile():
+    out, _ = add_player_history_features(
+        _team_rows(),
+        _players(),
+        _injuries(),
+        stat_cols=["PTS", "PACE_PER40", "MIN"],
+        report_out_overrides={(TARGET, TEAM): []},
+        report_questionable_sets={(TARGET, TEAM): ["star"]},
+    )
+    target = out.loc[out["GAME_ID"].eq(TARGET)].iloc[0]
+
+    assert target["TOP1_QUESTIONABLE_PLAYER_ID_MIN_BEFORE"] == "star"
+    assert target["TOP1_QUESTIONABLE_STREAK_MIN_BEFORE"] == 2
+    assert target["QUESTIONABLE_WEIGHTED_PACE_PER40_BEFORE"] == pytest.approx(99.0)
+    assert "TOP1_QUESTIONABLE_PLAYER_PACE_PER40_BEFORE" not in out.columns
+    assert "TOTAL_QUESTIONABLE_PLAYER_PACE_PER40_BEFORE" not in out.columns
+    assert pd.isna(out.iloc[0]["QUESTIONABLE_WEIGHTED_PACE_PER40_BEFORE"])
+
+
 def test_a_covered_team_game_with_nobody_questionable_reads_zero():
     out, _, _ = _run({(TARGET, TEAM): ["star"]}, questionable={(TARGET, TEAM): []})
     target = out.loc[out["GAME_ID"].eq(TARGET)].iloc[0]
@@ -285,7 +311,7 @@ def test_without_a_questionable_set_the_roster_splits_in_two():
 
 
 def test_available_roster_count_is_off_unless_requested():
-    # The schema 2_3 control must not gain the 2_4 roster counter.
+    # A build without report features does not gain the report roster counter.
     out = add_player_history_features(
         _team_rows(), _players(), _injuries(), stat_cols=["PTS"]
     )[0]
@@ -359,7 +385,11 @@ def _estimate(state, box, date, player="q", status="questionable"):
     form = Q.build_player_form(box)
     events = Q.build_status_events(state, box, form)
     targets = pd.DataFrame(
-        {"player_id": [player], "season_year": [2024], "game_date": [pd.Timestamp(date)]}
+        {
+            "player_id": [player],
+            "season_year": [2024],
+            "game_date": [pd.Timestamp(date)],
+        }
     )
     est = Q.status_player_estimates(targets, events, form, box, status)
     return est.iloc[0], events
@@ -405,7 +435,18 @@ def test_team_rows_uncovered_are_nan_and_covered_without_questionable_are_zero()
     state, box, dates = _history()
     # Game 7 lists q at the last report; game 8 is filed with nobody Questionable.
     state.statuses = pd.DataFrame(
-        [("0022400007", TEAM, "q", "questionable", "injury_illness", "", dates[6], 2024)],
+        [
+            (
+                "0022400007",
+                TEAM,
+                "q",
+                "questionable",
+                "injury_illness",
+                "",
+                dates[6],
+                2024,
+            )
+        ],
         columns=state.statuses.columns,
     )
     rows = pd.DataFrame(
@@ -494,7 +535,10 @@ def test_probable_gets_history_and_doubtful_only_its_players_form():
         if i in (3, 6):
             extra_events.append((game, TEAM, "p", "probable", date, 2024, True))
     state.status_events = pd.concat(
-        [state.status_events, pd.DataFrame(extra_events, columns=state.status_events.columns)],
+        [
+            state.status_events,
+            pd.DataFrame(extra_events, columns=state.status_events.columns),
+        ],
         ignore_index=True,
     )
 
@@ -512,7 +556,12 @@ def test_probable_gets_history_and_doubtful_only_its_players_form():
         columns=state.statuses.columns,
     )
     rows = pd.DataFrame(
-        {"GAME_ID": ["0022400008"], "TEAM_ID": [TEAM], "GAME_DATE": [dates[7]], "SEASON_YEAR": [2024]}
+        {
+            "GAME_ID": ["0022400008"],
+            "TEAM_ID": [TEAM],
+            "GAME_DATE": [dates[7]],
+            "SEASON_YEAR": [2024],
+        }
     )
     out = add_injury_report_features(rows, state, box)
     row = out.iloc[0]
@@ -561,14 +610,37 @@ def test_out_set_slots_rank_by_minutes_form():
             ignore_index=True,
         )
     rows = pd.DataFrame(
-        {"GAME_ID": ["0022400008"], "TEAM_ID": [TEAM], "GAME_DATE": [dates[7]], "SEASON_YEAR": [2024]}
+        {
+            "GAME_ID": ["0022400008"],
+            "TEAM_ID": [TEAM],
+            "GAME_DATE": [dates[7]],
+            "SEASON_YEAR": [2024],
+        }
     )
 
     for status in ("questionable", "doubtful"):
         state.statuses = pd.DataFrame(
             [
-                ("0022400008", TEAM, "big_min", status, "injury_illness", "", dates[7], 2024),
-                ("0022400008", TEAM, "big_pts", status, "injury_illness", "", dates[7], 2024),
+                (
+                    "0022400008",
+                    TEAM,
+                    "big_min",
+                    status,
+                    "injury_illness",
+                    "",
+                    dates[7],
+                    2024,
+                ),
+                (
+                    "0022400008",
+                    TEAM,
+                    "big_pts",
+                    status,
+                    "injury_illness",
+                    "",
+                    dates[7],
+                    2024,
+                ),
             ],
             columns=state.statuses.columns,
         )
@@ -580,8 +652,26 @@ def test_out_set_slots_rank_by_minutes_form():
     # Probable still ranks by points; both players are in the counters either way.
     state.statuses = pd.DataFrame(
         [
-            ("0022400008", TEAM, "big_min", "probable", "injury_illness", "", dates[7], 2024),
-            ("0022400008", TEAM, "big_pts", "probable", "injury_illness", "", dates[7], 2024),
+            (
+                "0022400008",
+                TEAM,
+                "big_min",
+                "probable",
+                "injury_illness",
+                "",
+                dates[7],
+                2024,
+            ),
+            (
+                "0022400008",
+                TEAM,
+                "big_pts",
+                "probable",
+                "injury_illness",
+                "",
+                dates[7],
+                2024,
+            ),
         ],
         columns=state.statuses.columns,
     )
@@ -608,7 +698,12 @@ def test_a_g_league_listing_fills_no_slot_and_no_counter():
         columns=state.statuses.columns,
     )
     rows = pd.DataFrame(
-        {"GAME_ID": ["0022400008"], "TEAM_ID": [TEAM], "GAME_DATE": [dates[7]], "SEASON_YEAR": [2024]}
+        {
+            "GAME_ID": ["0022400008"],
+            "TEAM_ID": [TEAM],
+            "GAME_DATE": [dates[7]],
+            "SEASON_YEAR": [2024],
+        }
     )
     row = add_injury_report_features(rows, state, box).iloc[0]
     assert row[counter_col("doubtful")] == 0

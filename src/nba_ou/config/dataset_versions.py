@@ -86,14 +86,14 @@ History
       covered team-game take the neutral values (``P_PLAY`` 1, everything else
       0); uncovered team-games are NaN.
 
-    ``create_train_data.py --no-injury-report-features`` is the control: it
-    writes ``training_data_2_3_<date>_rebuild.csv`` with the 2_3 columns and
-    out sets, and none of the above.
+    ``create_train_data.py --no-injury-report-features`` omits report-derived
+    availability. In the current build it retains the other 2_5 features and
+    writes a separately suffixed 2_5 file.
 
 ``2_5``
-    Closing-line dataset only. Splits the report into **three availability
-    groups** instead of folding Questionable into the out set, and gives the new
-    group the same feature families the other two have.
+    Splits closing-line report availability into **three groups** instead of
+    folding Questionable into the out set. It also adds referee and player
+    feature changes to both generated datasets.
 
     * Pre-game groups on a covered team-game: **injured** = Out ∪ Doubtful,
       **questionable** = Questionable, **available** = everyone else on the
@@ -103,14 +103,15 @@ History
     * ``TOP*_INJURED_*``, ``N_INJURED_PLAYERS``, ``AVG_INJURED_*``,
       ``TOTAL_INJURED_PLAYER_*``, ``ALL_STAR_*_INJURED_*`` and
       ``TOP3_INJURED_AVAILABILITY_EFFECT_*`` therefore change value: they now
-      describe Out ∪ Doubtful only. The available-side columns are unchanged
-      from 2_4.
-    * New per side, the questionable group mirroring the injured one, for every
-      statistic in ``stats``: ``TOP{1,2}_QUESTIONABLE_PLAYER_<stat>``,
-      ``AVG_QUESTIONABLE_<stat>``, ``TOTAL_QUESTIONABLE_PLAYER_<stat>``,
-      plus ``N_QUESTIONABLE_PLAYERS``, ``TOP{1,2}_QUESTIONABLE_STREAK_PTS``,
-      ``ALL_STAR_{MAX_QUESTIONABLE_FAN_VOTE_SHARE,MIN_QUESTIONABLE_SCORE}`` and
-      the ``TOP2_QUESTIONABLE_AVAILABILITY_EFFECT_*`` block. A team-game the
+      describe Out ∪ Doubtful only. The available side follows the reduced
+      player profile described below.
+    * New per side, the questionable group mirroring the injured one under the
+      reduced player profile: PTS/MIN per-player values and aggregates,
+      ``N_QUESTIONABLE_PLAYERS``, ``TOP{1,2}_QUESTIONABLE_STREAK_{PTS,MIN}``,
+      and minutes-weighted rate aggregates. Per-slot rate columns and sums of
+      rates are omitted by the same rules as the injured group. The group also
+      has ``ALL_STAR_{MAX_QUESTIONABLE_FAN_VOTE_SHARE,MIN_QUESTIONABLE_SCORE}``
+      and ``TOP2_QUESTIONABLE_AVAILABILITY_EFFECT_*``. A team-game the
       report does not cover has no questionable group, so every one of these is
       NaN there -- "nobody Questionable" and "no report" are different facts.
       The effect builder is coverage-blind (it fills a missing aggregate with
@@ -119,12 +120,25 @@ History
     * ``ALL_STAR_MIN_QUESTIONABLE_SCORE`` is the one column with a neutral
       value on a covered but empty group: 1000, a stand-in for the +infinity a
       minimum over an empty set really is, above every score the voting table
-      produces. Its injured twin keeps NaN there, because the 2_3 control build
-      has to reproduce that column value for value.
+      produces. Its injured twin keeps NaN there.
     * The 2_4 status block (``P_PLAY``, ``EFFECT_*``, ``FORM_*``, the
       ``SUM_/MEAN_/LEAGUE_`` aggregates) is unchanged and stays separate: it
       says what a *status* implies for a player, not what a group contributes to
       a team. A Questionable player carries both.
+
+    The same 2_5 build also adds the referee crew tendency family, fresh
+    absence interactions and the reduced player feature profile. The referee
+    features are available for both closing and intermediate datasets.
+
+    * ``REF_CREW_*_TENDENCY_BEFORE`` for free throws, fouls, possessions and
+      line error (totals track) and for spread error, favourite spread error,
+      home free-throw edge and home foul edge (spread track), plus
+      ``REF_CREW_MIN_PRIOR_GAMES_BEFORE`` and ``REF_CREW_UNKNOWN_COUNT_BEFORE``.
+    * ``REF_CREW_*_X_*_BEFORE`` combinations with expected free throws,
+      absolute spread and expected home free-throw-rate edge.
+    * Optional ``REF_CREW_SS_*`` same-season-only variants when built with
+      ``include_same_season_referee_variants=True``.
+    * The legacy ``REF_AVG/STD/SUM_*`` columns stay for comparison.
 """
 
 from __future__ import annotations

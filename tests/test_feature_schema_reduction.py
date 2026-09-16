@@ -34,7 +34,9 @@ def _availability_input() -> pd.DataFrame:
     )
 
 
-def _add_availability_features(include_detailed: bool) -> pd.DataFrame:
+def _add_availability_features(
+    include_detailed: bool, emit_max_abs: bool = False
+) -> pd.DataFrame:
     return add_top3_availability_effect_features_for_columns(
         _availability_input(),
         injured_dict={},
@@ -43,6 +45,7 @@ def _add_availability_features(include_detailed: bool) -> pd.DataFrame:
         away_player_cols=("AWAY_PLAYER",),
         out_prefix="TEST_AVAILABILITY",
         include_detailed_sample_size_features=include_detailed,
+        emit_max_abs_effects=emit_max_abs,
     )
 
 
@@ -52,8 +55,12 @@ def test_availability_defaults_to_compact_aggregate_schema():
         column for column in result.columns if column.startswith("TEST_AVAILABILITY_")
     ]
 
-    # 3 metrics x (MEAN, MEAN_SE) + 2 MAX_ABS + SUM_N_TOTAL_GAMES, per side.
-    assert len(feature_columns) == 18
+    # 3 metrics x (MEAN, MEAN_SE) + SUM_N_TOTAL_GAMES, per side. The two
+    # MAX_ABS aggregates per side are off by default since the feature-profile
+    # reduction -- see test_availability_max_abs_aggregates_can_be_restored.
+    assert len(feature_columns) == 14
+    assert "TEST_AVAILABILITY_HOME_MAX_ABS_TOTAL_POINTS" not in feature_columns
+    assert "TEST_AVAILABILITY_HOME_MAX_ABS_DIFF_FROM_LINE" not in feature_columns
     assert "TEST_AVAILABILITY_HOME_SUM_N_TOTAL_GAMES" in feature_columns
     assert "TEST_AVAILABILITY_HOME_MEAN_SPREAD_ERROR" in feature_columns
     assert "TEST_AVAILABILITY_HOME_MEAN_SE_TOTAL_POINTS" in feature_columns
@@ -87,9 +94,28 @@ def test_availability_detailed_diagnostics_can_be_restored():
         column for column in result.columns if column.startswith("TEST_AVAILABILITY_")
     ]
 
-    assert len(feature_columns) == 26
+    assert len(feature_columns) == 22
     assert "TEST_AVAILABILITY_HOME_SUM_N_INJ_GAMES" in feature_columns
     assert "TEST_AVAILABILITY_AWAY_HAS_PLAYER_EFFECT" in feature_columns
+
+
+def test_availability_max_abs_aggregates_can_be_restored():
+    """The pre-reduction schema stays reproducible for an archived dataset."""
+    result = _add_availability_features(include_detailed=False, emit_max_abs=True)
+    feature_columns = [
+        column for column in result.columns if column.startswith("TEST_AVAILABILITY_")
+    ]
+
+    assert len(feature_columns) == 18
+    for column in (
+        "TEST_AVAILABILITY_HOME_MAX_ABS_TOTAL_POINTS",
+        "TEST_AVAILABILITY_AWAY_MAX_ABS_TOTAL_POINTS",
+        "TEST_AVAILABILITY_HOME_MAX_ABS_DIFF_FROM_LINE",
+        "TEST_AVAILABILITY_AWAY_MAX_ABS_DIFF_FROM_LINE",
+    ):
+        assert column in feature_columns, column
+        # still zero-filled rather than NaN, as the aggregates always were
+        assert not result[column].isna().any(), column
 
 
 def test_total_prices_are_not_selected_for_historical_rolling_features():
@@ -242,7 +268,7 @@ def test_availability_aggregates_use_the_estimators_zero_prior_when_blank():
     Leaving NaN made the feature discontinuous exactly where the shrinkage was
     meant to be smooth: one weak game gives ~0, no games gave missing, and the
     row then had enough NaN to be discarded by the downstream per-row limit."""
-    result = _add_availability_features(include_detailed=False)
+    result = _add_availability_features(include_detailed=False, emit_max_abs=True)
 
     aggregates = [
         "TEST_AVAILABILITY_HOME_MEAN_TOTAL_POINTS",

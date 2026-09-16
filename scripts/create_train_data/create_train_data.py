@@ -13,11 +13,11 @@ from pathlib import Path
 import pandas as pd
 from nba_ou.config.dataset_versions import TRAINING_DATA_SCHEMA_VERSION
 from nba_ou.create_training_data.create_df_to_predict import create_df_to_predict
+from nba_ou.data_processing.referees.referee_tendencies import (
+    DEFAULT_REFEREE_HISTORY_SEASONS,
+)
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-
-#: Schema reproduced by ``--no-injury-report-features``.
-CONTROL_SCHEMA_VERSION = "2_3"
 
 
 def main(
@@ -29,6 +29,8 @@ def main(
     null_extreme_spread_prices: bool = True,
     injury_report_features: bool = True,
     status_top_n: dict[str, int] | None = None,
+    referee_history_seasons: int = DEFAULT_REFEREE_HISTORY_SEASONS,
+    include_same_season_referee_variants: bool = False,
 ) -> None:
     """Create training data up to `limit_date_to_train`.
 
@@ -47,6 +49,8 @@ def main(
         null_extreme_spread_prices=null_extreme_spread_prices,
         injury_report_features=injury_report_features,
         status_top_n=status_top_n,
+        referee_history_seasons=referee_history_seasons,
+        include_same_season_referee_variants=include_same_season_referee_variants,
     )
 
     if output is None:
@@ -55,16 +59,11 @@ def main(
         # Schema version in the name, never overwritten in place: spread and
         # moneyline additions, then spread-normalization semantics, must land beside
         # older files that pinned checksums still refer to.
-        # Without the injury report the build is the schema 2_3 control, so it
-        # is named as a 2_3 rebuild rather than as a 2_4 variant.
-        schema, variant = (
-            (TRAINING_DATA_SCHEMA_VERSION, "")
-            if injury_report_features
-            else (CONTROL_SCHEMA_VERSION, "_rebuild")
-        )
+        # Both variants use the current schema; the suffix distinguishes a
+        # build without report-derived availability from the default build.
+        variant = "" if injury_report_features else "_without_injury_reports"
         output = (
-            output_path
-            / f"training_data_{schema}_"
+            output_path / f"training_data_{TRAINING_DATA_SCHEMA_VERSION}_"
             f"{pd.to_datetime(limit_date_to_train).strftime('%Y%m%d')}{variant}.csv"
         )
     else:
@@ -116,13 +115,24 @@ if __name__ == "__main__":
         action="store_true",
         help="Keep extreme spread price cells instead of setting them to NaN.",
     )
+    parser.add_argument(
+        "--referee-history-seasons",
+        type=int,
+        default=DEFAULT_REFEREE_HISTORY_SEASONS,
+        help="Seasons of officiating history behind the REF_CREW_* features.",
+    )
+    parser.add_argument(
+        "--referee-same-season-variants",
+        action="store_true",
+        help="Also emit REF_CREW_SS_* same-season-only tendencies (history ablation).",
+    )
 
     parser.add_argument(
         "--no-injury-report-features",
         action="store_true",
         help=(
-            "Schema 2_3 control: out set from the inactive list only, no injury "
-            "report or listed-status columns. Written as training_data_2_3_*_rebuild.csv."
+            "Use inactive-list availability without report-derived columns. "
+            "The current schema version is retained with a distinct filename suffix."
         ),
     )
     for status, default in (("questionable", 2), ("probable", 1), ("doubtful", 1)):
@@ -147,4 +157,6 @@ if __name__ == "__main__":
             "probable": args.n_top_probable,
             "doubtful": args.n_top_doubtful,
         },
+        referee_history_seasons=args.referee_history_seasons,
+        include_same_season_referee_variants=args.referee_same_season_variants,
     )

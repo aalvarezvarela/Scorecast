@@ -6,6 +6,7 @@ including computing referee-specific features based on historical performance.
 """
 
 import re
+import warnings
 
 import numpy as np
 import pandas as pd
@@ -23,7 +24,7 @@ REFEREE_METRICS = [
 ]
 
 
-def _canonicalize_referee_name(name: str) -> str:
+def canonicalize_referee_name(name: str) -> str:
     """Normalize referee names so scheduled and historical sources match."""
     if pd.isna(name):
         return pd.NA
@@ -32,6 +33,9 @@ def _canonicalize_referee_name(name: str) -> str:
     name = name.replace(".", "")
     name = re.sub(r"\s+", " ", name)
     return name or pd.NA
+
+
+_canonicalize_referee_name = canonicalize_referee_name
 
 
 def _normalize_referee_slots(refs) -> pd.Series:
@@ -308,13 +312,17 @@ def process_referee_data_for_training(
                 refs = df_refs_pivot[ref_col].dropna().unique()
                 historical_refs.update(refs)
 
-            # Check for referees without historical data
+            # A referee without history (a rookie, a G League call-up) must not
+            # stop the day's predictions: the per-referee loop already skips
+            # officials with no prior games, and the REF_CREW_* tendency
+            # features give them the neutral value plus an unknown count.
             unmatched_refs = scheduled_refs - historical_refs
             if unmatched_refs:
                 unmatched_list = sorted(list(unmatched_refs))
-                raise ValueError(
+                warnings.warn(
                     f"Scheduled referee(s) not found in historical data: {unmatched_list}. "
-                    f"These referees have no prior games to compute features from."
+                    "They contribute nothing to the legacy REF_AVG/STD/SUM features.",
+                    stacklevel=2,
                 )
 
             # Append new referee data to df_refs_pivot
