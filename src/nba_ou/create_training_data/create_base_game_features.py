@@ -55,6 +55,7 @@ from nba_ou.data_processing.all_star_voting.attach_all_star_voting_features impo
 )
 from nba_ou.data_processing.merged_home_away_data.add_features_after_merging import (
     add_betting_stats_differences,
+    add_fresh_absence_sums,
     add_derived_features_after_computed_stats,
     add_game_date_features,
     add_high_value_features_for_team_points,
@@ -418,6 +419,7 @@ def create_base_game_features(
     )
     df_merged = add_betting_stats_differences(df_merged)
     df_merged = add_global_market_features(df_merged)
+    df_merged = add_fresh_absence_sums(df_merged)
 
     # The existing leakage gate runs first and unchanged; the intermediate
     # dataset's stricter gate runs later, on top of it.

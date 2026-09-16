@@ -354,6 +354,7 @@ def add_top3_availability_effect_features_for_columns(
     fit_shrinkage: bool = True,
     include_per_player_columns: bool = False,
     include_detailed_sample_size_features: bool = False,
+    emit_max_abs_effects: bool = False,
 ) -> pd.DataFrame:
     """
     Compute player availability impact features from past games only (< current game date).
@@ -372,8 +373,11 @@ def add_top3_availability_effect_features_for_columns(
         group. See ``_continuous_effect_and_se`` for why the p-value went.
       - A separate availability map limits history to games where the player was
         actually classified on that team's roster. It does not mutate injuries.
-      - Compact aggregate summaries include mean and max-abs effects plus total
-        sample size. This is the default training schema.
+      - Compact aggregate summaries include the mean effect and its standard
+        error plus total sample size. This is the default training schema.
+      - The max-abs aggregates are off by default: they restate what the mean
+        over the same three players already carries. Restore them with
+        emit_max_abs_effects=True to reproduce a pre-reduction dataset.
       - Redundant diagnostic counts/flags can be restored with
         include_detailed_sample_size_features=True.
       - Per-player columns can be disabled via include_per_player_columns=False.
@@ -834,12 +838,18 @@ def add_top3_availability_effect_features_for_columns(
                 standard_errors[metric]
             )
 
-    for side, effects in (("HOME", home_effects), ("AWAY", away_effects)):
-        for metric in ("TOTAL_POINTS", "DIFF_FROM_LINE"):
-            output_metric = metric_output_names[metric]
-            df[f"{out_prefix}_{side}_MAX_ABS_{output_metric}"] = _nanmaxabs_axis1(
-                effects[metric]
-            )
+    # MAX_ABS aggregates are no longer emitted. They tracked the largest single
+    # player effect, which the MEAN over the same three players already moves
+    # with (the two MAX_ABS columns correlate 0.62 with each other and 0.20/0.07
+    # with their own MEAN), and they cost 8 columns across both call sites. See
+    # players/feature_profile.py for the wider reduction this belongs to.
+    if emit_max_abs_effects:
+        for side, effects in (("HOME", home_effects), ("AWAY", away_effects)):
+            for metric in ("TOTAL_POINTS", "DIFF_FROM_LINE"):
+                output_metric = metric_output_names[metric]
+                df[f"{out_prefix}_{side}_MAX_ABS_{output_metric}"] = _nanmaxabs_axis1(
+                    effects[metric]
+                )
 
     # No evidence for any of the players means the fully shrunk estimate, which
     # for an estimator that shrinks toward zero is zero -- the weight is
@@ -857,8 +867,11 @@ def add_top3_availability_effect_features_for_columns(
             "MEAN_TOTAL_POINTS",
             f"MEAN_{diff_from_line_col}",
             "MEAN_SPREAD_ERROR",
-            "MAX_ABS_TOTAL_POINTS",
-            f"MAX_ABS_{diff_from_line_col}",
+            *(
+                ("MAX_ABS_TOTAL_POINTS", f"MAX_ABS_{diff_from_line_col}")
+                if emit_max_abs_effects
+                else ()
+            ),
         )
     ]
     for column in aggregate_columns:
