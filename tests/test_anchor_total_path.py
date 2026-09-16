@@ -30,7 +30,7 @@ def test_peer_gap_excludes_own_quote_and_caps_bad_feed_values():
             "level": [220.0, 221.0, 222.0, 300.0],
         }
     )
-    got = add_book_deviation(panel, pd.DataFrame()).set_index("book")
+    got = add_book_deviation(panel).set_index("book")
     # Peer median for bet365 is 221.5 after removing the corrupt 300 quote.
     assert got.loc["bet365", "deviation_from_consensus"] == -1.5
     assert got.loc["bad", "deviation_from_consensus"] == 10.0
@@ -114,3 +114,21 @@ def test_peer_state_is_signed_by_peer_direction():
     )
     got = add_anchor_total_path_features(_panel(ticks), ticks, anchor="bet365")
     assert got["ODDS_SNAP_TOT_BET365_PEERS_MOVED_ANCHOR_STILL_60"].iloc[0] == -1
+
+
+def test_move_age_is_capped_and_bad_tick_jumps_skip_the_path():
+    ticks = make_ticks(
+        [
+            {"left_line": 220.0, "minutes_before_tip": 60000.0},
+            {"left_line": 250.0, "minutes_before_tip": 90.0},
+            {"left_line": 220.0, "minutes_before_tip": 85.0},
+            {"left_line": 220.5, "minutes_before_tip": 80.0},
+        ]
+    )
+    prefix = "ODDS_SNAP_TOT_BET365_"
+    got = add_anchor_total_path_features(_panel(ticks), ticks, anchor="bet365").iloc[0]
+    assert got[prefix + "ABS_LEVEL_PATH_60"] == 0.5
+
+    stale = make_ticks([{"left_line": 220.0, "minutes_before_tip": 60000.0}])
+    got = add_anchor_total_path_features(_panel(stale), stale, anchor="bet365").iloc[0]
+    assert got[prefix + "MINUTES_SINCE_LAST_LEVEL_MOVE"] == 1440.0

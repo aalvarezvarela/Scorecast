@@ -16,6 +16,8 @@ from .snapshots import build_snapshot_panel, resolve_line
 
 PATH_WINDOW_MINUTES = 60
 MAX_INTERMOVE_GAP_MINUTES = 720.0
+#: Openers can be posted weeks ahead; beyond a day the exact age adds nothing.
+MAX_LEVEL_MOVE_AGE_MINUTES = 1440.0
 
 
 def add_anchor_total_path_features(
@@ -28,7 +30,9 @@ def add_anchor_total_path_features(
     and therefore distinguishes a round trip from no activity, even though
     both have zero net ``move_last_60``. The signed streak counts consecutive
     moves in the latest direction *within that window*. A gap of 720 minutes
-    means fewer than two prior moves or a longer gap.
+    means fewer than two prior moves or a longer gap. The move age is capped
+    at 1,440 minutes, and single jumps larger than the peer-gap limit are
+    treated as bad ticks and left out of the path sum.
 
     Peer-change state uses the median peer line now and 60 minutes earlier,
     restricted to peers quoted at both instants. It is +1/-1 when that median
@@ -79,6 +83,7 @@ def add_anchor_total_path_features(
         ["game_id", "minutes_before_tip"], ascending=[True, False], kind="stable"
     )
     tick_groups = source.groupby("game_id", sort=False).indices
+    limit = PEER_GAP_LIMITS[MARKET_TOTALS]
     results = []
     for game, positions in anchor_panel.groupby("game_id", sort=False).indices.items():
         game_ticks = source.iloc[tick_groups[game]]
@@ -93,10 +98,14 @@ def add_anchor_total_path_features(
             seen = move_times >= horizon
             seen_times = move_times[seen]
             seen_deltas = move_deltas[seen]
-            age = (seen_times[-1] if len(seen_times) else times[0]) - horizon
+            age = min(
+                (seen_times[-1] if len(seen_times) else times[0]) - horizon,
+                MAX_LEVEL_MOVE_AGE_MINUTES,
+            )
             recent = seen_times <= horizon + PATH_WINDOW_MINUTES
             recent_deltas = seen_deltas[recent]
-            path = float(np.abs(recent_deltas).sum())
+            recent_sizes = np.abs(recent_deltas)
+            path = float(recent_sizes[recent_sizes <= limit].sum())
             streak = 0
             if len(recent_deltas):
                 direction = int(np.sign(recent_deltas[-1]))
@@ -130,7 +139,6 @@ def add_anchor_total_path_features(
     # A single anomalous peer must not manufacture a "market moved" event.
     now_median = peers.groupby(keys)["level"].transform("median")
     before_median = peers.groupby(keys)["previous_level"].transform("median")
-    limit = PEER_GAP_LIMITS[MARKET_TOTALS]
     peers = peers[
         (peers["level"] - now_median).abs().le(limit)
         & (peers["previous_level"] - before_median).abs().le(limit)

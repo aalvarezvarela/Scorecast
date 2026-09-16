@@ -411,7 +411,7 @@ per-book columns; built in `line_history/anchor_total_path.py`). All use raw
 line *level* changes; a price-only reprice is not a move:
 
 - `ODDS_SNAP_TOT_<ANCHOR>_MINUTES_SINCE_LAST_LEVEL_MOVE` — minutes since the
-  level last changed (since open if it never did). Differs from
+  level last changed (since open if it never did), capped at 1,440. Differs from
   `line_age_minutes`, which resets on any tick, including price-only ones.
 - `ODDS_SNAP_TOT_<ANCHOR>_PEERS_MOVED_ANCHOR_STILL_60` — +1/−1 when the median of
   the other books (quoted both now and 60 min ago, at least two, outliers
@@ -419,7 +419,8 @@ line *level* changes; a price-only reprice is not a move:
   not; 0 otherwise. Signed so it gives the direction the anchor would follow.
 - `ODDS_SNAP_TOT_<ANCHOR>_ABS_LEVEL_PATH_60` — sum of absolute level changes in
   the last 60 min; separates a round trip from no activity, which share
-  `move_last_60 = 0`.
+  `move_last_60 = 0`. Single jumps above the 10-pt peer-gap limit are treated
+  as bad ticks and not summed.
 - `ODDS_SNAP_TOT_<ANCHOR>_SIGNED_MOVE_STREAK_60` — consecutive moves in the
   latest direction within the last 60 min, signed (+ up, − down, 0 none).
 - `ODDS_SNAP_TOT_<ANCHOR>_LAST_TWO_LEVEL_MOVES_GAP_MIN` — minutes between the

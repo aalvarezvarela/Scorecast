@@ -528,7 +528,7 @@ def create_intermediate_line_df(
         null_extreme_spread_prices=null_extreme_spread_prices,
     )
     consensus = aggregate_across_books(panel)
-    panel = add_book_deviation(panel, consensus)
+    panel = add_book_deviation(panel)
     anchor_path = add_anchor_total_path_features(panel, ticks, anchor=anchor)
     if verbose:
         print(f"✓ Snapshot panel: {len(panel):,} (game, market, book, snapshot) rows")

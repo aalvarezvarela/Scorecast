@@ -139,6 +139,20 @@ History
     * Optional ``REF_CREW_SS_*`` same-season-only variants when built with
       ``include_same_season_referee_variants=True``.
     * The legacy ``REF_AVG/STD/SUM_*`` columns stay for comparison.
+
+    Intermediate-line builds only, added later under the same 2_5 label:
+
+    * The per-book ``DEVIATION_FROM_CONSENSUS``, ``ABS_DEVIATION_FROM_CONSENSUS``,
+      ``DEVIATION_Z`` and ``IS_OUTLIER_BOOK`` columns keep their names but now
+      measure against the leave-one-book-out peer median, with grossly
+      discrepant peers removed and the gap capped. **Intermediate 2_5 files
+      built before and after this change are not directly comparable** on
+      those columns; rebuild rather than mixing them.
+    * New anchor-total path columns ``ODDS_SNAP_TOT_<ANCHOR>_*``:
+      ``MINUTES_SINCE_LAST_LEVEL_MOVE``, ``PEERS_MOVED_ANCHOR_STILL_60``,
+      ``ABS_LEVEL_PATH_60``, ``SIGNED_MOVE_STREAK_60`` and
+      ``LAST_TWO_LEVEL_MOVES_GAP_MIN``, plus the walk-forward Ridge
+      ``ODDS_LINE_HIST_RIDGE_EXPECTED_TOTAL_MOVE_TO_CLOSE``.
 """
 
 from __future__ import annotations

@@ -154,7 +154,7 @@ def aggregate_across_books(panel: pd.DataFrame) -> pd.DataFrame:
     return consensus.reset_index()
 
 
-def add_book_deviation(panel: pd.DataFrame, consensus: pd.DataFrame) -> pd.DataFrame:
+def add_book_deviation(panel: pd.DataFrame) -> pd.DataFrame:
     """Each book's capped distance from the other books at the same instant.
 
     Existing column names are retained, but their reference is now the
