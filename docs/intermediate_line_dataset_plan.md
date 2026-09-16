@@ -9,6 +9,19 @@ Build it with:
 poetry run python scripts/create_train_data/create_intermediate_line_train_data.py
 ```
 
+By default the training CSV includes
+`ODDS_LINE_HIST_RIDGE_EXPECTED_TOTAL_MOVE_TO_CLOSE`: the walk-forward Ridge
+estimate, in points, of the anchor total line at the final pregame tick minus
+its value at this snapshot. Use `--no-ridge-movement` to omit the column and
+skip its calculation, or pass `include_ridge_movement=False` to
+`create_intermediate_line_df`. Each historical row uses only games that tipped
+off before that row's snapshot, from its current and immediately previous
+seasons. Each completed game has total training weight one across its snapshots.
+The first 100 eligible games receive a neutral value of zero; 0-minute rows
+also receive exactly zero. This feature is computed from the same tick series
+as the snapshot lines, since the separate closing-odds table does not always
+agree with that series.
+
 It emits **two files**: the training CSV, and a `_scoring.csv` sidecar holding
 the closing lines, the per-row snapshot weight and raw timestamps. See §10 for
 why they are physically separate rather than distinguished by a prefix.
@@ -382,6 +395,38 @@ of ~5 h this is one of the more informative columns in the set, not bookkeeping.
 **Cross-book at T:** consensus median/mean, `CROSSBOOK_STD_SNAP`,
 `CROSSBOOK_RANGE_SNAP`, and `BOOK_DEVIATION_<b>` = book line − consensus (an
 outlying book is often the stale one, or the sharp one).
+
+As built, the per-book `deviation_from_consensus`, `abs_deviation_from_consensus`,
+`deviation_z` and `is_outlier_book` columns keep their names but use a
+**leave-one-book-out** reference: the median of the *other* books, after
+dropping peer quotes more than 10 points (totals/spread) or 0.15 probability
+(moneyline) from the all-book median. The gap is then capped at that same limit,
+and `deviation_z` divides by the peer std floored at 0.5 pt / 0.01. Including the
+evaluated book in its own median shrank its deviation toward zero; one corrupt
+feed value could inflate it by tens of points. A book with no quoted peers gets
+0. The headline `consensus_line` (all books) is unchanged.
+
+**Anchor-total path state** (bet365 totals only, to avoid dozens of redundant
+per-book columns; built in `line_history/anchor_total_path.py`). All use raw
+line *level* changes; a price-only reprice is not a move:
+
+- `ODDS_SNAP_TOT_<ANCHOR>_MINUTES_SINCE_LAST_LEVEL_MOVE` — minutes since the
+  level last changed (since open if it never did). Differs from
+  `line_age_minutes`, which resets on any tick, including price-only ones.
+- `ODDS_SNAP_TOT_<ANCHOR>_PEERS_MOVED_ANCHOR_STILL_60` — +1/−1 when the median of
+  the other books (quoted both now and 60 min ago, at least two, outliers
+  removed) rose/fell ≥ 0.5 pt in the last 60 min while the anchor level did
+  not; 0 otherwise. Signed so it gives the direction the anchor would follow.
+- `ODDS_SNAP_TOT_<ANCHOR>_ABS_LEVEL_PATH_60` — sum of absolute level changes in
+  the last 60 min; separates a round trip from no activity, which share
+  `move_last_60 = 0`.
+- `ODDS_SNAP_TOT_<ANCHOR>_SIGNED_MOVE_STREAK_60` — consecutive moves in the
+  latest direction within the last 60 min, signed (+ up, − down, 0 none).
+- `ODDS_SNAP_TOT_<ANCHOR>_LAST_TWO_LEVEL_MOVES_GAP_MIN` — minutes between the
+  last two level changes, capped at 720 (also 720 with fewer than two moves).
+
+If `--windows` omits 60, the 60-minute peer lookback is resolved internally
+without exporting a 60-minute window family.
 
 **Movement from the opener:** `MOVE_FROM_OPEN` (signed), `ABS_MOVE_FROM_OPEN`,
 `PCT_MOVE_FROM_OPEN`, `MOVE_DIRECTION` (sign), `MINUTES_SINCE_OPEN`.

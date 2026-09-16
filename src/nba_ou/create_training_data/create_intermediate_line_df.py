@@ -48,10 +48,17 @@ from nba_ou.config.odds_columns import (
 from nba_ou.create_training_data.create_base_game_features import (
     create_base_game_features,
 )
+from nba_ou.create_training_data.historical_ridge_movement import (
+    EXPECTED_TOTAL_MOVE_COLUMN,
+    add_historical_ridge_movement,
+)
 from nba_ou.create_training_data.select_intermediate_columns import (
     assert_no_bare_closing_odds,
     audit_closing_line_reconstruction,
     select_intermediate_training_columns,
+)
+from nba_ou.data_processing.line_history.anchor_total_path import (
+    add_anchor_total_path_features,
 )
 from nba_ou.data_processing.line_history.book_merge import (
     CAESARS_BOOK,
@@ -407,6 +414,7 @@ def create_intermediate_line_df(
     normalize_total_lines: bool = True,
     normalize_spread_lines: bool = True,
     null_extreme_spread_prices: bool = True,
+    include_ridge_movement: bool = True,
     return_scoring: bool = False,
     verbose: bool = True,
 ) -> pd.DataFrame | tuple[pd.DataFrame, pd.DataFrame]:
@@ -424,6 +432,11 @@ def create_intermediate_line_df(
     store holds no ticks for cannot become a row. Adding older years to
     ``season_years`` does **not** achieve this -- they are intersected against
     the store's own seasons and dropped.
+
+    ``include_ridge_movement`` adds a walk-forward estimate of the anchor
+    total's remaining move to its tick-series closing line. It uses only
+    completed prior games; set it to False to omit the column and its fitting
+    work entirely.
 
     ``fanatics_sportsbook`` only exists from season 2025 and the odds-fetching
     pipeline no longer scrapes the now-discontinued Caesars, so left alone
@@ -493,9 +506,16 @@ def create_intermediate_line_df(
     if verbose:
         print(f"✓ {len(ticks):,} pre-game ticks over {ticks.game_id.nunique()} games")
 
+    # The Ridge label is the 0-minute snapshot from this very tick series.
+    # Generate it internally even if the caller omits 0 from the output grid.
+    panel_grid = (
+        tuple(sorted(set(snapshot_grid) | {0}))
+        if include_ridge_movement
+        else snapshot_grid
+    )
     panel = build_snapshot_panel(
         ticks,
-        grid=snapshot_grid,
+        grid=panel_grid,
         normalize_total_lines=normalize_total_lines,
         normalize_spread_lines=normalize_spread_lines,
         null_extreme_spread_prices=null_extreme_spread_prices,
@@ -503,12 +523,13 @@ def create_intermediate_line_df(
     panel = add_movement_features(
         panel,
         ticks,
-        grid=snapshot_grid,
+        grid=panel_grid,
         windows=windows,
         null_extreme_spread_prices=null_extreme_spread_prices,
     )
     consensus = aggregate_across_books(panel)
     panel = add_book_deviation(panel, consensus)
+    anchor_path = add_anchor_total_path_features(panel, ticks, anchor=anchor)
     if verbose:
         print(f"✓ Snapshot panel: {len(panel):,} (game, market, book, snapshot) rows")
 
@@ -523,8 +544,25 @@ def create_intermediate_line_df(
         _pivot_consensus(consensus),
     ]
     snapshot_wide = _merge_wide_parts(wide_parts)
+    snapshot_wide = snapshot_wide.merge(
+        anchor_path, on=["game_id", "snapshot_minutes"], how="left", validate="one_to_one"
+    )
 
     target_line = _resolve_target_line(panel, anchor=anchor)
+    if include_ridge_movement:
+        ridge_closing_lines = target_line.loc[
+            target_line["snapshot_minutes"].eq(0), ["game_id", "target_line"]
+        ]
+        ridge_closing_lines = ridge_closing_lines.rename(
+            columns={"game_id": "GAME_ID", "target_line": "CLOSING_LINE"}
+        )
+        if not ridge_closing_lines["GAME_ID"].is_unique:
+            raise ValueError("Ridge close must be unique for each game")
+        # Internal closing snapshots must not appear in the requested CSV.
+        if 0 not in snapshot_grid:
+            snapshot_wide = snapshot_wide[
+                snapshot_wide["snapshot_minutes"].isin(snapshot_grid)
+            ].copy()
     snapshot_wide = snapshot_wide.merge(
         target_line, on=["game_id", "snapshot_minutes"], how="left"
     )
@@ -730,9 +768,32 @@ def create_intermediate_line_df(
             main_spread_column: merged[main_spread_column],
         }
     )
-    assert_no_bare_closing_odds(
-        gated, allowed=(main_line_column, main_spread_column)
-    )
+    if include_ridge_movement:
+        # The training frame is thousands of columns wide. Keep this fit on a
+        # narrow view so adding one feature does not copy the whole dataset.
+        ridge_columns = [
+            "GAME_ID",
+            "SEASON_YEAR",
+            "TIME_TO_MATCH_MIN",
+            main_line_column,
+            *[
+                column
+                for column in gated
+                if column.startswith(
+                    (f"ODDS_SNAP_TOT_{anchor.upper()}_", "ODDS_SNAP_TOT_CONSENSUS_")
+                )
+            ],
+        ]
+        ridge_input = gated[ridge_columns].join(
+            merged[["TIPOFF_UTC", "SNAPSHOT_TS_UTC"]]
+        )
+        ridge_feature = add_historical_ridge_movement(
+            ridge_input,
+            ridge_closing_lines,
+            anchor=anchor,
+        )
+        gated[EXPECTED_TOTAL_MOVE_COLUMN] = ridge_feature[EXPECTED_TOTAL_MOVE_COLUMN]
+    assert_no_bare_closing_odds(gated, allowed=(main_line_column, main_spread_column))
 
     # Audit BOTH markets. The spread audit is not optional politeness: the
     # snapshot spread family (ODDS_SNAP_SPR_*) contains a raw line, a normalised
