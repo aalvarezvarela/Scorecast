@@ -120,7 +120,95 @@ def coverage_at(
 # ``valid_from < tipoff_utc``, and ``valid_to >= tipoff_utc`` selects the span
 # still open at tip (spans are clamped there, so it is the last one).
 
-_SEASON_FILTER = "(%(season_years)s::smallint[] IS NULL OR g.season_year = ANY(%(season_years)s))"
+_SEASON_FILTER = (
+    "(%(season_years)s::smallint[] IS NULL OR g.season_year = ANY(%(season_years)s))"
+)
+
+# Snapshot cutoffs come from the line-history game clock, not ir_game.tipoff_utc:
+# the former is the timestamp used to resolve each market quote in the
+# intermediate dataset. Passing explicit (game, horizon, timestamp) triples
+# also makes the strict report boundary testable without guessing from tipoff.
+_SNAPSHOT_CUTOFFS = """
+    WITH cutoffs AS (
+        SELECT * FROM unnest(
+            %(game_ids)s::text[],
+            %(snapshot_minutes)s::integer[],
+            %(as_of)s::timestamptz[]
+        ) AS c(game_id, snapshot_minutes, as_of)
+    )
+"""
+
+_STATUS_AT_SNAPSHOTS = (
+    _SNAPSHOT_CUTOFFS
+    + f"""
+    SELECT c.game_id, c.snapshot_minutes,
+           t.nba_team_id::text AS team_id, s.player_id::text AS player_id,
+           st.code AS status, rc.code AS reason_category,
+           r.detail AS reason_detail, g.game_date, g.season_year
+    FROM cutoffs c
+    JOIN {SCHEMA}.ir_status_span s ON s.game_id = c.game_id
+        AND s.valid_from < c.as_of AND s.valid_to >= c.as_of
+    JOIN {SCHEMA}.ir_game g ON g.game_id = c.game_id
+    JOIN {SCHEMA}.ir_team t ON t.team_id = s.team_id
+    JOIN {SCHEMA}.ir_reason r ON r.reason_id = s.reason_id
+    JOIN {SCHEMA}.ir_reason_category rc ON rc.category_id = r.category_id
+    JOIN {SCHEMA}.ir_status st ON st.status_id = s.status_id
+"""
+)
+
+_FILING_AT_SNAPSHOTS = (
+    _SNAPSHOT_CUTOFFS
+    + f"""
+    SELECT c.game_id, c.snapshot_minutes,
+           t.nba_team_id::text AS team_id, f.submitted
+    FROM cutoffs c
+    JOIN {SCHEMA}.ir_filing_span f ON f.game_id = c.game_id
+        AND f.valid_from < c.as_of AND f.valid_to >= c.as_of
+    JOIN {SCHEMA}.ir_team t ON t.team_id = f.team_id
+"""
+)
+
+_REPORT_AGE_AT_SNAPSHOTS = (
+    _SNAPSHOT_CUTOFFS
+    + f"""
+    SELECT c.game_id, c.snapshot_minutes,
+           EXTRACT(EPOCH FROM (c.as_of - last.observed_at)) / 60
+               AS report_age_minutes
+    FROM cutoffs c
+    LEFT JOIN LATERAL (
+        SELECT max(r.observed_at) AS observed_at
+        FROM {SCHEMA}.ir_report r
+        WHERE r.observed_at < c.as_of AND r.parse_ok
+    ) last ON TRUE
+"""
+)
+
+
+def report_state_at_snapshots(
+    conn: psycopg.Connection, cutoffs: pd.DataFrame
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    """Status, filing and report age at every explicit pre-game UTC cutoff."""
+    required = {"game_id", "snapshot_minutes", "as_of"}
+    if not required.issubset(cutoffs.columns):
+        raise ValueError(
+            f"Snapshot cutoffs are missing {sorted(required - set(cutoffs))}"
+        )
+    if cutoffs.duplicated(["game_id", "snapshot_minutes"]).any():
+        raise ValueError("Snapshot cutoffs must be unique per game and horizon")
+    timestamps = pd.to_datetime(cutoffs["as_of"], utc=True)
+    if timestamps.isna().any():
+        raise ValueError("Snapshot cutoffs must have a UTC timestamp")
+    params = {
+        "game_ids": cutoffs["game_id"].astype(str).tolist(),
+        "snapshot_minutes": cutoffs["snapshot_minutes"].astype(int).tolist(),
+        "as_of": [value.to_pydatetime() for value in timestamps],
+    }
+    return (
+        pd.read_sql_query(_STATUS_AT_SNAPSHOTS, conn, params=params),
+        pd.read_sql_query(_FILING_AT_SNAPSHOTS, conn, params=params),
+        pd.read_sql_query(_REPORT_AGE_AT_SNAPSHOTS, conn, params=params),
+    )
+
 
 _LAST_STATUS_BEFORE_TIP = f"""
     SELECT s.game_id,

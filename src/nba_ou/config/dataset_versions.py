@@ -140,6 +140,13 @@ History
       ``include_same_season_referee_variants=True``.
     * The legacy ``REF_AVG/STD/SUM_*`` columns stay for comparison.
 
+    In intermediate-line snapshots these referee columns are populated only at
+    or after 09:00 Eastern on the game's date; earlier snapshots carry NaN.
+    Injury features use the most recent filed report strictly before each
+    snapshot's UTC timestamp. An unfiled team gets a coverage flag of 0 and
+    NaN for its injury-derived values. The intermediate pipeline keeps the
+    ``2_5`` schema version for these changes.
+
     Intermediate-line builds only, added later under the same 2_5 label:
 
     * The per-book ``DEVIATION_FROM_CONSENSUS``, ``ABS_DEVIATION_FROM_CONSENSUS``,

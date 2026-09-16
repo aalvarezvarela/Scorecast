@@ -30,6 +30,9 @@ from nba_ou.create_training_data.create_intermediate_line_df import (
 )
 from nba_ou.data_processing.line_history.movement_features import DEFAULT_WINDOWS
 from nba_ou.data_processing.line_history.snapshots import DEFAULT_SNAPSHOT_GRID
+from nba_ou.data_processing.referees.referee_tendencies import (
+    DEFAULT_REFEREE_HISTORY_SEASONS,
+)
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_OUTPUT_DIR = PROJECT_ROOT / "data" / "train_data"
@@ -92,6 +95,17 @@ def main() -> None:
         type=str,
         default=",".join(str(m) for m in DEFAULT_SNAPSHOT_GRID),
         help="Minutes before tip to sample.",
+    )
+    parser.add_argument(
+        "--referee-history-seasons",
+        type=int,
+        default=DEFAULT_REFEREE_HISTORY_SEASONS,
+        help="Seasons of officiating history behind REF_CREW_* features.",
+    )
+    parser.add_argument(
+        "--referee-same-season-variants",
+        action="store_true",
+        help="Also emit REF_CREW_SS_* same-season-only tendencies.",
     )
     parser.add_argument(
         "--windows",
@@ -162,6 +176,8 @@ def main() -> None:
         snapshot_grid=grid,
         windows=windows,
         base_lookback_seasons=args.base_lookback_seasons,
+        referee_history_seasons=args.referee_history_seasons,
+        include_same_season_referee_variants=args.referee_same_season_variants,
         anchor_book=args.anchor_book,
         exclude_fanatics=args.exclude_fanatics,
         exclude_caesars=args.exclude_caesars,
