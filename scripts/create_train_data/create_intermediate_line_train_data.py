@@ -156,6 +156,14 @@ def main() -> None:
         action="store_true",
         help="Keep extreme spread price cells instead of setting them to NaN.",
     )
+    parser.add_argument(
+        "--no-ridge-movement",
+        action="store_true",
+        help=(
+            "Omit the walk-forward expected total-line move to close feature "
+            "and skip its historical Ridge fit."
+        ),
+    )
     args = parser.parse_args()
 
     grid = _parse_int_tuple(args.snapshot_grid)
@@ -176,6 +184,7 @@ def main() -> None:
         normalize_total_lines=not args.no_normalize_total_lines,
         normalize_spread_lines=not args.no_normalize_spread_lines,
         null_extreme_spread_prices=not args.keep_extreme_spread_prices,
+        include_ridge_movement=not args.no_ridge_movement,
         return_scoring=True,
     )
 
