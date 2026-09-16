@@ -139,6 +139,10 @@ History
     * Optional ``REF_CREW_SS_*`` same-season-only variants when built with
       ``include_same_season_referee_variants=True``.
     * The legacy ``REF_AVG/STD/SUM_*`` columns stay for comparison.
+
+    In intermediate-line snapshots these referee columns are populated only at
+    or after 09:00 Eastern on the game's date; earlier snapshots carry NaN.
+    The intermediate pipeline keeps the ``2_5`` schema version for this change.
 """
 
 from __future__ import annotations

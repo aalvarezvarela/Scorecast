@@ -48,6 +48,11 @@ from nba_ou.config.odds_columns import (
 from nba_ou.create_training_data.create_base_game_features import (
     create_base_game_features,
 )
+from nba_ou.create_training_data.intermediate_referees import (
+    add_intermediate_referee_features,
+    add_snapshot_referee_interactions,
+    mask_referees_before_release,
+)
 from nba_ou.create_training_data.select_intermediate_columns import (
     assert_no_bare_closing_odds,
     audit_closing_line_reconstruction,
@@ -73,6 +78,9 @@ from nba_ou.data_processing.line_history.snapshots import (
     build_snapshot_panel,
 )
 from nba_ou.data_processing.odds.book_combination import resolve_combine_books
+from nba_ou.data_processing.referees.referee_tendencies import (
+    DEFAULT_REFEREE_HISTORY_SEASONS,
+)
 from nba_ou.postgre_db.line_history_aiven.fetch import (
     MARKET_MONEYLINE,
     MARKET_SPREAD,
@@ -397,6 +405,8 @@ def create_intermediate_line_df(
     recent_limit_to_include: str | pd.Timestamp | None = None,
     season_years: list[int] | None = None,
     base_lookback_seasons: int = DEFAULT_BASE_LOOKBACK_SEASONS,
+    referee_history_seasons: int = DEFAULT_REFEREE_HISTORY_SEASONS,
+    include_same_season_referee_variants: bool = False,
     snapshot_grid: tuple[int, ...] = DEFAULT_SNAPSHOT_GRID,
     windows: tuple[int, ...] = DEFAULT_WINDOWS,
     anchor_book: str | None = None,
@@ -456,6 +466,8 @@ def create_intermediate_line_df(
             "base_lookback_seasons must be >= 0; it only ever loads history "
             "EARLIER than the first line-history season."
         )
+    if referee_history_seasons < 1:
+        raise ValueError("referee_history_seasons must be >= 1")
     combine_books = resolve_combine_books(
         combine=combine_fanatics_and_caesars,
         exclude_caesars=exclude_caesars,
@@ -584,6 +596,16 @@ def create_intermediate_line_df(
         verbose=verbose,
     )
     base["GAME_ID"] = base["GAME_ID"].astype(str)
+    base = add_intermediate_referee_features(
+        base,
+        history_seasons=referee_history_seasons,
+        include_same_season_variants=include_same_season_referee_variants,
+        normalize_total_lines=normalize_total_lines,
+        normalize_spread_lines=normalize_spread_lines,
+        null_extreme_spread_prices=null_extreme_spread_prices,
+        exclude_caesars=exclude_caesars,
+        combine_fanatics_and_caesars=combine_books,
+    )
 
     # Closing lines are renamed, not kept: they leave in the scoring sidecar so
     # they cannot reach the feature matrix. The opener is deliberately NOT swept
@@ -664,7 +686,6 @@ def create_intermediate_line_df(
     merged["SNAPSHOT_TS_UTC"] = merged["TIPOFF_UTC"] - pd.to_timedelta(
         merged["TIME_TO_MATCH_MIN"], unit="m"
     )
-
     # ---- targets -------------------------------------------------------
     main_line_column = total_line_col(anchor)
     # The main-book column now holds the SNAPSHOT line, so the derived target
@@ -688,6 +709,10 @@ def create_intermediate_line_df(
     merged[main_spread_column] = spread_line_home_from_implied_margin(
         merged["target_spread_line"]
     )
+    merged = add_snapshot_referee_interactions(merged, book=anchor)
+    # This masks the legacy, crew tendency and interaction families together.
+    # Earlier snapshots must not inherit that game's eventual referee crew.
+    merged = mask_referees_before_release(merged)
     missing_scores = [
         column
         for column in (PTS_HOME_COL, PTS_AWAY_COL)
@@ -730,9 +755,7 @@ def create_intermediate_line_df(
             main_spread_column: merged[main_spread_column],
         }
     )
-    assert_no_bare_closing_odds(
-        gated, allowed=(main_line_column, main_spread_column)
-    )
+    assert_no_bare_closing_odds(gated, allowed=(main_line_column, main_spread_column))
 
     # Audit BOTH markets. The spread audit is not optional politeness: the
     # snapshot spread family (ODDS_SNAP_SPR_*) contains a raw line, a normalised

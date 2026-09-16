@@ -10,8 +10,8 @@ Three stages are deliberately absent, and none of them is an oversight:
 * **Player-level statistics and injury status** -- there is no trustworthy
   timestamped injury history, so a snapshot at T-12h would be given knowledge
   that only existed at T-1h. Train and inference would disagree.
-* **Referees** -- assignments are not reliably published at the horizons this
-  dataset samples.
+* **Referees** -- attached after the base game build, then masked per snapshot
+  until 09:00 Eastern on game day.
 * **``engineer_odds_features``** -- close-time by its own docstring. Its useful
   parts (consensus, dispersion, vig) are rebuilt from snapshot prices in
   ``data_processing/line_history/`` instead.
