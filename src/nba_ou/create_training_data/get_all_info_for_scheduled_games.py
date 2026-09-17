@@ -5,6 +5,7 @@ from zoneinfo import ZoneInfo
 import pandas as pd
 
 from nba_ou.config.constants import TEAM_ID_MAP, TEAM_NAME_STANDARDIZATION
+from nba_ou.config.odds_columns import drop_history_only_book_columns
 from nba_ou.config.settings import SETTINGS
 from nba_ou.data_processing.referees.process_refs_scheduled_game import (
     process_scheduled_referee_assignments,
@@ -237,6 +238,9 @@ def get_sportsbook_prediction_data(
     df_sportsbook = asyncio.run(
         scrape_sportsbook_days(days_to_scrape, headless=headless)
     )
+
+    # Same rule as training: stored-only books never reach a prediction frame.
+    df_sportsbook = drop_history_only_book_columns(df_sportsbook)
 
     # Check if we got any data
     if df_sportsbook.empty:

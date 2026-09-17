@@ -134,6 +134,55 @@ scrape missed it" without fetching once. If a specific game keeps reappearing,
 that is the former — raise `--min-book-share` or pass
 `--skip-incomplete-check`.
 
+## Adding a book the store never held (BetRivers)
+
+The incomplete check above cannot add a new book: no stored game carries it, so
+no date "expects" it. `--backfill-books` re-fetches every stored game with no
+tick for the named books instead. SBR's BetRivers history starts with 2021-22,
+so start there — earlier seasons would be re-requested for nothing:
+
+```bash
+python scripts/update_databases/update_line_history_database.py \
+    --start 2021 --end 2025 --backfill-books betrivers --refresh-days 0 \
+    --skip-incomplete-check
+```
+
+Writes are flushed every `--flush-every-dates` dates (default 7), so a failure
+late in a multi-season run keeps what was already fetched; re-running resumes,
+because stored games no longer lack the book. Inserts stay insert-only, so the
+re-fetch also adds any tick of the other books that the first scrape missed,
+and never changes one.
+
+The closing table gets the same book through
+`update_sportsbook_database.py --backfill-books betrivers`, which fills only
+BetRivers' NULL columns on stored games.
+
+That scraper now reads the same `__NEXT_DATA__` payload (`--engine json`, the
+default) instead of driving a browser: ~1.2 s per date instead of ~20 s, so a
+season takes minutes. It returns the same raw frames the browser engine did —
+checked on 33 dates from 2019 to scheduled 2026-27 games with zero differences —
+except for games with no odds at all, where the browser engine copied a
+neighbouring game's teams and odds (rows that never matched a game). Writes land
+every `--write-every-dates` dates (default 14), so an interrupted run resumes.
+`--engine browser` keeps the old path as a fallback.
+
+`--all-seasons` checks every season at once, and `--dry-run` shows the dates it
+would scrape per season. It skips missing games dated before the first stored
+odds (SBR has nothing earlier) and backfill games dated before the backfilled
+book's first stored value, so reruns do not re-request dates that can never
+fill:
+
+```bash
+python -m nba_ou.postgre_db.odds_sportsbook.update_sportsbook.update_sportsbook_database \
+    --all-seasons --backfill-books betrivers
+```
+
+**Stored is not a feature.** `nba_ou.config.odds_columns.HISTORY_ONLY_BOOKS`
+lists books both dataset builders drop at read time (the intermediate builder's
+tick fetch, the closing loader, and the same-day scrape). BetRivers' coverage
+starts two seasons after the others, so its presence alone encodes the season;
+admitting it is a deliberate, ablated change.
+
 ## Leakage still has to be filtered
 
 Nothing here changes the Phase 0 finding that SBR records in-play ticks with the

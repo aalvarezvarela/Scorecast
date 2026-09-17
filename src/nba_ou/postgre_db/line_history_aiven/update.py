@@ -14,6 +14,9 @@ A run does three things, in order of how often they matter:
 3. **Top up games missing a book that most games on their own date carry** --
    the signature of a partial scrape, as opposed to a book that had simply not
    launched yet or skipped that one game.
+4. **Optionally backfill named books** (``backfill_books``): re-fetch every
+   stored game with no tick at all for them. Step 3 cannot do this for a book
+   the store has never held, because no game on any date "expects" it.
 
 All writes are insert-only, so re-fetching costs a request and nothing else.
 """
@@ -49,6 +52,11 @@ DISCONTINUED_BOOKS: frozenset[str] = frozenset({"caesars"})
 #: of the slate) making every other game on that date look partial.
 DEFAULT_EXPECTED_BOOK_SHARE = 0.5
 
+#: Scraped games are written every this many dates rather than once at the end,
+#: so a multi-season backfill that fails late keeps what it already fetched.
+#: Inserts are idempotent, so re-running after a failure only re-requests.
+DEFAULT_FLUSH_EVERY_DATES = 7
+
 #: How far back the unconditional refresh reaches. Three days covers a run that
 #: was skipped, plus the gap between a morning fetch and the closing line.
 DEFAULT_REFRESH_DAYS = 3
@@ -60,6 +68,7 @@ class UpdateResult:
     refreshed_dates: list[date] = field(default_factory=list)
     gap_dates: list[date] = field(default_factory=list)
     incomplete_dates: list[date] = field(default_factory=list)
+    backfill_dates: list[date] = field(default_factory=list)
     scraped_games: int = 0
     inserted_ticks: int = 0
     inserted_games: int = 0
@@ -68,7 +77,10 @@ class UpdateResult:
     @property
     def target_dates(self) -> list[date]:
         return sorted(
-            set(self.refreshed_dates) | set(self.gap_dates) | set(self.incomplete_dates)
+            set(self.refreshed_dates)
+            | set(self.gap_dates)
+            | set(self.incomplete_dates)
+            | set(self.backfill_dates)
         )
 
 
@@ -174,6 +186,47 @@ def find_incomplete_games(
     return pd.DataFrame(rows, columns=["game_id", "game_date", "missing_books"])
 
 
+def find_games_missing_books(
+    conn: psycopg.Connection,
+    season_year: int,
+    books: tuple[str, ...],
+) -> pd.DataFrame:
+    """Stored games of ``season_year`` holding no tick for at least one of ``books``.
+
+    Unlike ``find_incomplete_games`` this needs no evidence that the book is
+    expected on the date, which is exactly what lets it backfill a book the
+    store has never held. The price is that a game the book genuinely never
+    priced (a season before it existed on SBR) is re-fetched on every run that
+    asks for it -- so this only runs when a backfill is requested explicitly.
+    """
+    slugs = sorted({str(b).strip().lower() for b in books if str(b).strip()})
+    if not slugs:
+        return pd.DataFrame(columns=["game_id", "game_date"])
+
+    query = sql.SQL(
+        """
+        SELECT g.game_id, g.game_date
+        FROM {schema}.lh_game g
+        WHERE g.season_year = %s
+          AND (
+            SELECT COUNT(DISTINCT b.slug)
+            FROM {schema}.lh_line l
+            JOIN {schema}.lh_book b USING (book_id)
+            WHERE l.game_id = g.game_id
+              AND l.season_year = g.season_year
+              AND b.slug = ANY(%s)
+          ) < %s
+        ORDER BY g.game_date, g.game_id
+        """
+    ).format(schema=sql.Identifier(SCHEMA))
+
+    with conn.cursor() as cur:
+        cur.execute(query, (int(season_year), slugs, len(slugs)))
+        rows = cur.fetchall()
+
+    return pd.DataFrame(rows, columns=["game_id", "game_date"])
+
+
 def season_game_dates(games_df: pd.DataFrame, season_year: int) -> set[date]:
     if games_df.empty or "season_year" not in games_df.columns:
         return set()
@@ -214,6 +267,7 @@ def plan_update(
     refresh_days: int = DEFAULT_REFRESH_DAYS,
     include_incomplete: bool = True,
     min_book_share: float = DEFAULT_EXPECTED_BOOK_SHARE,
+    backfill_books: tuple[str, ...] = (),
     today: date | None = None,
 ) -> UpdateResult:
     """Work out which dates need fetching, without fetching anything."""
@@ -234,6 +288,11 @@ def plan_update(
         if not incomplete.empty:
             result.incomplete_dates = sorted(set(incomplete["game_date"]))
 
+    if backfill_books:
+        lacking = find_games_missing_books(conn, season_year, tuple(backfill_books))
+        if not lacking.empty:
+            result.backfill_dates = sorted(set(lacking["game_date"]))
+
     return result
 
 
@@ -247,6 +306,8 @@ def update_line_history_database(
     include_incomplete: bool = True,
     min_book_share: float = DEFAULT_EXPECTED_BOOK_SHARE,
     markets: tuple[str, ...] = ALL_MARKETS,
+    backfill_books: tuple[str, ...] = (),
+    flush_every_dates: int = DEFAULT_FLUSH_EVERY_DATES,
     dry_run: bool = False,
     today: date | None = None,
     progress: bool = True,
@@ -263,6 +324,7 @@ def update_line_history_database(
         refresh_days=refresh_days,
         include_incomplete=include_incomplete,
         min_book_share=min_book_share,
+        backfill_books=backfill_books,
         today=today,
     )
     dates = result.target_dates
@@ -270,15 +332,29 @@ def update_line_history_database(
         print(
             f"Season {season_year}: {len(dates)} date(s) to fetch "
             f"({len(result.refreshed_dates)} recent, {len(result.gap_dates)} gaps, "
-            f"{len(result.incomplete_dates)} partial)"
+            f"{len(result.incomplete_dates)} partial, "
+            f"{len(result.backfill_dates)} backfill)"
         )
     if not dates or dry_run:
         return result
 
+    def flush(batch: list[ScrapedGame]) -> None:
+        if not batch:
+            return
+        stats = ingest_mod.ingest_scraped_games(
+            conn, batch, games_df=games_df, schedule=schedule
+        )
+        result.inserted_ticks += stats.inserted_ticks
+        result.inserted_games += stats.inserted_games
+        batch.clear()
+
     session = new_session()
     batch: list[ScrapedGame] = []
     try:
-        for day in dates:
+        for index, day in enumerate(dates):
+            # Checked before any `continue`, so a failed date never delays a write.
+            if index and flush_every_dates > 0 and index % flush_every_dates == 0:
+                flush(batch)
             try:
                 summaries = discover_games_for_date(session, day)
                 games = list(
@@ -304,12 +380,5 @@ def update_line_history_database(
     finally:
         session.close()
 
-    if not batch:
-        return result
-
-    stats = ingest_mod.ingest_scraped_games(
-        conn, batch, games_df=games_df, schedule=schedule
-    )
-    result.inserted_ticks = stats.inserted_ticks
-    result.inserted_games = stats.inserted_games
+    flush(batch)
     return result

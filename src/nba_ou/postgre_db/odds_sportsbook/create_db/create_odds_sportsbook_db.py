@@ -2,6 +2,7 @@ from pathlib import Path
 
 import pandas as pd
 import psycopg
+from nba_ou.config.odds_columns import is_book_column
 from nba_ou.fetch_data.odds_sportsbook.process_money_line_data import ML_BOOKS
 from nba_ou.fetch_data.odds_sportsbook.process_spread_data import SPREAD_BOOKS
 from nba_ou.fetch_data.odds_sportsbook.process_total_lines_data import TOTAL_BOOKS
@@ -88,6 +89,49 @@ def _sportsbook_columns() -> list[tuple[str, str]]:
     return columns
 
 
+def book_columns(books: list[str] | tuple[str, ...]) -> list[str]:
+    """Every stored column belonging to ``books`` (totals, spread and moneyline)."""
+    return [
+        name
+        for name, _ in _sportsbook_columns()
+        if any(is_book_column(name, book) for book in books)
+    ]
+
+
+def _add_missing_columns(cur: psycopg.Cursor, schema: str, table: str) -> None:
+    """Bring an existing table up to ``_sportsbook_columns``.
+
+    ``CREATE TABLE IF NOT EXISTS`` never touches a table that is already there,
+    so a book added to the scraper would otherwise have nowhere to be written.
+
+    Only columns that are actually missing are altered: every ``ALTER TABLE``
+    takes an ACCESS EXCLUSIVE lock even when ``IF NOT EXISTS`` makes it a no-op,
+    so issuing one per column on every run would queue behind any open reader.
+    A lock timeout makes a blocked migration fail loudly instead of hanging.
+    """
+    cur.execute(
+        "SELECT column_name FROM information_schema.columns "
+        "WHERE table_schema = %s AND table_name = %s",
+        (schema, table),
+    )
+    existing = {row[0] for row in cur.fetchall()}
+    missing = [(n, t) for n, t in _sportsbook_columns() if n not in existing]
+    if not missing:
+        return
+
+    print(f"Adding {len(missing)} column(s) to {schema}.{table}")
+    cur.execute("SET LOCAL lock_timeout = '30s'")
+    for name, dtype in missing:
+        cur.execute(
+            sql.SQL("ALTER TABLE {}.{} ADD COLUMN IF NOT EXISTS {} {}").format(
+                sql.Identifier(schema),
+                sql.Identifier(table),
+                sql.Identifier(name),
+                sql.SQL(dtype),
+            )
+        )
+
+
 def create_odds_sportsbook_table(drop_existing: bool = False) -> bool:
     """Create the odds_sportsbook table inside schema SCHEMA_NAME_ODDS_SPORTSBOOK."""
     try:
@@ -121,6 +165,7 @@ def create_odds_sportsbook_table(drop_existing: bool = False) -> bool:
             ).format(sql.Identifier(schema), sql.Identifier(table))
 
             cur.execute(create_table_query)
+            _add_missing_columns(cur, schema, table)
 
             cur.execute(
                 sql.SQL(
@@ -181,8 +226,56 @@ def _ensure_columns(df: pd.DataFrame, columns: list[str]) -> pd.DataFrame:
     return df
 
 
+def build_upsert_query(
+    schema: str, table: str, cols: list[str], fill_columns: list[str] | None = None
+) -> sql.Composed:
+    """INSERT for new games; optionally fill-only UPDATE for existing ones.
+
+    Without ``fill_columns`` an existing game is left untouched (the original
+    behaviour). With them, an existing row gets *only* those columns, and only
+    where they are still NULL -- so backfilling a new book can never overwrite a
+    value another book already stored.
+    """
+    if fill_columns:
+        unknown = sorted(set(fill_columns) - set(cols))
+        if unknown:
+            raise ValueError(f"fill_columns not in the table: {unknown}")
+        conflict = sql.SQL("DO UPDATE SET {}").format(
+            sql.SQL(", ").join(
+                sql.SQL("{col} = COALESCE({tbl}.{col}, EXCLUDED.{col})").format(
+                    col=sql.Identifier(col), tbl=sql.Identifier(table)
+                )
+                for col in fill_columns
+            )
+        )
+    else:
+        conflict = sql.SQL("DO NOTHING")
+
+    return sql.SQL(
+        """
+        INSERT INTO {}.{} (
+            {cols}
+        )
+        VALUES (
+            {placeholders}
+        )
+        ON CONFLICT (game_id)
+        {conflict}
+        """
+    ).format(
+        sql.Identifier(schema),
+        sql.Identifier(table),
+        cols=sql.SQL(", ").join(map(sql.Identifier, cols)),
+        placeholders=sql.SQL(", ").join(sql.Placeholder() for _ in cols),
+        conflict=conflict,
+    )
+
+
 def upsert_odds_sportsbook_df(
-    odds_df: pd.DataFrame, conn: psycopg.Connection | None = None
+    odds_df: pd.DataFrame,
+    conn: psycopg.Connection | None = None,
+    *,
+    fill_columns: list[str] | None = None,
 ) -> int:
     if odds_df.empty:
         return 0
@@ -217,23 +310,7 @@ def upsert_odds_sportsbook_df(
 
     rows = [tuple(row) for row in odds_df[cols].itertuples(index=False, name=None)]
 
-    insert_query = sql.SQL(
-        """
-        INSERT INTO {}.{} (
-            {cols}
-        )
-        VALUES (
-            {placeholders}
-        )
-        ON CONFLICT (game_id)
-        DO NOTHING
-        """
-    ).format(
-        sql.Identifier(schema),
-        sql.Identifier(table),
-        cols=sql.SQL(", ").join(map(sql.Identifier, cols)),
-        placeholders=sql.SQL(", ").join(sql.Placeholder() for _ in cols),
-    )
+    insert_query = build_upsert_query(schema, table, cols, fill_columns)
 
     try:
         with conn.cursor() as cur:

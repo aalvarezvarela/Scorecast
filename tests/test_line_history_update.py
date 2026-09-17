@@ -250,3 +250,150 @@ class TestPlanUpdate:
         )
         assert result.incomplete_dates == []
         assert result.target_dates == []
+
+
+class TestBackfillBooks:
+    """Backfilling a book the store has never held (BetRivers)."""
+
+    class _Conn:
+        def __init__(self, rows):
+            self._rows = rows
+            self.params = None
+            self.queries = 0
+
+        def cursor(self):
+            outer = self
+
+            class _Cur:
+                def __enter__(self):
+                    return self
+
+                def __exit__(self, *exc):
+                    return False
+
+                def execute(self, query, params=None):
+                    outer.queries += 1
+                    outer.params = params
+
+                def fetchall(self):
+                    return outer._rows
+
+            return _Cur()
+
+    def test_query_asks_for_every_requested_book(self):
+        conn = self._Conn([("A", date(2026, 1, 10))])
+        out = up.find_games_missing_books(conn, 2025, ("BetRivers ", "betrivers"))
+        # Normalised and de-duplicated, so the "< n books" test is not inflated.
+        assert conn.params == (2025, ["betrivers"], 1)
+        assert out["game_id"].tolist() == ["A"]
+
+    def test_no_books_means_no_query(self):
+        conn = self._Conn([])
+        assert up.find_games_missing_books(conn, 2025, ()).empty
+        assert conn.queries == 0
+
+    def test_plan_adds_backfill_dates(self, monkeypatch):
+        monkeypatch.setattr(
+            up.ingest_mod, "find_missing_games", lambda conn, games: pd.DataFrame()
+        )
+        monkeypatch.setattr(
+            up,
+            "find_games_missing_books",
+            lambda conn, season, books: pd.DataFrame(
+                {"game_id": ["A", "B"], "game_date": [date(2026, 1, 10)] * 2}
+            ),
+        )
+        result = up.plan_update(
+            object(),
+            _games(),
+            2025,
+            refresh_days=0,
+            include_incomplete=False,
+            backfill_books=("betrivers",),
+            today=date(2026, 1, 12),
+        )
+        assert result.backfill_dates == [date(2026, 1, 10)]
+        assert result.target_dates == [date(2026, 1, 10)]
+
+    def test_plan_skips_backfill_unless_asked(self, monkeypatch):
+        monkeypatch.setattr(
+            up.ingest_mod, "find_missing_games", lambda conn, games: pd.DataFrame()
+        )
+
+        def _fail(*args, **kwargs):
+            raise AssertionError("backfill query must not run without books")
+
+        monkeypatch.setattr(up, "find_games_missing_books", _fail)
+        result = up.plan_update(
+            object(),
+            _games(),
+            2025,
+            refresh_days=0,
+            include_incomplete=False,
+            today=date(2026, 1, 12),
+        )
+        assert result.backfill_dates == []
+
+
+class TestFlushing:
+    """A long backfill writes as it goes instead of once at the end."""
+
+    def _run(self, monkeypatch, n_dates, flush_every, fail_on=()):
+        dates = [date(2024, 1, d) for d in range(1, n_dates + 1)]
+        monkeypatch.setattr(
+            up,
+            "plan_update",
+            lambda *a, **k: up.UpdateResult(season_year=2023, backfill_dates=dates),
+        )
+
+        class _Session:
+            def close(self):
+                pass
+
+        monkeypatch.setattr(up, "new_session", lambda: _Session())
+
+        def _discover(session, day):
+            if day.day in fail_on:
+                raise RuntimeError("boom")
+            return [type("S", (), {"event_id": day.day})()]
+
+        monkeypatch.setattr(up, "discover_games_for_date", _discover)
+        monkeypatch.setattr(
+            up,
+            "scrape_events",
+            lambda ids, **k: [type("G", (), {"ticks": (1, 2)})() for _ in ids],
+        )
+        calls = []
+
+        def _ingest(conn, batch, **kwargs):
+            calls.append(len(batch))
+            stats = type(
+                "St", (), {"inserted_ticks": 2 * len(batch), "inserted_games": 0}
+            )
+            return stats()
+
+        monkeypatch.setattr(up.ingest_mod, "ingest_scraped_games", _ingest)
+        result = up.update_line_history_database(
+            2023,
+            games_df=_games(),
+            conn=object(),
+            flush_every_dates=flush_every,
+            progress=False,
+        )
+        return calls, result
+
+    def test_writes_every_n_dates_and_the_remainder(self, monkeypatch):
+        calls, result = self._run(monkeypatch, n_dates=15, flush_every=7)
+        assert calls == [7, 7, 1]
+        assert result.scraped_games == 15
+        assert result.inserted_ticks == 30  # summed across flushes, not overwritten
+
+    def test_zero_writes_once(self, monkeypatch):
+        calls, _ = self._run(monkeypatch, n_dates=15, flush_every=0)
+        assert calls == [15]
+
+    def test_a_failed_date_does_not_delay_the_write(self, monkeypatch):
+        # Date 7 fails; the flush due before date 8 must still happen.
+        calls, result = self._run(monkeypatch, n_dates=8, flush_every=7, fail_on=(7,))
+        assert calls == [6, 1]
+        assert len(result.failed_dates) == 1

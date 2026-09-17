@@ -41,6 +41,7 @@ from nba_ou.config.market_columns import (
     spread_line_home_from_implied_margin,
 )
 from nba_ou.config.odds_columns import (
+    HISTORY_ONLY_BOOKS,
     get_main_book,
     spread_line_home_col,
     total_line_col,
@@ -524,7 +525,9 @@ def create_intermediate_line_df(
     )
 
     anchor = anchor_book or get_main_book()
-    excluded_books: tuple[str, ...] = ()
+    # Books stored in line history but not yet admitted as features (BetRivers
+    # only exists from 2021-22): excluded unconditionally, see HISTORY_ONLY_BOOKS.
+    excluded_books: tuple[str, ...] = HISTORY_ONLY_BOOKS
     if exclude_fanatics:
         excluded_books += PARTIAL_COVERAGE_BOOKS
     if exclude_caesars:

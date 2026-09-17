@@ -22,6 +22,11 @@ Examples::
 
     # past seasons
     python scripts/update_databases/update_line_history_database.py --start 2021 --end 2024
+
+    # add a book the store never held to every stored game (BetRivers exists on
+    # SBR from 2021-22, so earlier seasons would only be re-requested for nothing)
+    python scripts/update_databases/update_line_history_database.py \
+        --start 2021 --end 2025 --backfill-books betrivers --refresh-days 0
 """
 
 from __future__ import annotations
@@ -87,6 +92,27 @@ def main() -> int:
         help="markets to store (default: all three)",
     )
     parser.add_argument(
+        "--backfill-books",
+        nargs="*",
+        default=[],
+        metavar="SLUG",
+        help=(
+            "re-fetch every stored game with no tick for these books (e.g. "
+            "betrivers). Needed once for a book the store has never held, "
+            "since the partial-game check only expects books already stored"
+        ),
+    )
+    parser.add_argument(
+        "--flush-every-dates",
+        type=int,
+        default=update_mod.DEFAULT_FLUSH_EVERY_DATES,
+        help=(
+            "write scraped games every N dates, so a long backfill keeps its "
+            f"progress if it fails (default: {update_mod.DEFAULT_FLUSH_EVERY_DATES}; "
+            "0 writes once at the end)"
+        ),
+    )
+    parser.add_argument(
         "--dry-run",
         action="store_true",
         help="report the plan and scrape nothing",
@@ -125,6 +151,8 @@ def main() -> int:
                 include_incomplete=not args.skip_incomplete_check,
                 min_book_share=args.min_book_share,
                 markets=tuple(args.markets),
+                backfill_books=tuple(args.backfill_books),
+                flush_every_dates=args.flush_every_dates,
                 dry_run=args.dry_run,
             )
             if args.dry_run:

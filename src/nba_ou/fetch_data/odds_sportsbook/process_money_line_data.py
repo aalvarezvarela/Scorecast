@@ -10,11 +10,24 @@ ML_BOOKS: list[str] = [
     "bet365",
     "draftkings",
     "fanatics_sportsbook",
+    # History only until admitted as a feature: see HISTORY_ONLY_BOOKS.
+    "betrivers",
 ]
 
 
 def _to_num(s: pd.Series) -> pd.Series:
     return pd.to_numeric(s, errors="coerce")
+
+
+def _off_board_to_na(price):
+    """SBR writes -10000 for an off-the-board price.
+
+    A book missing from the page arrives as ``pd.NA``, and ``pd.NA == -10000``
+    raises rather than returning False, so check for a value first.
+    """
+    if pd.isna(price) or price == -10000:
+        return pd.NA
+    return price
 
 
 def build_one_game_row_from_moneyline_group(g: pd.DataFrame) -> dict:
@@ -55,7 +68,7 @@ def build_one_game_row_from_moneyline_group(g: pd.DataFrame) -> dict:
             if (len(away_row) and price_col in g.columns)
             else pd.NA
         )
-        out[f"ml_{book}_price_away"] = pd.NA if away_price == -10000 else away_price
+        out[f"ml_{book}_price_away"] = _off_board_to_na(away_price)
 
         # Get home price and replace -10000 with NA
         home_price = (
@@ -63,7 +76,7 @@ def build_one_game_row_from_moneyline_group(g: pd.DataFrame) -> dict:
             if (len(home_row) and price_col in g.columns)
             else pd.NA
         )
-        out[f"ml_{book}_price_home"] = pd.NA if home_price == -10000 else home_price
+        out[f"ml_{book}_price_home"] = _off_board_to_na(home_price)
 
     return out
 

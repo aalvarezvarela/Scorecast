@@ -13,6 +13,41 @@ BOOK_ALIASES = {
 }
 
 
+#: Books collected into the odds stores (Supabase ``odds_sportsbook`` and the
+#: Aiven line history) but not yet admitted as model features. Both dataset
+#: builders drop them at read time, so storing a new book never changes a
+#: training frame silently.
+#:
+#: BetRivers is here because its SBR history only starts with the 2021-22
+#: season: admitting it unflagged would put a book whose mere presence encodes
+#: the season into every per-book and consensus column (the same problem
+#: ``PARTIAL_COVERAGE_BOOKS`` handles for Fanatics). Remove a slug from this
+#: tuple only as a deliberate, ablated feature change.
+HISTORY_ONLY_BOOKS: tuple[str, ...] = ("betrivers",)
+
+
+def is_book_column(column: str, book: str) -> bool:
+    """True if ``column`` belongs to ``book`` (``total_betrivers_line_over``, ...).
+
+    Matches the slug as a whole ``_``-delimited token, so ``bet365`` never
+    matches a hypothetical ``bet3650`` and a slug that is a prefix of another
+    cannot capture the longer book's columns.
+    """
+    tokens = column.lower().split("_")
+    slug = book.lower().split("_")
+    width = len(slug)
+    return any(tokens[i : i + width] == slug for i in range(len(tokens) - width + 1))
+
+
+def drop_history_only_book_columns(
+    df: pd.DataFrame, books: Iterable[str] = HISTORY_ONLY_BOOKS
+) -> pd.DataFrame:
+    """Drop the columns of books that are stored but not yet model features."""
+    books = tuple(books)
+    drop = [c for c in df.columns if any(is_book_column(c, b) for b in books)]
+    return df.drop(columns=drop) if drop else df
+
+
 def get_main_book() -> str:
     configured = getattr(SETTINGS, "main_sportsbook", None)
     if configured is None:

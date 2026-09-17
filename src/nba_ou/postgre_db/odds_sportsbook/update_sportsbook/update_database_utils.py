@@ -1,4 +1,5 @@
 from collections.abc import Iterable
+from datetime import date
 
 import pandas as pd
 from nba_ou.postgre_db.config.db_config import (
@@ -81,6 +82,86 @@ def get_existing_sportsbook_game_ids(
             return {str(row[0]) for row in rows}
     finally:
         conn.close()
+
+
+def get_game_ids_missing_columns(
+    game_ids: Iterable[str],
+    columns: Iterable[str],
+) -> list[str]:
+    """Stored games among ``game_ids`` where every one of ``columns`` is NULL.
+
+    Used to backfill a book added after those games were first scraped: a game
+    counts as missing the book only when none of its columns carry a value, so
+    a book that genuinely priced one market but not another is not re-fetched
+    forever.
+    """
+    target_ids = [str(gid) for gid in game_ids]
+    columns = list(columns)
+    if not target_ids or not columns:
+        return []
+
+    schema = get_schema_name_odds_sportsbook()
+    table = schema
+    query = sql.SQL("SELECT game_id FROM {}.{} WHERE game_id = ANY(%s) AND {}").format(
+        sql.Identifier(schema),
+        sql.Identifier(table),
+        sql.SQL(" AND ").join(
+            sql.SQL("{} IS NULL").format(sql.Identifier(col)) for col in columns
+        ),
+    )
+
+    conn = connect_nba_db()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(query, (target_ids,))
+            missing = {str(row[0]) for row in cur.fetchall()}
+    finally:
+        conn.close()
+    return [gid for gid in target_ids if gid in missing]
+
+
+def get_first_stored_game_date(columns: Iterable[str] | None = None) -> date | None:
+    """Earliest ``game_date`` in odds_sportsbook, or None when nothing matches.
+
+    With ``columns``, only rows where at least one of them carries a value
+    count: the first date a book was ever stored.
+    """
+    schema = get_schema_name_odds_sportsbook()
+    table = schema
+    columns = list(columns or [])
+    where = (
+        sql.SQL(" WHERE ")
+        + sql.SQL(" OR ").join(
+            sql.SQL("{} IS NOT NULL").format(sql.Identifier(col)) for col in columns
+        )
+        if columns
+        else sql.SQL("")
+    )
+    query = sql.SQL("SELECT min(game_date) FROM {}.{}{}").format(
+        sql.Identifier(schema), sql.Identifier(table), where
+    )
+
+    conn = connect_nba_db()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(query)
+            row = cur.fetchone()
+    finally:
+        conn.close()
+    first = row[0] if row else None
+    return pd.Timestamp(first).date() if first is not None else None
+
+
+def game_ids_on_or_after(
+    games_df: pd.DataFrame, game_ids: Iterable[str], first_date: date | None
+) -> list[str]:
+    """``game_ids`` (order kept) whose game_date is on or after ``first_date``."""
+    game_ids = [str(gid) for gid in game_ids]
+    if first_date is None or games_df.empty:
+        return game_ids
+    dates = pd.to_datetime(games_df["game_date"], errors="coerce").dt.date
+    keep = set(games_df.loc[dates >= first_date, "game_id"].astype(str))
+    return [gid for gid in game_ids if gid in keep]
 
 
 def get_missing_game_ids_to_scrape(

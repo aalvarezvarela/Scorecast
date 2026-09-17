@@ -1,4 +1,5 @@
 import pandas as pd
+from nba_ou.config.odds_columns import drop_history_only_book_columns
 from nba_ou.postgre_db.config.db_config import (
     connect_nba_db,
     get_schema_name_odds_sportsbook,
@@ -25,7 +26,7 @@ def _normalize_game_ids(game_ids) -> list[str]:
 
 
 def load_odds_sportsbook_from_db(
-    seasons=None, extra_game_ids=None
+    seasons=None, extra_game_ids=None, *, include_history_only_books: bool = False
 ) -> pd.DataFrame | None:
     schema = get_schema_name_odds_sportsbook()
     table = schema  # convention: schema == table
@@ -66,6 +67,12 @@ def load_odds_sportsbook_from_db(
             df = pd.read_sql_query(query, conn, params=tuple(query_params))
         else:
             df = pd.read_sql_query(query, conn)
+
+        # Stored-but-not-yet-feature books (HISTORY_ONLY_BOOKS) are dropped
+        # here, the one read path into the closing dataset, so adding a book to
+        # the table never changes a training frame without a deliberate opt-in.
+        if not include_history_only_books:
+            df = drop_history_only_book_columns(df)
 
         print(f"Loaded {len(df)} sportsbook odds records from database")
         return df
