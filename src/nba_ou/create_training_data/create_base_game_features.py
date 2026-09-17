@@ -81,6 +81,9 @@ from nba_ou.data_processing.players.attach_player_features import (
 from nba_ou.data_processing.players.roster_continuity import (
     add_roster_continuity_feature,
 )
+from nba_ou.data_processing.players.starter_history import (
+    add_starter_history_features,
+)
 from nba_ou.data_processing.scheduled_games.merge_scheduled_with_existing_data import (
     standardize_and_merge_scheduled_games_to_players_data,
 )
@@ -462,6 +465,9 @@ def create_base_game_features(
             ),
             df_game_context=df_team_player_context,
         )
+
+    if needs_players:
+        df = add_starter_history_features(df, df_players)
 
     if verbose:
         print("Merging home/away data...")

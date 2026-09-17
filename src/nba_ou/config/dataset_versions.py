@@ -194,6 +194,12 @@ History
     * Written as Parquet only (training_pipeline.parquet_dataset). The 2_5 CSVs
       built earlier carry the full Yahoo family and are left in place for the
       configs pinned to them.
+
+``2_6``
+    Adds four strictly prior-game starter-history features to both datasets:
+    overlap of the last two starting fives, unique starters and repeat rate in
+    the last five games, and the recent team-minutes share of the latest five.
+    No target-game starters or minutes are used.
 """
 
 from __future__ import annotations
@@ -203,7 +209,7 @@ from typing import Literal
 import pandas as pd
 
 #: Current schema version for both generated training datasets.
-TRAINING_DATA_SCHEMA_VERSION = "2_5"
+TRAINING_DATA_SCHEMA_VERSION = "2_6"
 
 
 def training_dataset_filename(
