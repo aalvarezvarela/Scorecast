@@ -177,11 +177,16 @@ python -m nba_ou.postgre_db.odds_sportsbook.update_sportsbook.update_sportsbook_
     --all-seasons --backfill-books betrivers
 ```
 
-**Stored is not a feature.** `nba_ou.config.odds_columns.HISTORY_ONLY_BOOKS`
+**Stored is not a feature, until admitted.** `nba_ou.config.odds_columns.HISTORY_ONLY_BOOKS`
 lists books both dataset builders drop at read time (the intermediate builder's
-tick fetch, the closing loader, and the same-day scrape). BetRivers' coverage
-starts two seasons after the others, so its presence alone encodes the season;
-admitting it is a deliberate, ablated change.
+tick fetch, the closing loader, and the same-day scrape), so storing a book
+never changes a training frame by itself. BetRivers was held there while it was
+backfilled and admitted on 2026-09-17; the tuple is now empty. Within the
+default `season_year_floor` (2021) it is missing only on 2021-22 opening week
+(46 games), 2024-03-29 (12, no book priced it) and 2025-02-11/12 (19). Its
+columns are empty on those rows, which the `max_na_per_row: 80` filter measured
+at 52 fewer training rows on the 2.4 build (6,540 -> 6,488). Below the floor it
+is absent entirely, so it encodes the season there.
 
 ## Leakage still has to be filtered
 

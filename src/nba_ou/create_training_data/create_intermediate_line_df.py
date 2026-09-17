@@ -525,8 +525,8 @@ def create_intermediate_line_df(
     )
 
     anchor = anchor_book or get_main_book()
-    # Books stored in line history but not yet admitted as features (BetRivers
-    # only exists from 2021-22): excluded unconditionally, see HISTORY_ONLY_BOOKS.
+    # Books stored in line history but not yet admitted as features are
+    # excluded unconditionally, see HISTORY_ONLY_BOOKS.
     excluded_books: tuple[str, ...] = HISTORY_ONLY_BOOKS
     if exclude_fanatics:
         excluded_books += PARTIAL_COVERAGE_BOOKS

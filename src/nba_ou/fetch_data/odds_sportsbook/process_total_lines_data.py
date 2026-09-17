@@ -11,7 +11,7 @@ TOTAL_BOOKS: list[str] = [
     "bet365",
     "draftkings",
     "fanatics_sportsbook",
-    # History only until admitted as a feature: see HISTORY_ONLY_BOOKS.
+    # From the 2021-22 season only.
     "betrivers",
 ]
 

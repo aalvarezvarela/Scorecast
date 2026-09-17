@@ -106,6 +106,7 @@ SPORTSBOOKS = [
     "gtbets",
     "consensus",
     "fanatics_sportsbook",
+    "betrivers",
 ]
 
 # Add total line and price columns for each book
