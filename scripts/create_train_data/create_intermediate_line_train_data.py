@@ -164,6 +164,15 @@ def main() -> None:
             "and skip its historical Ridge fit."
         ),
     )
+    parser.add_argument(
+        "--no-market-dynamics",
+        action="store_true",
+        help=(
+            "Omit the injury-news, news-reaction and cross-market snapshot "
+            "features and the spread/moneyline move-to-close Ridge fits "
+            "(docs/intermediate_market_dynamics_plan.md)."
+        ),
+    )
     args = parser.parse_args()
 
     grid = _parse_int_tuple(args.snapshot_grid)
@@ -185,6 +194,7 @@ def main() -> None:
         normalize_spread_lines=not args.no_normalize_spread_lines,
         null_extreme_spread_prices=not args.keep_extreme_spread_prices,
         include_ridge_movement=not args.no_ridge_movement,
+        include_market_dynamics=not args.no_market_dynamics,
         return_scoring=True,
     )
 

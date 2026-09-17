@@ -22,6 +22,13 @@ also receive exactly zero. This feature is computed from the same tick series
 as the snapshot lines, since the separate closing-odds table does not always
 agree with that series.
 
+Also by default, the market-dynamics families from
+`docs/intermediate_market_dynamics_plan.md`: injury news (`INJ_SNAP_*`), the
+market's reaction to it (`ODDS_SNAP_NEWS_*`), cross-market coherence
+(`ODDS_SNAP_XMKT_*`) and the spread and moneyline versions of the Ridge
+(`ODDS_LINE_HIST_RIDGE_EXPECTED_{SPREAD,ML}_MOVE_TO_CLOSE`). Use
+`--no-market-dynamics` (or `include_market_dynamics=False`) to omit them.
+
 It emits **two files**: the training CSV, and a `_scoring.csv` sidecar holding
 the closing lines, the per-row snapshot weight and raw timestamps. See §10 for
 why they are physically separate rather than distinguished by a prefix.

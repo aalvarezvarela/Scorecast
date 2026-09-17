@@ -94,7 +94,9 @@ SCHEDULE_COLUMN_PREFIXES: tuple[str, ...] = (
 
 #: Snapshot-derived features. Everything under these prefixes is built only from
 #: ticks at or before the snapshot horizon.
-SNAPSHOT_COLUMN_PREFIXES: tuple[str, ...] = ("ODDS_SNAP_", "ODDS_LINE_HIST_")
+#: ``INJ_SNAP_`` is injury news up to the snapshot (reports strictly before T);
+#: its columns also carry ``_BEFORE``, but the family is recognised explicitly.
+SNAPSHOT_COLUMN_PREFIXES: tuple[str, ...] = ("ODDS_SNAP_", "ODDS_LINE_HIST_", "INJ_SNAP_")
 
 # The closing pipeline's availability-effect estimator names these columns
 # without a _BEFORE suffix. In the intermediate dataset they are built from

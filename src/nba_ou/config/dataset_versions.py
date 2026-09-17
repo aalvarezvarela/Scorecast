@@ -160,6 +160,24 @@ History
       ``ABS_LEVEL_PATH_60``, ``SIGNED_MOVE_STREAK_60`` and
       ``LAST_TWO_LEVEL_MOVES_GAP_MIN``, plus the walk-forward Ridge
       ``ODDS_LINE_HIST_RIDGE_EXPECTED_TOTAL_MOVE_TO_CLOSE``.
+    * Market dynamics (``include_market_dynamics``, on by default;
+      ``docs/intermediate_market_dynamics_plan.md``):
+
+      - ``INJ_SNAP_*_BEFORE_TEAM_{HOME,AWAY}`` -- injury news: change in
+        expected missing points (p_out x ``FORM_PTS``) over 60 and 240 minutes
+        and since the previous game, the largest single-player change, minutes
+        since the last material change and a 240-minute flag. NaN for a team
+        with no filing at the snapshot.
+      - ``ODDS_SNAP_NEWS_{TOT,SPR,ML}_*`` -- move expected from recent news, the
+        anchor and consensus move since 60 minutes before the latest material
+        news, the anchor's reaction residual, books moved, and (totals, spread)
+        the 180-minute move not explained by news. The per-point price of news
+        is fitted walk-forward on games already tipped off.
+      - ``ODDS_SNAP_XMKT_*`` -- moneyline-implied margin minus spread (level,
+        60-minute move, move from open, versus the previous 30 game days) and
+        total moves without side-market moves.
+      - ``ODDS_LINE_HIST_RIDGE_EXPECTED_{SPREAD,ML}_MOVE_TO_CLOSE`` -- the total
+        Ridge generalised to spread (with cross-market inputs) and moneyline.
 """
 
 from __future__ import annotations

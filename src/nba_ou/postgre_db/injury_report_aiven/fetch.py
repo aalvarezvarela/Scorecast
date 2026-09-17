@@ -288,7 +288,13 @@ _LISTED_PAIRS = f"""
 
 
 def _season_params(season_years: list[int] | None) -> dict:
-    return {"season_years": None if season_years is None else list(season_years)}
+    # Plain ints: numpy integers mixed with Python ints cannot be dumped as one
+    # Postgres array.
+    return {
+        "season_years": (
+            None if season_years is None else [int(season) for season in season_years]
+        )
+    }
 
 
 def last_status_before_tip(
@@ -334,6 +340,98 @@ def listed_pairs(
 ) -> pd.DataFrame:
     """Every (game, player) with any pre-tip designation, of any status."""
     return pd.read_sql_query(_LISTED_PAIRS, conn, params=_season_params(season_years))
+
+
+# --------------------------------------------------------------------------------
+# Full span history (intermediate injury-news features)
+# --------------------------------------------------------------------------------
+#
+# Snapshot news needs every change before tip, not the state at one instant. The
+# reads stay pre-tip (``valid_from < tipoff_utc``); a snapshot's own strict
+# ``valid_from < T`` rule is applied by the caller, per snapshot.
+
+_STATUS_SPANS = f"""
+    SELECT s.game_id,
+           t.nba_team_id::text AS team_id,
+           s.player_id::text   AS player_id,
+           st.code             AS status,
+           rc.code             AS reason_category,
+           s.valid_from,
+           s.valid_to,
+           g.game_date,
+           g.season_year,
+           g.tipoff_utc
+    FROM {SCHEMA}.ir_status_span s
+    JOIN {SCHEMA}.ir_game            g  ON g.game_id      = s.game_id
+    JOIN {SCHEMA}.ir_team            t  ON t.team_id      = s.team_id
+    JOIN {SCHEMA}.ir_reason          r  ON r.reason_id    = s.reason_id
+    JOIN {SCHEMA}.ir_reason_category rc ON rc.category_id = r.category_id
+    LEFT JOIN {SCHEMA}.ir_status     st ON st.status_id   = s.status_id
+    WHERE s.valid_from < g.tipoff_utc
+      AND {_SEASON_FILTER}
+"""
+
+_FILING_SPANS = f"""
+    SELECT f.game_id,
+           t.nba_team_id::text AS team_id,
+           f.valid_from,
+           f.valid_to,
+           f.submitted
+    FROM {SCHEMA}.ir_filing_span f
+    JOIN {SCHEMA}.ir_game g ON g.game_id = f.game_id
+    JOIN {SCHEMA}.ir_team t ON t.team_id = f.team_id
+    WHERE f.valid_from < g.tipoff_utc
+      AND {_SEASON_FILTER}
+"""
+
+# The previous game is taken over the WHOLE game table and filtered afterwards,
+# so the first game of a requested season still finds its predecessor.
+# Preseason (001) and All-Star (003) games are left out: they carry no report,
+# so a regular-season opener would otherwise inherit an unreported predecessor.
+_TEAM_GAME_SCHEDULE = f"""
+    WITH team_games AS (
+        SELECT g.game_id, g.game_date, g.season_year, g.tipoff_utc,
+               t.nba_team_id::text AS team_id
+        FROM {SCHEMA}.ir_game g
+        JOIN {SCHEMA}.ir_team t ON t.tricode IN (g.team_home, g.team_away)
+        WHERE left(g.game_id, 3) NOT IN ('001', '003')
+    ), ordered AS (
+        SELECT *, lag(game_id) OVER (
+                   PARTITION BY team_id ORDER BY tipoff_utc, game_id
+               ) AS prev_game_id
+        FROM team_games
+    )
+    SELECT game_id, team_id, game_date, season_year, tipoff_utc, prev_game_id
+    FROM ordered g
+    WHERE {_SEASON_FILTER}
+"""
+
+
+def status_spans(
+    conn: psycopg.Connection, season_years: list[int] | None = None
+) -> pd.DataFrame:
+    """Every pre-tip status span, including drop-offs (``status`` NULL).
+
+    A NULL status means the player left the report; it is a change, so it is
+    kept rather than filtered out as the as-of reads do.
+    """
+    return pd.read_sql_query(_STATUS_SPANS, conn, params=_season_params(season_years))
+
+
+def filing_spans(
+    conn: psycopg.Connection, season_years: list[int] | None = None
+) -> pd.DataFrame:
+    """Every pre-tip filing span per team-game, with its ``submitted`` flag."""
+    return pd.read_sql_query(_FILING_SPANS, conn, params=_season_params(season_years))
+
+
+def team_game_schedule(
+    conn: psycopg.Connection, season_years: list[int] | None = None
+) -> pd.DataFrame:
+    """One row per (game, team), with the team's previous game by tip-off."""
+    return pd.read_sql_query(
+        _TEAM_GAME_SCHEDULE, conn, params=_season_params(season_years)
+    )
 
 
 def _require_aware(as_of: datetime) -> None:
