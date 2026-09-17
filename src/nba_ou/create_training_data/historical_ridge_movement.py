@@ -277,6 +277,7 @@ def add_historical_ridge_movement(
         alpha=RIDGE_ALPHA,
         unpenalized=(0,),
         min_train_games=MIN_TRAIN_GAMES,
+        progress=f"Ridge move-to-close ({market})",
     )
     predictions = np.clip(np.nan_to_num(fit.predictions, nan=0.0), -limit, limit)
 

@@ -7,11 +7,18 @@ This module provides functions to:
 - Fill missing BetMGM values with Yahoo data
 """
 
+from collections.abc import Callable
+
 import numpy as np
 import pandas as pd
 from nba_ou.data_processing.odds.book_combination import (
     combine_caesars_and_fanatics,
     resolve_combine_books,
+)
+from nba_ou.data_processing.odds.closing_line_repair import (
+    audit_repaired_closes,
+    print_repair_summary,
+    repair_closing_lines,
 )
 from nba_ou.data_processing.odds.normalize_total_lines import (
     normalize_total_lines_inplace,
@@ -22,6 +29,7 @@ from nba_ou.data_processing.odds.normalize_spread_lines import (
 from nba_ou.postgre_db.odds_sportsbook.fetch_data_from_db.fetch_data_from_odds_sportsbook_db import (
     load_odds_sportsbook_from_db,
 )
+from nba_ou.postgre_db.line_history_aiven.fetch import fetch_closing_ticks
 from nba_ou.postgre_db.odds_yahoo.fetch_data_from_db.fetch_data_from_odds_yahoo_db import (
     load_odds_yahoo_from_db,
 )
@@ -33,6 +41,7 @@ def merge_yahoo_sportsbook_odds(
     normalize_total_lines: bool = True,
     normalize_spread_lines: bool = True,
     null_extreme_spread_prices: bool = True,
+    closing_line_repair: Callable[[pd.DataFrame], pd.DataFrame] | None = None,
 ) -> pd.DataFrame:
     """
     Merge Yahoo and Sportsbook odds data.
@@ -56,6 +65,9 @@ def merge_yahoo_sportsbook_odds(
             spread markets with their estimated 50/50 line and -110/-110 prices.
         null_extreme_spread_prices (bool): If True, set implausibly extreme
             spread price cells to NaN before spread centering.
+        closing_line_repair: Applied to the merged frame while prices are
+            still American, after the Yahoo fill and before centering, so a
+            Yahoo-filled value is verified like any other.
 
     Returns:
         pd.DataFrame: Merged odds dataframe
@@ -70,6 +82,7 @@ def merge_yahoo_sportsbook_odds(
             normalize_total_lines=normalize_total_lines,
             normalize_spread_lines=normalize_spread_lines,
             null_extreme_spread_prices=null_extreme_spread_prices,
+            closing_line_repair=closing_line_repair,
         )
 
     if df_sportsbook.empty:
@@ -79,6 +92,7 @@ def merge_yahoo_sportsbook_odds(
             normalize_total_lines=normalize_total_lines,
             normalize_spread_lines=normalize_spread_lines,
             null_extreme_spread_prices=null_extreme_spread_prices,
+            closing_line_repair=closing_line_repair,
         )
 
     # Select all relevant columns from yahoo for merging
@@ -212,6 +226,7 @@ def merge_yahoo_sportsbook_odds(
         normalize_total_lines=normalize_total_lines,
         normalize_spread_lines=normalize_spread_lines,
         null_extreme_spread_prices=null_extreme_spread_prices,
+        closing_line_repair=closing_line_repair,
     )
 
 
@@ -240,8 +255,11 @@ def _convert_prices_and_normalize_markets(
     normalize_total_lines: bool,
     normalize_spread_lines: bool,
     null_extreme_spread_prices: bool,
+    closing_line_repair: Callable[[pd.DataFrame], pd.DataFrame] | None = None,
 ) -> pd.DataFrame:
     """Convert raw American prices, then optionally center total/spread markets."""
+    if closing_line_repair is not None:
+        df_odds = closing_line_repair(df_odds)
     price_cols = [column for column in df_odds.columns if "_price" in column]
     for column in price_cols:
         df_odds[column] = american_to_decimal_series(df_odds[column])
@@ -268,6 +286,7 @@ def load_and_merge_odds_yahoo_sportsbookreview(
     null_extreme_spread_prices: bool = True,
     exclude_caesars: bool = False,
     combine_fanatics_and_caesars: bool | None = None,
+    repair_closing_lines_from_history: bool = True,
 ) -> pd.DataFrame:
     """
     Load odds data from Yahoo and Sportsbook databases, merge them, and merge with games.
@@ -295,6 +314,12 @@ def load_and_merge_odds_yahoo_sportsbookreview(
             which means "combine unless an exclusion was explicitly asked for"
             -- see resolve_combine_books in
             nba_ou.data_processing.odds.book_combination.
+        repair_closing_lines_from_history (bool): Replace every per-book close
+            with the last valid pre-tip quote in the Aiven line history, then
+            clear cross-book outliers. SBR stores in-play values as closes for
+            27% of games, so turning this off reintroduces that leak; it needs
+            a line-history connection. See
+            nba_ou.data_processing.odds.closing_line_repair. Default True.
 
     Returns:
         pd.DataFrame: Complete merged odds dataframe with game_id, all odds columns
@@ -327,6 +352,9 @@ def load_and_merge_odds_yahoo_sportsbookreview(
         normalize_total_lines=normalize_total_lines,
         normalize_spread_lines=normalize_spread_lines,
         null_extreme_spread_prices=null_extreme_spread_prices,
+        closing_line_repair=(
+            _repair_from_line_history if repair_closing_lines_from_history else None
+        ),
     )
 
     df_odds_merged = combine_caesars_and_fanatics(
@@ -340,6 +368,30 @@ def load_and_merge_odds_yahoo_sportsbookreview(
     print(f"Final merged odds: {len(df_odds_merged)} rows")
 
     return df_odds_merged
+
+
+def _repair_from_line_history(df_odds: pd.DataFrame) -> pd.DataFrame:
+    """Fetch closing ticks for the frame's seasons and apply the repair."""
+    if df_odds.empty or "game_id" not in df_odds.columns:
+        return df_odds
+    frame = df_odds.reset_index(drop=True)
+    seasons = sorted(
+        int(season)
+        for season in pd.to_numeric(frame["season_year"], errors="coerce")
+        .dropna()
+        .unique()
+    )
+    ticks = fetch_closing_ticks(season_years=seasons)
+    repaired, audit = repair_closing_lines(
+        frame,
+        ticks,
+        game_tick_loader=lambda game_ids: fetch_closing_ticks(
+            game_ids=game_ids, last_n=None
+        ),
+    )
+    audit_repaired_closes(repaired, audit)
+    print_repair_summary(audit)
+    return repaired
 
 
 if __name__ == "__main__":

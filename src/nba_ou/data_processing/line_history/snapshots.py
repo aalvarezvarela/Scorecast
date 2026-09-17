@@ -25,14 +25,15 @@ from __future__ import annotations
 
 import numpy as np
 import pandas as pd
+from tqdm import tqdm
 
+from nba_ou.data_processing.odds.normalize_spread_lines import (
+    spread_price_extreme_mask,
+)
 from nba_ou.postgre_db.line_history_aiven.fetch import (
     MARKET_MONEYLINE,
     MARKET_SPREAD,
     MARKET_TOTALS,
-)
-from nba_ou.data_processing.odds.normalize_spread_lines import (
-    spread_price_extreme_mask,
 )
 
 from .normalization import (
@@ -209,8 +210,12 @@ def build_snapshot_panel(
     normalize_total_lines: bool = True,
     normalize_spread_lines: bool = True,
     null_extreme_spread_prices: bool = True,
+    progress: str | None = None,
 ) -> pd.DataFrame:
     """Long panel: one row per (game, market, book, snapshot).
+
+    ``progress`` labels a tqdm bar over the snapshot horizons; ``None`` runs
+    silently.
 
     ``normalize_total_lines`` and ``normalize_spread_lines`` center each quote
     onto its -110/-110 equivalent. The raw line is kept regardless -- it is the
@@ -246,7 +251,9 @@ def build_snapshot_panel(
     )
 
     frames = []
-    for snapshot_minutes in sorted(set(grid)):
+    for snapshot_minutes in tqdm(
+        sorted(set(grid)), desc=progress, unit="snapshot", disable=progress is None
+    ):
         latest = _as_of(working, snapshot_minutes)
         if latest.empty:
             continue

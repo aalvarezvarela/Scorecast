@@ -86,6 +86,12 @@ def _sportsbook_columns() -> list[tuple[str, str]]:
         columns.append((f"ml_{book}_price_away", "NUMERIC(10, 4)"))
         columns.append((f"ml_{book}_price_home", "NUMERIC(10, 4)"))
 
+    columns += [
+        ("scraped_at", "TIMESTAMPTZ"),
+        ("sbr_start_time_utc", "TIMESTAMPTZ"),
+        ("sbr_status_at_scrape", "TEXT"),
+        ("closes_repaired_at", "TIMESTAMPTZ"),
+    ]
     return columns
 
 
@@ -226,30 +232,89 @@ def _ensure_columns(df: pd.DataFrame, columns: list[str]) -> pd.DataFrame:
     return df
 
 
+#: Never changed once a game is stored.
+IDENTITY_COLUMNS: tuple[str, ...] = (
+    "game_id",
+    "game_date",
+    "season_year",
+    "team_home",
+    "team_away",
+)
+#: Final scores: a later scrape can only add them, never erase them.
+RESULT_COLUMNS: tuple[str, ...] = ("home_points", "away_points", "total_points")
+#: Written only by the line-history repair
+#: (``nba_ou.postgre_db.odds_sportsbook.repair_closes``).
+REPAIR_COLUMNS: tuple[str, ...] = ("closes_repaired_at",)
+
+
 def build_upsert_query(
     schema: str, table: str, cols: list[str], fill_columns: list[str] | None = None
 ) -> sql.Composed:
-    """INSERT for new games; optionally fill-only UPDATE for existing ones.
+    """INSERT for new games; for stored games, update only what is safe.
 
-    Without ``fill_columns`` an existing game is left untouched (the original
-    behaviour). With them, an existing row gets *only* those columns, and only
-    where they are still NULL -- so backfilling a new book can never overwrite a
-    value another book already stored.
+    Default (no ``fill_columns``) -- a *pre-tip refresh*. SBR shows each book's
+    last number, which after tip is a live line, so a stored game's odds are
+    replaced only when the new scrape is known to be pre-tip
+    (``scraped_at < sbr_start_time_utc``), the stored one is not known to be a
+    later pre-tip scrape, and the row has not been repaired from line history.
+    A post-tip scrape therefore never overwrites anything. Scores are filled
+    whenever the new scrape has them.
+
+    With ``fill_columns`` -- backfilling a new book: an existing row gets *only*
+    those columns, and only where they are still NULL, so no stored value is
+    ever overwritten. The row's repair stamp is cleared, because the filled
+    values are raw SBR closes that the line-history repair has not seen.
     """
+    tbl = sql.Identifier(table)
     if fill_columns:
         unknown = sorted(set(fill_columns) - set(cols))
         if unknown:
             raise ValueError(f"fill_columns not in the table: {unknown}")
-        conflict = sql.SQL("DO UPDATE SET {}").format(
-            sql.SQL(", ").join(
-                sql.SQL("{col} = COALESCE({tbl}.{col}, EXCLUDED.{col})").format(
-                    col=sql.Identifier(col), tbl=sql.Identifier(table)
-                )
-                for col in fill_columns
+        assignments = [
+            sql.SQL("{col} = COALESCE({tbl}.{col}, EXCLUDED.{col})").format(
+                col=sql.Identifier(col), tbl=tbl
             )
-        )
+            for col in fill_columns
+        ]
+        if "closes_repaired_at" in cols:
+            assignments.append(
+                sql.SQL("{col} = NULL").format(col=sql.Identifier("closes_repaired_at"))
+            )
+        conflict = sql.SQL("DO UPDATE SET {}").format(sql.SQL(", ").join(assignments))
     else:
-        conflict = sql.SQL("DO NOTHING")
+        refresh = sql.SQL(
+            "({tbl}.closes_repaired_at IS NULL"
+            " AND EXCLUDED.scraped_at IS NOT NULL"
+            " AND EXCLUDED.sbr_start_time_utc IS NOT NULL"
+            " AND EXCLUDED.scraped_at < EXCLUDED.sbr_start_time_utc"
+            " AND ({tbl}.scraped_at IS NULL"
+            " OR {tbl}.sbr_start_time_utc IS NULL"
+            " OR {tbl}.scraped_at >= {tbl}.sbr_start_time_utc"
+            " OR EXCLUDED.scraped_at > {tbl}.scraped_at))"
+        ).format(tbl=tbl)
+        assignments = []
+        for col in cols:
+            ident = sql.Identifier(col)
+            if col in IDENTITY_COLUMNS or col in REPAIR_COLUMNS:
+                continue
+            if col in RESULT_COLUMNS:
+                assignments.append(
+                    sql.SQL("{col} = COALESCE(EXCLUDED.{col}, {tbl}.{col})").format(
+                        col=ident, tbl=tbl
+                    )
+                )
+            else:
+                assignments.append(
+                    sql.SQL(
+                        "{col} = CASE WHEN {refresh} THEN EXCLUDED.{col} "
+                        "ELSE {tbl}.{col} END"
+                    ).format(col=ident, refresh=refresh, tbl=tbl)
+                )
+        conflict = (
+            sql.SQL("DO UPDATE SET {}").format(sql.SQL(", ").join(assignments))
+            if assignments
+            else sql.SQL("DO NOTHING")
+        )
 
     return sql.SQL(
         """
@@ -264,7 +329,7 @@ def build_upsert_query(
         """
     ).format(
         sql.Identifier(schema),
-        sql.Identifier(table),
+        tbl,
         cols=sql.SQL(", ").join(map(sql.Identifier, cols)),
         placeholders=sql.SQL(", ").join(sql.Placeholder() for _ in cols),
         conflict=conflict,
@@ -304,6 +369,11 @@ def upsert_odds_sportsbook_df(
     col_defs = _sportsbook_columns()
     cols = [c for c, _ in col_defs]
     odds_df = _ensure_columns(odds_df, cols)
+
+    # psycopg cannot adapt NaT; timestamps go over as datetimes or None.
+    for col in ("scraped_at", "sbr_start_time_utc"):
+        stamps = pd.to_datetime(odds_df[col], utc=True, errors="coerce")
+        odds_df[col] = [None if pd.isna(v) else v.to_pydatetime() for v in stamps]
 
     # Convert pd.NA to None for database compatibility
     odds_df = odds_df.where(pd.notna(odds_df), None)

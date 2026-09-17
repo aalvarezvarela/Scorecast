@@ -166,6 +166,11 @@ def main() -> int:
                     f"{result.inserted_ticks} tick(s) and "
                     f"{result.inserted_games} new game(s)"
                 )
+                if result.retimed_games:
+                    print(
+                        f"  moved {len(result.retimed_games)} stored game(s) to "
+                        f"the page tipoff: {', '.join(result.retimed_games[:10])}"
+                    )
             failures.extend(result.failed_dates)
 
     if failures:

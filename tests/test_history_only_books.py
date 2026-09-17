@@ -133,10 +133,13 @@ class TestScraperAndTable:
 class TestFillOnlyUpsert:
     COLS = ["game_id", "total_bet365_line_over", "total_betrivers_line_over"]
 
-    def test_default_never_touches_a_stored_game(self):
+    def test_default_only_refreshes_odds_from_a_pre_tip_scrape(self):
         text = db.build_upsert_query("s", "t", self.COLS).as_string(None)
-        assert "DO NOTHING" in text
-        assert "UPDATE" not in text
+        assert '"total_bet365_line_over" = CASE WHEN' in text
+        assert "EXCLUDED.scraped_at < EXCLUDED.sbr_start_time_utc" in text
+        assert '"t".closes_repaired_at IS NULL' in text
+        # The key is never rewritten.
+        assert '"game_id" =' not in text
 
     def test_backfill_updates_only_its_columns_and_only_nulls(self):
         text = db.build_upsert_query(

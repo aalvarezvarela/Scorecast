@@ -11,11 +11,19 @@ localizing the Eastern value.
 
 from __future__ import annotations
 
+import json
+import time
 from datetime import datetime
+from pathlib import Path
 from zoneinfo import ZoneInfo
 
 import pandas as pd
 import requests
+from tqdm import tqdm
+
+from nba_ou.fetch_data.nba_schedule.tipoff_corrections import (
+    apply_tipoff_corrections,
+)
 
 SCHEDULE_URL = (
     "https://data.nba.com/data/10s/v2015/json/mobile_teams/nba/"
@@ -112,8 +120,59 @@ def fetch_season_schedule(season_year: int, *, timeout: int = 30) -> pd.DataFram
 BOXSCORE_URL = "https://cdn.nba.com/static/json/liveData/boxscore/boxscore_{}.json"
 
 
+#: stats.nba.com throttles bursts by holding requests open rather than refusing
+#: them, so a long timeout turns throttling into minutes per date. A short one
+#: plus backoff recovers in seconds.
+SCOREBOARD_RETRIES = 4
+SCOREBOARD_BACKOFF_S = 2.0
+
+
+def _request_scoreboard(game_date: str, timeout: int) -> dict | None:
+    """One date's ScoreboardV3 payload, or None once every retry has failed."""
+    from nba_api.stats.endpoints import ScoreboardV3
+
+    for attempt in range(SCOREBOARD_RETRIES):
+        try:
+            return ScoreboardV3(game_date=game_date, timeout=timeout).get_dict()
+        except Exception:  # noqa: BLE001 - a bad date must not abort the load
+            if attempt < SCOREBOARD_RETRIES - 1:
+                time.sleep(SCOREBOARD_BACKOFF_S * 2**attempt)
+    return None
+
+
+def _scoreboard_rows(
+    payload: dict, game_date: str, season_year: int | None
+) -> list[dict]:
+    rows = []
+    for game in payload.get("scoreboard", {}).get("games", []):
+        tipoff = pd.to_datetime(game.get("gameTimeUTC"), errors="coerce", utc=True)
+        if pd.isna(tipoff) or not game.get("gameId"):
+            continue
+        rows.append(
+            {
+                "game_id": game["gameId"],
+                "season_year": season_year,
+                "game_date": pd.to_datetime(game_date).date(),
+                "tipoff_utc": tipoff,
+                "tipoff_et": game.get("gameEt"),
+                "team_home": (game.get("homeTeam") or {}).get("teamTricode"),
+                "team_away": (game.get("awayTeam") or {}).get("teamTricode"),
+                "arena_name": None,
+                "arena_city": None,
+                "game_status": game.get("gameStatusText"),
+            }
+        )
+    return rows
+
+
+def _rows_to_schedule(rows: list[dict]) -> pd.DataFrame:
+    if not rows:
+        return pd.DataFrame(columns=SCHEDULE_COLUMNS)
+    return apply_tipoff_corrections(pd.DataFrame(rows)[SCHEDULE_COLUMNS])
+
+
 def fetch_tipoffs_for_dates(
-    game_dates: list, *, timeout: int = 90, season_year: int | None = None
+    game_dates: list, *, timeout: int = 15, season_year: int | None = None
 ) -> pd.DataFrame:
     """Tipoff fallback, by date, for games missing from the season feed.
 
@@ -124,43 +183,94 @@ def fetch_tipoffs_for_dates(
 
     ``ScoreboardV3`` rather than V2: V2 has known line-score defects over
     2025-10-22..2025-12-25, which is exactly the affected window.
+
+    For long date ranges use :func:`cache_scoreboards`, which survives the
+    API cutting a run off.
     """
-    from nba_api.stats.endpoints import ScoreboardV3
-
     rows: list[dict] = []
-    for game_date in sorted({str(d) for d in game_dates}):
-        try:
-            payload = ScoreboardV3(game_date=game_date, timeout=timeout).get_dict()
-        except Exception:  # noqa: BLE001 - a bad date must not abort the load
+    failed: list[str] = []
+    for game_date in tqdm(
+        sorted({str(d) for d in game_dates}), desc="Scoreboard", unit="date"
+    ):
+        payload = _request_scoreboard(game_date, timeout)
+        if payload is None:
+            failed.append(game_date)
             continue
+        rows.extend(_scoreboard_rows(payload, game_date, season_year))
 
-        for game in payload.get("scoreboard", {}).get("games", []):
-            tipoff = pd.to_datetime(game.get("gameTimeUTC"), errors="coerce", utc=True)
-            if pd.isna(tipoff) or not game.get("gameId"):
-                continue
-            rows.append(
-                {
-                    "game_id": game["gameId"],
-                    "season_year": season_year,
-                    "game_date": pd.to_datetime(game_date).date(),
-                    "tipoff_utc": tipoff,
-                    "tipoff_et": game.get("gameEt"),
-                    "team_home": (game.get("homeTeam") or {}).get("teamTricode"),
-                    "team_away": (game.get("awayTeam") or {}).get("teamTricode"),
-                    "arena_name": None,
-                    "arena_city": None,
-                    "game_status": game.get("gameStatusText"),
-                }
-            )
+    if failed:
+        print(
+            f"! scoreboard unavailable for {len(failed)} date(s) after "
+            f"{SCOREBOARD_RETRIES} attempts: {', '.join(failed[:10])}"
+        )
+    return _rows_to_schedule(rows)
 
-    if not rows:
-        return pd.DataFrame(columns=SCHEDULE_COLUMNS)
 
-    return pd.DataFrame(rows)[SCHEDULE_COLUMNS]
+def _cache_path(cache_dir: Path, game_date: str) -> Path:
+    return cache_dir / f"scoreboard_{game_date}.json"
+
+
+def cache_scoreboards(
+    game_dates: list,
+    cache_dir: str | Path,
+    *,
+    max_requests: int | None = None,
+    timeout: int = 15,
+) -> list[str]:
+    """Download each date's scoreboard into ``cache_dir``; return dates still missing.
+
+    Dates already cached are never requested again, so a run the API cuts off
+    loses nothing. The run stops early -- leaving the rest for the next one --
+    once ``max_requests`` dates have been requested, or at the first date that
+    fails every retry: stats.nba.com blocks an address after roughly 300 rapid
+    requests, and past that point further attempts only waste time.
+    """
+    cache_dir = Path(cache_dir)
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    dates = sorted({str(pd.Timestamp(d).date()) for d in game_dates})
+    pending = [d for d in dates if not _cache_path(cache_dir, d).exists()]
+    if len(pending) < len(dates):
+        print(f"Scoreboard cache: {len(dates) - len(pending)}/{len(dates)} date(s) already cached")
+
+    budget = len(pending) if max_requests is None else min(max_requests, len(pending))
+    requested = 0
+    with tqdm(total=len(pending), desc="Scoreboard", unit="date") as bar:
+        for game_date in pending:
+            if requested >= budget:
+                break
+            payload = _request_scoreboard(game_date, timeout)
+            requested += 1
+            # A blocked address can get an answer without a scoreboard in it;
+            # caching that would hide the date from every later run.
+            if payload is None or "scoreboard" not in payload:
+                print(f"\n! scoreboard refused {game_date}; stopping this run")
+                break
+            path = _cache_path(cache_dir, game_date)
+            tmp = path.with_suffix(".tmp")
+            tmp.write_text(json.dumps(payload))
+            tmp.replace(path)
+            bar.update(1)
+
+    return [d for d in dates if not _cache_path(cache_dir, d).exists()]
+
+
+def tipoffs_from_cache(game_dates: list, cache_dir: str | Path) -> pd.DataFrame:
+    """Schedule rows parsed from cached scoreboards (uncached dates are skipped)."""
+    cache_dir = Path(cache_dir)
+    rows: list[dict] = []
+    for game_date in sorted({str(pd.Timestamp(d).date()) for d in game_dates}):
+        path = _cache_path(cache_dir, game_date)
+        if path.exists():
+            rows.extend(_scoreboard_rows(json.loads(path.read_text()), game_date, None))
+    return _rows_to_schedule(rows)
 
 
 def fetch_schedules(season_years: list[int], *, timeout: int = 30) -> pd.DataFrame:
-    """Concatenate :func:`fetch_season_schedule` across seasons."""
+    """Concatenate :func:`fetch_season_schedule` across seasons.
+
+    Known-wrong feed tipoffs (games the league moved) are overridden here; see
+    :mod:`nba_ou.fetch_data.nba_schedule.tipoff_corrections`.
+    """
     frames = [
         fetch_season_schedule(season_year, timeout=timeout)
         for season_year in season_years
@@ -169,4 +279,5 @@ def fetch_schedules(season_years: list[int], *, timeout: int = 30) -> pd.DataFra
         return pd.DataFrame(columns=SCHEDULE_COLUMNS)
 
     out = pd.concat(frames, ignore_index=True)
-    return out.drop_duplicates(subset=["game_id"], keep="last").reset_index(drop=True)
+    out = out.drop_duplicates(subset=["game_id"], keep="last").reset_index(drop=True)
+    return apply_tipoff_corrections(out)

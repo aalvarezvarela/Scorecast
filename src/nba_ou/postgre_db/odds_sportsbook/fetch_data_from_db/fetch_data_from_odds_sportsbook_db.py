@@ -1,5 +1,8 @@
 import pandas as pd
-from nba_ou.config.odds_columns import drop_history_only_book_columns
+from nba_ou.config.odds_columns import (
+    drop_history_only_book_columns,
+    drop_sportsbook_metadata_columns,
+)
 from nba_ou.postgre_db.config.db_config import (
     connect_nba_db,
     get_schema_name_odds_sportsbook,
@@ -73,6 +76,7 @@ def load_odds_sportsbook_from_db(
         # the table never changes a training frame without a deliberate opt-in.
         if not include_history_only_books:
             df = drop_history_only_book_columns(df)
+        df = drop_sportsbook_metadata_columns(df)
 
         print(f"Loaded {len(df)} sportsbook odds records from database")
         return df

@@ -72,6 +72,7 @@ class UpdateResult:
     scraped_games: int = 0
     inserted_ticks: int = 0
     inserted_games: int = 0
+    retimed_games: list[str] = field(default_factory=list)
     failed_dates: list[str] = field(default_factory=list)
 
     @property
@@ -346,6 +347,7 @@ def update_line_history_database(
         )
         result.inserted_ticks += stats.inserted_ticks
         result.inserted_games += stats.inserted_games
+        result.retimed_games.extend(stats.retimed_games)
         batch.clear()
 
     session = new_session()

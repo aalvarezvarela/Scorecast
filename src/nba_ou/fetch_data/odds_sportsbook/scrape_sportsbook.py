@@ -966,8 +966,39 @@ def _merge_day(
     return merge_daily_frames(totals_game_df, spread_game_df, ml_game_df)
 
 
+def attach_scrape_metadata(
+    day: pd.DataFrame,
+    model: dict[str, Any] | None,
+    scraped_at: pd.Timestamp,
+) -> pd.DataFrame:
+    """Stamp each game with when it was scraped and what SBR showed then.
+
+    SBR's "current line" is the book's last number, which after tip is a live
+    line. ``scraped_at`` against ``sbr_start_time_utc`` is what tells a closing
+    value apart from an in-play one, and the stored status (a start time, a
+    quarter, "Final") makes that visible without any clock arithmetic.
+    """
+    out = day.copy()
+    out["scraped_at"] = scraped_at
+    views = {
+        str(row["gameView"]["gameId"]): row["gameView"]
+        for row in ((model or {}).get("gameRows") or [])
+    }
+    ids = out["game_id"].astype(str)
+    out["sbr_start_time_utc"] = pd.to_datetime(
+        ids.map(lambda gid: (views.get(gid) or {}).get("startDate")),
+        utc=True,
+        errors="coerce",
+    )
+    out["sbr_status_at_scrape"] = ids.map(
+        lambda gid: (views.get(gid) or {}).get("gameStatusText")
+    )
+    return out
+
+
 def scrape_day_json(session: requests.Session, d: date) -> pd.DataFrame | None:
     """One date through the JSON engine, merged; None when it has no odds."""
+    scraped_at = pd.Timestamp.now(tz="UTC")
     totals_model = parse_sbr_odds_table(
         fetch_sbr_page(session, build_sbr_totals_url(d))
     )
@@ -986,7 +1017,9 @@ def scrape_day_json(session: requests.Session, d: date) -> pd.DataFrame | None:
         model = parse_sbr_odds_table(fetch_sbr_page(session, url))
         raw[name] = None if model is None else _with_season(parse(model, d), d)
 
-    return _merge_day(totals_raw, raw["spread"], raw["ml"])
+    return attach_scrape_metadata(
+        _merge_day(totals_raw, raw["spread"], raw["ml"]), totals_model, scraped_at
+    )
 
 
 def scrape_sportsbook_days_json(
@@ -1062,6 +1095,7 @@ async def scrape_sportsbook_days_browser(
 
         for d in tqdm(days, desc="Scraping sportsbook days", unit="day"):
             try:
+                scraped_at = pd.Timestamp.now(tz="UTC")
                 totals_result = await scrape_day_totals(page, d)
                 if totals_result.no_odds or totals_result.df is None:
                     await random_sleep()
@@ -1069,8 +1103,14 @@ async def scrape_sportsbook_days_browser(
 
                 spread_df_raw = await scrape_day_spread(page, d)
                 ml_df_raw = await scrape_day_moneyline(page, d)
+                # The rendered table has no machine-readable start time, so
+                # browser rows can never qualify as a pre-tip refresh.
                 merged_days.append(
-                    _merge_day(totals_result.df, spread_df_raw, ml_df_raw)
+                    attach_scrape_metadata(
+                        _merge_day(totals_result.df, spread_df_raw, ml_df_raw),
+                        None,
+                        scraped_at,
+                    )
                 )
 
             except Exception as e:

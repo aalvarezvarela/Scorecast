@@ -32,6 +32,25 @@ BOOK_ALIASES = {
 HISTORY_ONLY_BOOKS: tuple[str, ...] = ("hard_rock_bet",)
 
 
+#: Provenance columns of the ``odds_sportsbook`` table: when SBR was scraped, the
+#: start time and status SBR showed at that moment, and when the per-book closes
+#: were rewritten from line history. Bookkeeping only -- whether a row was
+#: scraped mid-game or needed repair is correlated with the game itself, so no
+#: read path may pass them on as columns.
+SPORTSBOOK_METADATA_COLUMNS: tuple[str, ...] = (
+    "scraped_at",
+    "sbr_start_time_utc",
+    "sbr_status_at_scrape",
+    "closes_repaired_at",
+)
+
+
+def drop_sportsbook_metadata_columns(df: pd.DataFrame) -> pd.DataFrame:
+    """Drop ``SPORTSBOOK_METADATA_COLUMNS`` where present."""
+    drop = [c for c in SPORTSBOOK_METADATA_COLUMNS if c in df.columns]
+    return df.drop(columns=drop) if drop else df
+
+
 def is_book_column(column: str, book: str) -> bool:
     """True if ``column`` belongs to ``book`` (``total_betrivers_line_over``, ...).
 

@@ -210,8 +210,12 @@ def main() -> None:
             / f"intermediate_line_data_{TRAINING_DATA_SCHEMA_VERSION}_{stamp}.csv"
         )
 
+    print(
+        f"\nWriting {len(df):,} rows x {df.shape[1]:,} columns to {output_path} ...",
+        flush=True,
+    )
     df.to_csv(output_path, index=False)
-    print(f"\nSaved training data to {output_path}")
+    print(f"Saved training data to {output_path}")
 
     # Closing lines and snapshot weights live in a separate file on purpose:
     # the training pipeline builds X by dropping only configured exclusions, so
@@ -224,6 +228,7 @@ def main() -> None:
 
     from training_pipeline.data import compute_file_checksum
 
+    print("Computing checksum ...", flush=True)
     print(f'expected_checksum: "{compute_file_checksum(output_path)}"')
 
     print_row_retention(df)

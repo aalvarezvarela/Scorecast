@@ -368,7 +368,13 @@ class TestFlushing:
         def _ingest(conn, batch, **kwargs):
             calls.append(len(batch))
             stats = type(
-                "St", (), {"inserted_ticks": 2 * len(batch), "inserted_games": 0}
+                "St",
+                (),
+                {
+                    "inserted_ticks": 2 * len(batch),
+                    "inserted_games": 0,
+                    "retimed_games": [],
+                },
             )
             return stats()
 

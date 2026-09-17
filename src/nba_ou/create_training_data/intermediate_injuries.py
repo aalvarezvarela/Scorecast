@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import numpy as np
 import pandas as pd
+from tqdm import tqdm
 
 from nba_ou.config.odds_columns import get_main_book
 from nba_ou.create_training_data.create_base_game_features import BaseInjuryContext
@@ -250,8 +251,13 @@ def add_snapshot_injury_features(
     snapshots: pd.DataFrame,
     base: pd.DataFrame,
     context: BaseInjuryContext,
+    *,
+    progress: str | None = None,
 ) -> pd.DataFrame:
     """Attach 2_5 injury features using the latest report before each snapshot.
+
+    ``progress`` labels a tqdm bar over the snapshot horizons; ``None`` runs
+    silently.
 
     ``snapshots`` needs GAME_ID, TIME_TO_MATCH_MIN and SNAPSHOT_TS_UTC. The
     report source uses strict publication time: a report stamped exactly at the
@@ -289,7 +295,13 @@ def add_snapshot_injury_features(
         )
 
     parts = []
-    for horizon, state in states.items():
+    for horizon, state in tqdm(
+        states.items(),
+        total=len(states),
+        desc=progress,
+        unit="snapshot",
+        disable=progress is None,
+    ):
         ids = set(cutoffs.loc[cutoffs.snapshot_minutes.eq(horizon), "game_id"])
         features = _one_horizon(base, context, state, injuries, box, voting, ids)
         features = features.loc[features.GAME_ID.isin(ids)].copy()

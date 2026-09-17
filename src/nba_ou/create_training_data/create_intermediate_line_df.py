@@ -29,6 +29,9 @@ leakage-safe columns are selected via ``_BEFORE``.
 
 from __future__ import annotations
 
+import time
+from collections.abc import Callable
+
 import pandas as pd
 
 from nba_ou.config.market_columns import (
@@ -229,6 +232,18 @@ CONSENSUS_FEATURES: tuple[str, ...] = (
     "steam_net",
     "steam_fraction",
 )
+
+
+def _stage_logger(verbose: bool) -> Callable[[str], None]:
+    """Print ``[mm:ss] message`` stage markers, timed from the logger's creation."""
+    started = time.perf_counter()
+
+    def stage(message: str) -> None:
+        if verbose:
+            minutes, seconds = divmod(int(time.perf_counter() - started), 60)
+            print(f"[{minutes:02d}:{seconds:02d}] {message}", flush=True)
+
+    return stage
 
 
 def _windowed_feature_names(windows: tuple[int, ...]) -> tuple[str, ...]:
@@ -544,10 +559,17 @@ def create_intermediate_line_df(
             f"(available: {store_seasons})."
         )
 
+    stage = _stage_logger(verbose)
+
+    def progress(label: str) -> str | None:
+        return label if verbose else None
+
     if verbose:
         print(f"Line-history seasons in scope: {season_years}")
+        print(f"Snapshot grid ({len(snapshot_grid)}): {sorted(snapshot_grid)}")
 
     # ---- snapshot side -------------------------------------------------
+    stage(f"Fetching pre-game ticks for {len(season_years)} season(s) ...")
     ticks = fetch_pregame_ticks(season_years, exclude_books=excluded_books)
     lh_games = fetch_games(season_years)
     if ticks.empty:
@@ -556,6 +578,7 @@ def create_intermediate_line_df(
         ticks = merge_caesars_into_fanatics_ticks(ticks)
     if verbose:
         print(f"✓ {len(ticks):,} pre-game ticks over {ticks.game_id.nunique()} games")
+    stage("Building the snapshot panel ...")
 
     # Ridge labels are the 0-minute snapshot from this very tick series.
     # Generate it internally even if the caller omits 0 from the output grid.
@@ -577,14 +600,18 @@ def create_intermediate_line_df(
         normalize_total_lines=normalize_total_lines,
         normalize_spread_lines=normalize_spread_lines,
         null_extreme_spread_prices=null_extreme_spread_prices,
+        progress=progress("As-of snapshots"),
     )
+    stage("Adding movement features ...")
     panel = add_movement_features(
         panel,
         ticks,
         grid=panel_grid,
         windows=windows,
         null_extreme_spread_prices=null_extreme_spread_prices,
+        progress=progress("Movement"),
     )
+    stage("Cross-book consensus and anchor path ...")
     consensus = aggregate_across_books(panel)
     panel = add_book_deviation(panel)
     anchor_path = add_anchor_total_path_features(panel, ticks, anchor=anchor)
@@ -596,6 +623,7 @@ def create_intermediate_line_df(
 
     # Same fields for every book, including all configured movement windows.
     book_features = FULL_BOOK_FEATURES + _windowed_feature_names(windows)
+    stage(f"Pivoting {len(books)} book(s) to wide snapshot rows ...")
     wide_parts = [
         _pivot_book_features(panel, book_features, [anchor]),
         _pivot_book_features(panel, book_features, other_books),
@@ -635,6 +663,7 @@ def create_intermediate_line_df(
     # two thirds of it away.
     history = lh_games[["game_id"]].copy()
     for market in (MARKET_TOTALS, MARKET_SPREAD, MARKET_MONEYLINE):
+        stage(f"Prior-game line dynamics ({MARKET_SHORT[market]}) ...")
         market_history = add_prior_game_line_dynamics(lh_games, ticks, market=market)
         suffix = MARKET_SHORT[market]
         market_history = market_history.rename(
@@ -663,6 +692,7 @@ def create_intermediate_line_df(
             "The extra season(s) carry team and player history but no odds, so "
             "they lengthen the build without warming any odds rollup."
         )
+    stage("Creating base game features (closing pipeline) ...")
     base, injury_context = create_base_game_features(
         recent_limit_to_include=recent_limit_to_include,
         season_start_date=pd.Timestamp(year=base_start_year, month=10, day=1),
@@ -676,6 +706,8 @@ def create_intermediate_line_df(
         verbose=verbose,
     )
     base["GAME_ID"] = base["GAME_ID"].astype(str)
+    stage(f"✓ Base features: {base.shape[0]:,} games x {base.shape[1]:,} columns")
+    stage("Referee features ...")
     base = add_intermediate_referee_features(
         base,
         history_seasons=referee_history_seasons,
@@ -750,6 +782,7 @@ def create_intermediate_line_df(
     )
 
     # ---- join ----------------------------------------------------------
+    stage("Joining base features onto snapshot rows ...")
     merged = base.merge(
         snapshot_wide, left_on="GAME_ID", right_on="game_id", how="inner"
     ).merge(history, left_on="GAME_ID", right_on="game_id", how="left")
@@ -770,12 +803,18 @@ def create_intermediate_line_df(
     merged["SNAPSHOT_TS_UTC"] = merged["TIPOFF_UTC"] - pd.to_timedelta(
         merged["TIME_TO_MATCH_MIN"], unit="m"
     )
-    merged = add_snapshot_injury_features(merged, injury_base, injury_context)
+    stage(f"✓ Joined: {merged.shape[0]:,} rows x {merged.shape[1]:,} columns")
+    stage("Snapshot injury features (per horizon) ...")
+    merged = add_snapshot_injury_features(
+        merged, injury_base, injury_context, progress=progress("Injuries")
+    )
     if include_market_dynamics:
+        stage("Market dynamics (injury news, cross-market, news betas) ...")
         merged = add_intermediate_market_dynamics(
             merged, ticks=ticks, anchor=anchor, verbose=verbose
         )
     # ---- targets -------------------------------------------------------
+    stage("Targets, referee masking and the leakage gate ...")
     main_line_column = total_line_col(anchor)
     # The main-book column now holds the SNAPSHOT line, so the derived target
     # and the settlement price are the same number. See the module docstring.
@@ -845,6 +884,7 @@ def create_intermediate_line_df(
         }
     )
     for market in ridge_markets:
+        stage(f"Walk-forward ridge move-to-close ({MARKET_SHORT[market]}) ...")
         # The training frame is thousands of columns wide. Keep this fit on a
         # narrow view so adding one feature does not copy the whole dataset.
         line_column = current_line_column(market, anchor)
@@ -877,6 +917,7 @@ def create_intermediate_line_df(
     # line, an opener and a move-from-open, and an opener plus its total movement
     # reconstructs the current line exactly -- the same additive-pair shape the
     # totals audit was built to catch.
+    stage("Auditing closing-line reconstruction ...")
     for market_name, anchor_column in (
         ("total", main_line_column),
         ("spread", main_spread_column),
@@ -897,6 +938,7 @@ def create_intermediate_line_df(
     gated = gated.reset_index(drop=True)
     scoring = _build_scoring_frame(merged, gated)
 
+    stage("Done.")
     if verbose:
         print()
         print("--" * 20)

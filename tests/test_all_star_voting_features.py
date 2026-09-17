@@ -441,3 +441,34 @@ def test_without_a_questionable_dict_no_questionable_columns_appear():
     all_star = _all_star_df([[2025, "p1", "Boston Celtics", 40, 1.5]])
     result = add_all_star_voting_features(_team_row(BOS_ID), _players_df(), all_star, {})
     assert not [c for c in result.columns if "QUESTIONABLE" in c]
+
+
+def test_merge_without_legacy_off_rating_slot_skips_star_offensive_ratio():
+    """The reduced player profile emits no per-slot OFF_RATING column."""
+    df = pd.DataFrame(
+        {
+            "SEASON_ID": ["22025", "22025"],
+            "GAME_ID": ["game", "game"],
+            "GAME_DATE": [pd.Timestamp("2026-03-02")] * 2,
+            "SEASON_TYPE": ["Regular Season", "Regular Season"],
+            "SEASON_YEAR": [2025, 2025],
+            "IS_OVERTIME": [0, 0],
+            "HOME": [True, False],
+            "TEAM_ID": [BOS_ID, LAL_ID],
+            "TEAM_CITY": ["Boston", "Los Angeles"],
+            "TEAM_ABBREVIATION": ["BOS", "LAL"],
+            "TEAM_NAME": ["Celtics", "Lakers"],
+            "MATCHUP": ["BOS vs. LAL", "LAL @ BOS"],
+            "GAME_NUMBER": [1, 1],
+            "OFF_RATING_SEASON_BEFORE_AVG": [100, 100],
+            "TOP1_PLAYER_PTS_BEFORE": [20, 20],
+            "PTS_SEASON_BEFORE_AVG": [110, 110],
+            "PTS": [100, 90],
+            "PF": [20, 18],
+        }
+    )
+
+    merged = merge_home_away_data(df)
+
+    assert not any(c.startswith("STAR_OFFENSIVE_RATIO") for c in merged.columns)
+    assert "STAR_PTS_PERCENTAGE_BEFORE_TEAM_HOME" in merged.columns

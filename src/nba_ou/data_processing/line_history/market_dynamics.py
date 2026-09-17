@@ -367,6 +367,7 @@ def news_reaction_features(
             predict_mask=np.ones(n, dtype=bool),
             alpha=0.0,
             min_train_rows=BETA_MIN_TRAIN_ROWS,
+            progress=f"News beta walk-forward ({short})",
         )
         beta = np.nan_to_num(fit.coefficients[:, 0], nan=0.0)
         if verbose:

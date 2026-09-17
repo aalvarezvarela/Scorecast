@@ -17,6 +17,7 @@ from dataclasses import dataclass
 
 import numpy as np
 import pandas as pd
+from tqdm import tqdm
 
 
 @dataclass(frozen=True)
@@ -45,6 +46,7 @@ def walk_forward_least_squares(
     unpenalized: tuple[int, ...] = (),
     min_train_games: int = 0,
     min_train_rows: int = 0,
+    progress: str | None = None,
 ) -> WalkForwardFit:
     """Fit ``y ~ x`` (ridge penalty ``alpha``) walk-forward, one fit per row.
 
@@ -54,6 +56,8 @@ def walk_forward_least_squares(
     previous seasons hold at least ``min_train_games`` games and
     ``min_train_rows`` labelled rows. The solve is repeated only when the
     training set has changed since the previous row of the same season.
+
+    ``progress`` labels a tqdm bar over the rows; ``None`` runs silently.
     """
     n_rows, n_features = x.shape
     events = []
@@ -90,7 +94,13 @@ def walk_forward_least_squares(
     predictions = np.full(n_rows, np.nan)
     coefficients = np.full((n_rows, n_features), np.nan)
     event_index = 0
-    for row_index in np.argsort(snapshot_ns, kind="stable"):
+    for row_index in tqdm(
+        np.argsort(snapshot_ns, kind="stable"),
+        desc=progress,
+        unit="row",
+        mininterval=1.0,
+        disable=progress is None,
+    ):
         timestamp = snapshot_ns[row_index]
         while event_index < len(events) and events[event_index][0] < timestamp:
             _, season, gg, gy, n_labelled = events[event_index]

@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import numpy as np
 import pandas as pd
+from tqdm import tqdm
 
 from nba_ou.postgre_db.line_history_aiven.fetch import MARKET_MONEYLINE
 
@@ -195,8 +196,12 @@ def add_movement_features(
     grid: tuple[int, ...] = DEFAULT_SNAPSHOT_GRID,
     windows: tuple[int, ...] = DEFAULT_WINDOWS,
     null_extreme_spread_prices: bool = True,
+    progress: str | None = None,
 ) -> pd.DataFrame:
     """Attach movement features to a snapshot ``panel``.
+
+    ``progress`` labels tqdm bars over the snapshot horizons; ``None`` runs
+    silently.
 
     ``panel`` is the base grid; the windowed look-backs are answered from a
     second panel built on the extended grid, so both come from the same as-of
@@ -218,7 +223,12 @@ def add_movement_features(
 
     aggregate_frames = [
         _history_aggregates(working, snapshot_minutes)
-        for snapshot_minutes in sorted(set(grid))
+        for snapshot_minutes in tqdm(
+            sorted(set(grid)),
+            desc=progress and f"{progress}: history",
+            unit="snapshot",
+            disable=progress is None,
+        )
     ]
     aggregate_frames = [frame for frame in aggregate_frames if not frame.empty]
     out = panel.copy()
@@ -236,6 +246,7 @@ def add_movement_features(
         grid=grid,
         windows=windows,
         null_extreme_spread_prices=null_extreme_spread_prices,
+        progress=progress and f"{progress}: windows",
     )
     out = _add_shape_features(out)
     return out
@@ -270,12 +281,14 @@ def _add_windowed_features(
     grid: tuple[int, ...],
     windows: tuple[int, ...],
     null_extreme_spread_prices: bool = True,
+    progress: str | None = None,
 ) -> pd.DataFrame:
     """Moves over trailing windows, via a second as-of read."""
     lookup = build_snapshot_panel(
         ticks,
         grid=extended_grid(grid, windows),
         null_extreme_spread_prices=null_extreme_spread_prices,
+        progress=progress,
     )
     if lookup.empty:
         return out
