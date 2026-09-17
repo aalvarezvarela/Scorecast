@@ -80,6 +80,9 @@ from nba_ou.data_processing.players.attach_player_features import (
 from nba_ou.data_processing.players.roster_continuity import (
     add_roster_continuity_feature,
 )
+from nba_ou.data_processing.players.starter_history import (
+    add_starter_history_features,
+)
 from nba_ou.data_processing.referees.add_referee_features import (
     add_referee_features_to_training_data,
 )
@@ -690,6 +693,7 @@ def create_df_to_predict(
         df_game_context=df_team_player_context,
         scheduled_game_ids=scheduled_game_ids,
     )
+    df = add_starter_history_features(df, df_players)
     print("✓ Player statistics processed")
 
     # The game being built reads its out set from the report where one exists;

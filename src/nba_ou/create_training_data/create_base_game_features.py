@@ -56,8 +56,8 @@ from nba_ou.data_processing.all_star_voting.attach_all_star_voting_features impo
 )
 from nba_ou.data_processing.merged_home_away_data.add_features_after_merging import (
     add_betting_stats_differences,
-    add_fresh_absence_sums,
     add_derived_features_after_computed_stats,
+    add_fresh_absence_sums,
     add_game_date_features,
     add_high_value_features_for_team_points,
 )
@@ -79,6 +79,9 @@ from nba_ou.data_processing.players.attach_player_features import (
 )
 from nba_ou.data_processing.players.roster_continuity import (
     add_roster_continuity_feature,
+)
+from nba_ou.data_processing.players.starter_history import (
+    add_starter_history_features,
 )
 from nba_ou.data_processing.team.merge_game_df_with_odds_by_game_id import (
     merge_remaining_odds_by_game_id,
@@ -416,6 +419,9 @@ def create_base_game_features(
             ),
             df_game_context=df_team_player_context,
         )
+
+    if needs_players:
+        df = add_starter_history_features(df, df_players)
 
     if verbose:
         print("Merging home/away data...")

@@ -178,9 +178,15 @@ History
         total moves without side-market moves.
       - ``ODDS_LINE_HIST_RIDGE_EXPECTED_{SPREAD,ML}_MOVE_TO_CLOSE`` -- the total
         Ridge generalised to spread (with cross-market inputs) and moneyline.
+
+``2_6``
+    Adds four strictly prior-game starter-history features to both datasets:
+    overlap of the last two starting fives, unique starters and repeat rate in
+    the last five games, and the recent team-minutes share of the latest five.
+    No target-game starters or minutes are used.
 """
 
 from __future__ import annotations
 
 #: Current schema version for both generated training datasets.
-TRAINING_DATA_SCHEMA_VERSION = "2_5"
+TRAINING_DATA_SCHEMA_VERSION = "2_6"
