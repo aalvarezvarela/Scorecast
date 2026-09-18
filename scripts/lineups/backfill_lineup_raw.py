@@ -69,6 +69,8 @@ def backfill(
             else:
                 manifest.record(season, game_id, endpoint, "ok", nbytes)
                 counts["ok"] += 1
+                if counts["ok"] % 100 == 0:
+                    print(f"Archived {counts['ok']} responses through {game_id}", flush=True)
     return counts
 
 

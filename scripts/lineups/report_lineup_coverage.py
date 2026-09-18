@@ -34,6 +34,7 @@ def coverage(root: Path, *, expected: dict[int, int] | None = None) -> pd.DataFr
             raw_complete=paired,
             raw_coverage=(paired / expected_games if expected_games else None),
             stint_ok=built, stint_failed=failed,
+            stint_coverage=(built / paired if paired else None),
             stint_pass_rate=(built / (built + failed) if built + failed else None),
             failure_reasons=reasons,
         ))

@@ -148,7 +148,10 @@ def build_game_stints(
         for period, clock in zip(events["_period"], events["clock"], strict=True)
     ]
     events["_order"] = pd.to_numeric(events["actionNumber"], errors="raise")
-    events = events.sort_values("_order", kind="stable")
+    # Corrected actions may be appended with new actionNumbers while their
+    # clock still belongs earlier in the game. Sort by game time first and use
+    # actionNumber only to resolve events sharing that clock.
+    events = events.sort_values(["_time", "_order"], kind="stable")
     subs_at = defaultdict(list)
     subs_by_team = defaultdict(list)
     for event in events.to_dict("records"):
@@ -273,6 +276,8 @@ def validate_game_stints(
         team_id = str(rotation.TEAM_ID.iloc[0])
         for player_id, player in rotation.groupby("PERSON_ID"):
             seconds = (player.OUT_TIME_REAL - player.IN_TIME_REAL).sum() / 10
+            if seconds == 0:
+                continue
             box = box_minutes.loc[
                 box_minutes.TEAM_ID.astype(str).eq(team_id)
                 & box_minutes.PLAYER_ID.astype(str).eq(str(player_id)), "MIN"
