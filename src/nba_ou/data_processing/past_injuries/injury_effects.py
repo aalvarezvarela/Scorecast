@@ -109,22 +109,6 @@ def _infer_last_two_season_years_for_row(season_year: int) -> tuple[int, int]:
     return (season_year - 1, season_year)
 
 
-def _get_recent_history_df(
-    df_hist: pd.DataFrame,
-    *,
-    team_id: int,
-    season_years: tuple[int, int],
-    before_date: pd.Timestamp,
-) -> pd.DataFrame:
-    y1, y2 = season_years
-    mask = (
-        (df_hist["TEAM_ID"].astype("int64") == int(team_id))
-        & (df_hist["SEASON_YEAR"].astype("int64").isin([y1, y2]))
-        & (df_hist["GAME_DATE"] < before_date)
-    )
-    return df_hist.loc[mask]
-
-
 def _continuous_effect_and_se(
     present_values: pd.Series,
     injured_values: pd.Series,
@@ -180,60 +164,108 @@ def _empty_effect_result(n_inj=0, n_present=0, n_total=0):
     )
 
 
-def _compute_player_availability_effect(
-    df_team_hist: pd.DataFrame,
-    injured_games_for_player: set,
-    available_games_for_player: set | None = None,
-):
+class _TeamHistoryIndex:
+    """Present-minus-injured effects of one player from their team's history.
+
+    History is the team's games in the given season years strictly before the
+    query date. ``available_games`` makes membership explicit, so games before
+    a player joined or after they left the team are excluded; ``None`` treats
+    every non-injured game as present.
+
+    Each team's rows are located once, so a query touches only that team's few
+    hundred rows rather than re-masking the whole team-game history. Rows keep
+    the history frame's order, so means and variances sum the same values in
+    the same order as a frame filter would.
     """
-    Return the present-minus-injured effects, their standard errors, and sizes.
 
-    ``available_games_for_player`` makes membership explicit, so games before a
-    player joined or after they left the team are excluded. ``None`` preserves
-    the legacy complement behaviour for standalone callers without that map.
-    """
-    if df_team_hist.empty:
-        return _empty_effect_result()
+    #: Stands in for an unparseable GAME_ID: never a member of a game-id set,
+    #: just as ``isin`` never matches a missing value.
+    _MISSING_GAME_ID = np.iinfo("int64").min
 
-    game_ids = pd.to_numeric(df_team_hist["GAME_ID"], errors="coerce").astype("Int64")
-    df_team_hist = df_team_hist.assign(_GAME_ID_INT=game_ids)
-
-    inj_mask = df_team_hist["_GAME_ID_INT"].isin(list(injured_games_for_player))
-    if available_games_for_player is None:
-        present_mask = ~inj_mask
-    else:
-        present_mask = (
-            df_team_hist["_GAME_ID_INT"].isin(list(available_games_for_player))
-            & ~inj_mask
+    def __init__(self, df_hist: pd.DataFrame) -> None:
+        # A missing team or season never matches a query, as in the frame masks.
+        team_ids = pd.to_numeric(df_hist["TEAM_ID"], errors="coerce").to_numpy(
+            dtype="float64", na_value=np.nan
         )
-    df_inj = df_team_hist.loc[inj_mask]
-    df_present = df_team_hist.loc[present_mask]
-    n_inj = int(len(df_inj))
-    n_present = int(len(df_present))
-    n_total = n_inj + n_present
-
-    if n_inj == 0 or n_present == 0:
-        return _empty_effect_result(n_inj, n_present, n_total)
-
-    effects, standard_errors, injured_counts, present_counts = [], [], [], []
-    for metric in EFFECT_METRICS:
-        effect, standard_error, metric_n_inj, metric_n_present = (
-            _continuous_effect_and_se(df_present[metric], df_inj[metric])
+        self._season_years = pd.to_numeric(
+            df_hist["SEASON_YEAR"], errors="coerce"
+        ).to_numpy(dtype="float64", na_value=np.nan)
+        self._dates = df_hist["GAME_DATE"].to_numpy(dtype="datetime64[ns]")
+        self._game_ids = (
+            pd.to_numeric(df_hist["GAME_ID"], errors="coerce")
+            .astype("Int64")
+            .fillna(self._MISSING_GAME_ID)
+            .to_numpy(dtype="int64")
         )
-        effects.append(effect)
-        standard_errors.append(standard_error)
-        injured_counts.append(metric_n_inj)
-        present_counts.append(metric_n_present)
+        self._metrics = {
+            metric: pd.to_numeric(df_hist[metric], errors="coerce").to_numpy(
+                dtype="float64", na_value=np.nan
+            )
+            for metric in EFFECT_METRICS
+        }
+        known = np.flatnonzero(np.isfinite(team_ids))
+        order = known[np.argsort(team_ids[known], kind="stable")]
+        boundaries = np.flatnonzero(np.diff(team_ids[order])) + 1
+        self._positions = {
+            int(team_ids[group[0]]): group
+            for group in np.split(order, boundaries)
+            if group.size
+        }
 
-    return (
-        tuple(effects),
-        tuple(standard_errors),
-        tuple(injured_counts),
-        tuple(present_counts),
-        n_inj,
-        n_present,
-        n_total,
-    )
+    def player_effect(
+        self,
+        team_id: int,
+        season_years: tuple[int, int],
+        before_date: pd.Timestamp,
+        injured_games: set,
+        available_games: set | None,
+    ):
+        positions = self._positions.get(int(team_id))
+        if positions is None:
+            return _empty_effect_result()
+        in_window = np.isin(self._season_years[positions], season_years) & (
+            self._dates[positions] < np.datetime64(before_date)
+        )
+        rows = positions[in_window]
+        if rows.size == 0:
+            return _empty_effect_result()
+
+        game_ids = self._game_ids[rows]
+        inj_mask = np.isin(game_ids, np.fromiter(injured_games, "int64"))
+        if available_games is None:
+            present_mask = ~inj_mask
+        else:
+            present_mask = (
+                np.isin(game_ids, np.fromiter(available_games, "int64")) & ~inj_mask
+            )
+        n_inj = int(inj_mask.sum())
+        n_present = int(present_mask.sum())
+        n_total = n_inj + n_present
+        if n_inj == 0 or n_present == 0:
+            return _empty_effect_result(n_inj, n_present, n_total)
+
+        effects, standard_errors, injured_counts, present_counts = [], [], [], []
+        for metric in EFFECT_METRICS:
+            values = self._metrics[metric][rows]
+            effect, standard_error, metric_n_inj, metric_n_present = (
+                _continuous_effect_and_se(
+                    pd.Series(values[present_mask]), pd.Series(values[inj_mask])
+                )
+            )
+            effects.append(effect)
+            standard_errors.append(standard_error)
+            injured_counts.append(metric_n_inj)
+            present_counts.append(metric_n_present)
+
+        return (
+            tuple(effects),
+            tuple(standard_errors),
+            tuple(injured_counts),
+            tuple(present_counts),
+            n_inj,
+            n_present,
+            n_total,
+        )
 
 
 def _expanding_empirical_bayes_weights(
@@ -488,18 +520,14 @@ def add_top3_availability_effect_features_for_columns(
         df_hist["SEASON_YEAR"], errors="coerce"
     ).astype("Int64")
 
+    team_history = _TeamHistoryIndex(df_hist)
+
     @lru_cache(maxsize=250_000)
     def _cached_effect(
         team_id: int, season_year: int, date_ordinal: int, player_id: int
     ):
         season_years = _infer_last_two_season_years_for_row(season_year)
         before_date = pd.Timestamp.fromordinal(date_ordinal)
-        df_team_hist = _get_recent_history_df(
-            df_hist,
-            team_id=team_id,
-            season_years=season_years,
-            before_date=before_date,
-        )
         available_games_for_player = None
         if availability_index is None:
             injured_games_for_player = injured_index.get(team_id, {}).get(
@@ -511,8 +539,10 @@ def add_top3_availability_effect_features_for_columns(
             )
             available_games_for_player = status["available"]
             injured_games_for_player = status["injured"]
-        return _compute_player_availability_effect(
-            df_team_hist,
+        return team_history.player_effect(
+            team_id,
+            season_years,
+            before_date,
             injured_games_for_player,
             available_games_for_player,
         )

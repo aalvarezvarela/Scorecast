@@ -26,6 +26,7 @@ from nba_ou.data_processing.players.players_statistics import (
     precompute_cumulative_avg_stat,
 )
 from nba_ou.utils.general_utils import _with_before_suffix
+from nba_ou.utils.row_cache import RowCache
 
 #: The top-N player columns come in three flavours per statistic: the value
 #: (``TOP1_PLAYER_PTS_BEFORE``), the player's id (``TOP1_PLAYER_ID_PTS_BEFORE``)
@@ -259,6 +260,21 @@ def _restrict_snapshot_membership(
     return out
 
 
+def _game_membership_signatures(membership_dict: dict) -> dict[str, frozenset]:
+    """``game -> {(team, player)}``, keyed the way ``create_player_lookup`` reads it."""
+    signatures = {}
+    for game_id, team_map in (membership_dict or {}).items():
+        # A later duplicate string key replaces the earlier one, exactly as in
+        # the lookup's ``injured_team_by_game_player``.
+        signatures[str(game_id)] = frozenset(
+            (str(team_id), str(player_id))
+            for team_id, player_ids in team_map.items()
+            for player_id in player_ids
+            if not pd.isna(player_id)
+        )
+    return signatures
+
+
 def add_player_history_features(
     df_team,
     df_players,
@@ -271,6 +287,7 @@ def add_player_history_features(
     include_available_roster_count: bool = False,
     snapshot_game_ids: set[str] | None = None,
     snapshot_report_listed_players: dict | None = None,
+    row_cache: RowCache | None = None,
 ):
     """
     Main function to attach top player statistics and injured player stats to team data.
@@ -307,6 +324,14 @@ def add_player_history_features(
             remain available as history for later games.
         snapshot_report_listed_players (dict, optional): All players named by
             the as-of report, including Probable and Available designations.
+        row_cache (RowCache, optional): Shared across repeated calls on the
+            same inputs that differ only in the report arguments. A row reads
+            the report through its own game alone -- roster membership for that
+            game, and the out and questionable sets for that team-game -- while
+            everything else it touches (earlier games' realized absences,
+            player history) is the same in every call. Rows whose game sees the
+            same report sets as before are reused; the result is identical to
+            building every row.
 
     Returns:
         pd.DataFrame: Updated df_team with extra columns for top players and injured players
@@ -545,6 +570,18 @@ def add_player_history_features(
     updates_list = []
     availability_dict = {}
 
+    if row_cache is not None:
+        row_cache.bind(
+            (
+                tuple(stat_cols),
+                include_available_roster_count,
+                build_questionable_group,
+                len(df_team),
+                len(df_players),
+            )
+        )
+        membership_signatures = _game_membership_signatures(membership_dict)
+
     for _, (game_id, team_id, season_id, game_date) in enumerate(
         tqdm(
             df_team[cols_needed].itertuples(index=False, name=None),
@@ -552,6 +589,36 @@ def add_player_history_features(
             desc="Adding players data",
         )
     ):
+        if row_cache is not None:
+            # Everything the row reads that can differ between calls: its own
+            # game's roster membership, out, questionable and realized sets.
+            game_key, team_key = str(game_id), str(team_id)
+            game_questionable = questionable_index.get(game_key, {})
+            cache_key = (
+                game_key,
+                team_key,
+                season_id,
+                game_date,
+                membership_signatures.get(game_key),
+                frozenset(pregame_index.get(game_key, {}).get(team_key, ())),
+                team_key in game_questionable,
+                frozenset(game_questionable.get(team_key, ())),
+                frozenset(realized_index.get(game_key, {}).get(team_key, ())),
+            )
+            cached = row_cache.rows.get(cache_key)
+            if cached is not None:
+                row_cache.hits += 1
+                cached_update, cached_availability = cached
+                updates_list.append(cached_update)
+                if cached_availability is not None:
+                    available, injured = cached_availability
+                    availability_dict.setdefault(game_key, {})[team_key] = {
+                        "available": list(available),
+                        "injured": list(injured),
+                    }
+                continue
+            row_cache.misses += 1
+
         # Resolve the roster without consulting who logged minutes in this game.
         # Availability is defined below solely as roster minus injured/inactive.
         df_roster = player_lookup(season_id, team_id, game_date, game_id=game_id)
@@ -564,6 +631,8 @@ def add_player_history_features(
 
         if df_roster.empty:
             updates_list.append({})
+            if row_cache is not None:
+                row_cache.rows[cache_key] = ({}, None)
             continue
 
         # Who is injured for this game/team? The injury sources already encode
@@ -873,6 +942,12 @@ def add_player_history_features(
                 )
 
         updates_list.append(row_update)
+        if row_cache is not None:
+            entry = availability_dict[str(game_id)][str(team_id)]
+            row_cache.rows[cache_key] = (
+                row_update,
+                (tuple(entry["available"]), tuple(entry["injured"])),
+            )
 
     # Apply all updates at once using a DataFrame
     updates_df = pd.DataFrame(updates_list, index=df_team.index)

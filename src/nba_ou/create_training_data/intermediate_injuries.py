@@ -47,6 +47,7 @@ from nba_ou.postgre_db.injuries_refs.fetch_injury_db.get_injury_data_from_db imp
     get_injury_data_from_db,
 )
 from nba_ou.postgre_db.injury_report_aiven import fetch
+from nba_ou.utils.row_cache import RowCache
 
 KEYS = ["GAME_ID", "TIME_TO_MATCH_MIN"]
 PLAYER_STATS = ["PTS", "PACE_PER40", "DEF_RATING", "OFF_RATING", "TS_PCT", "MIN"]
@@ -157,6 +158,8 @@ def _one_horizon(
     box: pd.DataFrame,
     voting: pd.DataFrame,
     snapshot_game_ids: set[str],
+    player_rows: RowCache | None = None,
+    all_star_rows: RowCache | None = None,
 ) -> pd.DataFrame:
     overrides = report_out_overrides(state)
     questionable = report_questionable_sets(state)
@@ -178,6 +181,7 @@ def _one_horizon(
         include_available_roster_count=True,
         snapshot_game_ids=snapshot_game_ids,
         snapshot_report_listed_players=report_listed,
+        row_cache=player_rows,
     )
     team = add_injury_report_features(team, state, box)
     team = add_all_star_voting_features(
@@ -186,6 +190,7 @@ def _one_horizon(
         voting,
         injured_dict=apply_report_out_overrides(injured_dict, overrides),
         questionable_dict=nested_status_dict(questionable),
+        row_cache=all_star_rows,
     )
     # When no team has filed at this horizon, the shared All-Star builder has
     # no questionable group to emit. Keep the snapshot schema stable anyway.
@@ -294,6 +299,9 @@ def add_snapshot_injury_features(
             "Could not load All-Star voting for snapshot injury features"
         )
 
+    # Every horizon rebuilds the same team games; only rows whose game sees a
+    # different report than at an earlier horizon need rebuilding.
+    player_rows, all_star_rows = RowCache(), RowCache()
     parts = []
     for horizon, state in tqdm(
         states.items(),
@@ -303,7 +311,17 @@ def add_snapshot_injury_features(
         disable=progress is None,
     ):
         ids = set(cutoffs.loc[cutoffs.snapshot_minutes.eq(horizon), "game_id"])
-        features = _one_horizon(base, context, state, injuries, box, voting, ids)
+        features = _one_horizon(
+            base,
+            context,
+            state,
+            injuries,
+            box,
+            voting,
+            ids,
+            player_rows,
+            all_star_rows,
+        )
         features = features.loc[features.GAME_ID.isin(ids)].copy()
         features["TIME_TO_MATCH_MIN"] = horizon
         parts.append(features)

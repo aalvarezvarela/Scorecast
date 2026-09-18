@@ -29,6 +29,7 @@ leakage-safe columns are selected via ``_BEFORE``.
 
 from __future__ import annotations
 
+import gc
 import time
 from collections.abc import Callable
 
@@ -630,6 +631,7 @@ def create_intermediate_line_df(
         _pivot_consensus(consensus),
     ]
     snapshot_wide = _merge_wide_parts(wide_parts)
+    del wide_parts, consensus
     snapshot_wide = snapshot_wide.merge(
         anchor_path, on=["game_id", "snapshot_minutes"], how="left", validate="one_to_one"
     )
@@ -656,6 +658,12 @@ def create_intermediate_line_df(
     snapshot_wide = snapshot_wide.merge(
         target_spread, on=["game_id", "snapshot_minutes"], how="left"
     )
+    # The long panel is millions of (game, market, book, snapshot) rows and
+    # nothing reads it past this point: every frame derived from it is built
+    # above. Holding it through the join below is what made the wide merge --
+    # the single largest allocation in the build -- run out of memory.
+    del panel, anchor_path, target_line, target_spread
+    gc.collect()
 
     # ---- historical line dynamics (prior games only) -------------------
     # Per market: how a team's spread and moneyline get re-priced is different
@@ -783,9 +791,17 @@ def create_intermediate_line_df(
 
     # ---- join ----------------------------------------------------------
     stage("Joining base features onto snapshot rows ...")
+    # Merged in two steps rather than one chained expression so each right-hand
+    # side can be released immediately; chaining keeps both alive alongside the
+    # intermediate result.
     merged = base.merge(
         snapshot_wide, left_on="GAME_ID", right_on="game_id", how="inner"
-    ).merge(history, left_on="GAME_ID", right_on="game_id", how="left")
+    )
+    del snapshot_wide
+    gc.collect()
+    merged = merged.merge(history, left_on="GAME_ID", right_on="game_id", how="left")
+    del history
+    gc.collect()
     merged = merged.drop(
         columns=[
             c for c in ["game_id_x", "game_id_y", "game_id"] if c in merged.columns

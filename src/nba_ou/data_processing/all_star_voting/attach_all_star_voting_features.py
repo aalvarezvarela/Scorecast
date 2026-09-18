@@ -9,6 +9,7 @@ from tqdm import tqdm
 
 from nba_ou.config.constants import TEAM_ID_MAP
 from nba_ou.data_processing.past_injuries.past_injuries import create_player_lookup
+from nba_ou.utils.row_cache import RowCache
 
 TEAM_NAME_BY_ID = {str(v): k for k, v in TEAM_ID_MAP.items()}
 
@@ -204,6 +205,7 @@ def add_all_star_voting_features(
     all_star_voting_df: pd.DataFrame,
     injured_dict: dict,
     questionable_dict: dict | None = None,
+    row_cache: RowCache | None = None,
 ) -> pd.DataFrame:
     """Adds per-team-game all-star fan-vote share columns.
 
@@ -221,6 +223,12 @@ def add_all_star_voting_features(
         ALL_STAR_FAN_VOTES_BEFORE          float
         ALL_STAR_CANDIDATE_COUNT_BEFORE    int
         ALL_STAR_SEASON_YEAR_BEFORE        int (audit; ok to keep)
+
+    ``row_cache`` is shared across repeated calls on the same team games,
+    players and votes whose ``injured_dict``/``questionable_dict`` differ. A
+    row reads the injury dict only for games on its own day (roster assignment
+    checks every game that day), so it is reused whenever that day's entries
+    and its own questionable set match an earlier call.
     """
     required_team_cols = {"GAME_ID", "TEAM_ID", "SEASON_ID", "GAME_DATE"}
     missing_team_cols = sorted(required_team_cols - set(df_team.columns))
@@ -273,6 +281,20 @@ def add_all_star_voting_features(
             "and upload it to Supabase before running this pipeline."
         )
 
+    if row_cache is not None:
+        row_cache.bind((len(out), len(players), len(all_star)))
+        day_entries: dict[pd.Timestamp, set[tuple[str, str, str]]] = {}
+        for injury_game_id, injury_team_map in injured_dict_normalized.items():
+            injury_game_day = game_day_by_game_id.get(injury_game_id)
+            if injury_game_day is None:
+                continue
+            day_entries.setdefault(injury_game_day, set()).update(
+                (injury_game_id, injury_team_id, injury_player_id)
+                for injury_team_id, injury_player_ids in injury_team_map.items()
+                for injury_player_id in injury_player_ids
+            )
+        day_signatures = {day: frozenset(v) for day, v in day_entries.items()}
+
     player_lookup = create_player_lookup(players, injured_dict=injured_dict)
     last_team_before_date_lookup = build_last_team_before_date_lookup(players)
 
@@ -286,6 +308,31 @@ def add_all_star_voting_features(
         game_date = pd.Timestamp(game_date)
         game_day = game_date.normalize()
         team_id_str = str(team_id)
+        if row_cache is not None:
+            team_questionable = (
+                questionable_normalized.get(str(game_id))
+                if questionable_normalized is not None
+                else None
+            )
+            cache_key = (
+                str(game_id),
+                team_id_str,
+                str(season_id),
+                game_date,
+                day_signatures.get(game_day),
+                (
+                    frozenset(team_questionable[team_id_str])
+                    if team_questionable is not None
+                    and team_id_str in team_questionable
+                    else None
+                ),
+            )
+            cached = row_cache.rows.get(cache_key)
+            if cached is not None:
+                row_cache.hits += 1
+                updates.append(cached)
+                continue
+            row_cache.misses += 1
         all_star_season_year = all_star_season_year_for_game_date(game_date)
         season_index = all_star_indexes[all_star_season_year]
 
@@ -419,6 +466,8 @@ def add_all_star_voting_features(
                         questionable_scores
                     )
         updates.append(row_update)
+        if row_cache is not None:
+            row_cache.rows[cache_key] = row_update
 
     updates_df = pd.DataFrame(updates, index=out.index, columns=feature_columns)
     return pd.concat([out, updates_df], axis=1)
