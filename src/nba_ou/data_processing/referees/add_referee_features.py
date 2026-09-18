@@ -174,15 +174,25 @@ def compute_referee_features(
             return games_with_trio, games_without_trio
         return pd.DataFrame(), pd.DataFrame()
 
+    # Games on the same date and season see exactly the same past games, and
+    # none of the columns read from them (crews, metrics, date, season) are
+    # written by this loop. Rows are in date order, so only the current
+    # (date, season)'s split and per-referee deltas are kept.
+    split_key = None
+    split = None
+    ref_diffs: dict[tuple[str, str], float | None] = {}
+
     # Process each game
     for idx in tqdm(range(len(df)), desc="Computing referee features"):
         current_game = df.iloc[idx]
         current_date = current_game["GAME_DATE"]
         current_season = current_game["SEASON_YEAR"]
 
-        past_games_same_season, past_games_prev_season = _split_past_games_by_season(
-            current_date, current_season
-        )
+        if split is None or split_key != (current_date, current_season):
+            split_key = (current_date, current_season)
+            split = _split_past_games_by_season(current_date, current_season)
+            ref_diffs = {}
+        past_games_same_season, past_games_prev_season = split
         past_games = (
             past_games_same_season
             if not past_games_same_season.empty
@@ -199,14 +209,18 @@ def compute_referee_features(
         for metric in REFEREE_METRICS:
             per_ref_diffs = []
             for ref_name in current_refs:
-                games_with_ref, games_without_ref = _select_games_for_ref(
-                    past_games_same_season, past_games_prev_season, ref_name
-                )
-
-                if len(games_with_ref) > 0 and len(games_without_ref) > 0:
-                    per_ref_diffs.append(
-                        games_with_ref[metric].mean() - games_without_ref[metric].mean()
+                if (ref_name, metric) not in ref_diffs:
+                    games_with_ref, games_without_ref = _select_games_for_ref(
+                        past_games_same_season, past_games_prev_season, ref_name
                     )
+                    ref_diffs[(ref_name, metric)] = (
+                        games_with_ref[metric].mean() - games_without_ref[metric].mean()
+                        if len(games_with_ref) > 0 and len(games_without_ref) > 0
+                        else None
+                    )
+                ref_diff = ref_diffs[(ref_name, metric)]
+                if ref_diff is not None:
+                    per_ref_diffs.append(ref_diff)
 
             if per_ref_diffs:
                 per_ref_diffs_series = pd.Series(per_ref_diffs, dtype="float64")

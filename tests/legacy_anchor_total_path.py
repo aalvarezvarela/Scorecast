@@ -1,26 +1,24 @@
-"""Five compact Bet365 total-line path signals, all as-of the snapshot.
+"""``add_anchor_total_path_features`` before reading horizons as an array, verbatim.
 
-These are exported only for the anchor total. Expanding each to every market
-and book would add dozens of mostly redundant columns to the training CSV.
+Reference for tests/test_line_history_speedups.py only.
 """
-
-from __future__ import annotations
 
 import numpy as np
 import pandas as pd
-
+from nba_ou.data_processing.line_history.anchor_total_path import (
+    MAX_INTERMOVE_GAP_MINUTES,
+    MAX_LEVEL_MOVE_AGE_MINUTES,
+    PATH_WINDOW_MINUTES,
+)
+from nba_ou.data_processing.line_history.cross_book import PEER_GAP_LIMITS
+from nba_ou.data_processing.line_history.snapshots import (
+    build_snapshot_panel,
+    resolve_line,
+)
 from nba_ou.postgre_db.line_history_aiven.fetch import MARKET_TOTALS
 
-from .cross_book import PEER_GAP_LIMITS
-from .snapshots import build_snapshot_panel, resolve_line
 
-PATH_WINDOW_MINUTES = 60
-MAX_INTERMOVE_GAP_MINUTES = 720.0
-#: Openers can be posted weeks ahead; beyond a day the exact age adds nothing.
-MAX_LEVEL_MOVE_AGE_MINUTES = 1440.0
-
-
-def add_anchor_total_path_features(
+def add_anchor_total_path_features_before(
     panel: pd.DataFrame, ticks: pd.DataFrame, *, anchor: str
 ) -> pd.DataFrame:
     """Return one row per anchor total snapshot, with five new features.
@@ -55,9 +53,7 @@ def add_anchor_total_path_features(
         # one feature rather than exporting an entire extra window family.
         earlier = build_snapshot_panel(
             ticks[ticks["market"].eq(MARKET_TOTALS)],
-            grid=tuple(
-                sorted(set(totals["snapshot_minutes"] + PATH_WINDOW_MINUTES))
-            ),
+            grid=tuple(sorted(set(totals["snapshot_minutes"] + PATH_WINDOW_MINUTES))),
         )
         earlier = earlier[[*keys, "book", "level"]].rename(
             columns={"level": "previous_level"}
@@ -65,13 +61,13 @@ def add_anchor_total_path_features(
         earlier["snapshot_minutes"] -= PATH_WINDOW_MINUTES
         totals = totals.merge(earlier, on=[*keys, "book"], how="left")
         totals["has_window_60"] = totals["previous_level"].notna().astype(int)
-        totals["move_last_60"] = (
-            totals["level"] - totals["previous_level"]
-        ).fillna(0.0)
+        totals["move_last_60"] = (totals["level"] - totals["previous_level"]).fillna(
+            0.0
+        )
 
-    anchor_panel = totals[
-        totals["book"].eq(anchor) & totals["level"].notna()
-    ][keys + ["level", "move_last_60", "has_window_60"]].copy()
+    anchor_panel = totals[totals["book"].eq(anchor) & totals["level"].notna()][
+        keys + ["level", "move_last_60", "has_window_60"]
+    ].copy()
     if anchor_panel.empty:
         return pd.DataFrame(columns=[*keys, *feature_names])
     if anchor_panel.duplicated(keys).any():
@@ -85,7 +81,6 @@ def add_anchor_total_path_features(
     tick_groups = source.groupby("game_id", sort=False).indices
     limit = PEER_GAP_LIMITS[MARKET_TOTALS]
     results = []
-    snapshot_values = anchor_panel["snapshot_minutes"].to_numpy()
     for game, positions in anchor_panel.groupby("game_id", sort=False).indices.items():
         game_ticks = source.iloc[tick_groups[game]]
         times = game_ticks["minutes_before_tip"].to_numpy(float)
@@ -95,7 +90,7 @@ def add_anchor_total_path_features(
         move_times = times[changed]
         move_deltas = deltas[changed - 1]
         for row_index in positions:
-            horizon = float(snapshot_values[row_index])
+            horizon = float(anchor_panel.iloc[row_index]["snapshot_minutes"])
             seen = move_times >= horizon
             seen_times = move_times[seen]
             seen_deltas = move_deltas[seen]

@@ -128,6 +128,13 @@ def _continuous_effect_and_se(
     """
     present = pd.to_numeric(present_values, errors="coerce").dropna().to_numpy()
     injured = pd.to_numeric(injured_values, errors="coerce").dropna().to_numpy()
+    return _effect_and_se_from_arrays(present, injured, min_se_games=min_se_games)
+
+
+def _effect_and_se_from_arrays(
+    present: np.ndarray, injured: np.ndarray, *, min_se_games: int = MIN_SE_GAMES
+) -> tuple[float, float, int, int]:
+    """``_continuous_effect_and_se`` on arrays already numeric and NaN-free."""
     n_injured = len(injured)
     n_present = len(present)
     if n_present == 0 or n_injured == 0:
@@ -247,9 +254,15 @@ class _TeamHistoryIndex:
         effects, standard_errors, injured_counts, present_counts = [], [], [], []
         for metric in EFFECT_METRICS:
             values = self._metrics[metric][rows]
+            # Float64 already, so ``to_numeric(...).dropna()`` in
+            # _continuous_effect_and_se is exactly this NaN filter; skipping
+            # the two Series per metric per query changes no value.
+            present_values = values[present_mask]
+            injured_values = values[inj_mask]
             effect, standard_error, metric_n_inj, metric_n_present = (
-                _continuous_effect_and_se(
-                    pd.Series(values[present_mask]), pd.Series(values[inj_mask])
+                _effect_and_se_from_arrays(
+                    present_values[~np.isnan(present_values)],
+                    injured_values[~np.isnan(injured_values)],
                 )
             )
             effects.append(effect)

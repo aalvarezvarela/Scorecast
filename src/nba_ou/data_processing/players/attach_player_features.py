@@ -22,8 +22,9 @@ from nba_ou.data_processing.players.fresh_absence import (
     add_fresh_absence_features,
 )
 from nba_ou.data_processing.players.players_statistics import (
-    get_top_n_averages_with_names,
+    latest_player_states,
     precompute_cumulative_avg_stat,
+    rank_player_states,
 )
 from nba_ou.utils.general_utils import _with_before_suffix
 from nba_ou.utils.row_cache import RowCache
@@ -275,6 +276,20 @@ def _game_membership_signatures(membership_dict: dict) -> dict[str, frozenset]:
     return signatures
 
 
+def precompute_stat_players(df_players, stat_cols) -> pd.DataFrame:
+    """Players with ``<stat>_CUM_AVG`` for every statistic, in ``stat_cols`` order.
+
+    The per-statistic preparation step of ``add_player_history_features``,
+    exposed so a caller building several horizons from the same players can
+    run it once.
+    """
+    if isinstance(stat_cols, str):
+        stat_cols = [stat_cols]
+    for stat_col in stat_cols:
+        df_players = precompute_cumulative_avg_stat(df_players, stat_col=stat_col)
+    return df_players
+
+
 def add_player_history_features(
     df_team,
     df_players,
@@ -288,6 +303,7 @@ def add_player_history_features(
     snapshot_game_ids: set[str] | None = None,
     snapshot_report_listed_players: dict | None = None,
     row_cache: RowCache | None = None,
+    stat_players: pd.DataFrame | None = None,
 ):
     """
     Main function to attach top player statistics and injured player stats to team data.
@@ -332,6 +348,10 @@ def add_player_history_features(
             player history) is the same in every call. Rows whose game sees the
             same report sets as before are reused; the result is identical to
             building every row.
+        stat_players (pd.DataFrame, optional): ``precompute_stat_players(
+            df_players, stat_cols)``, for callers that run this builder
+            repeatedly on the same players. It is exactly what the builder
+            would compute itself, so passing it changes no value.
 
     Returns:
         pd.DataFrame: Updated df_team with extra columns for top players and injured players
@@ -388,9 +408,11 @@ def add_player_history_features(
 
     # Collect all column names first to avoid fragmentation
     all_new_cols = []
+    if stat_players is None:
+        stat_players = precompute_stat_players(df_players, stat_cols)
+    df_players = stat_players
     for stat_col in stat_cols:
-        # 1) Precompute cumulative averages for the chosen stat
-        df_players = precompute_cumulative_avg_stat(df_players, stat_col=stat_col)
+        # 1) Cumulative averages for the chosen stat: precomputed above
 
         # 2) Dynamically name new columns based on `stat_col`
         profile = ACTIVE_PROFILE
@@ -714,41 +736,41 @@ def add_player_history_features(
         # own minutes after the per-statistic loop below.
         per_player_values: dict[str, dict] = {}
 
+        # Each group's latest per-player states do not depend on the statistic
+        # being ranked, so they are resolved once per row rather than once per
+        # statistic; ``get_top_n_averages_with_names`` is exactly these two steps.
+        non_inj_states = latest_player_states(df_non_inj, game_date, injured=False)
+        n_non_inj = df_non_inj["PLAYER_ID"].nunique()
+        inj_states = latest_player_states(df_inj, game_date, injured=True)
+        n_inj = df_inj["PLAYER_ID"].nunique()
+        # The questionable group, resolved exactly like the injured one:
+        # ``injured=True`` reads each player's last game strictly BEFORE this
+        # one, so membership and values are both independent of tonight's box
+        # score. Using the available branch instead would pick up a same-day row
+        # that exists only if the player ended up playing.
+        rank_questionable = build_questionable_group and questionable_covered
+        if rank_questionable:
+            questionable_states = latest_player_states(
+                df_questionable, game_date, injured=True
+            )
+            n_questionable = df_questionable["PLAYER_ID"].nunique()
+
         for stat_col in stat_cols:
             n_players_noninj = N_TOP_PLAYERS_NON_INJURED
             n_players_inj = N_TOP_PLAYERS_INJURED
 
             # Get ALL non-injured players for aggregation
-            all_non_inj = get_top_n_averages_with_names(
-                df_non_inj,
-                date=game_date,
-                stat_col=stat_col,
-                injured=False,
-                n_players=df_non_inj["PLAYER_ID"].nunique(),
+            all_non_inj = rank_player_states(
+                non_inj_states, stat_col, n_players=n_non_inj
             )
             # Get ALL injured players for aggregation
-            all_inj = get_top_n_averages_with_names(
-                df_inj,
-                date=game_date,
-                stat_col=stat_col,
-                n_players=df_inj["PLAYER_ID"].nunique(),
-                injured=True,
-            )
+            all_inj = rank_player_states(inj_states, stat_col, n_players=n_inj)
 
-            # The questionable group, resolved exactly like the injured one:
-            # ``injured=True`` reads each player's last game strictly BEFORE
-            # this one, so membership and values are both independent of
-            # tonight's box score. Using the available branch instead would pick
-            # up a same-day row that exists only if the player ended up playing.
             all_questionable = (
-                get_top_n_averages_with_names(
-                    df_questionable,
-                    date=game_date,
-                    stat_col=stat_col,
-                    n_players=df_questionable["PLAYER_ID"].nunique(),
-                    injured=True,
+                rank_player_states(
+                    questionable_states, stat_col, n_players=n_questionable
                 )
-                if build_questionable_group and questionable_covered
+                if rank_questionable
                 else []
             )
 

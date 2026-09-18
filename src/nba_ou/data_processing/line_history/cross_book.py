@@ -114,6 +114,40 @@ def _weighted_agreement(frame: pd.DataFrame, move_column: str) -> pd.Series:
     )
 
 
+def _steam_by_group(panel: pd.DataFrame, move_column: str) -> pd.DataFrame:
+    """``_weighted_agreement`` for every (game, market, snapshot) at once.
+
+    The same counts and the same float divisions, computed column-wise instead
+    of one Python call per group; the values match exactly.
+    """
+    directions = np.sign(panel[move_column].fillna(0.0))
+    flags = pd.DataFrame(
+        {"up": directions.gt(0).to_numpy(), "down": directions.lt(0).to_numpy()},
+        index=panel.index,
+    )
+    grouped = flags.groupby([panel[key] for key in CONSENSUS_KEYS], sort=False)
+    counts = grouped.sum()
+    n_books = grouped.size().astype("float64").to_numpy()
+    n_up = counts["up"].astype("float64").to_numpy()
+    n_down = counts["down"].astype("float64").to_numpy()
+    dominant = np.maximum(n_up, n_down)
+    movers = n_up + n_down
+    with np.errstate(divide="ignore", invalid="ignore"):
+        fraction = np.where(n_books != 0, dominant / n_books, np.nan)
+        agreement = np.where(movers != 0, dominant / movers, 0.0)
+    return pd.DataFrame(
+        {
+            "steam_books_up": n_up,
+            "steam_books_down": n_down,
+            "steam_net": n_up - n_down,
+            "steam_movers": movers,
+            "steam_fraction": fraction,
+            "steam_agreement": agreement,
+        },
+        index=counts.index,
+    )
+
+
 def aggregate_across_books(panel: pd.DataFrame) -> pd.DataFrame:
     """One row per (game, market, snapshot) summarising all books at T."""
     if panel.empty:
@@ -129,7 +163,8 @@ def aggregate_across_books(panel: pd.DataFrame) -> pd.DataFrame:
         consensus_line=("level", "median"),
         consensus_line_mean=("level", "mean"),
         crossbook_std=("level", lambda s: s.std(ddof=0)),
-        crossbook_range=("level", lambda s: s.max() - s.min()),
+        crossbook_range_max=("level", "max"),
+        crossbook_range_min=("level", "min"),
         consensus_norm_line=("norm_line", "median"),
         consensus_raw_line=("raw_line", "median"),
         consensus_fair_left=("fair_left", "median"),
@@ -144,9 +179,14 @@ def aggregate_across_books(panel: pd.DataFrame) -> pd.DataFrame:
         consensus_has_quote=("has_quote", "sum"),
     )
 
-    steam = grouped.apply(
-        _weighted_agreement, move_column=move_column, include_groups=False
+    # ``s.max() - s.min()`` per group, kept in its original column position.
+    consensus.insert(
+        consensus.columns.get_loc("crossbook_range_max"),
+        "crossbook_range",
+        consensus.pop("crossbook_range_max") - consensus.pop("crossbook_range_min"),
     )
+
+    steam = _steam_by_group(panel, move_column)
     consensus = consensus.join(steam)
 
     consensus["crossbook_std"] = consensus["crossbook_std"].fillna(0.0)

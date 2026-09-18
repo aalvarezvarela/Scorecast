@@ -38,6 +38,7 @@ from nba_ou.data_processing.past_injuries.injury_effects import (
 from nba_ou.data_processing.players.attach_player_features import (
     add_player_history_features,
     is_player_identifier_column,
+    precompute_stat_players,
 )
 from nba_ou.postgre_db.all_star_voting.fetch_data_from_db.fetch_all_star_voting_from_db import (
     load_all_star_voting_from_db,
@@ -160,6 +161,7 @@ def _one_horizon(
     snapshot_game_ids: set[str],
     player_rows: RowCache | None = None,
     all_star_rows: RowCache | None = None,
+    stat_players: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
     overrides = report_out_overrides(state)
     questionable = report_questionable_sets(state)
@@ -182,6 +184,7 @@ def _one_horizon(
         snapshot_game_ids=snapshot_game_ids,
         snapshot_report_listed_players=report_listed,
         row_cache=player_rows,
+        stat_players=stat_players,
     )
     team = add_injury_report_features(team, state, box)
     team = add_all_star_voting_features(
@@ -302,6 +305,9 @@ def add_snapshot_injury_features(
     # Every horizon rebuilds the same team games; only rows whose game sees a
     # different report than at an earlier horizon need rebuilding.
     player_rows, all_star_rows = RowCache(), RowCache()
+    # The same for every horizon: the players' cumulative statistics do not
+    # depend on the report.
+    stat_players = precompute_stat_players(context.players.copy(), PLAYER_STATS)
     parts = []
     for horizon, state in tqdm(
         states.items(),
@@ -321,6 +327,7 @@ def add_snapshot_injury_features(
             ids,
             player_rows,
             all_star_rows,
+            stat_players,
         )
         features = features.loc[features.GAME_ID.isin(ids)].copy()
         features["TIME_TO_MATCH_MIN"] = horizon

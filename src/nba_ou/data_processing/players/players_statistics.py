@@ -84,14 +84,24 @@ def get_top_n_averages_with_names(
     Returns:
         list: List of tuples (player_id, player_name, cumulative_average)
     """
-    if stat_col == "DEF_RATING":
-        lowest = True
+    states = latest_player_states(df, date, injured=injured, min_minutes=min_minutes)
+    return rank_player_states(states, stat_col, lowest=lowest, n_players=n_players)
 
+
+def latest_player_states(df, date, *, injured=False, min_minutes=15):
+    """The statistic-independent half of ``get_top_n_averages_with_names``.
+
+    One row per player -- their latest state as of ``date`` -- with the
+    minutes-threshold flag the ranking sorts on. Nothing here depends on which
+    statistic is ranked, so a caller ranking the same players by several
+    statistics computes it once and passes it to ``rank_player_states``.
+    Returns None where the ranking would be empty.
+    """
     if injured:
         min_minutes = min_minutes * 0.8
 
     if df.empty:
-        return []
+        return None
 
     if injured:
         # For injured players: last game *before* `date`
@@ -109,7 +119,7 @@ def get_top_n_averages_with_names(
         df_last = df_available.groupby("PLAYER_ID", as_index=False).tail(1).copy()
 
     if df_last.empty:
-        return []
+        return None
 
     # Check if MIN_CUM_AVG already exists (e.g., when stat_col="MIN")
     if "MIN_CUM_AVG" not in df_last.columns:
@@ -128,20 +138,41 @@ def get_top_n_averages_with_names(
         # Merge the cumulative average minutes into the selected game rows
         df_last = df_last.merge(df_cum_min, on="PLAYER_ID", how="left")
 
-    cum_col = f"{stat_col}_CUM_AVG"
-
     # Create extra variable to check if player meets the minimum threshold
     df_last.loc[:, "MEETS_MIN_THRESHOLD"] = (
         df_last["MIN_CUM_AVG"].fillna(0) >= min_minutes
     ).astype(int)
+    return df_last
 
-    # Sort by the cumulative average column
-    df_sorted = df_last.sort_values(
-        by=["MEETS_MIN_THRESHOLD", cum_col], ascending=[False, lowest]
-    )
 
-    # Extract the top n (or bottom n) players
-    chosen = df_sorted.head(n_players)
+def rank_player_states(states, stat_col="PTS", *, lowest=False, n_players=3):
+    """The per-statistic half of ``get_top_n_averages_with_names``."""
+    if stat_col == "DEF_RATING":
+        lowest = True
+
+    if states is None:
+        return []
+
+    cum_col = f"{stat_col}_CUM_AVG"
+
+    meets = states["MEETS_MIN_THRESHOLD"].to_numpy()
+    values = states[cum_col].to_numpy()
+    if meets.dtype.kind in "iub" and values.dtype.kind == "f":
+        # ``sort_values(by=[MEETS_MIN_THRESHOLD, cum_col], ascending=[False,
+        # lowest])`` without its per-call Categorical encoding: a stable sort,
+        # ties in row order, NaN last in either direction -- as np.lexsort
+        # orders negated keys. Same rows, same order.
+        order = np.lexsort((values if lowest else -values, -meets.astype("int64")))
+        # Extract the top n (or bottom n) players
+        chosen = states.take(order[:n_players])
+    else:
+        # Sort by the cumulative average column
+        df_sorted = states.sort_values(
+            by=["MEETS_MIN_THRESHOLD", cum_col], ascending=[False, lowest]
+        )
+
+        # Extract the top n (or bottom n) players
+        chosen = df_sorted.head(n_players)
 
     top_or_bottom_n = list(
         zip(chosen["PLAYER_ID"], chosen["PLAYER_NAME"], chosen[cum_col], strict=True)

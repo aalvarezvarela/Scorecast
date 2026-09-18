@@ -286,21 +286,25 @@ def compute_rolling_weighted_stats(
 
     series = pd.to_numeric(out[param], errors="coerce")
 
-    def weighted_moving_average(x: pd.Series) -> float:
+    def weighted_moving_average(x: np.ndarray) -> float:
         """
         Compute weighted moving average with consistent relative weighting.
         Uses exponential-like weights that scale properly for any window size.
+
+        Takes the raw window (``raw=True``): the same float64 values and the
+        same numpy reductions as the Series version it replaced, without
+        building a Series for every window.
         """
         n = len(x)
-        if x.isna().all():
+        mask = ~np.isnan(x)
+        if not mask.any():
             return np.nan
 
         # Generate weights for the actual window size (1 to n)
         # This ensures consistent relative weighting regardless of window size
         w = np.arange(1, n + 1, dtype=float)
 
-        mask = ~x.isna()
-        return float((x[mask] * w[mask.to_numpy()]).sum() / w[mask.to_numpy()].sum())
+        return float((x[mask] * w[mask]).sum() / w[mask].sum())
 
     # Build groupby keys
     if group_by_season:
@@ -315,7 +319,7 @@ def compute_rolling_weighted_stats(
         lambda s: (
             s.shift(1)
             .rolling(window, min_periods=1)
-            .apply(weighted_moving_average, raw=False)
+            .apply(weighted_moving_average, raw=True)
         )
     )
 
@@ -329,7 +333,7 @@ def compute_rolling_weighted_stats(
                 lambda s: (
                     s.shift(1)
                     .rolling(window, min_periods=1)
-                    .apply(weighted_moving_average, raw=False)
+                    .apply(weighted_moving_average, raw=True)
                 )
             )
             out[last_n_split_col] = split_wma - out[last_n_wma_col]
@@ -348,7 +352,7 @@ def compute_rolling_weighted_stats(
                     lambda s: (
                         s.shift(1)
                         .rolling(relative_to_window, min_periods=1)
-                        .apply(weighted_moving_average, raw=False)
+                        .apply(weighted_moving_average, raw=True)
                     )
                 )
             out[relative_col] = ref_wma - out[last_n_wma_col]

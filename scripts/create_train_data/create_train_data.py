@@ -16,6 +16,7 @@ from nba_ou.create_training_data.create_df_to_predict import create_df_to_predic
 from nba_ou.data_processing.referees.referee_tendencies import (
     DEFAULT_REFEREE_HISTORY_SEASONS,
 )
+from nba_ou.utils.parallel_csv import write_csv
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
@@ -70,7 +71,7 @@ def main(
         output.parent.mkdir(parents=True, exist_ok=True)
 
     # Save to CSV
-    df_train.to_csv(output, index=False)
+    write_csv(df_train, output)
     print(f"Training data saved to {output}")
 
     from training_pipeline.data import compute_file_checksum

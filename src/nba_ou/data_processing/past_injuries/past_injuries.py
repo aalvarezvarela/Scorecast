@@ -236,6 +236,28 @@ def create_player_lookup(df_players, injured_dict=None):
                     player_to_teams[str(player_id)].add(team_key)
             injured_team_by_game_player[game_key] = player_to_teams
 
+    # Row positions of each player inside each bucket, keyed exactly as the
+    # ``astype(str)`` membership test below compares them. Selecting a
+    # player's rows through this index returns the rows a mask over the whole
+    # bucket would, in the same order, without rebuilding that mask on every
+    # call. Built lazily: most buckets are only ever read through one path.
+    bucket_player_positions: dict[tuple[int, object], dict[str, np.ndarray]] = {}
+
+    def _player_positions(bucket_groups, bucket_key, df_bucket):
+        cache_key = (id(bucket_groups), bucket_key)
+        positions = bucket_player_positions.get(cache_key)
+        if positions is None:
+            player_ids = df_bucket["PLAYER_ID"].astype(str).to_numpy()
+            codes, uniques = pd.factorize(player_ids)
+            order = np.argsort(codes, kind="stable")
+            bounds = np.searchsorted(codes[order], np.arange(len(uniques) + 1))
+            positions = {
+                str(player_id): order[bounds[i] : bounds[i + 1]]
+                for i, player_id in enumerate(uniques)
+            }
+            bucket_player_positions[cache_key] = positions
+        return positions
+
     def _season_year_from_season_id(season_id):
         try:
             return int(str(season_id)[-4:])
@@ -312,10 +334,22 @@ def create_player_lookup(df_players, injured_dict=None):
 
         # Keep a player's history across teams so a same-game injury assignment
         # after a trade can still use their prior, already known statistics.
-        mask = df_bucket["PLAYER_ID"].astype(str).isin(valid_players_set) & (
-            df_bucket["GAME_DATE"] <= date_to_filter
+        # Equivalent to masking the whole bucket with
+        # ``PLAYER_ID.astype(str).isin(valid_players_set) & (GAME_DATE <= date)``:
+        # same rows, same bucket order.
+        player_positions = _player_positions(bucket_groups, bucket_key, df_bucket)
+        empty_positions = np.empty(0, dtype=np.intp)
+        rows = np.sort(
+            np.concatenate(
+                [empty_positions]
+                + [
+                    player_positions.get(player_id, empty_positions)
+                    for player_id in valid_players_set
+                ]
+            )
         )
-        result = df_bucket[mask]
+        candidates = df_bucket.iloc[rows]
+        result = candidates[(candidates["GAME_DATE"] <= date_to_filter).to_numpy()]
 
         return result
 

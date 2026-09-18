@@ -1,6 +1,5 @@
 import numpy as np
 import pandas as pd
-from scipy.stats import linregress
 from tqdm import tqdm
 
 from nba_ou.config.odds_columns import moneyline_col, spread_col, total_line_col
@@ -278,6 +277,20 @@ def _fill_trend_from_history(df, values, *, extra_keys=()):
     return np.where(np.isnan(filled), TREND_NO_HISTORY_VALUE, filled)
 
 
+def _linregress_slope(x: np.ndarray, y: np.ndarray) -> float:
+    """``linregress(x, y).slope``, bit for bit, without the rest of the fit.
+
+    ``linregress`` derives the slope as ``ssxym / ssxm`` from
+    ``np.cov(x, y, bias=1)`` and then spends most of its time on the
+    correlation, p-value and standard errors, which the trend features discard.
+    This is that same expression on the same arrays. ``x`` is always
+    ``1..n`` with ``n >= 2`` here, so linregress's constant-``x`` error
+    cannot occur.
+    """
+    ssxm, ssxym, _, _ = np.cov(x, y, bias=1).flat
+    return ssxym / ssxm
+
+
 def compute_trend_slope(
     df,
     parameter="PTS",
@@ -320,8 +333,7 @@ def compute_trend_slope(
         X = np.arange(1, len(clean_series) + 1)  # Time index [1, 2, ..., N]
         Y = np.array(clean_series)  # Convert to array for linregress
 
-        slope, _, _, _, _ = linregress(X, Y)
-        return slope
+        return _linregress_slope(X, Y)
 
     # Sort by team, season, and date
     df = df.sort_values(["TEAM_ID", "SEASON_YEAR", "GAME_DATE"], ascending=True)
@@ -423,7 +435,109 @@ def compute_trend_slope(
     return df
 
 
+#: Columns the rolling stage reads besides the statistics themselves.
+_ROLLING_KEY_COLUMNS = (
+    "TEAM_ID",
+    "HOME",
+    "GAME_DATE",
+    "SEASON_YEAR",
+    "GAME_ID",
+    SEASON_TYPE_COLUMN,
+)
+#: Scratch columns the statistics helpers create and drop again.
+_ROLLING_SCRATCH_COLUMNS = ("_prev_season_mean", "_prev_season_std")
+_ROW_POSITION = "__rolling_row_position__"
+
+
+def _rolling_source_columns(columns, exclude_yahoo: bool) -> list[str]:
+    """Columns the rolling stage can read or write, in frame order.
+
+    Every column the discovery rules in ``_compute_all_rolling_statistics_on``
+    can pick up is included, so discovery on this subset returns the same lists
+    as on the full frame. Every column the stage can create is named
+    ``<source>_...`` or ``__<source>_...``, so any such column already in the
+    frame is included too and gets overwritten or dropped exactly as before.
+    """
+    columns = list(columns)
+    discovered = {
+        c
+        for c in columns
+        if c.startswith(("DIFF_FROM_", "ODDS_TOTAL_LINE_"))
+        or c.startswith(
+            (
+                "total_consensus_pct_",
+                "spread_consensus_pct_",
+                "moneyline_consensus_pct_",
+            )
+        )
+        or (not exclude_yahoo and ("_pct_bets" in c or "_pct_money" in c))
+    }
+    discovered.update(_get_rolling_price_columns(columns))
+    sources = discovered | set(
+        COLS_TO_AVERAGE
+        + COLS_TO_AVERAGE_ODDS
+        + COLS_FOR_WEIGHTED_STATS
+        + COLS_FOR_SEASON_STD
+        + COLS_FOR_SHORT_WINDOWS
+        + list(STYLE_SOURCE_COLUMNS)
+    )
+    prefixes = tuple(f"{s}_" for s in sources) + tuple(f"__{s}_" for s in sources)
+    return [
+        c
+        for c in columns
+        if c in sources
+        or c in _ROLLING_KEY_COLUMNS
+        or c in _ROLLING_SCRATCH_COLUMNS
+        or c.startswith(prefixes)
+    ]
+
+
 def compute_all_rolling_statistics(df, exclude_yahoo=False):
+    """``_compute_all_rolling_statistics_on`` without dragging the wide frame.
+
+    Each of the ~150 helper calls in that stage copies, sorts, merges and
+    re-sorts the frame it is given, to add one to three columns. Given the full
+    team frame -- hundreds of columns wide by then -- that copying was nearly
+    all of the stage's time. The helpers only read the key columns and the
+    statistics themselves, and every row permutation they apply depends only on
+    the keys and the current row order. So the stage runs unchanged on just
+    those columns, and the wide frame is reordered once at the end: same rows,
+    order, index, columns and values as running it on the whole frame.
+    """
+    columns = pd.Index(df.columns)
+    if not columns.is_unique or _ROW_POSITION in columns:
+        return _compute_all_rolling_statistics_on(df, exclude_yahoo=exclude_yahoo)
+
+    narrow_columns = _rolling_source_columns(columns, exclude_yahoo)
+    narrow = df[narrow_columns].copy()
+    narrow[_ROW_POSITION] = np.arange(len(df))
+    narrow = _compute_all_rolling_statistics_on(narrow, exclude_yahoo=exclude_yahoo)
+
+    narrow_set = set(narrow_columns)
+    created = [c for c in narrow.columns if c not in narrow_set and c != _ROW_POSITION]
+    if set(created) & set(columns):
+        # Unreachable given _rolling_source_columns; kept as the safe path.
+        return _compute_all_rolling_statistics_on(df, exclude_yahoo=exclude_yahoo)
+
+    positions = narrow.pop(_ROW_POSITION).to_numpy()
+    untouched = [c for c in columns if c not in narrow_set]
+    result = pd.concat(
+        [
+            df[untouched].take(positions).reset_index(drop=True),
+            narrow.reset_index(drop=True),
+        ],
+        axis=1,
+    )
+    final_columns = [
+        c for c in columns if c not in narrow_set or c in narrow.columns
+    ] + created
+    result = result[final_columns]
+    result.index = narrow.index
+    result.columns.name = columns.name
+    return result
+
+
+def _compute_all_rolling_statistics_on(df, exclude_yahoo=False):
     """
     Compute rolling statistics, weighted averages, and seasonal standard deviations,
     dynamically including new DIFF_FROM_* columns, ODDS_TOTAL_LINE_* columns, and

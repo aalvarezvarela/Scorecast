@@ -33,6 +33,7 @@ from nba_ou.data_processing.line_history.snapshots import DEFAULT_SNAPSHOT_GRID
 from nba_ou.data_processing.referees.referee_tendencies import (
     DEFAULT_REFEREE_HISTORY_SEASONS,
 )
+from nba_ou.utils.parallel_csv import write_csv
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_OUTPUT_DIR = PROJECT_ROOT / "data" / "train_data"
@@ -214,7 +215,7 @@ def main() -> None:
         f"\nWriting {len(df):,} rows x {df.shape[1]:,} columns to {output_path} ...",
         flush=True,
     )
-    df.to_csv(output_path, index=False)
+    write_csv(df, output_path)
     print(f"Saved training data to {output_path}")
 
     # Closing lines and snapshot weights live in a separate file on purpose:

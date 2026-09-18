@@ -206,7 +206,8 @@ def select_intermediate_training_columns(
     excellent and is worthless, which is far more expensive than a failed build.
     """
     kept = [column for column in df.columns if is_kept_column(column)]
-    dropped = [column for column in df.columns if column not in set(kept)]
+    kept_set = set(kept)
+    dropped = [column for column in df.columns if column not in kept_set]
 
     if debug:
         print(f"Intermediate gate: keeping {len(kept)}, dropping {len(dropped)}")
