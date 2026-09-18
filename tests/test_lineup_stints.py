@@ -111,3 +111,13 @@ def test_v3_rebounds_use_description_counters():
     stints = build_game_stints(rotation("H"), rotation("A"), pbp)
     assert stints.home_oreb.sum() == 1
     assert stints.home_dreb.sum() == 1
+
+
+def test_appended_corrected_action_uses_game_clock_before_action_number():
+    pbp = pd.DataFrame([
+        event(1, 1, "PT09M00.00S", "Made Shot", team="H", home="4"),
+        event(100, 1, "PT10M00.00S", "Made Shot", team="H", home="2"),
+        event(101, 4, "PT00M00.00S", "period", home="4"),
+    ])
+    stints = build_game_stints(rotation("H"), rotation("A"), pbp)
+    assert stints.home_pts.sum() == 4

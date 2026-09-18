@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import time
 from collections.abc import Callable
 
@@ -10,6 +11,8 @@ from nba_api.stats.endpoints import GameRotation, PlayByPlayV3
 from requests.exceptions import ConnectionError, ReadTimeout
 
 from nba_ou.fetch_data.nba_api_session import reset_nba_http_session
+
+LOGGER = logging.getLogger(__name__)
 
 
 class CircuitOpen(RuntimeError):
@@ -102,6 +105,10 @@ class LineupClient:
                 except (ReadTimeout, ConnectionError, json.JSONDecodeError) as exc:
                     last_error = exc
                     if attempt == 0:
+                        LOGGER.warning(
+                            "%s %s failed (%s); retrying in 5 s",
+                            endpoint, game_id, type(exc).__name__,
+                        )
                         self.sleep(5)
             self.consecutive_blocks += 1
             if self.consecutive_blocks >= 4:
@@ -109,5 +116,10 @@ class LineupClient:
                     f"NBA API blocked four consecutive attempts; resume at {game_id}"
                 ) from last_error
             self.reset()
+            LOGGER.warning(
+                "%s %s blocked (%d/4); waiting %d s",
+                endpoint, game_id, self.consecutive_blocks,
+                (90, 180, 300)[block],
+            )
             self.sleep((90, 180, 300)[block])
         raise AssertionError("unreachable")
