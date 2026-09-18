@@ -10,10 +10,9 @@ import re
 import time
 
 import pandas as pd
-import requests
-from nba_api.library.http import NBAHTTP
 from nba_api.stats.endpoints import BoxScoreSummaryV3, LeagueGameFinder
 from nba_ou.config.constants import SEASON_TYPE_MAP, TEAM_ID_MAP
+from nba_ou.fetch_data.nba_api_session import reset_nba_http_session
 from nba_ou.postgre_db.config.db_config import (
     connect_injuries_db,
     connect_refs_db,
@@ -112,15 +111,6 @@ def get_existing_ref_game_ids_from_db(season_year: str, db_connection=None) -> s
         f"Found {len(game_ids)} existing games in refs database for season {season_year}"
     )
     return game_ids
-
-
-def reset_nba_http_session():
-    """Resets the NBA API HTTP session to prevent stale connections."""
-    old_session = NBAHTTP.get_session()
-    if old_session is not None:
-        old_session.close()
-    NBAHTTP._session = None
-    NBAHTTP.set_session(requests.Session())
 
 
 def calculate_season_year(date):

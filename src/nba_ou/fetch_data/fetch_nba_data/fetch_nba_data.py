@@ -3,29 +3,19 @@ import re
 import time
 
 import pandas as pd
-import requests
-from nba_api.library.http import NBAHTTP
 from nba_api.stats.endpoints import (
     BoxScoreAdvancedV3,
     BoxScoreTraditionalV3,
     LeagueGameFinder,
 )
 from nba_ou.config.constants import SEASON_TYPE_MAP as SEASON_TYPE_MAPPING
+from nba_ou.fetch_data.nba_api_session import reset_nba_http_session
 from nba_ou.postgre_db.games.update_games.mapping_v3_v2 import (
     V3_TO_V2_ADVANCED_PLAYER_MAP,
     V3_TO_V2_ADVANCED_TEAM_MAP,
     V3_TO_V2_TRADITIONAL_MAP,
 )
 from tqdm import tqdm
-
-
-def reset_nba_http_session():
-    """Resets the NBA API HTTP session to prevent stale connections."""
-    old_session = NBAHTTP.get_session()
-    if old_session is not None:
-        old_session.close()
-    NBAHTTP._session = None
-    NBAHTTP.set_session(requests.Session())
 
 
 def classify_season_type(game_id: str) -> str:
