@@ -35,6 +35,19 @@ This creates the `lineups` schema in the configured default database. The
 loader is idempotent per game. The raw archive is the source of truth and
 permits a parser fix without another NBA API backfill.
 
+The walk-forward ridge code can be smoke-tested with explicit regularization
+values:
+
+```bash
+python scripts/lineups/fit_player_ratings.py --last-season 2025 \
+  --lambda-offdef 100 --lambda-pace 1000 \
+  --output data/lineup_ratings/pilot.parquet
+```
+
+Those lambda values are an example, **not calibrated production values**.
+Phase C requires walk-forward tuning and the 2021–2025 go/no-go comparison
+before these ratings become model features.
+
 Pace uses `FGA + 0.44*FTA - OREB + TOV` per segment. V3 player rebound rows
 carry cumulative offensive/defensive counts in `description`; those counts are
 decoded by the builder. Team rebounds without a player ID are currently not
