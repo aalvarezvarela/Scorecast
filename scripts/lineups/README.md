@@ -79,6 +79,18 @@ python scripts/lineups/build_player_ratings.py --last-season 2025 \
   --lambda-offdef <chosen-value> --lambda-pace <chosen-value>
 ```
 
+Then run the required Phase C comparison on identical games:
+
+```bash
+python scripts/lineups/evaluate_player_ratings.py --last-season 2025 \
+  --validation-from 2021-10-01 --validation-to 2025-06-30 \
+  --ratings data/lineup_ratings/player_ratings.parquet \
+  --output-dir data/lineup_ratings/gate
+```
+
+The baseline sums each team's mean points scored over its prior five games.
+Both methods are scored only where both are available.
+
 Pace uses `FGA + 0.44*FTA - OREB + TOV` per segment. V3 player rebound rows
 carry cumulative offensive/defensive counts in `description`; those counts are
 decoded by the builder. Team rebounds without a player ID are currently not
