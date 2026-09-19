@@ -70,6 +70,15 @@ python scripts/lineups/tune_player_ratings.py --last-season 2025 \
   --output-dir data/lineup_ratings/cv
 ```
 
+After selecting and recording production penalties, materialize the reusable
+walk-forward cache with explicit values:
+
+```bash
+python scripts/lineups/build_player_ratings.py --last-season 2025 \
+  --as-of-from 2019-10-01 --as-of-to 2025-06-30 \
+  --lambda-offdef <chosen-value> --lambda-pace <chosen-value>
+```
+
 Pace uses `FGA + 0.44*FTA - OREB + TOV` per segment. V3 player rebound rows
 carry cumulative offensive/defensive counts in `description`; those counts are
 decoded by the builder. Team rebounds without a player ID are currently not

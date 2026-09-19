@@ -8,14 +8,14 @@ Anything not checked is marked **(unverified)**.
 
 Implementation checkpoint (2026-09-19): the paced raw archive, manifest,
 stint builder, validation, local status report and compact database schema
-are implemented. A pilot archive is running; the first 109 complete games
+are implemented. A pilot archive is running; the first 112 complete games
 passed stint validation after handling zero-duration rotation rows, rebound
 descriptions, same-clock substitutions and corrected PBP actions. One game
 was loaded into the default database and read back. The walk-forward ridge
-solver has synthetic leakage tests, a real-data smoke fit and a walk-forward
-penalty-tuning command. The daily S3-backed fetch/build/load command is wired
-into the finished-game workflow. The full 2018-to-present backfill, lambda
-selection, go/no-go C, and D-G remain open.
+solver has synthetic leakage tests, a real-data smoke fit, a walk-forward
+penalty-tuning command and an atomic Parquet cache builder. The daily S3-backed
+fetch/build/load command is wired into the finished-game workflow. The full
+2018-to-present backfill, lambda selection, go/no-go C, and D-G remain open.
 See `scripts/lineups/README.md` for commands and current data layout.
 
 Read these first:

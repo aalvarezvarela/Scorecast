@@ -8,6 +8,7 @@ from nba_ou.data_processing.lineups.player_ratings import (
     _NormalEquations,
     walk_forward_player_ratings,
 )
+from nba_ou.data_processing.lineups.rating_cache import build_player_rating_cache
 from nba_ou.data_processing.lineups.rating_cv import (
     score_stint_predictions,
     tune_rating_lambdas,
@@ -144,3 +145,24 @@ def test_stint_scoring_does_not_read_future_ratings():
     future["o_rating"] = 1e9
     combined = pd.concat([ratings, future], ignore_index=True)
     assert score_stint_predictions(history, combined) == baseline
+
+
+def test_rating_cache_includes_serving_date_and_uses_only_prior_games():
+    history = pd.DataFrame(
+        [
+            _stint("2025-01-01", "g1", special=1, home_pts=20),
+            _stint("2025-01-03", "g2", special=1, home_pts=22),
+        ]
+    )
+    cache = build_player_rating_cache(
+        history,
+        as_of_from="2025-01-02",
+        as_of_to="2025-01-04",
+        lambda_offdef=1,
+        lambda_pace=10,
+    )
+    assert set(cache.as_of_date) == {
+        pd.Timestamp("2025-01-03"),
+        pd.Timestamp("2025-01-04"),
+    }
+    assert cache.fit_max_game_date.lt(cache.as_of_date).all()
