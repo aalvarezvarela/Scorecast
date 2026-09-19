@@ -13,9 +13,11 @@ passed stint validation after handling zero-duration rotation rows, rebound
 descriptions, same-clock substitutions and corrected PBP actions. One game
 was loaded into the default database and read back. The walk-forward ridge
 solver has synthetic leakage tests, a real-data smoke fit, a walk-forward
-penalty-tuning command and an atomic Parquet cache builder. The daily S3-backed
-fetch/build/load command is wired into the finished-game workflow. The full
-2018-to-present backfill, lambda selection, go/no-go C, and D-G remain open.
+penalty-tuning command, an atomic Parquet cache builder and the ratings-only
+go/no-go evaluator. The daily S3-backed fetch/build/load command is wired into
+the finished-game workflow. A 30-game pilot is only a smoke test and does not
+replace the specified 2021-2025 gate. The full 2018-to-present backfill, lambda
+selection, go/no-go C, and D-G remain open.
 See `scripts/lineups/README.md` for commands and current data layout.
 
 Read these first:
