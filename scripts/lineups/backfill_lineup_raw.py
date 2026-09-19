@@ -12,6 +12,10 @@ from nba_ou.fetch_data.nba_lineups.client import (
     LineupClient,
 )
 from nba_ou.fetch_data.nba_lineups.manifest import Manifest
+from nba_ou.fetch_data.nba_lineups.run_lock import (
+    BackfillAlreadyRunning,
+    lineup_run_lock,
+)
 from nba_ou.postgre_db.games.fetch_data_from_db.fetch_data_from_games_db import (
     load_games_from_db,
 )
@@ -97,14 +101,15 @@ def main() -> None:
         mirror=storage if args.s3 else None,
     )
     try:
-        counts = backfill(
-            finished_games(args.min_season),
-            archive=archive,
-            manifest=manifest,
-            client=LineupClient(),
-            limit=args.limit,
-        )
-    except CircuitOpen as exc:
+        with lineup_run_lock(args.local_root):
+            counts = backfill(
+                finished_games(args.min_season),
+                archive=archive,
+                manifest=manifest,
+                client=LineupClient(),
+                limit=args.limit,
+            )
+    except (CircuitOpen, BackfillAlreadyRunning) as exc:
         manifest.sync_all()
         parser.exit(2, f"{exc}\n")
     manifest.sync_all()

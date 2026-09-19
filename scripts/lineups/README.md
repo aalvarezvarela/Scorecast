@@ -32,8 +32,22 @@ python scripts/lineups/load_lineup_stints.py --season 2018
 ```
 
 This creates the `lineups` schema in the configured default database. The
-loader is idempotent per game. The raw archive is the source of truth and
+loader skips unchanged game statuses and is idempotent per game; use `--force`
+after a parser/storage migration. The raw archive is the source of truth and
 permits a parser fix without another NBA API backfill.
+
+For daily operation, the combined command fetches missing finished games,
+validates new archives and loads only changed statuses:
+
+```bash
+python scripts/lineups/update_lineups.py --local-root data --s3
+```
+
+The daily command compares against `lineups.lu_game_status`, so a cleaned
+runner workspace only downloads and builds games not already stored. An
+interprocess lock prevents it and a historical backfill from writing the same
+local manifests concurrently. The finished-match GitHub workflow uses the S3
+raw archive and runs this command after updating the game database.
 
 The walk-forward ridge code can be smoke-tested with explicit regularization
 values:
@@ -47,6 +61,14 @@ python scripts/lineups/fit_player_ratings.py --last-season 2025 \
 Those lambda values are an example, **not calibrated production values**.
 Phase C requires walk-forward tuning and the 2021–2025 go/no-go comparison
 before these ratings become model features.
+
+Tune explicit penalty grids only after the stint coverage gate passes:
+
+```bash
+python scripts/lineups/tune_player_ratings.py --last-season 2025 \
+  --validation-from 2021-10-01 --validation-to 2025-06-30 \
+  --output-dir data/lineup_ratings/cv
+```
 
 Pace uses `FGA + 0.44*FTA - OREB + TOV` per segment. V3 player rebound rows
 carry cumulative offensive/defensive counts in `description`; those counts are
