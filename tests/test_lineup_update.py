@@ -10,9 +10,12 @@ from nba_ou.fetch_data.nba_lineups.run_lock import (
 
 def test_lineup_run_lock_rejects_a_concurrent_writer(tmp_path):
     with lineup_run_lock(tmp_path):
+        path = tmp_path / "nba_api_raw" / "backfill.lock"
+        owner = path.read_text()
         with pytest.raises(BackfillAlreadyRunning):
             with lineup_run_lock(tmp_path):
                 pass
+        assert path.read_text() == owner
 
 
 def test_database_status_comparison_normalizes_success_reasons():
