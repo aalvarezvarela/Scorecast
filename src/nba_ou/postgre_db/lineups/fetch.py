@@ -11,6 +11,28 @@ from nba_ou.postgre_db.config.db_config import connect_nba_db
 from .schema import SCHEMA
 
 
+def fetch_game_statuses(
+    *, conn: psycopg.Connection | None = None
+) -> dict[str, tuple[str, str | None]]:
+    """Return every stored game status, creating the schema when necessary."""
+    from .schema import create_schema
+
+    if conn is None:
+        with connect_nba_db() as owned_conn:
+            return fetch_game_statuses(conn=owned_conn)
+    create_schema(conn)
+    with conn.cursor() as cur:
+        cur.execute(
+            sql.SQL("SELECT game_id, status, reason FROM {}.lu_game_status").format(
+                sql.Identifier(SCHEMA)
+            )
+        )
+        return {
+            str(game_id): (str(status), reason)
+            for game_id, status, reason in cur.fetchall()
+        }
+
+
 def fetch_stints(
     season_years: list[int], *, conn: psycopg.Connection | None = None
 ) -> pd.DataFrame:
@@ -36,7 +58,9 @@ def fetch_stints(
         with conn.cursor() as cur:
             cur.execute(query, (season_years,))
             rows = cur.fetchall()
-            return pd.DataFrame(rows, columns=[column.name for column in cur.description])
+            return pd.DataFrame(
+                rows, columns=[column.name for column in cur.description]
+            )
     finally:
         if owned:
             conn.close()
