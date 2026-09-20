@@ -248,6 +248,9 @@ def check_configs(
             "min_validation_games": c.walk_forward.min_validation_games,
             "eval_span_games": c.walk_forward.eval_span_games,
             "train_games_choices": str(c.walk_forward.train_games_choices),
+            "time_decay": c.sample_weight.enabled,
+            "tune_decay": c.sample_weight.tune_lambda,
+            "allow_unweighted": c.sample_weight.allow_unweighted,
             "tune_n_estimators": c.optuna.tune_n_estimators,
             "objective_agg": c.optuna.objective_aggregation.value,
             "planted_variance": (
@@ -313,7 +316,8 @@ def check_configs(
                     _check_rolling_origin(name, member, df_dev)
                 )
                 continue
-            requested = member.walk_forward.train_games
+            choices = member.walk_forward.train_games_choices
+            requested = max(choices) if choices else member.walk_forward.train_games
             # Feasibility must be measured with training-row filters OFF.
             # build_walk_forward_splits applies them (overtime, etc.) AFTER
             # tail(train_games), so a filtered fold is legitimately smaller than

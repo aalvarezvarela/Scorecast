@@ -6,6 +6,13 @@ accessing configs, datasets, logs, or artifacts.
 
 ## Available campaigns
 
+- `run_early_line_error_window_2_5_2026_09_part1.sh` and
+  `run_early_line_error_window_2_5_2026_09_part2.sh`: parallel halves of the
+  schema-2.5 line-error campaign covering every T-0 through T-1080 snapshot,
+  including T-30.
+  Both let Optuna choose 2,500, 3,000, 3,500, or the maximum for each horizon
+  (3,775–4,788 games) on eight test-anchored folds of at least 80 games.
+  Part 2 also runs the optional time-decay arm at T-360.
 - `run_rolling_origin_campaign.sh`: the current protocol -- rolling-origin CV
   (train to a date, predict the next 4 game-days), with the training window and
   the boosting rounds both tuned by Optuna. 2 runs, one per regression target.

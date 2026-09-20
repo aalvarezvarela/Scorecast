@@ -632,14 +632,56 @@ def test_the_selected_window_is_what_the_run_reports_and_refits_on(tmp_path):
     assert resolve_selected_train_games(None, config) == 400
 
 
-def test_tuning_the_window_is_rejected_under_test_anchored_folds(tmp_path):
-    """There the window is part of the fold layout, so trials would be scored on
-    different folds -- an incomparability the config must refuse, not hide."""
+def test_test_anchored_window_choices_keep_validation_games_fixed(dev_frame, tmp_path):
+    config = _rolling_config(
+        tmp_path,
+        walk_forward=WalkForwardConfig(
+            strategy="test_anchored",
+            test_games=80,
+            step_games_between_tests=1,
+            min_train_games=100,
+            max_folds=8,
+            train_games=400,
+            train_games_choices=(200, 400, 800),
+        ),
+    )
+    provider = build_split_provider(dev_frame, config)
+    small = provider.splits_for(200)
+    large = provider.splits_for(800)
+    assert len(small) == len(large) == 8
+    for (short_train, short_valid), (long_train, long_valid) in zip(
+        small, large, strict=True
+    ):
+        np.testing.assert_array_equal(short_valid, long_valid)
+        np.testing.assert_array_equal(short_train, long_train[-200:])
+        assert len(long_train) == 800
+        assert len(short_valid) >= 80
+        assert dev_frame.GAME_DATE.iloc[long_train].max() < dev_frame.GAME_DATE.iloc[long_valid].min()
+
+
+def test_test_anchored_tuned_window_rejects_short_history(dev_frame, tmp_path):
+    config = _rolling_config(
+        tmp_path,
+        walk_forward=WalkForwardConfig(
+            strategy="test_anchored",
+            test_games=80,
+            step_games_between_tests=1,
+            min_train_games=100,
+            max_folds=8,
+            train_games_choices=(200, 100000),
+        ),
+    )
+    with pytest.raises(ValueError, match="exceeds the .* GAMES"):
+        build_split_provider(dev_frame, config)
+
+
+def test_tuning_the_window_is_rejected_under_last_n_seasons_folds(tmp_path):
     with pytest.raises(ValueError, match="requires walk_forward.strategy"):
         _rolling_config(
             tmp_path,
             walk_forward=WalkForwardConfig(
-                strategy="test_anchored", train_games_choices=(200, 400)
+                strategy="last_n_seasons", train_seasons=2,
+                train_games_choices=(200, 400)
             ),
         )
 

@@ -611,16 +611,14 @@ class SplitProvider:
 
     Two shapes behind one interface:
 
-    * a fixed list of splits (``test_anchored`` / ``last_n_seasons``), where the
-      window is baked into the fold layout and cannot vary per trial;
-    * a :class:`RollingOriginPlan`, where the validation games are fixed and the
-      window is applied at read time -- so ``train_games`` can be sampled per
-      trial while every trial is still scored on identical games.
+    * a fixed list of splits (``test_anchored`` / ``last_n_seasons``); for tuned
+      test-anchored runs, these store the full training histories and are trimmed
+      at read time so every trial scores the same validation games;
+    * a :class:`RollingOriginPlan`, which also applies the window at read time.
 
-    The second property is what makes tuning the window legitimate. If the
-    validation set moved with the window, a trial preferring 4500 games would be
-    scored on different games than one preferring 2500, and the comparison would
-    measure the cohort rather than the window.
+    Fixed validation games make tuning the window legitimate. If the validation
+    set moved with the window, a trial preferring 4500 games would be scored on
+    different games than one preferring 2500, measuring the cohort as well.
     """
 
     fold_info: pd.DataFrame
@@ -628,6 +626,7 @@ class SplitProvider:
     plan: RollingOriginPlan | None = None
     fixed_splits: list[Split] | None = None
     train_games_choices: tuple[int, ...] | None = None
+    fixed_training_mask: np.ndarray | None = None
     _cache: dict[int | None, list[Split]] = field(default_factory=dict, repr=False)
 
     @property
@@ -680,6 +679,26 @@ class SplitProvider:
     def splits_for(self, train_games: int | None) -> list[Split]:
         if self.plan is None:
             assert self.fixed_splits is not None
+            if self.train_games_choices:
+                if train_games is None or int(train_games) <= 0:
+                    raise ValueError("A tuned test-anchored window must be positive.")
+                available = min(len(train_idx) for train_idx, _ in self.fixed_splits)
+                if int(train_games) > available:
+                    raise ValueError(
+                        f"train_games={train_games} exceeds the {available} GAMES "
+                        "available before the earliest test-anchored fold."
+                    )
+                key = int(train_games)
+                if key not in self._cache:
+                    mask = self.fixed_training_mask
+                    splits = []
+                    for history_idx, valid_idx in self.fixed_splits:
+                        tail = history_idx[-key:]
+                        if mask is not None:
+                            tail = tail[mask[tail]]
+                        splits.append((tail, valid_idx))
+                    self._cache[key] = splits
+                return self._cache[key]
             if train_games != self.default_train_games:
                 raise ValueError(
                     f"This split set was built for train_games="
@@ -723,6 +742,53 @@ def build_split_provider(
             )
         return provider
 
+    if wf.strategy == CVStrategy.TEST_ANCHORED and wf.train_games_choices:
+        if min(wf.train_games_choices) < wf.min_train_games:
+            raise ValueError(
+                "Every test-anchored train_games choice must be at least "
+                f"min_train_games={wf.min_train_games}."
+            )
+        # Build validation windows ONCE with unbounded histories. Applying a
+        # candidate's tail afterwards cannot add/drop a fold or move its test
+        # dates, unlike rebuilding the upstream splitter for each trial.
+        histories, fold_info = make_test_anchored_walk_forward_splits(
+            df=df_dev,
+            date_col=config.data.date_col,
+            season_col=config.data.season_col,
+            test_games=wf.test_games,
+            step_games_between_tests=wf.step_games_between_tests,
+            train_games=None,
+            min_train_games=wf.min_train_games,
+            exclude_test_months=wf.exclude_test_months,
+            require_same_season_test=wf.require_same_season_test,
+            max_folds=wf.max_folds,
+            fold_selection=wf.fold_selection,
+            verbose=wf.verbose,
+        )
+        largest = max(wf.train_games_choices)
+        provider = SplitProvider(
+            fold_info=fold_info.copy(),
+            default_train_games=wf.train_games,
+            fixed_splits=histories,
+            train_games_choices=wf.train_games_choices,
+            fixed_training_mask=training_eligible_mask(df_dev, config),
+        )
+        provider.fold_info["history_n_games"] = [len(train) for train, _ in histories]
+        for candidate in wf.train_games_choices:
+            validate_splits(
+                df_dev,
+                provider.splits_for(candidate),
+                date_col=config.data.date_col,
+            )
+        nominal = provider.splits_for(largest)
+        provider.fold_info["train_n_games"] = [len(train) for train, _ in nominal]
+        provider.fold_info["train_n_rows"] = provider.fold_info["train_n_games"]
+        dates = pd.to_datetime(df_dev[config.data.date_col])
+        provider.fold_info["train_start_date"] = [
+            dates.iloc[train].min() for train, _ in nominal
+        ]
+        return provider
+
     splits, fold_info = build_walk_forward_splits(df_dev, config)
     return SplitProvider(
         fold_info=fold_info,
@@ -734,12 +800,17 @@ def build_split_provider(
 def build_walk_forward_splits(
     df_dev: pd.DataFrame, config: ExperimentConfig
 ) -> tuple[list[tuple[np.ndarray, np.ndarray]], pd.DataFrame]:
-    """The pre-rolling-origin path, unchanged.
+    """Return the configured fixed splits or the nominal tuned window.
 
-    Kept as-is so every existing config reproduces exactly, and because
-    ``scripts/preflight_campaign.py`` calls it directly.
+    Existing fixed-window configs keep their original splitter. A tuned
+    test-anchored config gets the same fixed validation folds via a provider,
+    which this entry point also exposes to ``scripts/preflight_campaign.py``.
     """
     wf = config.walk_forward
+
+    if wf.strategy == CVStrategy.TEST_ANCHORED and wf.train_games_choices:
+        provider = build_split_provider(df_dev, config)
+        return provider.splits_for(max(wf.train_games_choices)), provider.fold_info
 
     if wf.strategy == CVStrategy.ROLLING_ORIGIN:
         plan = build_rolling_origin_plan(df_dev, config)
