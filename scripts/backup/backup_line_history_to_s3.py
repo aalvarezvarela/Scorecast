@@ -10,16 +10,18 @@ The partitioned parent itself is skipped -- it holds no rows, and including it
 would write the whole fact table a second time.
 
 Usage:
-    python scripts/backup_line_history_to_s3.py              # back it up
-    python scripts/backup_line_history_to_s3.py --dry-run    # list, upload nothing
-    python scripts/backup_line_history_to_s3.py --list        # existing backups
-    python scripts/backup_line_history_to_s3.py --date-tag 2026-08-01
+    python scripts/backup/backup_line_history_to_s3.py              # back it up
+    python scripts/backup/backup_line_history_to_s3.py --dry-run    # list, upload nothing
+    python scripts/backup/backup_line_history_to_s3.py --list        # existing backups
+    python scripts/backup/backup_line_history_to_s3.py --verify      # check today's backup
+    python scripts/backup/backup_line_history_to_s3.py --date-tag 2026-08-01
 """
 
 from __future__ import annotations
 
 import argparse
 import sys
+from datetime import UTC, datetime
 
 from nba_ou.postgre_db.config.db_config import connect_line_history_db
 from nba_ou.postgre_db.line_history_aiven import backup as backup_mod
@@ -42,6 +44,11 @@ def main() -> int:
         action="store_true",
         help="list the date tags that already hold a backup, newest first",
     )
+    parser.add_argument(
+        "--verify",
+        action="store_true",
+        help="check that a backup covers every live relation, then exit",
+    )
     args = parser.parse_args()
 
     if args.list:
@@ -52,6 +59,18 @@ def main() -> int:
             print(f"{len(tags)} backup(s), newest first:")
             for tag in tags:
                 print(f"  {tag}")
+        return 0
+
+    if args.verify:
+        tag = args.date_tag or datetime.now(UTC).strftime("%Y-%m-%d")
+        with connect_line_history_db() as conn:
+            issues = backup_mod.verify_line_history(conn, tag)
+        if issues:
+            print(f"Backup {tag} is incomplete -- {len(issues)} issue(s):")
+            for issue in issues:
+                print(f"  {issue}")
+            return 1
+        print(f"Backup {tag} covers every live relation. ✓")
         return 0
 
     with connect_line_history_db() as conn:

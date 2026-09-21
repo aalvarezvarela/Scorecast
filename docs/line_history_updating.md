@@ -144,15 +144,15 @@ separation, and feature queries should keep using
 ## Monthly backup
 
 `.github/workflows/monthly_line_history_backup.yml` runs on the 1st of each
-month and calls `scripts/backup_line_history_to_s3.py`, which writes the whole
+month and calls `scripts/backup/backup_line_history_to_s3.py`, which writes the whole
 `line_history` schema to
 `s3://<BUCKET>/backups/db/<YYYY-MM-DD>/line_history/<table>.parquet` — the same
 layout the Supabase backup uses, so a restore reads the same way for both.
 
 ```bash
-python scripts/backup_line_history_to_s3.py            # back it up
-python scripts/backup_line_history_to_s3.py --dry-run  # list, upload nothing
-python scripts/backup_line_history_to_s3.py --list     # existing backup dates
+python scripts/backup/backup_line_history_to_s3.py            # back it up
+python scripts/backup/backup_line_history_to_s3.py --dry-run  # list, upload nothing
+python scripts/backup/backup_line_history_to_s3.py --list     # existing backup dates
 ```
 
 Each run writes under its own date tag, so runs never overwrite one another.

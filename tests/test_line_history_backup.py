@@ -5,10 +5,11 @@ partitioned parent, and treating it like an ordinary table would write the
 whole fact table twice.
 """
 
-from datetime import date
+from datetime import UTC, datetime
 
 import pandas as pd
 import pytest
+from nba_ou.postgre_db import backup_core
 from nba_ou.postgre_db.line_history_aiven import backup as bk
 
 # (relname, relkind, is_partition) as pg_class reports them.
@@ -54,7 +55,7 @@ class _S3:
     def __init__(self):
         self.puts = []
 
-    def put_object(self, Bucket, Key, Body):  # noqa: N803 - boto3 casing
+    def put_object(self, Bucket, Key, Body, Tagging=None):  # noqa: N803 - boto3 casing
         self.puts.append((Bucket, Key, len(Body)))
 
 
@@ -94,7 +95,9 @@ class TestDiscovery:
 class TestBackupRun:
     def _patch_export(self, monkeypatch, payload=b"PARQUET", rows=100):
         monkeypatch.setattr(
-            bk, "export_table_to_parquet", lambda conn, schema, table: (payload, rows)
+            backup_core,
+            "export_table_to_parquet",
+            lambda conn, schema, table: (payload, rows),
         )
 
     def test_writes_one_object_per_target(self, monkeypatch):
@@ -103,7 +106,9 @@ class TestBackupRun:
         result = bk.backup_line_history(
             _Conn(), date_tag="2026-08-01", s3_client=s3, progress=False
         )
-        assert len(s3.puts) == 6  # 4 plain tables + 2 partitions, parent skipped
+        # 4 plain tables + 2 partitions (parent skipped), plus the manifest.
+        assert len(s3.puts) == 7
+        assert len([k for _, k, _ in s3.puts if k.endswith("_manifest.json")]) == 1
         assert len(result.uploaded) == 6
         assert result.rows == 600
 
@@ -139,11 +144,15 @@ class TestBackupRun:
         assert len(result.uploaded) == 6
         assert result.rows == 0
 
-    def test_date_tag_defaults_to_today(self, monkeypatch):
+    def test_date_tag_defaults_to_today_in_utc(self, monkeypatch):
+        # UTC, not local time. The workflow pins TZ=UTC and both databases
+        # share one date tag, so a runner in any timezone must land in the
+        # same folder. Asserting against the local date fails for the hours
+        # between local midnight and UTC midnight.
         self._patch_export(monkeypatch)
         s3 = _S3()
         result = bk.backup_line_history(_Conn(), s3_client=s3, progress=False)
-        assert date.today().isoformat() in result.prefix
+        assert datetime.now(UTC).strftime("%Y-%m-%d") in result.prefix
 
     def test_empty_schema_uploads_nothing(self, monkeypatch):
         self._patch_export(monkeypatch)
