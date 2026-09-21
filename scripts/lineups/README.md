@@ -5,10 +5,64 @@ archive and validated five-on-five stints. Run these commands from the repo root
 with the Poetry environment (or `.venv/bin/python`).
 
 ```bash
-python scripts/lineups/backfill_lineup_raw.py --limit 100
+python scripts/lineups/import_pbp_archive.py --min-season 2018 --max-season 2025
+python scripts/lineups/backfill_lineup_raw.py --endpoints gamerotation
 python scripts/lineups/build_lineup_stints.py --season 2018
 python scripts/lineups/report_lineup_coverage.py --with-db
 ```
+
+## Import the play-by-play instead of fetching it
+
+`shufinskiy/nba_data` republishes the same `PlayByPlayV3` payloads season by
+season, so a whole season costs one ~8 MB download rather than 1,312
+rate-limited calls. `import_pbp_archive.py` rewrites them into the ordinary raw
+archive and marks them `ok` in the manifest, which halves the backfill: only
+`gamerotation` is left to fetch, and `--endpoints gamerotation` stops the
+fetcher from asking for play-by-play it already has.
+
+**This was verified, not assumed.** For the 440 games we had already fetched
+from the API, the rebuilt payloads produce **byte-identical stints in all 437
+that pass rotation validation**. Three details the importer has to handle:
+
+- The archive omits `shotValue`. It is rebuilt from the `3PT` marker in the
+  description, which matched the API exactly on all 78,050 field goals in
+  2018-19. Non-shot rows (blocks) get 0; the stint parser never reads them.
+- Corrected actions share an `actionNumber` with the row they amend, so the
+  sort must be stable or a turnover and its steal swap teams.
+- The archive strips diacritics from `playerName` and pads some text columns.
+  Players are identified by `personId`, so this does not reach the stints.
+
+The archive covers 1996–2025 including playoffs, but has **no `gamerotation`**,
+which is why the API is still needed for the other half.
+
+Run the remaining rotation backfill in chunks rather than in one long process:
+
+```bash
+python scripts/lineups/backfill_lineup_raw.py --endpoints gamerotation \
+    --min-season 2018 --max-season 2018
+```
+
+`--limit N` caps the API calls per run and `--timeout` sets the per-request read
+timeout. Everything is resumable: the manifest skips whatever is already `ok`,
+so re-running after any interruption costs no extra API calls.
+
+Both the fetcher and the stint builder show a `tqdm` bar. The fetcher resolves
+what is already archived **before** starting it, so the total, rate and ETA
+describe only the calls still owed:
+
+```
+fetch (560 archived): 67% 2/3 [00:03<00:02, 5.04s/call, ok=2, empty=0, failed=0, skipped=560]
+```
+
+The bar disables itself when stdout is not a terminal, so a `nohup` run writes a
+periodic progress line to its log instead of thousands of redraws.
+
+**Measured throughput (2026-09-20):** the pacer waits at least 3 s between
+request *starts*, but `stats.nba.com` response times swing between 0.5 s and a
+30 s hang, so the real cost was **5 s per call over 46 consecutive games** and
+much worse during a bad stretch. Budget well over the 3 s/call floor when
+planning a backfill. Importing the play-by-play removes half of the ~20.4k
+calls, leaving ~10.2k rotation calls, or roughly 14 h rather than 29 h.
 
 The raw fetcher stores gzip-compressed original NBA responses under
 `data/nba_api_raw/{gamerotation,playbyplayv3}/{season_year}/{game_id}.json.gz`.
@@ -25,29 +79,42 @@ points or player minutes do not reconcile. `--force` rebuilds validated games
 after parser changes. The report prints pass rates and failure reasons; use
 `--with-db` to calculate raw coverage against all finished games.
 
-After reviewing the report and choosing the database, load validated games:
+## Where the data lives
+
+**The local Parquet store is the default destination.** `data/lineup_stints/`
+holds one file per validated game plus a per-season `game_status.parquet`, and
+each stint file carries its `game_date`, so ratings can be fitted with no
+database at all. Read it with
+`nba_ou.data_processing.lineups.stint_store.read_stints()`.
+
+Postgres is **opt-in** and stays that way until the lineup features earn a
+place in the training pipeline:
 
 ```bash
-python scripts/lineups/load_lineup_stints.py --season 2018
+python scripts/lineups/load_lineup_stints.py --season 2018      # manual load
+python scripts/lineups/update_lineups.py --local-root data --s3 --load-db
 ```
 
-This creates the `lineups` schema in the configured default database. The
-loader skips unchanged game statuses and is idempotent per game; use `--force`
-after a parser/storage migration. The raw archive is the source of truth and
-permits a parser fix without another NBA API backfill.
+`load_lineup_stints.py` creates the `lineups` schema in the configured default
+database, skips unchanged game statuses and is idempotent per game; use
+`--force` after a parser/storage migration.
 
-For daily operation, the combined command fetches missing finished games,
-validates new archives and loads only changed statuses:
+For daily operation, the combined command fetches missing finished games and
+validates new archives into the Parquet store:
 
 ```bash
 python scripts/lineups/update_lineups.py --local-root data --s3
 ```
 
-The daily command compares against `lineups.lu_game_status`, so a cleaned
-runner workspace only downloads and builds games not already stored. An
-interprocess lock prevents it and a historical backfill from writing the same
-local manifests concurrently. The finished-match GitHub workflow uses the S3
-raw archive and runs this command after updating the game database.
+Without `--load-db` it neither reads nor writes the `lineups` schema: it
+compares against the local `game_status.parquet` files, so keep `data/` on a
+persistent disk (the finished-match workflow runs on a self-hosted runner, so
+it does). A game recorded as `failed` is retried on the next run, because its
+raw archive is already paid for. An interprocess lock prevents this command and
+a historical backfill from writing the same local manifests concurrently.
+
+The raw archive is the source of truth and permits a parser fix without another
+NBA API backfill.
 
 The walk-forward ridge code can be smoke-tested with explicit regularization
 values:
@@ -57,6 +124,9 @@ python scripts/lineups/fit_player_ratings.py --last-season 2025 \
   --lambda-offdef 100 --lambda-pace 1000 \
   --output data/lineup_ratings/pilot.parquet
 ```
+
+Every ratings command reads the Parquet store by default; pass `--source db` to
+read `lineups.lu_stint` instead.
 
 Those lambda values are an example, **not calibrated production values**.
 Phase C requires walk-forward tuning and the 2021–2025 go/no-go comparison

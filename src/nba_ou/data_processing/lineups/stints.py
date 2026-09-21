@@ -242,7 +242,13 @@ def build_game_stints(
                     old_off, old_def = rebound_totals.get(player, (0, 0))
                     row[f"{side}_oreb"] += max(0, off - old_off)
                     row[f"{side}_dreb"] += max(0, defensive - old_def)
-                    rebound_totals[player] = off, defensive
+                    # A corrected action can restate a *lower* cumulative count
+                    # than an earlier row. Keep the running maximum so the next
+                    # genuine rebound is not counted twice.
+                    rebound_totals[player] = (
+                        max(off, old_off),
+                        max(defensive, old_def),
+                    )
         elif action == "turnover":
             row[f"{side}_tov"] += 1
     out = pd.DataFrame(rows)

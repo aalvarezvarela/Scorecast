@@ -7,11 +7,13 @@ import json
 from pathlib import Path
 
 from nba_ou.data_processing.lineups.rating_cache import build_player_rating_cache
-from nba_ou.postgre_db.lineups.fetch import fetch_stints
+
+from scripts.lineups.stint_source import add_source_arguments, load_stints
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
+    add_source_arguments(parser)
     parser.add_argument("--first-season", type=int, default=2018)
     parser.add_argument("--last-season", type=int, required=True)
     parser.add_argument("--as-of-from", required=True)
@@ -25,7 +27,8 @@ def main() -> None:
         default=Path("data/lineup_ratings/player_ratings.parquet"),
     )
     args = parser.parse_args()
-    stints = fetch_stints(list(range(args.first_season, args.last_season + 1)))
+    seasons = list(range(args.first_season, args.last_season + 1))
+    stints = load_stints(args.source, seasons, args.local_root)
     ratings = build_player_rating_cache(
         stints,
         as_of_from=args.as_of_from,

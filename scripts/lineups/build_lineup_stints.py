@@ -20,6 +20,7 @@ from nba_ou.postgre_db.config.db_config import (
     get_schema_name_players,
 )
 from psycopg import sql
+from tqdm import tqdm
 
 
 def game_context(game_ids: list[str]) -> tuple[pd.DataFrame, pd.DataFrame]:
@@ -89,7 +90,8 @@ def build_archived(
         return {"ok": 0, "failed": 0}
     games, box = game_context(complete)
     counts = {"ok": 0, "failed": 0}
-    for game_id in complete:
+    bar = tqdm(complete, desc=f"build {season_year}", unit="game", disable=None)
+    for game_id in bar:
         try:
             rotation = archive.get("gamerotation", season_year, game_id)
             pbp_raw = archive.get("playbyplayv3", season_year, game_id)
@@ -114,6 +116,9 @@ def build_archived(
             )
             stints.insert(0, "game_id", game_id)
             stints.insert(1, "season_year", season_year)
+            # The Parquet store must stand on its own: ratings are fitted
+            # walk-forward by date, so the date travels with the stints.
+            stints.insert(2, "game_date", pd.Timestamp(score.GAME_DATE.iloc[0]))
             path = target / f"{game_id}.parquet"
             tmp = path.with_suffix(".parquet.tmp")
             stints.to_parquet(tmp, index=False)
@@ -140,6 +145,10 @@ def build_archived(
         statuses.to_parquet(tmp, index=False)
         tmp.replace(status_path)
         counts[verdict[0]] += 1
+        bar.set_postfix(counts, refresh=False)
+        if verdict[0] == "failed":
+            tqdm.write(f"  {game_id} rejected: {verdict[1]}")
+    bar.close()
     return counts
 
 

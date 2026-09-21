@@ -132,3 +132,55 @@ def test_rating_gate_rejects_same_day_or_future_fits():
             validation_from="2025-01-04",
             validation_to="2025-01-04",
         )
+
+
+def test_long_absent_player_does_not_absorb_projected_minutes():
+    """A player who missed the whole recent window is not projected minutes."""
+    games, players, ratings = _gate_fixture()
+    # A star who only played the first game, then never appeared again, and
+    # whose rating is far from his replacements'.
+    players = pd.concat(
+        [
+            players,
+            pd.DataFrame(
+                [
+                    {
+                        "GAME_ID": "0022500001",
+                        "TEAM_ID": "1",
+                        "PLAYER_ID": "99",
+                        "MIN": 48.0,
+                    }
+                ]
+            ),
+        ],
+        ignore_index=True,
+    )
+    ratings = pd.concat(
+        [
+            ratings,
+            pd.DataFrame(
+                [
+                    {
+                        "as_of_date": "2025-01-04",
+                        "player_id": "99",
+                        "o_rating": 50.0,
+                        "d_rating": 0.0,
+                        "pace_rating": 0.0,
+                        "league_ortg": 100.0,
+                        "league_pace": 100.0,
+                        "fit_max_game_date": "2025-01-03",
+                    }
+                ]
+            ),
+        ],
+        ignore_index=True,
+    )
+    projections = ratings_only_game_projections(
+        games,
+        players,
+        ratings,
+        validation_from="2025-01-04",
+        validation_to="2025-01-04",
+        recent_games=2,
+    )
+    assert projections.proj_total.iloc[0] == pytest.approx(210.0)
