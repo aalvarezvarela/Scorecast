@@ -121,3 +121,24 @@ def test_appended_corrected_action_uses_game_clock_before_action_number():
     ])
     stints = build_game_stints(rotation("H"), rotation("A"), pbp)
     assert stints.home_pts.sum() == 4
+
+
+def test_restated_rebound_counter_does_not_double_count():
+    """A corrected action can restate a lower cumulative count than before."""
+    pbp = pd.DataFrame([
+        dict(event(1, 1, "PT10M00.00S", "Rebound", team="H"),
+             personId=1, description="Player REBOUND (Off:1 Def:0)",
+             subType="Unknown"),
+        dict(event(2, 1, "PT09M00.00S", "Rebound", team="H"),
+             personId=1, description="Player REBOUND (Off:3 Def:0)",
+             subType="Unknown"),
+        dict(event(3, 1, "PT09M00.00S", "Rebound", team="H"),
+             personId=1, description="Player REBOUND (Off:2 Def:0)",
+             subType="Unknown"),
+        dict(event(4, 1, "PT08M00.00S", "Rebound", team="H"),
+             personId=1, description="Player REBOUND (Off:3 Def:0)",
+             subType="Unknown"),
+        event(5, 4, "PT00M00.00S", "period"),
+    ])
+    stints = build_game_stints(rotation("H"), rotation("A"), pbp)
+    assert stints.home_oreb.sum() == 3

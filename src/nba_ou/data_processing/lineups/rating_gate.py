@@ -122,15 +122,22 @@ def ratings_only_game_projections(
     points_history: dict[str, deque[float]] = defaultdict(
         lambda: deque(maxlen=recent_games)
     )
+    team_games_played: dict[str, int] = defaultdict(int)
+    last_seen: dict[tuple[str, str], int] = {}
     output = []
 
     def team_projection(
         team_id: str, day: pd.Timestamp
     ) -> tuple[float, float, float] | None:
+        # A player who has missed the team's whole recent window keeps a stale
+        # average that would otherwise absorb minutes from whoever replaced
+        # him. "Recent minutes" must mean recently played minutes.
+        cutoff = team_games_played[team_id] - recent_games
         recent = {
             player: float(np.mean(minute_history[(team_id, player)]))
             for player in rosters[team_id]
             if minute_history[(team_id, player)]
+            and last_seen.get((team_id, player), -1) > cutoff
         }
         total_minutes = sum(recent.values())
         if total_minutes <= 0:
@@ -195,6 +202,8 @@ def ratings_only_game_projections(
                 points_history[game.home_team_id].append(float(game.home_points))
             if pd.notna(game.away_points):
                 points_history[game.away_team_id].append(float(game.away_points))
+            team_games_played[game.home_team_id] += 1
+            team_games_played[game.away_team_id] += 1
         for row in players_by_date.get(day, pd.DataFrame()).itertuples(index=False):
             player = row.PLAYER_ID
             team = row.TEAM_ID
@@ -204,6 +213,7 @@ def ratings_only_game_projections(
             assignments[player] = team
             rosters[team].add(player)
             minute_history[(team, player)].append(max(0.0, float(row.MIN)))
+            last_seen[(team, player)] = team_games_played[team]
     return pd.DataFrame(output)
 
 

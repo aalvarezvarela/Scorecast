@@ -57,7 +57,7 @@ def test_daily_update_builds_and_loads_work_completed_before_breaker(
     )
 
     with pytest.raises(CircuitOpen, match="completed work"):
-        update_lineups.update(Path(tmp_path))
+        update_lineups.update(Path(tmp_path), load_to_db=True)
     assert built == [2018]
     assert loaded == [2018]
 
@@ -119,7 +119,91 @@ def test_daily_update_only_processes_games_missing_from_database(monkeypatch, tm
     )
     monkeypatch.setattr(update_lineups, "load_season", lambda *args, **kwargs: 1)
 
-    update_lineups.update(tmp_path)
+    update_lineups.update(tmp_path, load_to_db=True)
 
     assert fetched == [(2018, "0021800002")]
     assert built == [{"0021800002"}]
+
+
+def test_daily_update_retries_a_previously_failed_game(monkeypatch, tmp_path):
+    """A failed build must not be permanent: the raw archive is already paid."""
+    from scripts.lineups import update_lineups
+
+    monkeypatch.setattr(
+        update_lineups,
+        "finished_games",
+        lambda minimum: [(2018, "0021800001"), (2018, "0021800002")],
+    )
+    monkeypatch.setattr(
+        update_lineups,
+        "fetch_game_statuses",
+        lambda: {
+            "0021800001": ("ok", None),
+            "0021800002": ("failed", "points_mismatch"),
+        },
+    )
+    requested = {}
+
+    def fake_backfill(pending, **kwargs):
+        requested["pending"] = list(pending)
+        return {"ok": 0, "empty": 0, "failed": 0, "skipped": 0}
+
+    monkeypatch.setattr(update_lineups, "backfill", fake_backfill)
+    monkeypatch.setattr(
+        update_lineups, "build_archived", lambda season, **kwargs: {"ok": 1, "failed": 0}
+    )
+    monkeypatch.setattr(update_lineups, "load_season", lambda season, **kwargs: 1)
+
+    update_lineups.update(Path(tmp_path), load_to_db=True)
+    assert requested["pending"] == [(2018, "0021800002")]
+
+
+def test_daily_update_defaults_to_the_local_parquet_store(monkeypatch, tmp_path):
+    """Without --load-db nothing reads or writes the lineups database."""
+    import pandas as pd
+
+    from scripts.lineups import update_lineups
+
+    target = tmp_path / "lineup_stints" / "season=2018"
+    target.mkdir(parents=True)
+    pd.DataFrame(
+        [
+            {"game_id": "0021800001", "status": "ok", "reason": ""},
+            {"game_id": "0021800002", "status": "failed", "reason": "points_mismatch"},
+        ]
+    ).to_parquet(target / "game_status.parquet", index=False)
+
+    monkeypatch.setattr(
+        update_lineups,
+        "finished_games",
+        lambda minimum: [
+            (2018, "0021800001"),
+            (2018, "0021800002"),
+            (2018, "0021800003"),
+        ],
+    )
+    monkeypatch.setattr(
+        update_lineups,
+        "fetch_game_statuses",
+        lambda: pytest.fail("the default run must not touch the lineups database"),
+    )
+    monkeypatch.setattr(
+        update_lineups,
+        "load_season",
+        lambda *args, **kwargs: pytest.fail("no database load without --load-db"),
+    )
+    requested = {}
+
+    def fake_backfill(pending, **kwargs):
+        requested["pending"] = list(pending)
+        return {"ok": 2, "empty": 0, "failed": 0, "skipped": 0}
+
+    monkeypatch.setattr(update_lineups, "backfill", fake_backfill)
+    monkeypatch.setattr(
+        update_lineups, "build_archived", lambda season, **kwargs: {"ok": 2, "failed": 0}
+    )
+
+    result = update_lineups.update(tmp_path)
+
+    assert requested["pending"] == [(2018, "0021800002"), (2018, "0021800003")]
+    assert "loaded" not in result

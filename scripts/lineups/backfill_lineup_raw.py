@@ -19,6 +19,7 @@ from nba_ou.fetch_data.nba_lineups.run_lock import (
 from nba_ou.postgre_db.games.fetch_data_from_db.fetch_data_from_games_db import (
     load_games_from_db,
 )
+from tqdm import tqdm
 
 
 def finished_games(min_season: int = 2018) -> list[tuple[int, str]]:
@@ -39,6 +40,31 @@ def finished_games(min_season: int = 2018) -> list[tuple[int, str]]:
     )
 
 
+ENDPOINT_ORDER = ("gamerotation", "playbyplayv3")
+
+
+def pending_calls(
+    games: list[tuple[int, str]],
+    *,
+    archive: RawArchive,
+    manifest: Manifest,
+    endpoints: tuple[str, ...] = ENDPOINT_ORDER,
+) -> tuple[list[tuple[int, str, str]], int]:
+    """Split the work into calls still owed and calls already archived."""
+    pending, skipped = [], 0
+    for season, game_id in games:
+        game_id = str(game_id).zfill(10)
+        for endpoint in endpoints:
+            # A manifest without its object is not a successful archive.
+            if manifest.is_ok(season, game_id, endpoint) and archive.exists(
+                endpoint, season, game_id
+            ):
+                skipped += 1
+                continue
+            pending.append((season, game_id, endpoint))
+    return pending, skipped
+
+
 def backfill(
     games: list[tuple[int, str]],
     *,
@@ -46,20 +72,26 @@ def backfill(
     manifest: Manifest,
     client: LineupClient,
     limit: int | None = None,
+    endpoints: tuple[str, ...] = ENDPOINT_ORDER,
 ) -> dict[str, int]:
-    counts = {"ok": 0, "empty": 0, "failed": 0, "skipped": 0}
-    attempted = 0
-    for season, game_id in games:
-        game_id = str(game_id).zfill(10)
-        for endpoint in ("gamerotation", "playbyplayv3"):
-            if manifest.is_ok(season, game_id, endpoint):
-                # A manifest without its object is not a successful archive.
-                if archive.exists(endpoint, season, game_id):
-                    counts["skipped"] += 1
-                    continue
-            if limit is not None and attempted >= limit:
-                return counts
-            attempted += 1
+    # Resolving what is owed up front costs under a second locally and keeps
+    # already-archived calls out of the progress bar, so its rate and ETA
+    # describe the API calls that actually take ~5 s each.
+    pending, skipped = pending_calls(
+        games, archive=archive, manifest=manifest, endpoints=endpoints
+    )
+    counts = {"ok": 0, "empty": 0, "failed": 0, "skipped": skipped}
+    if limit is not None:
+        pending = pending[:limit]
+    # disable=None silences the bar when stdout is not a terminal, which is how
+    # an overnight nohup run behaves; that run gets periodic log lines instead.
+    with tqdm(
+        pending,
+        desc=f"fetch ({skipped:,} archived)",
+        unit="call",
+        disable=None,
+    ) as bar:
+        for season, game_id, endpoint in bar:
             try:
                 raw = client.fetch(endpoint, game_id)
                 nbytes = archive.put(endpoint, season, game_id, raw)
@@ -73,8 +105,13 @@ def backfill(
             else:
                 manifest.record(season, game_id, endpoint, "ok", nbytes)
                 counts["ok"] += 1
-                if counts["ok"] % 100 == 0:
-                    print(f"Archived {counts['ok']} responses through {game_id}", flush=True)
+            bar.set_postfix(counts, refresh=False)
+            if bar.disable and counts["ok"] and counts["ok"] % 100 == 0:
+                print(
+                    f"Archived {counts['ok']} of {len(pending)} owed responses "
+                    f"through {game_id}",
+                    flush=True,
+                )
     return counts
 
 
@@ -83,7 +120,25 @@ def main() -> None:
     parser.add_argument("--local-root", type=Path, default=Path("data"))
     parser.add_argument("--s3", action="store_true", help="Store raw JSON in configured S3 bucket")
     parser.add_argument("--min-season", type=int, default=2018)
+    parser.add_argument(
+        "--max-season", type=int, help="Stop after this season, to run in chunks"
+    )
+    parser.add_argument(
+        "--timeout",
+        type=float,
+        default=30.0,
+        help="Per-request read timeout; a hung socket costs this much before "
+        "the session is reset and retried",
+    )
     parser.add_argument("--limit", type=int, default=None, help="Maximum API calls this run")
+    parser.add_argument(
+        "--endpoints",
+        nargs="+",
+        choices=ENDPOINT_ORDER,
+        default=list(ENDPOINT_ORDER),
+        help="Endpoints to fetch. Pass 'gamerotation' alone once "
+        "scripts/lineups/import_pbp_archive.py has supplied the play-by-play.",
+    )
     args = parser.parse_args()
     if args.s3:
         from nba_ou.config.settings import SETTINGS
@@ -102,12 +157,16 @@ def main() -> None:
     )
     try:
         with lineup_run_lock(args.local_root):
+            games = finished_games(args.min_season)
+            if args.max_season is not None:
+                games = [item for item in games if item[0] <= args.max_season]
             counts = backfill(
-                finished_games(args.min_season),
+                games,
                 archive=archive,
                 manifest=manifest,
-                client=LineupClient(),
+                client=LineupClient(timeout=args.timeout),
                 limit=args.limit,
+                endpoints=tuple(args.endpoints),
             )
     except (CircuitOpen, BackfillAlreadyRunning) as exc:
         manifest.sync_all()

@@ -10,14 +10,31 @@ Implementation checkpoint (2026-09-19): the paced raw archive, manifest,
 stint builder, validation, local status report and compact database schema
 are implemented. A pilot archive is running; the first 112 complete games
 passed stint validation after handling zero-duration rotation rows, rebound
-descriptions, same-clock substitutions and corrected PBP actions. One game
-was loaded into the default database and read back. The walk-forward ridge
+descriptions, same-clock substitutions and corrected PBP actions. The 112 pilot games
+were loaded into the default database and read back; their stint aggregates
+reconcile **exactly** (100% of 224 team-games) with the `nba_players` box score
+for points, FGA, 3PA, FTA, OREB, DREB and TOV. The walk-forward ridge
 solver has synthetic leakage tests, a real-data smoke fit, a walk-forward
 penalty-tuning command, an atomic Parquet cache builder and the ratings-only
 go/no-go evaluator. The daily S3-backed fetch/build/load command is wired into
-the finished-game workflow. A 30-game pilot is only a smoke test and does not
-replace the specified 2021-2025 gate. The full 2018-to-present backfill, lambda
-selection, go/no-go C, and D-G remain open.
+the finished-game workflow. The 112-game pilot is only a smoke test and does not
+replace the specified 2021-2025 gate. Audit (2026-09-20) fixed three defects:
+a restated cumulative rebound counter double-counted OREB (~4% of team-games),
+the Phase C gate projected minutes for players long absent from the roster, and
+the daily updater never retried a game stored as `failed`.
+
+Ingestion checkpoint (2026-09-21): **play-by-play is complete.** All 10,191
+finished games from 2018-19 on were imported from the `shufinskiy/nba_data`
+season archive instead of being fetched: 162 MB on disk, ~10 minutes, and the
+rebuilt payloads produce byte-identical stints in all 437 of the 440
+API-fetched games that pass rotation validation (§4.7). That halves the API
+backfill, which now owes **9,701 `GameRotation` calls and nothing else**. Two
+client defects surfaced while diagnosing it: an HTTP 5xx with an empty body was
+being counted as a throttle, costing 570 s per game and risking the circuit
+breaker, and the endpoint class discarded the status code before it could be
+read (§2.3, §2.4). `GameRotation` coverage is **not** complete before 2021
+(§2.4). The rotation backfill, lambda selection, go/no-go C, and D-G remain
+open.
 See `scripts/lineups/README.md` for commands and current data layout.
 
 Read these first:
@@ -75,7 +92,9 @@ On a quiet night the projection will mostly reproduce the line.
 | Injury-report cut-off | **The repo's existing convention:** closing dataset reads the last injury report before tip-off (schema 2_4, `injury_status/report_state.py`); intermediate dataset reads it per snapshot | Keeps training and serving consistent with every other injury feature |
 | Actual starters and minutes of the target game | **Never an input**, only a training target | They are outcomes. The starting five is announced about 30 min before tip, but using it would still differ between training and serving. |
 | First version of on-floor time | **Minutes-weighted player ratings** (§7.1). The rotation template (§7.2) is optional and comes later. | Simplest thing that can be falsified |
-| Backfill range | **2018-19 → present**, regular season + playoffs | 2018-19 gives the ratings a prior season before the 2019 training start. Verified available (§2). |
+| Backfill range | **2018-19 → present**, regular season + playoffs, **accepting that 2018-2020 rotation coverage is incomplete** | 2018-19 gives the ratings a prior season before the 2019 training start. **Correction 2026-09-21:** the original "verified available" rested on a handful of early-season games, which is the part that works. `GameRotation` is missing for scattered games in 2018-2020 (§2.4). Play-by-play is complete for all 10,191 games. |
+| Play-by-play acquisition | **Imported from the `shufinskiy/nba_data` season archive; only `GameRotation` is fetched from the API** | Decided 2026-09-21. The archive republishes the same `PlayByPlayV3` payloads: for the 440 games already fetched, the rebuilt payloads give byte-identical stints in all 437 that pass rotation validation. Halves the backfill (~20.4k calls → ~10.2k, ~29 h → ~14 h) and halves rate-limit exposure. The archive has no rotation data, so the API is still required for that half. |
+| Stint storage | **Local Parquet (`data/lineup_stints/`) is the default; Postgres is opt-in (`--load-db`)** | Decided 2026-09-20. Until go/no-go C and G pass, the data may never be used; Parquet keeps it reproducible from the raw archive with no database cost. Revisit when the features enter the pipeline. |
 
 ---
 
@@ -130,9 +149,58 @@ actionType, subType, videoAvailable, shotValue, actionId`.
 
 - A block shows up as a `ReadTimeout`, or as a response that isn't valid JSON
   (`JSONDecodeError`).
+- **But not every `JSONDecodeError` is a block (measured 2026-09-21).** An
+  HTTP 5xx with an empty body fails to parse in exactly the same way while
+  meaning the opposite: the game is permanently unavailable, not throttled.
+  Constructing an nba_api endpoint parses the body inside `__init__`, so the
+  status code is discarded before anything can read it; the client now defers
+  the request (`get_request=False` + `send_api_request`) to keep it. See §2.4.
 - The limit is **rate-based**, on the server side and probably per IP. Resetting
   the session does not get past it.
 - A 1.2–3 s gap is untested. Don't go below 3 s without measuring first.
+
+### 2.4 `GameRotation` coverage is not complete before 2021 (measured 2026-09-21)
+
+Some games return **HTTP 500 with a zero-byte body**, in under a second. This
+is not throttling, and three separate tests say so:
+
+- **It is deterministic per game.** Three rounds, new session each time:
+  `0021800445` → 500, 500, 500 while the control `0021800444` → 200, 200, 200
+  with an identical 5,923-byte body.
+- **Games that have data never return it.** Ten games already archived with
+  valid rotations: seven `ReadTimeout`, three 200, **zero 500**. A throttle
+  would have hit these too.
+- **A healthy game answers between two failures.** `0021800444` returned 200 in
+  0.2 s interleaved with three consecutive 500s on `0021800445`.
+
+Coverage sample, six games per season at the 2/20/40/60/80/98 % marks:
+
+| Season | Result |
+|---|---|
+| 2018 | 200 200 200 **500** 200 **500** |
+| 2019 | 200 200 200 200 timeout **500** |
+| 2020 | 200 200 200 **500** 200 200 |
+| 2021-2025 | **30/30 → 200** |
+
+The holes are **scattered, not a cut-off**: in 2018-19 the game at the 80 %
+mark answers 200 while `0021800900` and `0021801100` return 500. The 98 %
+picks for 2018 and 2019 are playoff games and both fail, which hints that old
+playoffs are worse, but six samples per season cannot carry that claim.
+
+**The exact hole rate for 2018-2020 is unmeasured**; establishing it means
+probing thousands of games, which is the backfill itself. The manifest's
+`empty` count after each season is the measurement.
+
+Consequences:
+
+- A missing game costs 0.4 s and is recorded `empty`, not `failed`, and does
+  **not** count towards the circuit breaker. Before this was separated from
+  throttling it cost 570 s per game, and four such games in a row would have
+  ended the run.
+- 2018-19 exists to warm the ratings up before the 2019 training start. With
+  holes in it that warm-up is weaker. The walk-forward ridge simply sees fewer
+  games, but **if go/no-go C fails narrowly, rule this out before blaming the
+  method.**
 
 **Related fix (uncommitted in the working tree, commit it with phase A):**
 `src/nba_ou/fetch_data/nba_api_session.py` and `tests/test_nba_api_session.py`.
@@ -248,7 +316,18 @@ Tests should use small hand-built fixtures covering:
 - overtime;
 - a game whose points don't reconcile, which must be rejected.
 
-### 4.3 Storage (`postgre_db/lineups/schema.py`)
+### 4.3 Storage
+
+**Current default: local Parquet.** `data/lineup_stints/season=YYYY/` holds one
+file per validated game (carrying `game_date`) plus `game_status.parquet`.
+`data_processing/lineups/stint_store.py` reads it. Measured: 112 games = 2.2 MB
+on disk, so the full 2018-to-present backfill is ~200 MB of Parquet.
+
+The Postgres schema below is implemented and stays available behind
+`--load-db`; it is not populated by the daily job. Measured in Supabase: 112
+games occupy 1.22 MB, so the full backfill would be ~120 MB.
+
+#### Postgres schema (opt-in, `postgre_db/lineups/schema.py`)
 
 Sizing: ~10.5k games × ~30 segments ≈ 315k stint rows. Use a **lineup
 dimension** so a stint row stores two small integers instead of ten player IDs:
@@ -285,10 +364,18 @@ lu_game_status (game_id TEXT PK, season_year, game_date DATE, tipoff_utc TIMESTA
 
 ### 4.5 Phase A/B acceptance
 
-- The backfill finishes with the manifest ≥99.5% `ok`.
-- The stint build is ≥99% `status=ok`.
-- A notebook-free report script prints pass rates per season and failure reason
-  counts.
+- The backfill leaves **no `failed`** entries in the manifest. `empty` is not a
+  failure of ours: since §2.4 it also means the NBA has no rotation for that
+  game, and no amount of retrying will change it.
+- **Per season, of the games the NBA does serve, ≥99.5% are `ok`.** The old
+  flat ≥99.5% `ok` target is unreachable for 2018-2020 and was written before
+  the coverage gap was known; the 2021-2025 seasons should still meet it
+  outright, since 30/30 sampled games answered 200.
+- The stint build is ≥99% `status=ok` **among games with both endpoints
+  archived**.
+- The report script prints pass rates per season and failure reason counts, and
+  now also the `empty` share, which is the measurement of §2.4 that a sample
+  could not provide.
 
 ### 4.6 Cross-check (optional, cheap)
 
@@ -296,6 +383,34 @@ For 3 team-seasons, compare our 5-man minutes, net rating and pace with
 `LeagueDashLineups(group_quantity=5, season=..., team_id_nullable=...)`.
 Expect agreement within rounding and small differences in possession estimates.
 A large gap means a bug in 4.2.
+
+### 4.7 Play-by-play comes from the season archive, not the API (2026-09-21)
+
+`shufinskiy/nba_data` republishes the same `PlayByPlayV3` payloads one season
+per file (1996-2025, regular season + playoffs, ~8 MB each).
+`scripts/lineups/import_pbp_archive.py` rewrites them into the ordinary raw
+archive and records them `ok`, so nothing downstream changes;
+`backfill_lineup_raw.py --endpoints gamerotation` then skips the half we
+already hold. **The archive has no rotation data**, which is why the API is
+still needed for the other half.
+
+Verified against the 440 games already fetched from the API: **byte-identical
+stints in all 437 that pass rotation validation** (the other 3 fail with API
+data too). Three details the importer must get right, each found by that
+comparison rather than assumed:
+
+- The archive **omits `shotValue`**, which §4.2 reads to separate threes from
+  twos. It is rebuilt from the `3PT` marker in the description, which matched
+  the API exactly on all 78,050 field goals in 2018-19. Block rows get 0; the
+  parser only reads `shotValue` on made and missed field goals.
+- **Corrected actions share an `actionNumber`** with the row they amend, so the
+  sort must be stable. A quicksort swapped a turnover with its steal and
+  reattributed both to the wrong team.
+- The archive **strips diacritics from `playerName`** and pads some text
+  columns. Players are identified by `personId`, so this never reaches a stint.
+
+The importer takes the same `lineup_run_lock` as the fetcher, because both
+write the per-season manifest.
 
 ---
 

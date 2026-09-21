@@ -50,3 +50,49 @@ def test_lost_object_is_fetched_even_if_manifest_says_ok(tmp_path):
                       client=client, limit=1)
     assert counts["ok"] == 1
     assert client.calls == ["gamerotation"]
+
+
+def test_the_progress_total_counts_only_calls_still_owed(tmp_path):
+    """The bar's rate and ETA must describe API calls, not archive hits."""
+    from scripts.lineups.backfill_lineup_raw import pending_calls
+
+    archive = RawArchive(root=tmp_path)
+    manifest = Manifest(tmp_path / "manifest")
+    archive.put("gamerotation", 2018, "0021800001", b"{}")
+    manifest.record(2018, "0021800001", "gamerotation", "ok", 2)
+    # Recorded ok, but its object is gone: still owed.
+    manifest.record(2018, "0021800002", "gamerotation", "ok", 2)
+
+    pending, skipped = pending_calls(
+        [(2018, "0021800001"), (2018, "0021800002")],
+        archive=archive,
+        manifest=manifest,
+    )
+    assert skipped == 1
+    assert pending == [
+        (2018, "0021800001", "playbyplayv3"),
+        (2018, "0021800002", "gamerotation"),
+        (2018, "0021800002", "playbyplayv3"),
+    ]
+
+
+def test_the_backfill_can_be_restricted_to_the_endpoints_still_owed():
+    """Once the play-by-play is imported, only gamerotation should be fetched."""
+    from scripts.lineups.backfill_lineup_raw import pending_calls
+
+    class Archive:
+        def exists(self, endpoint, season, game_id):
+            return False
+
+    class NothingArchived:
+        def is_ok(self, season, game_id, endpoint):
+            return False
+
+    pending, skipped = pending_calls(
+        [(2018, "0021800001")],
+        archive=Archive(),
+        manifest=NothingArchived(),
+        endpoints=("gamerotation",),
+    )
+    assert pending == [(2018, "0021800001", "gamerotation")]
+    assert skipped == 0

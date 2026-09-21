@@ -56,6 +56,44 @@ class Manifest:
         ]
         return not rows.empty and rows.iloc[-1] == "ok"
 
+    def record_many(
+        self,
+        season_year: int,
+        rows: list[tuple[str, str, str, int]],
+    ) -> None:
+        """Record many results with a single parquet write.
+
+        Importing a season settles over a thousand rows at once; recording them
+        one at a time rewrites the whole manifest each time.
+        """
+        if not rows:
+            return
+        frame = self.load(season_year)
+        now = pd.Timestamp.now(tz="UTC")
+        incoming = pd.DataFrame(
+            [
+                (str(game_id), endpoint, now, status, nbytes)
+                for game_id, endpoint, status, nbytes in rows
+            ],
+            columns=list(COLUMNS),
+        )
+        if not frame.empty:
+            superseded = pd.MultiIndex.from_frame(
+                frame[["game_id", "endpoint"]]
+            ).isin(list(zip(incoming.game_id, incoming.endpoint, strict=True)))
+            frame = frame.loc[~superseded]
+        self._frames[season_year] = (
+            incoming if frame.empty else pd.concat([frame, incoming], ignore_index=True)
+        )
+        self._write(season_year)
+
+    def _write(self, season_year: int) -> None:
+        path = self.path(season_year)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(".parquet.tmp")
+        self._frames[season_year].to_parquet(tmp, index=False)
+        tmp.replace(path)
+
     def record(
         self,
         season_year: int,
@@ -76,8 +114,4 @@ class Manifest:
         self._frames[season_year] = (
             row if existing.empty else pd.concat([existing, row], ignore_index=True)
         )
-        path = self.path(season_year)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = path.with_suffix(".parquet.tmp")
-        self._frames[season_year].to_parquet(tmp, index=False)
-        tmp.replace(path)
+        self._write(season_year)
