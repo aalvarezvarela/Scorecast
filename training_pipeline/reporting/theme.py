@@ -137,7 +137,9 @@ LABEL_FIELDS: tuple[tuple[str, Any], ...] = (
     ("data.exclude_playoffs", lambda v: "no-playoffs" if v else "+playoffs"),
     ("cleaning.max_na_per_row", lambda v: f"na{v}"),
     ("cleaning.exclude_cols_containing",
-     lambda v: "no-consensus" if v and "consensus_pct" in str(v) else "std-cols"),
+     lambda v: "no-consensus" if v and "consensus_pct" in str(v)
+     else "no-global" if v and "GLOBAL_" in str(v).upper()
+     else "std-cols"),
     ("cleaning.nan_threshold", lambda v: f"nanthr{v:g}"),
     ("optuna.n_trials", lambda v: f"{v}trials"),
 )
