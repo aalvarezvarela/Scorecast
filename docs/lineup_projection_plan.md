@@ -1,7 +1,7 @@
 # Lineup stints, projected minutes and a bottom-up game projection
 
 Status: **phases A and B implemented; C solver implemented, calibration and
-acceptance gates pending.** Written 2026-09-18 on
+acceptance gates pending. The rotation backfill is the critical path.** Written 2026-09-18 on
 `feat/pregame-rotation-features` for the agent that will implement it. Every
 API fact below was checked against the live `stats.nba.com` API that day (§2).
 Anything not checked is marked **(unverified)**.
@@ -35,6 +35,23 @@ breaker, and the endpoint class discarded the status code before it could be
 read (§2.3, §2.4). `GameRotation` coverage is **not** complete before 2021
 (§2.4). The rotation backfill, lambda selection, go/no-go C, and D-G remain
 open.
+Backfill checkpoint (2026-09-22): rotation is complete for **2021, 2022, 2023
+and 2024**; 2025 is in progress and **2019, 2020 and 868 games of 2018 have not
+been started**. 4,430 `GameRotation` calls remain. Play-by-play stays complete
+at 10,191/10,191. Two operational facts measured that day: seasons 2022-2024
+fetched at a clean **3.0 s/call** (pacer-bound), but the 2025 run degraded to
+**~38 s/call** — a bimodal gap distribution with nothing between 10 s and 20 s,
+which is the 30 s read timeout followed by the session reset, the 5 s backoff
+and a fast retry, not a gradual slowdown. `--timeout 8` is the knob; the
+circuit breaker never trips on this failure mode because every call eventually
+succeeds. Stint building then ran for every archived season: **5,332 games and
+160,359 stints**, at a 99.31-99.86% validation pass rate per season (2018-19
+112, 2021-22 1,292, 2022-23 1,310, 2023-24 1,305, 2024-25 1,313), clearing the
+99% phase-B threshold. The three failure modes are `bad_rotation_interval`,
+`overlapping_player_intervals` and `points_mismatch`. `build_lineup_stints.py`
+takes no run lock, so it is safe to run while a backfill is fetching. Storage sizing and free
+space re-measured (§4.3); the feature-family switch was specified (§8.2).
+
 See `scripts/lineups/README.md` for commands and current data layout.
 
 Read these first:
@@ -95,6 +112,8 @@ On a quiet night the projection will mostly reproduce the line.
 | Backfill range | **2018-19 → present**, regular season + playoffs, **accepting that 2018-2020 rotation coverage is incomplete** | 2018-19 gives the ratings a prior season before the 2019 training start. **Correction 2026-09-21:** the original "verified available" rested on a handful of early-season games, which is the part that works. `GameRotation` is missing for scattered games in 2018-2020 (§2.4). Play-by-play is complete for all 10,191 games. |
 | Play-by-play acquisition | **Imported from the `shufinskiy/nba_data` season archive; only `GameRotation` is fetched from the API** | Decided 2026-09-21. The archive republishes the same `PlayByPlayV3` payloads: for the 440 games already fetched, the rebuilt payloads give byte-identical stints in all 437 that pass rotation validation. Halves the backfill (~20.4k calls → ~10.2k, ~29 h → ~14 h) and halves rate-limit exposure. The archive has no rotation data, so the API is still required for that half. |
 | Stint storage | **Local Parquet (`data/lineup_stints/`) is the default; Postgres is opt-in (`--load-db`)** | Decided 2026-09-20. Until go/no-go C and G pass, the data may never be used; Parquet keeps it reproducible from the raw archive with no database cost. Revisit when the features enter the pipeline. |
+| Eventual database | **Aiven, if the gates pass.** Parquet stays the default until then | Decided 2026-09-22 with both databases measured (§4.3). Supabase is the default `DB_ENV` but has the least room; Aiven has ~550 MB under its hard cap for a load sized at ~75-110 MB. Ongoing maintenance (daily load, partition retention) is an open question to settle **after** go/no-go G, not before. |
+| Feature-family switch | **A `lineup_features` flag on the dataset builders, default `False`** | Decided 2026-09-22. The family is unproven, so the campaign needs the same builder to emit a dataset with and without it (§8.2). Follows the existing `injury_report_features` precedent: same schema version, distinct filename suffix. |
 
 ---
 
@@ -325,7 +344,42 @@ on disk, so the full 2018-to-present backfill is ~200 MB of Parquet.
 
 The Postgres schema below is implemented and stays available behind
 `--load-db`; it is not populated by the daily job. Measured in Supabase: 112
-games occupy 1.22 MB, so the full backfill would be ~120 MB.
+games occupy 1.22 MB, so a linear extrapolation gives ~120 MB.
+
+**Sizing re-derived 2026-09-22 (bottom-up, from the built games).** The linear
+extrapolation overstates, because the lineup dimension saturates: at 112 games
+there are 2,324 distinct lineups for 3,711 stints (0.63 per stint), but the
+distinct-lineup curve grows as roughly `G^0.75` (639 → 1,076 → 1,434 → 1,808 →
+2,140 → 2,324 over the first 112 games), which extrapolates to ~70k lineups for
+~330k stints (0.21 per stint). Measured 33.1 segments per game.
+
+| Table | Rows | Heap | Indexes | Total |
+|---|---|---|---|---|
+| `lu_stint` | ~330k | ~31 MB | ~11 MB (PK) | ~42 MB |
+| `lu_lineup` | ~70k | ~6 MB | ~8 MB (PK + the 6-BIGINT UNIQUE) | ~14 MB |
+| `lu_game_status` | ~10k | ~1 MB | ~0.3 MB | ~1 MB |
+| | | | | **~57 MB** |
+
+Calibrating against the real 1.22 MB the schema occupies today (~1.3× the
+per-row arithmetic, from page overhead and per-partition minimums) gives
+**~75-95 MB**. Postgres does **not** create indexes for the two foreign keys;
+adding them for joins costs ~19 MB more, so budget **~110 MB** if they are
+wanted. The lineup dimension is earning its place: storing `lineup_id` instead
+of ten `BIGINT`s per stint row saves ~25 MB.
+
+**Free space, measured 2026-09-22** (`pg_database_size`):
+
+| Database | Size | Largest schemas |
+|---|---|---|
+| Supabase (default `DB_ENV`) | 449 MB | `nba_players` 267 MB, `odds_sportsbook` 72 MB, `nba_injuries` 31 MB |
+| Aiven | 447 MB | `line_history` 396 MB, `injury_report` 41 MB |
+
+Aiven's hard 1 GB cap covers heap, indexes **and WAL**, so ~550 MB is free and
+the load fits with room to spare. Supabase is the riskier target despite being
+the default: **confirm the plan's storage limit before loading there** — the
+free tier caps at 500 MB, which this would exceed. Hence the decision in §1:
+Aiven is the eventual destination, and nothing is loaded until go/no-go G
+passes.
 
 #### Postgres schema (opt-in, `postgre_db/lineups/schema.py`)
 
@@ -454,10 +508,100 @@ A regularized adjusted plus-minus style ridge regression on stints, fitted
   - the incremental update gives the same ratings as a batch refit;
   - ratings on date D are unchanged when stints dated ≥ D are perturbed.
 
+**RESULT (2026-09-22): go/no-go C PASSES.** Lambdas tuned on 2022-23/2023-24
+and gated on 2024-25, disjoint windows. The README's grids were **truncated** —
+both penalties selected their grid maximum with a monotone curve. Widening them
+found interior minima at **`lambda_offdef=1000`** (stint MAE 47.126) and
+**`lambda_pace=30000`** (14.222); the offdef value was right by luck, the pace
+value was not (10000 was a boundary artefact).
+
+| Window | n | ratings MAE | baseline MAE | improvement | 95% CI |
+|---|---|---|---|---|---|
+| 2024-25, **out of sample** | 1,314 | 14.716 | 15.880 | **+1.163** | [0.707, 1.606] |
+| 2021-2025 | 5,251 | 14.846 | 15.835 | **+0.989** | [0.769, 1.210] |
+
+Stable every season (+0.95, +0.85, +1.00, +1.16), and the out-of-sample season
+is the *best* of the four, so the tuning did not overfit. The ratings beat the
+rolling team-average baseline on 54.5% of games.
+
+**But the phase-G dry run on the same projection is a null.** Against the
+`ODDS_TOTAL_LINE_bet365` closing line on the same games, the ratings-only
+projection is **worse than the market** (MAE 14.82 vs **14.11**), and
+regressing `LINE_ERROR` on `proj_total - line` gives a slope of **-0.037, 95%
+CI [-0.133, +0.053]** (corr -0.011). Every subset tested also spans zero,
+including the ones this plan is built on:
+
+| Subset | n | slope | 95% CI |
+|---|---|---|---|
+| all | 5,236 | -0.037 | [-0.133, +0.048] |
+| best absentee >= 20 pts | 2,138 | +0.023 | [-0.122, +0.164] |
+| first game out (streak <= 1) | 2,729 | -0.020 | [-0.136, +0.108] |
+| key player >= 15 pts **and** first game out | 1,652 | -0.050 | [-0.213, +0.115] |
+| \|proj - line\| >= 8 | 677 | +0.037 | [-0.081, +0.160] |
+
+**Do not read this as falsifying the hypothesis.** The ratings-only projection
+uses minutes = each player's recent five-game average and carries **no injury
+information at all**, so on a key player's first game out it still assigns that
+player his recent minutes. The fresh-absence subsets are therefore the cases
+this particular projection is *least* able to model, and §0 already predicted
+the quiet-night result ("the projection will mostly reproduce the line").
+
+What it does establish: **the unconditional path is closed, and phase E is
+load-bearing.** The bet now rests entirely on the minutes model redistributing
+minutes correctly on news nights, not on the ratings. Weigh that before
+spending the effort on D-F, and re-run this dry run the moment F v1 exists.
+
+Artifacts: `data/lineup_ratings/{cv,cv_wide,gate_2024,gate_all}/`, cache
+`data/lineup_ratings/player_ratings.parquet` (741,335 rows, as-of 2021-10-19 to
+2025-06-22).
+
+**Market-calibration check (2026-09-22), run instead of the standalone
+comparison above.** The dry run asked "is this projection better than the
+bookmaker?", which is not the question a feature has to answer: the model
+already sees ~3,000 columns, so what matters is incremental information. The
+owner redirected this. Measured on the 2_3 closing-line dataset, 8,829 non-push
+games, 2018-19 to 2025-26, `LINE_ERROR = TOTAL_POINTS - ODDS_TOTAL_LINE_bet365`:
+
+| Situation | n | OVER | 95% CI | mean LINE_ERROR |
+|---|---|---|---|---|
+| all games (reference) | 8,829 | 50.7% | [49.6, 51.7] | +0.52 |
+| best absentee >= 18 pts | 4,333 | 51.1% | [49.6, 52.5] | +0.54 |
+| best absentee >= 25 pts | 1,316 | 49.3% | [46.6, 52.0] | -0.10 |
+| **>= 18 pts AND first game out** | **1,498** | **53.4%** | **[50.9, 55.9]** | **+1.46** |
+| >= 18 pts AND >= 5 games out (control) | 2,017 | 49.6% | [47.4, 51.8] | -0.11 |
+
+**The size of the absence carries nothing; the freshness carries everything.**
+The settled-absence control is a clean null, which is what an overreaction
+story predicts and a data-mining artefact would not. Stable in 7 of 8 seasons
+(2025-26 is the exception at 48.5%, n=231, whose CI still covers the other
+seasons). This reproduces the owner's existing lead.
+
+**It is not yet a bankable edge.** Break-even at -110 is 52.38% and the
+interval's lower bound is 50.9%, so this is a real but marginal signal, not a
+proven profitable one.
+
+**The lineup projection adds nothing to it.** Regressing `LINE_ERROR` on
+`proj_total - line` *within* the fresh-absence subset gives slope **-0.117, 95%
+CI [-0.340, +0.105]** (n=924) — indistinguishable from zero and, if anything,
+negative. Same null as the unconditional test.
+
+**The bar this sets for D-F.** The inefficiency is already detectable from two
+columns that exist today, `TOP1_INJURED_PLAYER_PTS_BEFORE` and
+`TOP1_INJURED_STREAK_PTS_BEFORE`. Phases D-F do not have to find the effect —
+they have to **beat features already in the dataset**. The phase-C projection
+does not, though it is also the version least able to (no injury inputs at
+all). Any decision to build E should be made against that bar, and the first
+thing E's output should be tested on is this subset.
+
 **Go/no-go C.** Build `PROJ_TOTAL` from ratings alone, with minutes = each
 player's recent average (no minutes model yet). On 2021–2025 walk-forward,
 compare its total-points MAE with a rolling team-average baseline.
 - If it is not better, stop and report back before building D–F.
+- **Run it on what is built, not on the full backfill** (§10). As of 2026-09-22
+  that is 2021-22 through 2024-25: tune the lambdas on 2022-23/2023-24 and gate
+  on **2024-25, out of sample**. Tuning and gating on the same window, as the
+  README's example does, flatters the verdict on a gate whose whole purpose is
+  to be failable.
 
 ---
 
@@ -576,6 +720,41 @@ overtime periods.
 - `league_ortg`, `league_pace` and the home-court term are walk-forward
   estimates too (the league-average intercepts of §5).
 
+### 7.1b Shared-minutes weighting (owner's direction, 2026-09-22)
+
+**The v1 formula above throws away the combination information.** It sums
+individual ratings weighted by each player's own minutes, so two stars who
+share 30 minutes and two who never overlap give the identical team number.
+Who plays *with* whom is the entire reason this project collects stints
+instead of box scores, and v1 does not use it.
+
+Between v1 and the full rotation template of §7.2 there is a cheaper step that
+captures most of it: an **expected shared-minutes matrix**.
+
+- For each pair of available players, estimate the minutes they will share,
+  from their shared-minutes history **conditioned on tonight's availability** —
+  a pair's past overlap is only informative among the players actually
+  expected to play.
+- Normalise so each player's row sums to his projected minutes and the team
+  total holds at 240.
+- Weight the §6.1 pair synergy by **expected shared minutes**, not by whether
+  both are merely in the rotation. The exact-five term stays as in §7.1 for
+  the projected starting five.
+
+New column, alongside §8.1:
+
+| Column | Meaning |
+|---|---|
+| `LU_PROJ_PTS_COMINUTES_BEFORE` | expected team points with synergy weighted by expected shared minutes, i.e. what the available players are expected to score **given how they actually share the floor** |
+
+Emit it **beside** `LU_PROJ_PTS_BEFORE`, not instead of it. The difference
+between the two is itself informative: it is the part of the projection that
+combination information accounts for, and it is cheap to let the model choose
+between them.
+
+Same temporal contract as §5: shared-minutes history comes only from games
+before the target date.
+
 ### 7.2 v2 (optional): rotation template
 
 Model which fives share the floor from recent substitution patterns:
@@ -584,7 +763,14 @@ Model which fives share the floor from recent substitution patterns:
 - bench staggering.
 
 This distributes minutes across specific lineup pairs so exact-five synergy
-applies beyond the starting units. **Only do this if F v1 clears go/no-go G.**
+applies beyond the starting units.
+
+**Gating relaxed 2026-09-22 (owner).** This was "only do this if F v1 clears
+go/no-go G", which had the ordering backwards: v1 is the version that cannot
+use combination information at all, so gating the combination-aware version
+behind v1's result risks discarding the idea on a test that could not have
+shown it. §7.1b is the cheap way to get most of the way there; keep the full
+rotation template gated behind §7.1b showing something, not behind v1.
 
 ---
 
@@ -619,6 +805,58 @@ the merge. **Keep the set small and add more only on evidence.**
 | `LU_PROJ_TOTAL_MINUS_LINE_BEFORE` | projected total − closing total line (`total_line_col()`); probably the key input for `LINE_ERROR` |
 | `LU_STARTERS_VS_STARTERS_NET_BEFORE`, `LU_STARTERS_VS_STARTERS_PACE_BEFORE` | the two projected starting fives against each other |
 
+#### Added 2026-09-22 (owner's direction)
+
+Two additions, and a caveat on how the null results above should be read.
+
+**Caveat first.** The dry-run and calibration tests in §5 are **linear** slopes.
+A flat linear slope does not rule out the non-linear structure and interactions
+XGBoost is there to find, so treat those nulls as weak evidence in one
+direction, not a verdict. They do establish the bar (the effect is already
+reachable from two existing injury columns), not the impossibility.
+
+**A. Counterfactual absence impact.** The question worth asking is not "what
+will the total be" but **"did the market react correctly to this news"**. Make
+that directly measurable: run the §7.1 projection **twice** — once with
+projected availability, once with the same roster at full health — and emit the
+difference.
+
+| Column | Meaning |
+|---|---|
+| `LU_ABSENCE_IMPACT_PTS_BEFORE` | projected total with absences − projected total at full health. The model's estimate of what tonight's absences are worth, in points |
+| `LU_ABSENCE_IMPACT_PACE_BEFORE` | the same difference in projected possessions |
+| `LU_ABSENCE_IMPACT_MINUS_LINE_BEFORE` | `LU_ABSENCE_IMPACT_PTS_BEFORE` − (closing line − the team's recent typical line level). A crude read on whether the line moved more or less than the absence is worth |
+
+This is the closing-line version. The sharper form — impact versus the line's
+*actual* move since the news broke — needs snapshots and belongs to phase 2
+(§9), where `INJ_SNAP_*` already exists.
+
+**B. Replacement-specific synergy.** §6.1 gives synergy for the projected
+starting five as a whole. The owner's sharper question is about **the
+replacement in particular**: the player expected to take an absent starter's
+place, and how he plays *with the other four*.
+
+| Column | Meaning |
+|---|---|
+| `LU_REPL_SYNERGY_WITH_STARTERS_BEFORE` | sum of the shrunk §6.1 pair residuals between the projected replacement and each of the four remaining projected starters |
+| `LU_REPL_MIN_WITH_STARTERS_BEFORE` | minutes the replacement has actually played alongside those four, season and last 10 games |
+| `LU_REPL_EXACT_FIVE_MIN_BEFORE` | minutes the resulting exact five has ever played together |
+
+`LU_REPL_MIN_WITH_STARTERS_BEFORE` is the one to watch. It is the "untested
+replacement" hypothesis made measurable, and it cuts both ways: when it is near
+zero **neither we nor the market have a basis**, which is precisely the
+condition under which a market overreaction is plausible. Expect it to earn its
+place as an interaction term, not as a main effect.
+
+**Sequencing consequence.** Both additions need a **projected starting five**,
+not the full §6.2 minutes model. That is a much lighter prerequisite —
+`starter_history.py` already supplies the latest five, and §6.2 already plans
+"who started the last times that player was out" as an input, which is a
+replacement-identification rule that can stand on its own. Build the projected
+starting five first, emit group A and B against it, and test on the 1,498-game
+fresh-absence subset before committing to the full minutes model. If the
+replacement columns move nothing there, E is unlikely to rescue them.
+
 - **Leakage gate.** `select_training_columns()` must accept every new column
   unchanged. Don't add exemptions.
 - **Minus-line column.** `LU_PROJ_TOTAL_MINUS_LINE_BEFORE` uses the closing line
@@ -628,10 +866,53 @@ the merge. **Keep the set small and add more only on evidence.**
 
 ### 8.2 Wiring and schema
 
+**The family is switchable, and off by default.** Decided 2026-09-22. The point
+of the campaign in §8.4 is to find out whether these columns are worth
+anything, so one builder has to be able to emit the dataset with and without
+them. Two existing flags are the precedent to copy; do not invent a new
+mechanism:
+
+- `injury_report_features` (`create_train_data.py` → `create_df_to_predict`) —
+  a boolean that **keeps the schema version** and distinguishes the build by a
+  **filename suffix** (`_without_injury_reports`).
+- `include_same_season_referee_variants` — a default-`False` additive flag
+  threaded from an `argparse` `store_true` down into the builder.
+
+Thread `lineup_features: bool = False` the same way:
+
+| Layer | Change |
+|---|---|
+| `create_df_to_predict.py` | `lineup_features: bool = False` parameter; guard the `add_lineup_features(...)` call with it, attached where `add_starter_history_features` is (line ~696) |
+| `create_base_game_features.py` | same parameter and guard (line ~424) |
+| `create_train_data.py` (`main`) | `lineup_features: bool = False`, passed straight through |
+| `create_train_data.py` (CLI) | `--lineup-features`, `action="store_true"` — opt-in, because the default is off |
+| filename | `variant` suffix `_with_lineup_features` when on, alongside the existing `_without_injury_reports` logic |
+
+**Schema version: stay on `2_6` while the family is experimental.** The owner's
+call, 2026-09-22. With the flag off the builder must emit a file **identical**
+to today's 2_6, which means the campaign's control arm is the existing 2_6 file
+and needs no rebuild — only the treatment arm is generated. This follows
+`injury_report_features`, whose CLI help says as much: *"The current schema
+version is retained with a distinct filename suffix."*
+
+Bump `dataset_versions.py` to **`2_7`** and add a History entry **only if
+go/no-go G passes and the flag's default flips to `True`** — at that point the
+columns are part of the standard dataset and the version contract in the
+`dataset_versions` docstring ("bumped whenever a regenerated CSV gains or loses
+columns") applies. Until then a 2_6 file with the suffix is the honest label:
+same pipeline, one extra opt-in family.
+
 - Attach in **both** `create_training_data/create_base_game_features.py` and
   `create_df_to_predict.py`, the same way commit `73eef65` wired starter history.
-- Bump `src/nba_ou/config/dataset_versions.py` to **`2_7`** and add a History
-  entry.
+- **Test the flag, not just the features.** Add to `tests/test_lineup_features.py`:
+  with `lineup_features=False` no `LU_*` column exists and the frame's columns
+  equal the current 2_6 set; with it `True` every column in §8.1 is present and
+  no other column changes value. That second half is what stops the flag from
+  silently perturbing the control arm.
+- **Serving path uses the same flag.** `predict_nba_games.py` must pass whatever
+  the production model was trained with; a model trained without `LU_*` columns
+  and served with them (or the reverse) is a schema mismatch the bundle's
+  feature list should catch, but the flag should not be left to chance.
 - Update `docs/feature_engineering_overview.md` (the feature table and §6 "Open
   work") and `docs/README_Training Data Processing.md`.
 - **Serving path.** For scheduled games, `create_df_to_predict` needs:
@@ -660,7 +941,9 @@ the merge. **Keep the set small and add more only on evidence.**
      see the memory note on team line-error history.
 2. If the slope is clearly positive: run a campaign under
    `experiments/lineup_projection_2026_09/`:
-   - `2_6` control vs `2_7`, both targets, multiple seeds.
+   - control vs treatment, both targets, multiple seeds. The two arms are the
+     same builder run with `lineup_features` off and on (§8.2), so the control
+     is the existing `2_6` file and only the treatment arm is generated.
    - Report overall results and the subsets:
      - games with ≥1 projected starter replaced;
      - a key player's first game out (`INJ_KEY_PLAYER_FIRST_GAME_OUT_PTS_BEFORE == 1`);
@@ -668,8 +951,10 @@ the merge. **Keep the set small and add more only on evidence.**
 3. Report confidence intervals. The known trap: 2021 alone carries the base
    model's win rate (58% vs 50.8% excluding it). Show results with and without
    2021.
-4. **Meta-learner.** If 2_7 changes production base models,
+4. **Meta-learner.** If the lineup family changes production base models,
    `scripts/build_meta_learner_training_data.py` must be re-run.
+5. **Only then** flip the `lineup_features` default to `True` and bump the
+   schema version to `2_7` (§8.2).
 
 ---
 
@@ -691,11 +976,59 @@ the merge. **Keep the set small and add more only on evidence.**
 |---|---|---|
 | A | client + archive + manifest; the session fix committed | — |
 | A′ | backfill running (overnight, resumable) | manifest ok < 99.5% |
+| B′ | build stints for every archived game, not just the 112 pilot | stint pass rate < 99% |
+
+**The backfill is not on the critical path to the decision (2026-09-22).** It
+was being treated as one, which is wrong. Three questions need very different
+amounts of data:
+
+| Question | What it needs | Status |
+|---|---|---|
+| Write the feature code | Almost no data — a rating cache is enough | Unblocked now |
+| **Decide whether the family is worth anything** (gates C and G) | The 2021-2025 window this plan already specifies | **5,257 of 6,572 games (80%) built; only 2025-26 missing** |
+| Train production models with the family | Stints back to the training start | ~54% of training rows would be NaN |
+
+Four complete consecutive seasons (2021-22 through 2024-25) are ample for an
+MAE comparison and for a single-regressor slope. Run the gates on what is
+built; do not wait for the backfill.
+
+The third row matters less than it looks. Of the six production prefixes,
+`last_3_seasons` (two models) is **fully** covered by what is already built and
+`last_5_seasons` (two models) misses only 2020-21; only `full_dataset` carries
+the 2017-2020 hole, and XGBoost takes NaN natively, so the feature simply does
+not inform those older rows.
+
+Revised order, cheapest decision first:
+
+1. Gate C on 2021-2024. **Tune and gate on disjoint windows** — tune the lambdas
+   on 2022-23/2023-24 and gate on 2024-25 out of sample. The README's example
+   does both on 2021-2025, which flatters the result.
+2. If C passes: build D, E, F and `features.py`; run gate G on 2021-2024.
+3. **Only if G shows a clearly positive slope**, spend the 3,175 calls on
+   2019-20, 2020-21 and the rest of 2018-19 to fill in `full_dataset`.
+
+2025-26 (1,027 calls) is worth finishing regardless of the gates, because it is
+needed to serve predictions next season either way.
+
+**Warm-up caveat.** The plan assumed 2018-19 and 2019-20 as rating history
+before the evaluation window. Neither is available: 2019 and 2020 have no
+rotation at all, and 2018-19 has only 112 games from October, which a 180-day
+half-life decays to ~1.5% weight three years later. **2021-22 is therefore the
+warm-up season and the ratings start cold there.** Read any gate result that
+includes late 2021 with that in mind.
 | B | stint builder + validation + DB load | stint pass rate < 99% |
 | C | walk-forward player ratings | **go/no-go C** fails |
+| D0 | projected starting five + replacement identification (no minutes model) | — |
+| D1 | counterfactual absence impact + replacement synergy (§8.1 additions), tested on the fresh-absence subset | report the result, but **do not stop** — see below |
 | D, E | synergy; minutes model | **go/no-go E** fails (continue with the fallback, but report it) |
-| F | projection v1 | — |
-| G | features, schema 2_7, leakage tests, docs, regression test, campaign | **go/no-go G** slope ≈ 0 |
+| F | projection v1 **and §7.1b shared-minutes weighting** | — |
+
+**D0/D1 are an ordering, not a reduction (owner, 2026-09-22).** They are the
+cheapest falsifiable slice of the hypothesis and worth running first, but D, E
+and F are all in scope and a weak D1 does not cancel them. The agent proposed
+narrowing twice; the owner declined twice. Implement the plan.
+| G | features behind the `lineup_features` flag (§8.2), leakage tests, docs, regression test, campaign | **go/no-go G** slope ≈ 0 |
+| G′ | flip the flag's default and bump to schema 2_7 | only after G passes |
 
 Work in small commits per step, with tests. Run `pytest` (the whole suite, ~2.5
 min) and `ruff check` before each commit.
