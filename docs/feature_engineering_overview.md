@@ -61,7 +61,7 @@ Sportsbook Review, Yahoo, refs and injuries) plus
 | Grain | one row per game | one row per (game, snapshot) |
 | Builder | `create_training_data/create_df_to_predict.py` | `create_training_data/create_intermediate_line_df.py` |
 | Script | `scripts/create_train_data/create_train_data.py` | `scripts/create_train_data/create_intermediate_line_train_data.py` |
-| Moment the bet is placed | at close | `TIME_TO_MATCH_MIN` before tip, from `DEFAULT_SNAPSHOT_GRID` = 0, 30, 60, 120, 180, 240, 300, 360, 480, 720 minutes |
+| Moment the bet is placed | at close | `TIME_TO_MATCH_MIN` before tip, from `DEFAULT_SNAPSHOT_GRID` = 0, 30, 60, 120, 180, 240, 300, 360, 420, 480, 540, 600, 660, 720, 840, 960, 1080 minutes (17 horizons, out to 18h) |
 | Line the target is defined against | closing line of the main book | anchor book's (bet365) centred line **at the snapshot** |
 | Market features | wide closing and opening columns per book | snapshot panel read from line-history ticks |
 | Injuries | last report before tip, with fallback to realised absences | last report strictly before the snapshot timestamp |

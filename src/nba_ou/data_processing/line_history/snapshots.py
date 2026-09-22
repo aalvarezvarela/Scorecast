@@ -46,10 +46,29 @@ from .normalization import (
 #: Minutes before tip at which the market is sampled.
 #:
 #: Roughly geometric rather than evenly spaced, because line-movement
-#: information decays in log time. Measured on the store: coverage is ~100% of
-#: game-book pairs out to 12h and collapses to ~60% at 24h, which is why the
-#: grid stops there. 30 and 60 are both kept even though they often resolve to
-#: the same tick -- they bracket the most common betting window.
+#: information decays in log time. 30 and 60 are both kept even though they
+#: often resolve to the same tick -- they bracket the most common betting
+#: window.
+#:
+#: **This tuple is the promotable-horizon contract.** A model slot exists per
+#: ``(target, horizon)``, and the daily build's grid bounds which slots can be
+#: refit: promoting a horizon that is not sampled here produces a slot that
+#: silently never updates. So this grid must be a superset of every horizon any
+#: promoted model was trained at -- see ``training_pipeline.registry
+#: .check_horizon_is_buildable``, which enforces exactly that, and
+#: ``tests/test_snapshot_grid_and_windows.py``.
+#:
+#: The 17 entries are the horizons present in the schema-2.5 intermediate
+#: dataset (``intermediate_line_data_2_5_20260613.csv``), which was already
+#: built with this grid passed explicitly via ``--snapshot-grid``. The default
+#: now states what that build actually did, so the daily build and the training
+#: data agree without anyone remembering a flag.
+#:
+#: Coverage falls off past 12h but does not collapse, measured on that build as
+#: games carrying a row at each horizon, against 8,902 at T-0: 720 -> 95.8%,
+#: 840 -> 93.1%, 960 -> 87.6%, 1080 -> 79.5%. The grid stops at 1080 (18h)
+#: because coverage reaches ~60% at 24h, where a longer lead would be a biased
+#: sample of well-covered games rather than more information.
 #:
 #: ``0`` is the closing snapshot: bet as late as the market allows. It is not
 #: literally tip-off -- ``fetch_pregame_ticks`` already refuses anything inside
@@ -64,6 +83,8 @@ from .normalization import (
 #: rows, so an unwanted horizon is removed with a filter on
 #: ``TIME_TO_MATCH_MIN`` -- no rebuild required -- whereas adding one back means
 #: regenerating the whole dataset. Over-sampling here is the cheap direction.
+#: The cost is paid in as-of reads at build time: with ``DEFAULT_WINDOWS`` the
+#: extended grid goes from 40 horizons to 61 (x1.5).
 DEFAULT_SNAPSHOT_GRID: tuple[int, ...] = (
     0,
     30,
@@ -73,8 +94,15 @@ DEFAULT_SNAPSHOT_GRID: tuple[int, ...] = (
     240,
     300,
     360,
+    420,
     480,
+    540,
+    600,
+    660,
     720,
+    840,
+    960,
+    1080,
 )
 
 #: Per-market sigma for the -110 centering. Moneyline has no line to center.

@@ -1,131 +1,222 @@
+"""Refit every enabled slot from its spec and stage the result.
+
+    python scripts/retrain_prediction_models.py
+    python scripts/retrain_prediction_models.py --slot 2_5/line_error/t0000/main
+
+Each slot's ``channels/config.json`` names the spec to use, and that spec --
+not yesterday's model -- supplies the features, the cleaning thresholds and the
+hyperparameters. Nothing here can change a configuration; adopting a new one is
+``python -m training_pipeline.promote <run_dir> --to-s3``.
+
+The staged build does not serve until ``scripts/promote_build.py --execute``
+flips the production pointer, so a bad refit is visible before it reaches
+anything.
+"""
+
+import argparse
+import getpass
 import os
+import sys
+from collections import defaultdict
 from datetime import datetime
-from pathlib import Path
 from zoneinfo import ZoneInfo
 
-import pandas as pd
 from nba_ou.config.settings import SETTINGS
-from nba_ou.create_training_data.create_df_to_predict import create_df_to_predict
-from nba_ou.modeling.retraining import (
-    retrain_model_to_staging_with_inferred_settings,
+from nba_ou.modeling.refit import (
+    TrainingFrame,
+    TrainingFrameUnavailable,
+    model_bytes_of,
+    refit_from_spec,
+    resolve_training_frame,
+)
+from nba_ou.modeling.registry_paths import Channel, ModelSlot, parse_horizon
+from nba_ou.modeling.registry_store import (
+    SlotNotPromotedError,
+    resolve_config_spec,
+    set_build_channel,
+    write_build,
 )
 from nba_ou.utils.s3_models import make_s3_client
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-TRAIN_DATA_DIR = PROJECT_ROOT / "data" / "train_data"
 TODAY_TIMEZONE = ZoneInfo("Europe/Madrid")
-XGB_STATIC_PARAMS = {
-    "booster": "gbtree",
-    "tree_method": "hist",
-    "objective": "reg:squarederror",
-    "eval_metric": "mae",
-    "random_state": 16,
-    "n_jobs": -1,
-    "verbosity": 0,
-}
-DATE_COLUMN = "GAME_DATE"
-MINIMUM_LINE_VALUE = 100.0
+
+
+def configure_tqdm_for_environment() -> None:
+    """Keep local tqdm behaviour intact while avoiding noisy CI logs.
+
+    tqdm reads ``TQDM_*`` at bar-creation time, so setting it here disables
+    downstream bars without touching their call sites. Set
+    ``NBA_OU_GITHUB_ACTIONS_TQDM=keep`` to preserve them in a specific run.
+    """
+    mode = os.getenv("NBA_OU_GITHUB_ACTIONS_TQDM", "disable").strip().lower()
+    if os.getenv("GITHUB_ACTIONS", "").lower() == "true" and mode != "keep":
+        os.environ.setdefault("TQDM_DISABLE", "1")
 
 
 def _today_limit_date() -> str:
     return datetime.now(TODAY_TIMEZONE).strftime("%Y-%m-%d")
 
 
-def _create_training_dataframe_for_today(limit_date: str) -> tuple[pd.DataFrame, Path]:
-    df_train = create_df_to_predict(
-        todays_prediction=False,
-        recent_limit_to_include=limit_date,
-        older_season_limit=None,
+def _current_user() -> str | None:
+    try:
+        return getpass.getuser()
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _parse_slot(value: str, *, root: str) -> ModelSlot:
+    parts = [part for part in value.split("/") if part]
+    if len(parts) == 3:
+        parts.append("main")
+    if len(parts) != 4:
+        raise SystemExit(
+            "--slot must be 'schema_version/target/horizon/variant' "
+            f"(variant optional). Got {value!r}."
+        )
+    schema_version, target, horizon, variant = parts
+    return ModelSlot(
+        schema_version=schema_version,
+        target=target,
+        horizon_minutes=parse_horizon(horizon),
+        variant=variant,
+        root=root,
     )
 
-    TRAIN_DATA_DIR.mkdir(parents=True, exist_ok=True)
-    output_path = (
-        TRAIN_DATA_DIR
-        / f"all_odds_training_data_until_{pd.to_datetime(limit_date).strftime('%Y%m%d')}.csv"
+
+def _build_arg_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument(
+        "--slot",
+        action="append",
+        default=None,
+        help="Refit this slot only; repeatable. Default: every enabled slot.",
     )
-    df_train.to_csv(output_path, index=False)
-    return df_train, output_path
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Report what would be refitted without fitting or writing.",
+    )
+    return parser
 
 
-def configure_tqdm_for_environment() -> None:
-    """
-    Keep local tqdm behavior intact while avoiding noisy GitHub Actions logs.
-
-    tqdm reads `TQDM_*` environment variables when progress bars are created, so
-    setting `TQDM_DISABLE=1` here disables downstream bars in CI without
-    touching their call sites.
-
-    Set `NBA_OU_GITHUB_ACTIONS_TQDM=keep` to preserve normal tqdm output inside
-    GitHub Actions for a specific workflow run.
-    """
-    github_actions_tqdm_mode = os.getenv(
-        "NBA_OU_GITHUB_ACTIONS_TQDM", "disable"
-    ).strip().lower()
-
-    if (
-        os.getenv("GITHUB_ACTIONS", "").lower() == "true"
-        and github_actions_tqdm_mode != "keep"
-    ):
-        os.environ.setdefault("TQDM_DISABLE", "1")
-
-
-def main() -> None:
+def main() -> int:
     configure_tqdm_for_environment()
-    limit_date = _today_limit_date()
-    configured_prefixes = SETTINGS.prediction_model_prefixes
-    if not configured_prefixes:
-        raise ValueError(
-            "No prediction model prefixes configured in [PredictionModels] "
-            "S3_MODEL_PREFIXES."
-        )
+    args = _build_arg_parser().parse_args()
 
-    print(f"Creating training dataframe up to {limit_date}")
-    df_train, output_path = _create_training_dataframe_for_today(limit_date)
-    print(f"Training dataframe saved to {output_path}")
-    print(f"Training dataframe rows: {len(df_train)}")
-
-    s3_client = make_s3_client(
-        profile=SETTINGS.s3_aws_profile,
-        region=SETTINGS.s3_aws_region,
+    root = SETTINGS.s3_models_prefix or "models/"
+    slots = (
+        [_parse_slot(value, root=root) for value in args.slot]
+        if args.slot
+        else SETTINGS.prediction_model_slots
     )
-    bucket = SETTINGS.s3_bucket
 
-    for prefix in configured_prefixes:
-        print(f"Retraining {prefix}")
-        bundle = retrain_model_to_staging_with_inferred_settings(
-            df_train,
-            production_prefix=prefix,
-            date_column=DATE_COLUMN,
-            minimum_line_value=MINIMUM_LINE_VALUE,
-            xgb_static_params=XGB_STATIC_PARAMS,
-            s3_client=s3_client,
-            bucket=bucket,
-        )
-        training_metrics = bundle.metadata.training_metrics
-        sample_weight_lambda = None
-        sample_weight_lambda_bounds = None
-        if training_metrics is not None:
-            best_params = training_metrics.best_params or {}
-            sample_weight_lambda = best_params.get("sample_weight_lambda")
-            sample_weight_lambda_bounds = (
-                training_metrics.sample_weight_lambda_bounds
-            )
-
+    if not slots:
+        # A valid state, not an error: the registry has to be runnable before
+        # the first configuration is promoted.
         print(
-            "Staged retrained bundle: "
-            f"prefix={prefix}, staging_prefix={bundle.staging_prefix}, "
-            f"model_key={bundle.model_key}, meta_key={bundle.meta_key}, "
-            f"train_games={bundle.train_games}"
+            "No model slots enabled in [PredictionModels] ENABLED_MODELS. "
+            "Nothing to retrain."
         )
-        if sample_weight_lambda is not None:
-            print(
-                "Recency decay: "
-                f"enabled (sample_weight_lambda={sample_weight_lambda}, "
-                f"sample_weight_lambda_bounds={sample_weight_lambda_bounds})"
+        return 0
+
+    s3 = make_s3_client(profile=SETTINGS.s3_aws_profile, region=SETTINGS.s3_aws_region)
+    bucket = SETTINGS.s3_bucket
+    actor = _current_user()
+    limit_date = _today_limit_date()
+
+    print(f"Refitting {len(slots)} slot(s) up to {limit_date} in {bucket}\n")
+
+    # One frame per dataset flavour, shared by every slot that wants it: the
+    # marginal cost of an extra slot should be one fit, not one dataset build.
+    frames: dict[tuple[str, str], TrainingFrame] = {}
+    specs = {}
+    for slot in slots:
+        try:
+            specs[slot.describe()] = resolve_config_spec(
+                s3_client=s3, bucket=bucket, slot=slot
             )
-        else:
-            print("Recency decay: disabled")
+        except SlotNotPromotedError as exc:
+            print(f"{slot.describe()}\n  skipped: {exc}\n")
+
+    by_dataset: dict[tuple[str, str], list[ModelSlot]] = defaultdict(list)
+    for slot in slots:
+        spec = specs.get(slot.describe())
+        if spec is not None:
+            by_dataset[(spec.identity.dataset_type, slot.schema_version)].append(slot)
+
+    failures = 0
+    staged = 0
+    for (dataset_type, schema_version), group in by_dataset.items():
+        label = f"{dataset_type} / schema {schema_version}"
+        try:
+            if (dataset_type, schema_version) not in frames:
+                if args.dry_run:
+                    print(f"[{label}] would build the training frame")
+                else:
+                    print(f"[{label}] building training frame...")
+                    frames[(dataset_type, schema_version)] = resolve_training_frame(
+                        specs[group[0].describe()], limit_date=limit_date
+                    )
+        except TrainingFrameUnavailable as exc:
+            failures += len(group)
+            print(
+                f"[{label}] unavailable: {exc}\n"
+                f"  skipping {len(group)} slot(s): "
+                f"{', '.join(slot.describe() for slot in group)}\n",
+                file=sys.stderr,
+            )
+            continue
+
+        for slot in group:
+            spec = specs[slot.describe()]
+            print(slot.describe())
+            print(f"  spec       : {spec.spec_id}")
+            if args.dry_run:
+                print("  dry run    : not fitted\n")
+                continue
+            try:
+                result = refit_from_spec(
+                    spec,
+                    slot=slot,
+                    frame=frames[(dataset_type, schema_version)],
+                    fitted_by=actor,
+                )
+                write_build(
+                    s3_client=s3,
+                    bucket=bucket,
+                    slot=slot,
+                    fit=result.fit,
+                    model_bytes=model_bytes_of(result.model),
+                    spec=spec,
+                )
+                set_build_channel(
+                    s3_client=s3,
+                    bucket=bucket,
+                    slot=slot,
+                    channel=Channel.STAGING,
+                    fit_id=result.fit.fit_id,
+                    set_by=actor,
+                    reason="daily refit",
+                )
+            except Exception as exc:  # noqa: BLE001 - one slot must not stop the rest
+                failures += 1
+                print(f"  FAILED     : {exc}\n", file=sys.stderr)
+                continue
+
+            staged += 1
+            print(f"  staged     : {result.fit.fit_id}")
+            print(f"  model_name : {result.fit.model_name}")
+            print(
+                f"  trained on : {result.fit.n_train_games} games "
+                f"({result.fit.train_date_min.date()} .. "
+                f"{result.fit.train_date_max.date()})\n"
+            )
+
+    print(f"{staged} build(s) staged, {failures} failure(s).")
+    if staged and not args.dry_run:
+        print("Promote them with: python scripts/promote_build.py --execute")
+    return 1 if failures else 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

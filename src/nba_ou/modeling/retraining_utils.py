@@ -1,9 +1,6 @@
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass
-from pathlib import Path
-from tempfile import TemporaryDirectory
 from typing import Any
 
 import pandas as pd
@@ -12,18 +9,15 @@ from nba_ou.config.settings import SETTINGS
 from nba_ou.data_processing.missing_data.handle_missing_data import (
     apply_missing_policy,
 )
-from nba_ou.modeling.model_registry import derive_staging_prefix
 from nba_ou.modeling.modeling import (
     ModelBundleMetadata,
     build_recency_sample_weights,
-    save_model_bundle,
 )
 from nba_ou.utils.s3_models import (
     list_s3_objects,
     make_s3_client,
     read_s3_json_object,
     read_s3_object_bytes,
-    upload_file_to_s3,
 )
 from pandas.api.types import is_bool_dtype, is_numeric_dtype
 from xgboost import XGBRegressor
@@ -57,22 +51,10 @@ class RetrainingSettings:
     xgb_params: dict[str, Any]
     sample_weight_lambda: float | None
     sample_weight_lambda_bounds: tuple[float, float] | None
-    source_metadata: ModelBundleMetadata
-
-
-@dataclass(frozen=True)
-class RetrainedModelBundle:
-    """Details about the newly staged retrained bundle."""
-
-    model: XGBRegressor
-    metadata: ModelBundleMetadata
-    bucket: str
-    staging_prefix: str
-    model_key: str
-    meta_key: str
-    target_column: str
-    train_games: int
-    feature_count: int
+    #: Only set by the legacy chain-refit path, which derived each day's
+    #: settings from the previous bundle. A spec-driven refit has a fixed
+    #: reference instead and leaves this None.
+    source_metadata: ModelBundleMetadata | None = None
 
 
 def _resolve_column_name(df: pd.DataFrame, desired_column: str) -> str | None:
@@ -695,111 +677,18 @@ def retrain_model(
     model.fit(X_train, y_train, **fit_kwargs)
     return model
 
-
-def build_updated_retraining_metadata(
-    training_window_df: pd.DataFrame,
-    *,
-    settings: RetrainingSettings,
-) -> ModelBundleMetadata:
-    """Build updated metadata for the newly retrained staging bundle."""
-    source_metadata = settings.source_metadata
-    if source_metadata.training_metrics is None:
-        raise ValueError("Source metadata is missing training_metrics.")
-
-    train_date_min = pd.Timestamp(
-        training_window_df[settings.date_column].min()
-    ).to_pydatetime()
-    train_date_max = pd.Timestamp(
-        training_window_df[settings.date_column].max()
-    ).to_pydatetime()
-    model_version = pd.Timestamp(train_date_max).strftime("%d_%m_%y")
-
-    source_name = (
-        source_metadata.model_info.name
-        or source_metadata.model_info.prediction_source
-        or "production_model"
-    )
-    base_name = re.sub(r"_\d{2}_\d{2}_\d{2}$", "", source_name)
-    model_name = f"{base_name}_{model_version}"
-
-    model_info = source_metadata.model_info.model_copy(
-        update={
-            "name": model_name,
-            "model_version": model_version,
-        }
-    )
-    training_metrics = source_metadata.training_metrics.model_copy(
-        update={
-            "nan_threshold": float(settings.nan_threshold),
-            "max_na_per_row": int(settings.max_na_per_row),
-            "train_games": int(len(training_window_df)),
-            "train_date_min": train_date_min,
-            "train_date_max": train_date_max,
-            "sample_weight_lambda_bounds": settings.sample_weight_lambda_bounds,
-        }
-    )
-
-    return ModelBundleMetadata(
-        model_info=model_info,
-        training_metrics=training_metrics,
-    )
-
-
-def _clear_prefix_files(*, s3_client, bucket: str, prefix: str) -> None:
-    """Delete existing non-directory files under a bundle prefix."""
-    for obj in _non_directory_objects(
-        s3_client=s3_client, bucket=bucket, prefix=prefix
-    ):
-        s3_client.delete_object(Bucket=bucket, Key=obj["Key"])
-
-
-def save_retrained_bundle_to_staging(
-    model: XGBRegressor,
-    *,
-    settings: RetrainingSettings,
-    metadata: ModelBundleMetadata,
-    production_prefix: str,
-    s3_client=None,
-    bucket: str | None = None,
-) -> tuple[str, str, str]:
-    """Save the retrained bundle locally and upload it to the staging S3 prefix."""
-    if s3_client is None:
-        s3_client = make_s3_client(
-            profile=SETTINGS.s3_aws_profile,
-            region=SETTINGS.s3_aws_region,
-        )
-
-    bucket_name = bucket or SETTINGS.s3_bucket
-    staging_prefix = derive_staging_prefix(production_prefix)
-
-    with TemporaryDirectory() as temp_dir:
-        model_path, meta_path = save_model_bundle(
-            model=model,
-            feature_names=settings.feature_names,
-            out_dir=temp_dir,
-            metadata=metadata,
-        )
-
-        _clear_prefix_files(
-            s3_client=s3_client,
-            bucket=bucket_name,
-            prefix=staging_prefix,
-        )
-
-        model_key = f"{staging_prefix.rstrip('/')}/{Path(model_path).name}"
-        meta_key = f"{staging_prefix.rstrip('/')}/{Path(meta_path).name}"
-
-        upload_file_to_s3(
-            s3_client=s3_client,
-            bucket=bucket_name,
-            key=model_key,
-            file_path=str(model_path),
-        )
-        upload_file_to_s3(
-            s3_client=s3_client,
-            bucket=bucket_name,
-            key=meta_key,
-            file_path=str(meta_path),
-        )
-
-    return staging_prefix, model_key, meta_key
+# ---------------------------------------------------------------------------
+# NOTE ON WHAT IS NO LONGER HERE
+#
+# The functions that wrote a refit into S3 -- save_retrained_bundle_to_staging,
+# build_updated_retraining_metadata and their helpers -- are gone. They served
+# the previous layout, in which each day's model was derived from the previous
+# day's bundle and copied between production/, staging/ and archive/. A refit
+# now reads a fixed spec (nba_ou.modeling.refit) and writes an immutable build
+# (nba_ou.modeling.registry_store).
+#
+# The loaders above (load_production_artifacts_from_s3 and friends) still read
+# the OLD layout and are kept only for nba_ou.modeling.meta_learner_training_data,
+# which has not been migrated. They stop working once the old tree is swept into
+# models/retired/.
+# ---------------------------------------------------------------------------

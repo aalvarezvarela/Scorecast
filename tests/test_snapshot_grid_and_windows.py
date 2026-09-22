@@ -65,6 +65,31 @@ def test_the_grid_is_sorted_and_free_of_duplicates():
     assert list(DEFAULT_SNAPSHOT_GRID) == sorted(set(DEFAULT_SNAPSHOT_GRID))
 
 
+#: The horizons present in the schema-2.5 intermediate dataset, and therefore
+#: the set a model can be trained at and promoted to a slot. Kept as a literal
+#: rather than read from the 4.4 GB CSV so the test stays cheap and states the
+#: contract out loud.
+TRAINED_HORIZONS = (
+    0,
+    30,
+    60,
+    120,
+    180,
+    240,
+    300,
+    360,
+    420,
+    480,
+    540,
+    600,
+    660,
+    720,
+    840,
+    960,
+    1080,
+)
+
+
 def test_the_grid_covers_the_hours_a_bettor_actually_uses():
     """3h, 5h and 6h were added so the afternoon window is sampled rather than
     jumped over -- the old grid went straight from 4h to 8h."""
@@ -72,10 +97,33 @@ def test_the_grid_covers_the_hours_a_bettor_actually_uses():
         assert horizon in DEFAULT_SNAPSHOT_GRID
 
 
-def test_the_grid_stops_at_twelve_hours():
-    """Coverage collapses to ~60% of game-book pairs at 24h, so a longer horizon
-    would be a biased sample of well-covered games rather than a longer lead."""
-    assert max(DEFAULT_SNAPSHOT_GRID) == 720
+def test_the_grid_samples_every_horizon_a_model_can_be_promoted_at():
+    """The promotable-horizon contract.
+
+    A slot is one ``(target, horizon)``, and the daily build's grid bounds which
+    slots can be refit -- promote a horizon the build does not sample and the
+    slot silently never updates, which is the failure
+    ``registry.check_horizon_is_buildable`` exists to catch. So the grid must be
+    a SUPERSET of every horizon the training data carries, not merely overlap
+    it. Before this was enforced the default stopped at 720 while campaigns
+    trained at 420, 540, 600, 660, 840, 960 and 1080.
+    """
+    missing = [t for t in TRAINED_HORIZONS if t not in DEFAULT_SNAPSHOT_GRID]
+    assert not missing, (
+        f"horizons {missing} are in the training data but are not sampled by "
+        "the daily build, so a model promoted at them could never refit"
+    )
+
+
+def test_the_grid_stops_at_eighteen_hours():
+    """Coverage falls off with lead time but does not collapse until ~24h.
+
+    Measured on ``intermediate_line_data_2_5_20260613.csv`` as games carrying a
+    row at each horizon, against 8,902 at T-0: 720 -> 95.8%, 840 -> 93.1%,
+    960 -> 87.6%, 1080 -> 79.5%. At 24h it reaches ~60%, where a longer lead
+    buys a biased sample of well-covered games rather than more information.
+    """
+    assert max(DEFAULT_SNAPSHOT_GRID) == 1080
 
 
 def test_windows_include_the_short_end():

@@ -1,34 +1,54 @@
 from datetime import datetime
-from pathlib import Path
 from typing import Literal
 from zoneinfo import ZoneInfo
 
 import numpy as np
 import pandas as pd
 import shap
-from nba_ou.config.odds_columns import total_line_over_col_raw
+from nba_ou.config.odds_columns import (
+    resolve_main_spread_line_col,
+    total_line_over_col_raw,
+)
 from nba_ou.data_processing.missing_data.clean_df_for_training import (
     clean_dataframe_for_training,
 )
 from nba_ou.postgre_db.predictions.create.create_ou_predictions_db import (
     upload_predictions_to_postgre,
 )
-from nba_ou.utils.s3_models import (
-    get_latest_model_bundle_from_prefix,
-    read_s3_json_object,
-    read_s3_object_bytes,
-)
 from xgboost import XGBRegressor
 
-PredictionTarget = Literal["PRED_LINE_ERROR", "TOTAL_POINTS"]
+PredictionTarget = Literal["PRED_LINE_ERROR", "TOTAL_POINTS", "PRED_SPREAD_ERROR"]
 
 PREDICTION_TARGET_LINE_ERROR: PredictionTarget = "PRED_LINE_ERROR"
 PREDICTION_TARGET_TOTAL_POINTS: PredictionTarget = "TOTAL_POINTS"
+PREDICTION_TARGET_SPREAD_ERROR: PredictionTarget = "PRED_SPREAD_ERROR"
 PREDICTION_VALUE_TYPE_TOTAL_POINTS = "TOTAL_POINTS"
 # Keep the stored/database value as DIFF_FROM_LINE for backward compatibility,
 # but use "line_error" as the canonical name in code and model metadata.
 PREDICTION_VALUE_TYPE_LINE_ERROR = "DIFF_FROM_LINE"
 PREDICTION_VALUE_TYPE_DIFF_FROM_LINE = PREDICTION_VALUE_TYPE_LINE_ERROR
+PREDICTION_VALUE_TYPE_SPREAD_ERROR = "SPREAD_ERROR"
+
+#: Targets priced against the totals market, which therefore require a totals
+#: line at prediction time. The spread target requires a spread line instead,
+#: so demanding a totals column for every model would reject it for the wrong
+#: reason.
+TOTALS_TARGETS = frozenset(
+    {PREDICTION_TARGET_LINE_ERROR, PREDICTION_TARGET_TOTAL_POINTS}
+)
+
+#: How far a model may be used from the horizon it was trained for, in minutes.
+#: A T-720 model quietly serving every game at T-60 is invisible without this:
+#: the predictions table records when a prediction RAN, never what the model
+#: was trained FOR.
+DEFAULT_HORIZON_TOLERANCE_MINUTES = 45
+
+#: Map a registry target onto this module's prediction target.
+REGISTRY_TARGET_TO_PREDICTION_TARGET: dict[str, PredictionTarget] = {
+    "line_error": PREDICTION_TARGET_LINE_ERROR,
+    "total_points": PREDICTION_TARGET_TOTAL_POINTS,
+    "spread_error": PREDICTION_TARGET_SPREAD_ERROR,
+}
 
 
 def _resolve_column_name(df: pd.DataFrame, desired_column: str) -> str | None:
@@ -60,16 +80,15 @@ def _prepare_required_features_for_prediction(
     """
     normalized_required = [str(feat) for feat in required_features]
 
-    # Derive mandatory column from config if not provided
-    if mandatory_main_book_col is None:
-        mandatory_main_book_col = total_line_over_col_raw()
-
-    # Check if mandatory column exists
-    main_book_col = _resolve_column_name(df, mandatory_main_book_col)
-    if main_book_col is None:
-        raise ValueError(
-            f"Column '{mandatory_main_book_col}' is mandatory for prediction."
-        )
+    # The anchor line the caller says this market needs. Passing None means
+    # "no line is mandatory" -- not "fall back to the totals line", which would
+    # reject a spread model for lacking a column its market does not have.
+    if mandatory_main_book_col is not None:
+        main_book_col = _resolve_column_name(df, mandatory_main_book_col)
+        if main_book_col is None:
+            raise ValueError(
+                f"Column '{mandatory_main_book_col}' is mandatory for prediction."
+            )
 
     # Resolve all required features with case-insensitive fallback
     resolved_feature_columns: list[str] = []
@@ -262,29 +281,22 @@ def _nested_metadata_value(metadata: dict, *path: str) -> object | None:
     return current
 
 
-def _is_line_error_signature(signature: str) -> bool:
-    """Return True for canonical and legacy aliases of line-error models."""
-    return any(
-        token in signature for token in ("line_error", "error_line", "diff_from_line")
-    )
+def resolve_prediction_target(registry_target: str) -> PredictionTarget:
+    """Map a spec's declared target onto a prediction target.
 
-
-def _infer_prediction_target_from_metadata(metadata: dict) -> PredictionTarget:
-    model_type = str(_nested_metadata_value(metadata, "model", "model_type") or "")
-    prediction_source = str(
-        _nested_metadata_value(metadata, "model", "prediction_source") or ""
-    )
-    model_name = str(_nested_metadata_value(metadata, "model", "name") or "")
-    signature = " ".join(
-        [model_type.lower(), prediction_source.lower(), model_name.lower()]
-    )
-
-    if "total_points" in signature:
-        return PREDICTION_TARGET_TOTAL_POINTS
-    if _is_line_error_signature(signature):
-        return PREDICTION_TARGET_LINE_ERROR
-
-    return PREDICTION_TARGET_LINE_ERROR
+    Replaces the previous ``_infer_prediction_target_from_metadata``, which
+    searched the model's name and type for substrings and **fell back to
+    line-error for anything it did not recognise**. A spread model matched
+    neither token and would have been served as a line-error model with no
+    warning. The target is now declared, so an unknown one raises.
+    """
+    try:
+        return REGISTRY_TARGET_TO_PREDICTION_TARGET[str(registry_target)]
+    except KeyError:
+        known = ", ".join(sorted(REGISTRY_TARGET_TO_PREDICTION_TARGET))
+        raise ValueError(
+            f"Unknown model target {registry_target!r}. Known targets: {known}."
+        ) from None
 
 
 def _resolve_feature_names_from_metadata(metadata: dict) -> list[str] | None:
@@ -310,16 +322,22 @@ def load_and_predict_model_for_nba_games(
     prediction_datetime: datetime | None = None,
     prediction_target: PredictionTarget = PREDICTION_TARGET_LINE_ERROR,
     total_points_pick_line_col: str | None = None,
+    spread_pick_line_col: str | None = None,
+    extra_summary_columns: dict | None = None,
     shap_top_n: int = 20,
 ) -> pd.DataFrame:
     """
-    Predict NBA games using a trained regressor for one of two targets:
-    - PRED_LINE_ERROR: model predicts line error directly
+    Predict NBA games using a trained regressor for one of three targets:
+    - PRED_LINE_ERROR: model predicts the totals residual directly
     - TOTAL_POINTS: model predicts total points directly
+    - PRED_SPREAD_ERROR: model predicts the spread residual (home margin minus
+      the anchor book's home line)
 
     PRED_PICK behavior:
     - PRED_LINE_ERROR mode: OVER if prediction > 0, UNDER if < 0, PUSH if == 0
     - TOTAL_POINTS mode: compares predicted total points against the configured line column
+    - PRED_SPREAD_ERROR mode: HOME if the residual > 0 (the home team beats its
+      own spread), AWAY if < 0, PUSH if == 0
 
     Args:
         df: Input DataFrame containing game data with features
@@ -387,7 +405,11 @@ def load_and_predict_model_for_nba_games(
     ) = _prepare_required_features_for_prediction(
         df_predictable,
         required_features,
-        mandatory_main_book_col=total_points_pick_line_col,
+        mandatory_main_book_col=(
+            None
+            if prediction_target == PREDICTION_TARGET_SPREAD_ERROR
+            else total_points_pick_line_col
+        ),
     )
 
     # Add NaN tracking columns (based on required features only)
@@ -401,18 +423,48 @@ def load_and_predict_model_for_nba_games(
     )
     pick_line: pd.Series | None = None
 
-    main_book_line_col = _resolve_column_name(
-        df_predictable, total_points_pick_line_col
-    )
-    if main_book_line_col is None:
-        raise ValueError(
-            f"Main sportsbook line column '{total_points_pick_line_col}' is mandatory for prediction."
+    if prediction_target in TOTALS_TARGETS:
+        main_book_line_col = _resolve_column_name(
+            df_predictable, total_points_pick_line_col
         )
-    main_book_line = pd.to_numeric(df_predictable[main_book_line_col], errors="coerce")
-    df_predictable["TOTAL_BET365_LINE_AT_PREDICTION"] = main_book_line
-    df_predictable["TOTAL_OVER_UNDER_LINE"] = main_book_line
+        if main_book_line_col is None:
+            raise ValueError(
+                f"Main sportsbook line column '{total_points_pick_line_col}' is mandatory for prediction."
+            )
+        main_book_line = pd.to_numeric(
+            df_predictable[main_book_line_col], errors="coerce"
+        )
+        df_predictable["TOTAL_BET365_LINE_AT_PREDICTION"] = main_book_line
+        df_predictable["TOTAL_OVER_UNDER_LINE"] = main_book_line
 
-    if prediction_target == PREDICTION_TARGET_LINE_ERROR:
+    if prediction_target == PREDICTION_TARGET_SPREAD_ERROR:
+        # The spread residual is defined against the anchor book's line, so
+        # there is deliberately no fallback to another book: answering with a
+        # different book's spread would change what the target MEANS row by
+        # row. See odds_columns.resolve_main_spread_line_col.
+        spread_line_col = spread_pick_line_col or resolve_main_spread_line_col(
+            df_predictable
+        )
+        resolved_spread_col = (
+            _resolve_column_name(df_predictable, spread_line_col)
+            if spread_line_col
+            else None
+        )
+        if resolved_spread_col is None:
+            raise ValueError(
+                f"Spread line column '{spread_line_col}' is mandatory when "
+                f"prediction_target={PREDICTION_TARGET_SPREAD_ERROR}."
+            )
+        spread_line = pd.to_numeric(
+            df_predictable[resolved_spread_col], errors="coerce"
+        )
+        df_predictable["SPREAD_LINE_AT_PREDICTION"] = spread_line
+        df_predictable["PRED_SPREAD_ERROR"] = prediction_values
+        # SPREAD_LINE_HOME is the implied home margin, so the model's residual
+        # adds to it to give the predicted margin.
+        df_predictable["PRED_HOME_MARGIN"] = spread_line + prediction_values
+
+    elif prediction_target == PREDICTION_TARGET_LINE_ERROR:
         df_predictable["PRED_LINE_ERROR"] = prediction_values
         df_predictable["PRED_TOTAL_POINTS"] = (
             df_predictable["TOTAL_OVER_UNDER_LINE"] + df_predictable["PRED_LINE_ERROR"]
@@ -428,10 +480,25 @@ def load_and_predict_model_for_nba_games(
     else:
         raise ValueError(
             "prediction_target must be one of: "
-            f"{PREDICTION_TARGET_LINE_ERROR}, {PREDICTION_TARGET_TOTAL_POINTS}"
+            f"{PREDICTION_TARGET_LINE_ERROR}, {PREDICTION_TARGET_TOTAL_POINTS}, "
+            f"{PREDICTION_TARGET_SPREAD_ERROR}"
         )
 
-    if prediction_target == PREDICTION_TARGET_TOTAL_POINTS:
+    if prediction_target == PREDICTION_TARGET_SPREAD_ERROR:
+        pred_spread_error = pd.to_numeric(
+            df_predictable["PRED_SPREAD_ERROR"], errors="coerce"
+        )
+        # A positive residual means the home team beats its own spread.
+        df_predictable["PRED_PICK"] = np.select(
+            [
+                pred_spread_error > 0,
+                pred_spread_error < 0,
+                pred_spread_error == 0,
+            ],
+            ["HOME", "AWAY", "PUSH"],
+            default=None,
+        )
+    elif prediction_target == PREDICTION_TARGET_TOTAL_POINTS:
         if pick_line is None:
             pick_line_col = _resolve_column_name(
                 df_predictable, total_points_pick_line_col
@@ -466,18 +533,20 @@ def load_and_predict_model_for_nba_games(
             default=None,
         )
 
-    df_predictable["PREDICTION_VALUE_TYPE"] = (
-        PREDICTION_VALUE_TYPE_TOTAL_POINTS
-        if prediction_target == PREDICTION_TARGET_TOTAL_POINTS
-        else PREDICTION_VALUE_TYPE_LINE_ERROR
-    )
+    df_predictable["PREDICTION_VALUE_TYPE"] = {
+        PREDICTION_TARGET_TOTAL_POINTS: PREDICTION_VALUE_TYPE_TOTAL_POINTS,
+        PREDICTION_TARGET_SPREAD_ERROR: PREDICTION_VALUE_TYPE_SPREAD_ERROR,
+    }.get(prediction_target, PREDICTION_VALUE_TYPE_LINE_ERROR)
 
     df_predictable.rename(columns={"MATCHUP_TEAM_HOME": "MATCHUP"}, inplace=True)
     df_predictable["GAME_DATE"] = (
         df_predictable["GAME_DATE"].astype(str).str.split("T").str[0]
     )
 
-    # Sheet 1: Summary DataFrame
+    # Sheet 1: Summary DataFrame.
+    # The market-specific block differs by target: a spread model never
+    # produces a totals line or a totals residual, so asking for those columns
+    # would raise rather than simply leave them empty.
     summary_columns = [
         "GAME_ID",
         "SEASON_TYPE",
@@ -486,10 +555,21 @@ def load_and_predict_model_for_nba_games(
         "TEAM_NAME_TEAM_HOME",
         "TEAM_NAME_TEAM_AWAY",
         "PREDICTION_VALUE_TYPE",
-        "TOTAL_OVER_UNDER_LINE",
-        "TOTAL_BET365_LINE_AT_PREDICTION",
-        "PRED_LINE_ERROR",
-        "PRED_TOTAL_POINTS",
+    ]
+    if prediction_target == PREDICTION_TARGET_SPREAD_ERROR:
+        summary_columns += [
+            "SPREAD_LINE_AT_PREDICTION",
+            "PRED_SPREAD_ERROR",
+            "PRED_HOME_MARGIN",
+        ]
+    else:
+        summary_columns += [
+            "TOTAL_OVER_UNDER_LINE",
+            "TOTAL_BET365_LINE_AT_PREDICTION",
+            "PRED_LINE_ERROR",
+            "PRED_TOTAL_POINTS",
+        ]
+    summary_columns += [
         "PRED_PICK",
         "NA_COLUMNS_COUNT",
         "NA_COLUMNS_NAMES",
@@ -571,7 +651,12 @@ def load_and_predict_model_for_nba_games(
     )
 
     # Compute SHAP confidence metrics per row
-    pred_margins = df_summary["PRED_LINE_ERROR"]
+    # The signed edge this model is expressing, whichever market it is in.
+    pred_margins = df_summary[
+        "PRED_SPREAD_ERROR"
+        if prediction_target == PREDICTION_TARGET_SPREAD_ERROR
+        else "PRED_LINE_ERROR"
+    ]
     confidence_metrics = shap_df.apply(
         lambda row: pd.Series(
             compute_shap_confidence_metrics(
@@ -588,105 +673,139 @@ def load_and_predict_model_for_nba_games(
         df_summary[col] = confidence_metrics[col].values
 
     # Drop rows with NaN in the model's predicted target before saving to database
-    if prediction_target == PREDICTION_TARGET_TOTAL_POINTS:
-        df_summary_clean = df_summary.dropna(subset=["PRED_TOTAL_POINTS"])
-    else:
-        df_summary_clean = df_summary.dropna(subset=["PRED_LINE_ERROR"])
+    target_column = {
+        PREDICTION_TARGET_TOTAL_POINTS: "PRED_TOTAL_POINTS",
+        PREDICTION_TARGET_SPREAD_ERROR: "PRED_SPREAD_ERROR",
+    }.get(prediction_target, "PRED_LINE_ERROR")
+    df_summary_clean = df_summary.dropna(subset=[target_column])
+
+    # Applied BEFORE the upload: these identify which slot, spec and build
+    # produced the row, and the upload happens here rather than in the caller.
+    if extra_summary_columns:
+        for column, value in extra_summary_columns.items():
+            df_summary_clean[column] = value
 
     upload_predictions_to_postgre(df_summary_clean)
 
     return df_summary_clean
 
 
-def load_s3_model_and_predict(
+def select_rows_for_horizon(
+    df: pd.DataFrame,
+    *,
+    horizon_minutes: int | None,
+    tolerance_minutes: int = DEFAULT_HORIZON_TOLERANCE_MINUTES,
+    time_to_match_col: str = "TIME_TO_MATCH_MINUTES",
+) -> pd.Series:
+    """Which rows this model is entitled to predict.
+
+    A model trained on the T-360 snapshot has only ever seen a market six hours
+    from tip; using it at T-60 is a different question asked of the same
+    booster. Nothing in the stored output would reveal that, because
+    ``TIME_TO_MATCH_MINUTES`` records when the prediction RAN and there was no
+    field for what the model was trained FOR -- which is why the fit now
+    carries its horizon and this check exists.
+
+    A pooled model (``horizon_minutes is None``) conditions on time-to-tip
+    itself and is exempt. A T-0 model is "at or after the last snapshot", so it
+    has no upper bound.
+    """
+    if horizon_minutes is None or time_to_match_col not in df.columns:
+        return pd.Series(True, index=df.index)
+
+    minutes = pd.to_numeric(df[time_to_match_col], errors="coerce")
+    if horizon_minutes == 0:
+        return (minutes <= tolerance_minutes) | minutes.isna()
+    within = (minutes - horizon_minutes).abs() <= tolerance_minutes
+    return within | minutes.isna()
+
+
+def load_registry_model_and_predict(
     *,
     s3_client,
     bucket: str,
-    prefix: str,
+    slot,
     df: pd.DataFrame,
     prediction_datetime: datetime | None = None,
     total_points_pick_line_col: str | None = None,
+    spread_pick_line_col: str | None = None,
     shap_top_n: int = 20,
+    horizon_tolerance_minutes: int = DEFAULT_HORIZON_TOLERANCE_MINUTES,
+    channel=None,
 ) -> pd.DataFrame:
-    """
-    Discover a model bundle from an S3 prefix and generate predictions.
+    """Predict with whatever a slot's channel currently points at.
+
+    Resolution is ``channels/production.json -> fit -> spec -> model``: the
+    served model is interpreted by the spec ITS OWN FIT names, never by the
+    slot's current configuration. That is what lets a new configuration be
+    adopted without disturbing production.
 
     Args:
-        s3_client: Boto3 S3 client
-        bucket: S3 bucket name
-        prefix: S3 prefix to search for model
-        df: DataFrame containing game data to predict
-        prediction_datetime: Timestamp for predictions (defaults to now in Europe/Madrid)
-        total_points_pick_line_col: Line column used for PRED_PICK when
-            prediction_target is TOTAL_POINTS. Defaults to main sportsbook from config.
-        shap_top_n: Number of top positive/negative SHAP contributors to store.
-
-    Returns:
-        DataFrame containing predictions
-
-    Raises:
-        FileNotFoundError: If no valid model bundle is found in the prefix
+        slot: ``nba_ou.modeling.registry_paths.ModelSlot`` to serve.
+        channel: which channel to read; defaults to production.
     """
-    bundle = get_latest_model_bundle_from_prefix(
+    from nba_ou.modeling.registry_paths import Channel
+    from nba_ou.modeling.registry_store import resolve_channel
+
+    resolved = resolve_channel(
         s3_client=s3_client,
         bucket=bucket,
-        prefix=prefix,
+        slot=slot,
+        channel=channel or Channel.PRODUCTION,
     )
+    spec = resolved.spec
+    fit = resolved.fit
 
-    if bundle is None:
-        raise FileNotFoundError(f"No model bundle found in S3 prefix: {prefix}")
+    prediction_target = resolve_prediction_target(spec.identity.target)
 
-    metadata = read_s3_json_object(
-        s3_client=s3_client,
-        bucket=bucket,
-        key=bundle.meta_key,
+    eligible = select_rows_for_horizon(
+        df,
+        horizon_minutes=spec.identity.horizon_minutes,
+        tolerance_minutes=horizon_tolerance_minutes,
     )
-    model_info = metadata.get("model")
-    training_metrics = metadata.get("training_metrics")
-    if not isinstance(model_info, dict):
-        raise ValueError(f"Metadata file {bundle.meta_key} is missing model metadata")
-    if training_metrics is None:
-        training_metrics = {}
-    if not isinstance(training_metrics, dict):
-        raise ValueError(
-            f"Metadata file {bundle.meta_key} has invalid training_metrics metadata"
+    if not bool(eligible.any()):
+        print(
+            f"  {slot.describe()}: no rows within "
+            f"{horizon_tolerance_minutes} min of the model's horizon "
+            f"({spec.identity.horizon_minutes}); skipping."
+        )
+        return pd.DataFrame()
+    skipped = int((~eligible).sum())
+    if skipped:
+        print(
+            f"  {slot.describe()}: skipping {skipped} row(s) outside the "
+            f"model's horizon (T-{spec.identity.horizon_minutes})."
         )
 
-    model_bytes = read_s3_object_bytes(
-        s3_client=s3_client,
-        bucket=bucket,
-        key=bundle.model_key,
-    )
     regressor = XGBRegressor()
-    regressor.load_model(bytearray(model_bytes))
+    regressor.load_model(bytearray(resolved.model_bytes))
 
-    model_name = str(model_info.get("name") or Path(bundle.model_key).stem)
-    model_type = str(model_info.get("model_type") or "unknown")
-    model_version = str(model_info.get("model_version") or "unknown")
-    prediction_source = str(model_info.get("prediction_source") or model_type)
-    training_code_tag = str(model_info.get("training_code_tag") or "")
-    required_features = _resolve_feature_names_from_metadata(metadata)
-    if not required_features:
-        raise ValueError(
-            f"Metadata file {bundle.meta_key} is missing feature names metadata"
-        )
-
-    prediction_target = _infer_prediction_target_from_metadata(metadata)
-
-    # Generate predictions
-    return load_and_predict_model_for_nba_games(
-        df=df,
+    predictions = load_and_predict_model_for_nba_games(
+        df=df.loc[eligible],
         regressor=regressor,
-        model_name=model_name,
-        model_type=model_type,
-        model_version=model_version,
-        required_features=[str(feat) for feat in required_features],
-        prediction_source=prediction_source,
-        training_code_tag=training_code_tag or None,
-        train_date_min=training_metrics.get("train_date_min"),
-        train_date_max=training_metrics.get("train_date_max"),
+        model_name=fit.model_name,
+        model_type=f"{spec.identity.target}_{slot.horizon_label}",
+        model_version=fit.train_date_max.strftime("%d_%m_%y"),
+        required_features=list(spec.features.feature_names),
+        prediction_source=fit.model_name,
+        training_code_tag=spec.provenance.training_version,
+        train_date_min=fit.train_date_min.isoformat(),
+        train_date_max=fit.train_date_max.isoformat(),
         prediction_datetime=prediction_datetime,
         prediction_target=prediction_target,
         total_points_pick_line_col=total_points_pick_line_col,
+        spread_pick_line_col=spread_pick_line_col,
+        # Passed in rather than attached to the returned frame: the upload to
+        # Postgres happens INSIDE load_and_predict_model_for_nba_games, so
+        # anything added here afterwards would never be stored.
+        extra_summary_columns={
+            "MODEL_TARGET": str(spec.identity.target),
+            "MODEL_HORIZON_MINUTES": spec.identity.horizon_minutes,
+            "MODEL_SCHEMA_VERSION": spec.identity.schema_version,
+            "MODEL_VARIANT": spec.identity.variant,
+            "SPEC_ID": spec.spec_id,
+            "FIT_ID": fit.fit_id,
+        },
         shap_top_n=shap_top_n,
     )
+    return predictions

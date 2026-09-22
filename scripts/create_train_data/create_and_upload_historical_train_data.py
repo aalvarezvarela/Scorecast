@@ -13,8 +13,13 @@ import os
 from datetime import datetime, timedelta
 from io import BytesIO
 
+from nba_ou.config.dataset_versions import TRAINING_DATA_SCHEMA_VERSION
 from nba_ou.config.settings import SETTINGS
 from nba_ou.create_training_data.create_df_to_predict import create_df_to_predict
+from nba_ou.create_training_data.train_data_store import (
+    historical_filename,
+    train_data_key,
+)
 from nba_ou.utils.s3_models import make_s3_client, upload_bytes_to_s3
 
 
@@ -40,8 +45,13 @@ def main() -> None:
 
     print(f"Training data created. Shape: {df_train.shape}")
 
-    filename = (
-        f"historical_training_data_until_{thirty_days_ago.strftime('%Y%m%d')}.parquet"
+    # The schema version goes in the name and in the prefix. This script and
+    # create_train_data.py call the same create_df_to_predict, so the frame
+    # landing in S3 has exactly the schema that script stamps onto its CSVs --
+    # it was simply not being recorded here.
+    filename = historical_filename(
+        schema_version=TRAINING_DATA_SCHEMA_VERSION,
+        limit_date=thirty_days_ago.strftime("%Y%m%d"),
     )
 
     # Convert object columns to string to avoid Parquet type errors
@@ -60,8 +70,10 @@ def main() -> None:
     bucket = os.getenv("S3_BUCKET") or SETTINGS.s3_bucket
     profile = SETTINGS.s3_aws_profile
 
-    # S3 key: train_data/filename
-    s3_key = f"train_data/{filename}"
+    # S3 key: train_data/<schema_version>/<filename>
+    s3_key = train_data_key(
+        schema_version=TRAINING_DATA_SCHEMA_VERSION, filename=filename
+    )
 
     print(f"  Bucket: {bucket}")
     print(f"  Key: {s3_key}")
