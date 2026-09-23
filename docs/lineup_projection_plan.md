@@ -795,6 +795,76 @@ applies a `last_seen > team_games_played - recent_games` cutoff; anything
 comparing against it must apply the same rule or it is not comparing like with
 like.
 
+### 7.1d p_out wired: the first non-null result (2026-09-23)
+
+`data_processing/lineups/availability.py` builds the `PlayerNight` rosters from
+box-score history and `injury_status.news.chance_out`, with the same temporal
+contract as `rating_gate`. Measured on **2021-22 to 2024-25**, 5,235 games; the
+rotation backfill for 2025-26 is irrelevant to all of it, since the rating
+cache stops at `last_season: 2024`.
+
+**Availability information improves the projection.**
+
+| | MAE on the same games |
+|---|---|
+| Phase-C gate | 14.716 |
+| F v1, `p_out = 0` | 14.710 |
+| **F v1 with the real report** | **14.519** |
+
+73.3% of team-games carry at least one certain absence, so the counterfactual
+has content nearly everywhere. Only **7.7%** branch on a genuinely doubtful
+player: the report holds 42,615 `out` listings against 1,374 `questionable` and
+149 `doubtful`, so scenario spread is rare and `total_sd` is 0 at the median.
+**The counterfactual, not the scenario spread, is the payload.**
+
+**`absence_impact_points` is the first column in this project that is not
+null.** Regressing `LINE_ERROR` on it, against the plan's own gate-G quantity:
+
+| Regressor | n | slope | 95% CI |
+|---|---|---|---|
+| `proj_total - line` (the plan's gate G) | 5,156 | +0.077 | [-0.034, +0.185] |
+| **`absence_impact_points`** | 5,156 | **+0.291** | **[+0.100, +0.472]** |
+
+A slope near 0.29 says roughly **29% of the modelled point impact of tonight's
+absences is not in the closing line**. The sign is positive in all four seasons
+(+0.26, +0.10, +0.28, +0.54) and the strongest season, 2024-25, is the one
+**outside** the window the lambdas were tuned on: +0.536, 95% CI [+0.195,
++0.889], significant on its own.
+
+**It does not yet clear the vig, and one diagnostic points the wrong way.**
+Betting OVER on a positive impact:
+
+| Filter | n | Directional accuracy | 95% CI |
+|---|---|---|---|
+| all | 5,156 | 51.59% | [50.23, 52.95] |
+| \|impact\| >= 1 | 2,776 | 52.34% | [50.48, 54.20] |
+| \|impact\| >= 2 | 1,667 | 52.73% | [50.33, 55.13] |
+| \|impact\| >= 3 | 1,008 | 51.09% | [48.01, 54.18] |
+| \|impact\| >= 4 | 608 | 50.49% | [46.52, 54.47] |
+
+Break-even at -110 is 52.38%; no interval's lower bound clears it. Worse, the
+accuracy **falls** as the threshold rises. A real edge should concentrate where
+the signal is strongest, not dilute, so the slope is likelier carried by the
+bulk of small-impact games than by the large ones. Read it as a genuine
+correlation that is not yet an exploitable one.
+
+**Two things this changes.**
+
+- The right feature is the **counterfactual**, not the level. The plan named
+  `LU_PROJ_TOTAL_MINUS_LINE_BEFORE` the probable key input for `LINE_ERROR`; on
+  this evidence it is not, and `LU_ABSENCE_IMPACT_PTS_BEFORE` is.
+- The fresh-absence subset is **not** where the effect lives. On the impact
+  column the non-fresh games carry it (+0.403, CI [+0.176, +0.645]) while the
+  fresh ones do not separate (+0.264, CI [-0.116, +0.609]). That is a different
+  story from the 53.4% OVER finding in section 5, which was about freshness.
+  Both can be true; they are not the same effect, and neither should be used to
+  argue for the other.
+
+**What it justifies.** Phases D and E are worth building. The impact column is
+computed from a crude proportional minutes redistribution; a real minutes model
+(E) is exactly what would sharpen it, and this is the first evidence that
+sharpening it is worth the effort.
+
 ### 7.2 v2 (optional): rotation template
 
 Model which fives share the floor from recent substitution patterns:
