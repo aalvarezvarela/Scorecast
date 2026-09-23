@@ -29,8 +29,23 @@ import pandas as pd
 
 from .game_projection import PlayerNight
 
-#: Team games behind a player's recent-minutes average.
-RECENT_GAMES = 5
+#: Team games behind a player's recent-minutes average, and by default the
+#: window a player may go unseen before leaving the roster.
+#:
+#: Swept 2026-09-23 on projection MAE, fitted on 2021-2023 and scored on
+#: 2024-25, with the two windows separated. **The averaging window and the
+#: minutes MAE disagree**: a 3-game average predicts individual minutes best
+#: (5.73 against 6.70 at 15) and the game total worst. Short windows track a
+#: changing role but overreact to one blowout or one foul-trouble night, and
+#: that noise accumulates in the team aggregate instead of averaging out. Both
+#: sweep windows agree 5 was too short; the fitting window's optimum is 10 and
+#: the test season's is 20, so 10 is taken -- picking 20 would be selecting on
+#: the evaluation set.
+#:
+#: The roster window carries no consistent signal at all: the fitting window
+#: prefers 40 and the test season prefers 10, in every row. 10 is kept as the
+#: only value that is never poor on either.
+RECENT_GAMES = 10
 
 _TEAM_REQUIRED = {"GAME_ID", "TEAM_ID", "GAME_DATE"}
 _PLAYER_REQUIRED = _TEAM_REQUIRED | {"PLAYER_ID", "MIN"}
@@ -68,6 +83,7 @@ def build_player_nights(
     df_players: pd.DataFrame,
     p_out: dict[tuple[str, str, str], float] | None = None,
     recent_games: int = RECENT_GAMES,
+    roster_games: int | None = None,
 ) -> dict[tuple[str, str], list[PlayerNight]]:
     """``(game_id, team_id) ->`` the roster expected to share tonight's minutes.
 
@@ -75,9 +91,18 @@ def build_player_nights(
     convention the report itself uses: it lists the players with something to
     say about them, not the squad, so silence means available rather than
     unknown.
+
+    ``recent_games`` averages the minutes; ``roster_games`` decides how long a
+    player stays on the roster without appearing, and defaults to it. They are
+    separable because they pull in opposite directions -- a short average
+    tracks a changing role, a long one is less noisy -- and holding them
+    together makes a sweep of either uninterpretable.
     """
     if recent_games <= 0:
         raise ValueError("recent_games must be positive")
+    roster_games = recent_games if roster_games is None else roster_games
+    if roster_games <= 0:
+        raise ValueError("roster_games must be positive")
     if missing := _TEAM_REQUIRED - set(df_team.columns):
         raise ValueError(f"Team games are missing {sorted(missing)}")
     if missing := _PLAYER_REQUIRED - set(df_players.columns):
@@ -122,7 +147,7 @@ def build_player_nights(
     for date in sorted(set(targets["GAME_DATE"]) | set(history_by_date)):
         for row in targets.loc[targets["GAME_DATE"].eq(date)].itertuples(index=False):
             team = row.TEAM_ID
-            cutoff = games_played[team] - recent_games
+            cutoff = games_played[team] - roster_games
             roster = [
                 player
                 for player in rosters[team]

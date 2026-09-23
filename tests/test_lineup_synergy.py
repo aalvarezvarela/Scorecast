@@ -8,6 +8,7 @@ from nba_ou.data_processing.lineups.synergy import (
     PAIRS_ON_COURT,
     SynergyAccumulator,
     expected_shared_minutes,
+    projected_five_synergy,
     stint_residuals,
     team_synergy,
 )
@@ -267,3 +268,35 @@ class TestTeamSynergy:
         with_all = team_synergy(accumulator, list(FIVE), DAY)
         without_e = team_synergy(accumulator, ["a", "b", "c", "d"], DAY)
         assert with_all != pytest.approx(without_e)
+
+
+class TestExactFive:
+    def test_the_exact_five_value_comes_back_with_its_evidence(self):
+        """Section 6.1 wants both values emitted, not one chosen for the model."""
+        accumulator = SynergyAccumulator(shrinkage_possessions=0.001)
+        _seed_league(accumulator)
+        accumulator.observe(
+            FIVE, residual=4.0, possessions=1000.0, seconds=600.0, date=DAY
+        )
+        value, possessions = projected_five_synergy(accumulator, frozenset(FIVE), DAY)
+        # The five's own deviation, undivided: it is a lineup-level quantity.
+        assert value == pytest.approx(4.0, rel=1e-2)
+        assert possessions == pytest.approx(1000.0, rel=1e-2)
+
+    def test_a_five_that_never_played_together_says_so(self):
+        accumulator = SynergyAccumulator()
+        _seed_league(accumulator)
+        value, possessions = projected_five_synergy(accumulator, frozenset(FIVE), DAY)
+        assert value == 0.0
+        assert possessions == 0.0
+
+    def test_the_evidence_decays_like_everything_else(self):
+        accumulator = SynergyAccumulator(half_life_days=180.0)
+        accumulator.observe(
+            FIVE, residual=4.0, possessions=1000.0, seconds=600.0, date=DAY
+        )
+        _, fresh = projected_five_synergy(accumulator, frozenset(FIVE), DAY)
+        _, later = projected_five_synergy(
+            accumulator, frozenset(FIVE), DAY + pd.Timedelta(days=180)
+        )
+        assert later == pytest.approx(fresh / 2.0, rel=1e-2)
