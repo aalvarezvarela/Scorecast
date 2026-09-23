@@ -755,6 +755,46 @@ between them.
 Same temporal contract as §5: shared-minutes history comes only from games
 before the target date.
 
+### 7.1c Phase F v1 as built (2026-09-23)
+
+`data_processing/lineups/game_projection.py`, 25 unit tests. Two deviations
+from 7.1 above, both deliberate:
+
+**Home court splits rather than adds.** 7.1 writes `+ home_court` on the home
+side only, which raises every projected *total* by that amount. Venue cannot
+move a total in aggregate -- every game has one home side and one away side --
+so it is applied as `+h/2` and `-h/2`, keeping the margin and leaving the total
+alone.
+
+**A calibration term was needed, and it is explicit.** Projecting straight from
+the fitted intercepts under-predicts every total by **2.75 points**. The cause
+is measurement, not modelling: the stint possession count is *estimated*
+(`FGA + 0.44*FTA - OREB + TOV`, unattributed team rebounds unclassified), it
+runs high, so points per 100 come out low -- the fitted `league_ortg` averages
+**111.37** against a game-level implied **113.39**. `project_totals` therefore
+takes a `total_offset` the caller estimates walk-forward. Correcting it here
+keeps the distortion out of the player ratings.
+
+**Validation.** With everyone available (`p_out = 0`), F v1 reproduces the
+phase-C gate almost exactly on 2024-25: **MAE 14.710 against 14.716**, bias
+-0.32 after calibration. That is the expected agreement -- with no absences the
+scenarios collapse to one and the arithmetic is the same -- and it checks the
+new code against the existing implementation.
+
+**This has not yet tested the hypothesis.** `p_out` was zero throughout, so no
+scenario branched and the counterfactual was always null. Wiring `chance_out()`
+from the injury report is the next step and the first real test of F. The
+phase-G dry run on this absence-free version is unchanged from phase C: slope
+-0.082, 95% CI [-0.269, +0.110].
+
+**A harness trap worth recording.** The first measurement made F v1 look worse
+than phase C (15.054 vs 14.716). The cause was the evaluation driver, not the
+module: it never expired players from a team's roster, so long-departed players
+kept diluting the minutes share. `rating_gate.ratings_only_game_projections`
+applies a `last_seen > team_games_played - recent_games` cutoff; anything
+comparing against it must apply the same rule or it is not comparing like with
+like.
+
 ### 7.2 v2 (optional): rotation template
 
 Model which fives share the floor from recent substitution patterns:
