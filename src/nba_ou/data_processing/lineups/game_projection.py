@@ -200,6 +200,16 @@ def enumerate_scenarios(
     return scenarios
 
 
+_AGGREGATE_KEYS = (
+    "home_off",
+    "home_def",
+    "home_pace",
+    "away_off",
+    "away_def",
+    "away_pace",
+)
+
+
 def project_game(
     home_players: list[PlayerNight],
     away_players: list[PlayerNight],
@@ -216,12 +226,16 @@ def project_game(
 
     Returns the probability-weighted mean of each quantity, plus ``total_sd``,
     the weighted standard deviation of the total across scenarios: the
-    projection's own statement of how unsettled tonight's news is.
+    projection's own statement of how unsettled tonight's news is. The mean
+    team aggregates (``home_off``, ``home_def``, ``home_pace`` and the away
+    three) come along so a caller can say *which* channel a change runs through.
     """
     home_scenarios = enumerate_scenarios(home_players, max_enumerated)
     away_scenarios = enumerate_scenarios(away_players, max_enumerated)
     totals, weights = [], []
-    summed = {"home_points": 0.0, "away_points": 0.0, "possessions": 0.0}
+    summed = dict.fromkeys(
+        ("home_points", "away_points", "possessions", *_AGGREGATE_KEYS), 0.0
+    )
     weight_sum = 0.0
     for home_sitting, home_weight in home_scenarios:
         home_minutes = allocate_minutes(home_players, home_sitting)
@@ -247,6 +261,9 @@ def project_game(
                 total_offset,
             )
             weight = home_weight * away_weight
+            projection |= dict(
+                zip(_AGGREGATE_KEYS, home_aggregate + away_aggregate, strict=True)
+            )
             for key in summed:
                 summed[key] += weight * projection[key]
             totals.append(projection["total"])
@@ -282,6 +299,15 @@ def project_with_counterfactual(
     against the outcome (plan section 8.1, group A). Projecting both from the
     same roster and the same ratings means everything except availability
     cancels.
+
+    The difference is also split two ways, because the parts are priced
+    differently (``docs/lineup_projection_plan.md`` section 8.6):
+
+    - **by side**: each team's absences alone, the other at full health;
+    - **by channel**: the points the absentees would have *scored* (offense),
+      would have *prevented* (defense), and the rest, which is the change in
+      possessions (pace). Offense and defense are valued at full-health
+      possessions, so the three add up to the total impact exactly.
     """
     actual = project_game(
         home_players,
@@ -315,9 +341,37 @@ def project_with_counterfactual(
     )
     if not actual or not healthy:
         return actual
+    context = (
+        home_ratings,
+        away_ratings,
+        league_ortg,
+        league_pace,
+        home_court,
+        game_minutes,
+        total_offset,
+    )
+    home_only = project_game(home_players, healthy_away, *context)
+    away_only = project_game(healthy_home, away_players, *context)
+    impact = actual["total"] - healthy["total"]
+    per_100 = healthy["possessions"] / 100.0
+    offense = per_100 * sum(
+        actual[key] - healthy[key] for key in ("home_off", "away_off")
+    )
+    # A defensive rating is points prevented, so losing it adds points.
+    defense = -per_100 * sum(
+        actual[key] - healthy[key] for key in ("home_def", "away_def")
+    )
     return actual | {
         "healthy_total": healthy["total"],
         "healthy_possessions": healthy["possessions"],
-        "absence_impact_points": actual["total"] - healthy["total"],
+        "absence_impact_points": impact,
         "absence_impact_possessions": actual["possessions"] - healthy["possessions"],
+        "absence_impact_offense": offense,
+        "absence_impact_defense": defense,
+        "absence_impact_pace": impact - offense - defense,
+        "absence_impact_home": home_only["total"] - healthy["total"],
+        "absence_impact_away": away_only["total"] - healthy["total"],
+        "margin": actual["home_points"] - actual["away_points"],
+        "absence_impact_margin": (actual["home_points"] - actual["away_points"])
+        - (healthy["home_points"] - healthy["away_points"]),
     }

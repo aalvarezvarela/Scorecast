@@ -265,3 +265,60 @@ def test_a_scenario_that_empties_a_team_is_dropped_not_averaged():
     # Four scenarios, but the both-out one cannot be projected.
     assert result["scenarios"] == 3
     assert result["total"] == pytest.approx(224.0)
+
+
+class TestCounterfactualDecomposition:
+    """Plan section 8.6: which channel, and which side, an absence runs through."""
+
+    def _ratings(self, offense=None, defense=None, pace=None):
+        return TeamRatings(
+            offense=offense or {}, defense=defense or {}, pace=pace or {}
+        )
+
+    def _project(self, home, away, ratings):
+        return project_with_counterfactual(home, away, ratings, ratings, 112.0, 100.0)
+
+    def test_the_three_channels_add_up_to_the_impact(self):
+        ratings = self._ratings(
+            offense={"h0": 4.0, "a1": -2.0},
+            defense={"h0": 1.5, "a0": 3.0},
+            pace={"h0": 2.0, "a0": -1.0},
+        )
+        home = [PlayerNight("h0", 30.0, 1.0), *_roster(n=7, minutes=30.0)[1:]]
+        away = [
+            PlayerNight("a0", 30.0, 1.0),
+            *_roster(n=7, minutes=30.0, prefix="a")[1:],
+        ]
+        result = self._project(home, away, ratings)
+        channels = sum(
+            result[f"absence_impact_{c}"] for c in ("offense", "defense", "pace")
+        )
+        assert channels == pytest.approx(result["absence_impact_points"])
+
+    def test_a_pure_defender_shows_up_only_on_defense(self):
+        ratings = self._ratings(defense={"h0": 5.0})
+        home = [PlayerNight("h0", 48.0, 1.0), *_roster(n=5, minutes=48.0)[1:]]
+        away = _roster(n=5, minutes=48.0, prefix="a")
+        result = self._project(home, away, ratings)
+        # He prevents 5 per 100 over all 48 minutes; losing him adds 5 points.
+        assert result["absence_impact_defense"] == pytest.approx(5.0)
+        assert result["absence_impact_offense"] == pytest.approx(0.0)
+        assert result["absence_impact_pace"] == pytest.approx(0.0)
+        assert result["absence_impact_points"] == pytest.approx(5.0)
+
+    def test_each_side_is_measured_with_the_other_at_full_health(self):
+        ratings = self._ratings(offense={"h0": 5.0}, defense={"a0": 3.0})
+        home = [PlayerNight("h0", 48.0, 1.0), *_roster(n=5, minutes=48.0)[1:]]
+        away = [
+            PlayerNight("a0", 48.0, 1.0),
+            *_roster(n=5, minutes=48.0, prefix="a")[1:],
+        ]
+        result = self._project(home, away, ratings)
+        # Each side's own loss only: home loses a scorer (-5), away a defender
+        # (+3), and together they give the game's impact.
+        assert result["absence_impact_home"] == pytest.approx(-5.0)
+        assert result["absence_impact_away"] == pytest.approx(3.0)
+        assert result["absence_impact_points"] == pytest.approx(-2.0)
+        # Margin: the scorer costs home 5; the missing away defender gives
+        # home 3 back.
+        assert result["absence_impact_margin"] == pytest.approx(-5.0 + 3.0)

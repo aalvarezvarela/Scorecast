@@ -22,6 +22,14 @@ from nba_ou.data_processing.lineups.features import (
     add_lineup_features,
     attach_lineup_features,
 )
+from nba_ou.data_processing.lineups.style_matchup import STYLE_FEATURE_COLUMNS
+
+#: The projection's columns. The three-point matchup columns come from stints,
+#: which this world does not have; their temporal contract is tested in
+#: ``tests/test_style_matchup.py``.
+PROJECTION_COLUMNS = [
+    c for c in LINEUP_FEATURE_COLUMNS if c not in STYLE_FEATURE_COLUMNS
+]
 
 H, A, C, D = "1610612739", "1610612738", "1610612737", "1610612736"
 ROSTERS = {team: [f"{team[-2:]}p{i}" for i in range(6)] for team in (H, A, C, D)}
@@ -90,7 +98,7 @@ def _world(seed: int = 0):
 
 def _target_values(box, merged, ratings, p_out=None) -> pd.Series:
     out = add_lineup_features(merged, box, RatingBook(ratings), p_out)
-    return out.loc[out.GAME_ID.eq(TARGET), list(LINEUP_FEATURE_COLUMNS)].iloc[0]
+    return out.loc[out.GAME_ID.eq(TARGET), PROJECTION_COLUMNS].iloc[0]
 
 
 P_OUT = {(TARGET, H, ROSTERS[H][0]): 1.0, (TARGET, A, ROSTERS[A][1]): 0.4}
@@ -196,8 +204,9 @@ class TestInjuryCutoff:
             enabled=True,
             injury_statuses=statuses,
             ratings=RatingBook(ratings),
+            stints=pd.DataFrame(),
         )
-        return out.loc[out.GAME_ID.eq(TARGET), list(LINEUP_FEATURE_COLUMNS)].iloc[0]
+        return out.loc[out.GAME_ID.eq(TARGET), PROJECTION_COLUMNS].iloc[0]
 
     def test_same_day_and_later_listings_do_not_reach_the_game(self):
         own = [(TARGET, H, ROSTERS[H][0], "out", "injury")]
@@ -222,7 +231,7 @@ class TestInjuryCutoff:
         ]
         own_values = self._values(self._statuses(own))
         earlier_values = self._values(self._statuses(earlier))
-        unaffected = [c for c in LINEUP_FEATURE_COLUMNS if c != "LU_PROJ_TOTAL_BEFORE"]
+        unaffected = [c for c in PROJECTION_COLUMNS if c != "LU_PROJ_TOTAL_BEFORE"]
         pd.testing.assert_series_equal(
             earlier_values[unaffected], own_values[unaffected]
         )

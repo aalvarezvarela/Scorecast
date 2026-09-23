@@ -182,3 +182,55 @@ def test_an_invalid_roster_window_raises():
         build_player_nights(
             _games([("1", HOME, "2025-01-10")]), _history(), roster_games=0
         )
+
+
+def test_a_zero_minute_injury_row_is_not_an_appearance():
+    """An injured player listed with 0 minutes keeps his real average and
+    leaves the roster once his window passes; a coach's decision is a real
+    zero-minute appearance."""
+    rows = []
+    for index in range(10):
+        date = f"2025-01-{index + 1:02d}"
+        game = f"00{index:08d}"
+        rows.append((game, HOME, date, "b", 30.0, ""))
+        rows.append((game, HOME, date, "c", 0.0, "DNP - Coach's Decision"))
+        star = (30.0, "") if index < 2 else (0.0, "DND - Injury/Illness")
+        rows.append((game, HOME, date, "a", *star))
+    box = pd.DataFrame(
+        rows, columns=["GAME_ID", "TEAM_ID", "GAME_DATE", "PLAYER_ID", "MIN", "COMMENT"]
+    )
+    target = _games([("0000000099", HOME, "2025-02-01")])
+    roster = {
+        p.player_id: p.base_minutes
+        for p in build_player_nights(target, box, recent_games=5)[("0000000099", HOME)]
+    }
+    # "a" has been out for eight games: he left, rather than averaging 6 minutes.
+    assert "a" not in roster
+    assert roster["c"] == pytest.approx(0.0)
+    early = _games([("0000000098", HOME, "2025-01-04")])
+    nights = build_player_nights(early, box, recent_games=5)[("0000000098", HOME)]
+    assert {p.player_id: p.base_minutes for p in nights}["a"] == pytest.approx(30.0)
+
+
+def test_a_g_league_assignment_leaves_the_roster_for_that_game_only():
+    from nba_ou.data_processing.lineups.availability import roster_exclusions
+
+    statuses = pd.DataFrame(
+        {
+            "game_id": ["0000000099"],
+            "team_id": [HOME],
+            "player_id": ["c"],
+            "status": ["out"],
+            "reason_category": ["g_league"],
+        }
+    )
+    excluded = roster_exclusions(statuses)
+    assert excluded == {("0000000099", HOME, "c")}
+    # The report's own probability still says "not an absence".
+    assert player_out_probabilities(statuses)[("0000000099", HOME, "c")] == 0.0
+    targets = _games(
+        [("0000000099", HOME, "2025-01-10"), ("0000000100", HOME, "2025-01-11")]
+    )
+    nights = build_player_nights(targets, _history(), excluded=excluded)
+    assert "c" not in {p.player_id for p in nights[("0000000099", HOME)]}
+    assert "c" in {p.player_id for p in nights[("0000000100", HOME)]}
