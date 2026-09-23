@@ -58,12 +58,12 @@ def test_a_player_absent_all_window_leaves_the_roster():
             rows.append(
                 (f"00{index:08d}", HOME, f"2025-01-{index + 1:02d}", player, played)
             )
-    target = _games([("0000000099", HOME, "2025-02-01")])
+    # Explicit window: this asserts the expiry rule, not whatever the default
+    # happens to be, so a recalibration of the default cannot silently gut it.
     nights = build_player_nights(
-        _games([("0000000099", HOME, "2025-02-01")]), _box(rows)
+        _games([("0000000099", HOME, "2025-02-01")]), _box(rows), recent_games=5
     )
     assert {player.player_id for player in nights[("0000000099", HOME)]} == {"b", "c"}
-    assert target is not None
 
 
 def test_a_traded_player_leaves_his_old_roster():
@@ -150,4 +150,35 @@ def test_missing_columns_raise():
     with pytest.raises(ValueError, match="recent_games must be positive"):
         build_player_nights(
             _games([("1", HOME, "2025-01-10")]), _history(), recent_games=0
+        )
+
+
+def test_the_roster_window_is_separable_from_the_averaging_window():
+    """They pull opposite ways, so a sweep of either must hold the other."""
+    rows = list(_history(n=2).itertuples(index=False, name=None))
+    rows = [(r[0], r[1], r[2], r[3], r[4]) for r in rows]
+    for index in range(2, 8):
+        for player, played in (("b", 25.0), ("c", 15.0)):
+            rows.append(
+                (
+                    f"00{index:02d}".zfill(10),
+                    HOME,
+                    f"2025-01-{index + 1:02d}",
+                    player,
+                    played,
+                )
+            )
+    target = _games([("0000000099", HOME, "2025-02-01")])
+    # A short average but a roster patient enough to keep "a" around.
+    nights = build_player_nights(target, _box(rows), recent_games=2, roster_games=10)
+    assert "a" in {p.player_id for p in nights[("0000000099", HOME)]}
+    # The same average with an impatient roster drops him.
+    nights = build_player_nights(target, _box(rows), recent_games=2, roster_games=2)
+    assert "a" not in {p.player_id for p in nights[("0000000099", HOME)]}
+
+
+def test_an_invalid_roster_window_raises():
+    with pytest.raises(ValueError, match="roster_games must be positive"):
+        build_player_nights(
+            _games([("1", HOME, "2025-01-10")]), _history(), roster_games=0
         )

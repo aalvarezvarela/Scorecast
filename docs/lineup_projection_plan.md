@@ -667,6 +667,115 @@ rather than exact-five weighting — and a linear addition to the projection, so
 it does not prove synergy is worthless. It does mean the column should go into
 the campaign to be judged there rather than be argued for here.
 
+### 6.1c Calibration of the hand-set parameters (2026-09-23)
+
+Three values had been chosen by judgement. Each now has an objective criterion
+and a sweep; two of the three answers are "it does not matter", which is worth
+knowing.
+
+**`ROSTER_APPEARANCE_WINDOW`: flat, set to 5.** Criterion: how well the
+projected five matches the **actual** starting five -- an observable fact, not
+a betting metric. Swept over {3, 5, 8, 10, 15, 20, 30, 60}: mean overlap 4.4699
+at 3 against 4.4675 at 60, out of 5. The false replacements the bound removes
+are ~25 cases in 10,514 team-games, far too few to move it.
+
+**The D0 machinery itself was never compared to the trivial alternative**, and
+should have been. Against simply reusing the latest starting five:
+
+| | projected | latest five |
+|---|---|---|
+| mean overlap | **4.4700** | 4.3096 |
+| exact 5/5 | **58.91%** | 51.77% |
+| overlap where a starter is out (n=2,663) | **4.098** | 3.467 |
+| exact 5/5 there | **28.13%** | 0.04% |
+
+The gain grows with the number of starters out: +0.444, +1.084, **+1.870** for
+one, two and three. D0 earns its place.
+
+**Synergy `k` and half-life: the calibration confirms the null, and corrects an
+earlier claim.** Swept k in {50, 200, 1000, 5000, 25000} against half-lives of
+{90, 180, 365}, fitted on 2021-2023 and scored on 2024-25 (fit/test MAE):
+
+| half-life | k=50 | k=200 | k=1000 | k=5000 | k=25000 |
+|---|---|---|---|---|---|
+| 90 | 14.749/14.460 | 14.663/**14.428** | 14.583/14.429 | 14.548/14.450 | 14.538/14.462 |
+| 180 | 14.741/14.483 | 14.665/14.453 | 14.590/14.442 | 14.552/14.453 | 14.539/14.462 |
+| 365 | 14.733/14.494 | 14.664/14.470 | 14.595/14.452 | 14.555/14.456 | 14.540/14.463 |
+
+No synergy at all: **14.535 fit / 14.466 test**.
+
+On the fitting window **nothing beats leaving synergy out**, and the curve is
+monotone toward `k -> infinity`, where the term vanishes and the MAE converges
+back to 14.535. Three settings edge the baseline on the test season by ~0.04
+MAE, which the fitting window does not corroborate; adopting one would be
+selecting on the evaluation set.
+
+**Correction to 6.1b.** The `k = 200`, 180-day setting used there was a *poor*
+one -- 14.665 on the fitting window against a 14.535 baseline. The reported
+"synergy makes the projection 0.094 worse" was partly an artefact of that
+choice. Properly calibrated, synergy is **neutral rather than harmful**. Still
+null, but the distinction matters.
+
+`k` is set to 1000 as a near-neutral compromise, and **the projection no longer
+adds the synergy term at all**; it is emitted as its own column for the
+campaign to judge, which is where section 8.4 says this belongs.
+
+**Exact-five synergy was specified and not emitted.** This section asks for the
+exact-five residual *and* the pair-based value, "emit both and let the model
+choose". `five_value` was being computed and discarded, and the pair weighting
+picked unilaterally. `projected_five_synergy` now returns the exact five's
+residual with the possessions behind it, so a consumer can tell the sharp case
+from the empty one.
+
+### 6.1d The recent-minutes window, and a problem with go/no-go E
+
+Swept 2026-09-23 on projection MAE, fitted on 2021-2023 and scored on 2024-25.
+The window turned out to control **two** things -- how many games the minutes
+average spans, and how long a player may go unseen before leaving the roster --
+so they were separated (`recent_games` and `roster_games`) before anything was
+concluded from a sweep of either.
+
+**The two criteria are anti-correlated.** A 3-game average gives the best
+individual minutes (MAE 5.73, against 6.70 at 15 games) and the **worst** game
+total; a long one is the reverse:
+
+| window | minutes MAE | projection MAE (test) |
+|---|---|---|
+| 3 | **5.732** | 14.4871 |
+| 5 | 5.967 | 14.4677 |
+| 15 | 6.695 | **14.4072** |
+
+A short window tracks a changing role but overreacts to one blowout or one
+foul-trouble night, and that noise accumulates in the team aggregate rather
+than averaging out.
+
+**This makes go/no-go E the wrong instrument for a projection decision.**
+Section 6.2 asks the minutes model to beat the last-5 average on **minutes
+MAE**, and it does, by 23.8%. But winning on that criterion can actively hurt
+the total, which is what the pipeline is for. The gate remains a fair test of
+the minutes model; it is not evidence about what the projection wants. Read it
+that way, and note that the phase-E result (6.3) is measured against the same
+confusion.
+
+**Separated, the two windows behave very differently** (fit/test MAE):
+
+| average \ roster | 5 | 10 | 20 | 40 |
+|---|---|---|---|---|
+| 3 | 14.5409/14.4528 | 14.5355/14.4379 | 14.5332/14.4589 | 14.5205/14.5230 |
+| 5 | 14.5357/14.4677 | 14.5311/14.4583 | 14.5269/14.4813 | 14.5155/14.5504 |
+| 10 | 14.5149/14.4514 | **14.5089/14.4368** | 14.5050/14.4613 | **14.4947**/14.5195 |
+| 20 | 14.5194/14.4099 | 14.5115/**14.3961** | 14.5092/14.4252 | 14.5005/14.4775 |
+| 40 | 14.5381/14.4167 | 14.5287/14.4018 | 14.5303/14.4297 | 14.5262/14.4833 |
+
+- **The average carries a consistent signal**: both windows agree 5 is too
+  short. The fitting window's optimum is 10, the test season's is 20, so
+  **10** is taken; 20 would be chosen on the evaluation set.
+- **The roster window carries none**: the fitting window prefers 40 and the
+  test season prefers 10, in every row. That is noise, not an optimum. **10**
+  is kept as the only value that is never poor on either.
+
+`RECENT_GAMES` moves 5 -> 10, worth about 0.03 MAE on both windows.
+
 ### 6.2 Minutes model (`minutes_model.py`)
 
 **Target:** each player's actual minutes in each team-game (0 if they didn't

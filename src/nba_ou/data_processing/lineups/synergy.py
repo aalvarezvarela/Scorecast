@@ -45,9 +45,21 @@ from itertools import combinations
 import pandas as pd
 
 #: Possessions at which a pair or five carries half its raw residual.
-DEFAULT_SHRINKAGE_POSSESSIONS = 200.0
+#:
+#: Swept 2026-09-23 over k in {50, 200, 1000, 5000, 25000} and half-lives of
+#: {90, 180, 365} days, fitted on 2021-2023 and scored on 2024-25. On the
+#: fitting window **no setting beats leaving synergy out**, and the curve is
+#: monotone toward k -> infinity, where the term vanishes and the MAE converges
+#: to the no-synergy 14.535. Three settings edge the baseline on the test
+#: season alone, by 0.04 MAE, which the fitting window does not corroborate;
+#: adopting one of those would be selecting on the evaluation set. 1000 is
+#: taken as a near-neutral compromise that shrinks thin samples hard, and the
+#: projection does not add the term at all -- it is emitted as its own column
+#: for the campaign to judge.
+DEFAULT_SHRINKAGE_POSSESSIONS = 1000.0
 
-#: Half-life of the evidence, in days. Matches the ratings' default.
+#: Half-life of the evidence, in days. Matches the ratings' default. The sweep
+#: above found it barely matters next to k.
 DEFAULT_HALF_LIFE_DAYS = 180.0
 
 #: Pairs on the floor at any instant, for five players.
@@ -279,6 +291,23 @@ def expected_shared_minutes(
         return dict.fromkeys(shares, even)
     scale = PAIRS_ON_COURT * team_minutes / total
     return {pair: value * scale for pair, value in shares.items()}
+
+
+def projected_five_synergy(
+    accumulator: SynergyAccumulator,
+    five: frozenset[str],
+    date: pd.Timestamp,
+) -> tuple[float, float]:
+    """The exact five's own residual, and the possessions behind it.
+
+    Section 6.1 asks for both this and the pair-based value, emitted side by
+    side so the model can choose rather than the pipeline choosing for it: the
+    exact five is the sharper measurement where a lineup has really played
+    together, and useless where it has not. The possession count is what says
+    which case this is, so it is returned with the value rather than folded
+    into it.
+    """
+    return accumulator.five_value(five, date), accumulator.five_possessions(five, date)
 
 
 def team_synergy(

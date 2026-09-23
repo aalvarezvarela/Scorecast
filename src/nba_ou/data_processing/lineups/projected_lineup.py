@@ -56,9 +56,14 @@ import pandas as pd
 FALLBACK_MINUTES_WINDOW = 5
 
 #: Team games a player must have appeared in to still count as on the roster.
-#: Wide enough to keep a rotation player through a short injury, short enough
-#: that a trade stops offering the departed player as tonight's replacement.
-ROSTER_APPEARANCE_WINDOW = 10
+#:
+#: Swept 2026-09-23 over {3, 5, 8, 10, 15, 20, 30, 60} against how well the
+#: projected five matches the actual starting five. The curve is **flat**:
+#: 4.4699 mean overlap at 3 against 4.4675 at 60, out of 5. The false
+#: replacements this bound removes are about 25 cases in 10,514 team-games, far
+#: too few to move the measure. 5 is taken because it is marginally best and
+#: tightest against those replacements, but almost any value would do.
+ROSTER_APPEARANCE_WINDOW = 5
 
 PROJECTED_LINEUP_COLUMNS = (
     "LU_PROJ_STARTERS_REPLACED_BEFORE",
@@ -128,6 +133,7 @@ def current_roster(
     history: list[_TeamGame],
     listed: frozenset[str] = frozenset(),
     season=None,
+    window: int = ROSTER_APPEARANCE_WINDOW,
 ) -> frozenset[str]:
     """Who is plausibly on this team tonight.
 
@@ -150,10 +156,10 @@ def current_roster(
     in_season = [event for event in history if season is None or event.season == season]
     # One game is enough: it is the game the latest five comes from, so the
     # five are rostered by construction and only older names can be filtered.
-    window = in_season if in_season else history
+    usable = in_season if in_season else history
     recent = {
         player
-        for event in window[-ROSTER_APPEARANCE_WINDOW:]
+        for event in usable[-window:]
         for player, value in event.minutes.items()
         if pd.notna(value) and float(value) > 0
     }
@@ -227,6 +233,7 @@ def project_starting_five(
     expected_out: frozenset[str],
     season=None,
     listed: frozenset[str] = frozenset(),
+    window: int = ROSTER_APPEARANCE_WINDOW,
 ) -> dict | None:
     """Project one team-game's five from its prior games and tonight's out set.
 
@@ -239,7 +246,7 @@ def project_starting_five(
     """
     if not history:
         return None
-    roster = current_roster(history, listed, season)
+    roster = current_roster(history, listed, season, window)
     latest = history[-1].starters
     # A starter who has since left the team is a departure, not an absence:
     # nobody is "out" for him, but he cannot be projected to start either.
@@ -289,6 +296,7 @@ def add_projected_lineup_features(
     df_players: pd.DataFrame,
     out_sets: dict[tuple[str, str], list[str]] | None = None,
     listed_sets: dict[tuple[str, str], list[str]] | None = None,
+    window: int = ROSTER_APPEARANCE_WINDOW,
 ) -> pd.DataFrame:
     """Attach the projected-five diagnostics to each team-game row.
 
@@ -377,6 +385,7 @@ def add_projected_lineup_features(
                     frozenset(str(player) for player in out or ()),
                     season=row["SEASON_YEAR"],
                     listed=frozenset(str(player) for player in listed or ()),
+                    window=window,
                 )
                 if projection is None:
                     continue
