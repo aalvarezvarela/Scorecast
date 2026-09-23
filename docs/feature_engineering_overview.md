@@ -128,6 +128,7 @@ intermediate dataset.
 | Availability effects (empirical-Bayes with/without deltas) | `TOP3_AVAILABILITY_EFFECT_*`, `TOP3_INJURED_*`, `TOP2_QUESTIONABLE_*` | `past_injuries/injury_effects.py` | box scores, closing lines of **earlier** games | C, I (per snapshot) |
 | Roster continuity | `ROSTER_MINUTES_CONTINUITY_*_PCT_BEFORE_*`, `ROSTER_NET_MINUTES_*` | `players/roster_continuity.py` | box scores | C, I |
 | Starter history | `STARTER_OVERLAP_LAST_TWO_GAMES_BEFORE_*`, `STARTER_LATEST_FIVE_MINUTES_SHARE_LAST_5_GAMES_BEFORE_*` | `players/starter_history.py` | completed player box scores only | C, I |
+| Lineup projection (**opt-in**, `lineup_features=True`) | `LU_ABSENCE_IMPACT_PTS_BEFORE`, `LU_PROJ_TOTAL_BEFORE` | `lineups/features.py` | box scores, Aiven `injury_report`, walk-forward lineup rating cache (2021-22+) | C |
 | All-Star voting | `ALL_STAR_*_INJURED_*`, `ALL_STAR_*_QUESTIONABLE_*` | `all_star_voting/attach_all_star_voting_features.py` | `nba_all_star_voting` | C, I (per snapshot) |
 | **G1** injury news up to the snapshot (change in expected missing points) | `INJ_SNAP_*_BEFORE_TEAM_{HOME,AWAY}` | `injury_status/news.py` | Aiven `injury_report`, player form | I |
 
@@ -182,6 +183,12 @@ builder.
 | Missing history: season-to-date, then previous regular season, then a neutral value; structural absence uses a flag plus 0 | `feature-engineering` skill, rule 3 |
 
 ## 6. Open work
+
+- The lineup projection family (`LU_*`, `docs/lineup_projection_plan.md` §8.5)
+  is behind a default-off `lineup_features` flag in the closing builder only.
+  Its with/without campaign decides whether the default flips and the schema
+  moves to 2_7. It is not wired into the intermediate builder or the serving
+  path yet.
 
 - Schema 2_6 adds prior-game starter stability and recent-minutes-share features
   to both builders. A fresh 2_6 dataset and controlled ablation are still needed.

@@ -1,7 +1,9 @@
 # Lineup stints, projected minutes and a bottom-up game projection
 
-Status: **phases A and B implemented; C solver implemented, calibration and
-acceptance gates pending. The rotation backfill is the critical path.** Written 2026-09-18 on
+Status (2026-09-23): **A-F implemented; phase G features are built behind a
+default-off `lineup_features` flag, with leakage tests; the with/without
+campaign is the open decision (§8.5).** The paragraph below is the original
+2026-09-18 status, kept for history. Written 2026-09-18 on
 `feat/pregame-rotation-features` for the agent that will implement it. Every
 API fact below was checked against the live `stats.nba.com` API that day (§2).
 Anything not checked is marked **(unverified)**.
@@ -1299,6 +1301,79 @@ same pipeline, one extra opt-in family.
    `scripts/build_meta_learner_training_data.py` must be re-run.
 5. **Only then** flip the `lineup_features` default to `True` and bump the
    schema version to `2_7` (§8.2).
+
+### 8.5 Phase G as built, and the 2025-26 holdout (2026-09-23)
+
+**New data.** The 2025-26 rotation backfill finished: stints for 1,303 of
+1,315 games (99.1%; 7 `bad_rotation_interval`, 2 `overlapping_player_intervals`,
+1 `points_mismatch`, 2 unclassified `ValueError`). The rating cache was rebuilt
+through 2026-06-30 with the same lambdas; it agrees with the previous cache
+on every shared date (max difference 1e-6). 2025-26 is the first season no
+lambda, window or `k` was tuned on.
+
+**Reproducibility.** The 7.1d / 6.3 / 6.1b numbers came from drivers that were
+never committed. `scripts/lineups/evaluate_game_projection.py` now regenerates
+them from the modules. A rebuild matches the 2021-24 slope (+0.288 against
++0.291) but not every game (`impact` differs by more than 0.01 on ~25% of
+games, mostly early-season; the old calibration scheme could not be
+recovered). From here, the script's output is the reference.
+
+**Result** (`evaluate_game_projection.py`, `RECENT_GAMES = 10`, 6,588 games):
+
+| Window | n | `LINE_ERROR ~ impact` slope | 95% CI (date-clustered) |
+|---|---|---|---|
+| 2021-2024 | 5,266 | +0.289 | [+0.102, +0.474] |
+| **2025-26 holdout** | 1,322 | **+0.206** | [-0.113, +0.515] |
+| 2021-2025 | 6,588 | +0.269 | [+0.115, +0.423] |
+
+Positive in all five seasons (+0.40, +0.00, +0.25, +0.52, +0.21). The holdout
+agrees in sign and size but is not significant on its own. `proj - line` stays
+null (+0.071, [-0.020, +0.164]). Controlling for `TOP1_INJURED_PLAYER_PTS` and
+the fresh-absence flag (OLS, date-clustered SEs) the impact slope **rises** to
++0.35 [+0.17, +0.53], so the column is not a restatement of the injury
+features already in the dataset -- the bar §5 set.
+
+**The accuracy shape was partly a setting.** With the 5-game minutes average,
+accuracy fell as |impact| grew (7.1d's worrying sign). With the calibrated
+10-game default it rises: 51.2% at any size, 52.9% at >= 2, 53.3% at >= 4
+(2021-24); 2025-26 is 51.6% to 53.0%. No interval clears the 52.38% break-even.
+
+Two robustness checks: dropping the `DND`/`NWT` injury rows that enter the box
+score with 0 minutes (see open issue below) gives +0.254 pooled; a 5-game
+window gives +0.272.
+
+**What was built.** `data_processing/lineups/features.py`:
+
+| Column | Meaning |
+|---|---|
+| `LU_PROJ_TOTAL_BEFORE` | F v1 total, calibrated on the previous 200 games |
+| `LU_PROJ_POSS_BEFORE` | projected possessions |
+| `LU_PROJ_TOTAL_SD_BEFORE` | spread across availability scenarios |
+| `LU_ABSENCE_IMPACT_PTS_BEFORE` | total with absences minus full health |
+| `LU_ABSENCE_IMPACT_PACE_BEFORE` | the same in possessions |
+
+Deviations from §8.1-8.2, each deliberate:
+
+- **Five columns, not the §8.1 list.** Synergy and `LU_PROJ_TOTAL_MINUS_LINE`
+  measured null; the team-level and replacement columns have no evidence yet.
+  Add them on evidence.
+- **Closing builder only.** `create_base_game_features` is the intermediate
+  dataset's base, whose injury status is per snapshot -- phase 2 (§9).
+- **Serving is not wired.** No production model has these columns, and the
+  rating cache has no daily refresh. Both are prerequisites for G′.
+- **Calibration window in games (200), not an expanding mean.** An expanding
+  mean depends on how many seasons the build loads, so a training build and
+  same-day serving would disagree. Swept {100, ..., 800}: flat MAE, 200 has
+  the least bias.
+
+**Campaign constraint.** Ratings start in 2021-22. On any window starting
+earlier, `find_season_gated_columns` drops the whole family (100% NaN before,
+~0% after), so the campaign must train and evaluate on 2021-22+.
+
+**Open issue, not fixed.** `availability.build_player_nights` appends 0 minutes
+for `DND - Injury/Illness` / `NWT` box-score rows (700-1,400 a season) and
+refreshes `last_seen`, contrary to its docstring. The check above shows it does
+not drive the result; fix it before the family is promoted.
 
 ---
 

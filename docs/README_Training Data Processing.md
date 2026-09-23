@@ -1271,6 +1271,53 @@ flags are omitted. They remain available for diagnostics through
 `include_detailed_sample_size_features=True`, but the training and prediction
 pipeline explicitly keeps the compact schema.
 
+## Lineup Projection Features (opt-in)
+
+`create_df_to_predict(..., lineup_features=True)` (CLI:
+`create_train_data.py --lineup-features`) adds five game-level columns from the
+bottom-up lineup projection in `data_processing/lineups/features.py`. The
+default is **off**: the family is experimental, and off leaves the dataset
+exactly as it was, so a build with it on differs by these columns only. Same
+schema version; the file gets a `_with_lineup_features` suffix.
+
+| Column | Meaning |
+|---|---|
+| `LU_PROJ_TOTAL_BEFORE` | projected total from minutes-weighted player lineup ratings and tonight's availability, calibrated walk-forward |
+| `LU_PROJ_POSS_BEFORE` | projected possessions |
+| `LU_PROJ_TOTAL_SD_BEFORE` | spread of the total across availability scenarios (Questionable players) |
+| `LU_ABSENCE_IMPACT_PTS_BEFORE` | projected total with tonight's absences minus the same roster at full health |
+| `LU_ABSENCE_IMPACT_PACE_BEFORE` | the same difference in possessions |
+
+Attached after the home/away merge, next to `add_fresh_absence_sums`. Inputs
+and cutoffs:
+
+- **Rosters and minutes:** box scores on strictly earlier dates; each player's
+  average over his last `RECENT_GAMES` (10) appearances, rescaled to 240.
+- **Availability:** `InjuryReportState.statuses` (last report before tip)
+  through `chance_out`, the same probability the report features use. An
+  unlisted player is taken as available.
+- **Ratings:** `data/lineup_ratings/player_ratings.parquet`, built by
+  `scripts/lineups/build_player_ratings.py`. A game reads the latest cache date
+  on or before its own date; every cache row was fitted on stints strictly
+  before that date. A cache date older than 14 days gives NaN rather than a
+  stale projection.
+- **Level calibration:** the mean `actual - projected` over the previous 200
+  games on earlier dates (stint possessions are estimated and run high).
+
+The absence columns do not need the calibration: it cancels in the difference.
+
+**Coverage.** Ratings start in 2021-22, so earlier games are NaN. For any
+training window starting earlier, `find_season_gated_columns` will drop the
+family, so evaluate it on a 2021-22+ window. Games with no roster history (a
+team's first game in the data) are NaN too.
+
+**Serving.** `predict_nba_games.py` does not pass the flag, because no
+production model has been trained with these columns. Serving them needs the
+rating cache refreshed through the day before, which no daily job does yet.
+
+Leakage tests: `tests/test_lineup_leakage.py`. Evidence and evaluation:
+`docs/lineup_projection_plan.md` §8.5, `scripts/lineups/evaluate_game_projection.py`.
+
 ## Travel And Schedule Features
 
 `compute_travel_features()` converts the game-level table back into a team-game
