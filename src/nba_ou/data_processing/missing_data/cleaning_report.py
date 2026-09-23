@@ -38,6 +38,9 @@ class CleaningReport:
     #: Which rows and columns the correlation step actually judged, when a
     #: repeated-measures policy was in force. See ``record_redundancy_view``.
     redundancy_view: dict[str, Any] = field(default_factory=dict)
+    #: Columns held out of the correlation comparison for having no spread on
+    #: the view. They survive cleaning. See ``record_correlation_exclusions``.
+    correlation_exclusions: list[str] = field(default_factory=list)
     columns_in: int = 0
     columns_out: int = 0
     rows_in: int = 0
@@ -176,6 +179,18 @@ class CleaningReport:
             ),
         }
 
+    def record_correlation_exclusions(self, columns: list[str]) -> None:
+        """Columns the correlation step refused to judge, for lack of spread.
+
+        Kept apart from ``column_drops`` because these columns survive: the
+        record answers "why was this never compared?", not "why did this die?".
+        A constant correlates with nothing, so judging it either way is
+        meaningless -- but leaving it in the comparison makes it a
+        divide-by-zero that reads as perfect redundancy, which is what this
+        exclusion exists to prevent.
+        """
+        self.correlation_exclusions = sorted(columns)
+
     def why_dropped(self, column: str) -> dict[str, str] | None:
         """The record for one column, or None if it survived."""
         for entry in self.column_drops:
@@ -201,6 +216,7 @@ class CleaningReport:
             "row_drops": self.row_drops,
             "group_survival": self.group_survival,
             "redundancy_view": self.redundancy_view,
+            "correlation_exclusions": self.correlation_exclusions,
             "column_drops": self.column_drops,
         }
 
@@ -226,6 +242,13 @@ class CleaningReport:
                 f"correlation judged on one row per {view['group_col']}: "
                 f"{view['rows_in_view']:,} of {view['rows_total']:,} rows, "
                 f"{view['n_exempt_columns']} snapshot columns exempt"
+            )
+        if self.correlation_exclusions:
+            lines.append(
+                f"    {len(self.correlation_exclusions)} constant columns excluded "
+                f"from the comparison (kept): "
+                f"{', '.join(self.correlation_exclusions[:5])}"
+                + (" ..." if len(self.correlation_exclusions) > 5 else "")
             )
         if self.group_survival:
             spread = self.group_survival.get("retention_spread_pp")

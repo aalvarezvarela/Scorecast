@@ -580,3 +580,45 @@ def test_exempt_prefixes_cover_the_snapshot_blocks():
     assert not policy.is_exempt("ODDS_TOTAL_LINE_bet365_SEASON_BEFORE_AVG_TEAM_HOME")
     assert not policy.is_exempt("PACE_BEFORE_TEAM_HOME")
     assert not policy.is_exempt("ODDS_TOT_PRIOR_GAME_MOVE")
+
+
+def test_zero_variance_pairs_are_nan_not_inf():
+    """``pairwise_complete_corr`` promises to reproduce ``DataFrame.corr()``.
+
+    For a column with no spread pandas returns NaN. Computing the variance as
+    ``E[x^2] - E[x]^2`` lands it on either side of zero as roundoff, so the
+    division returned inf -- and every caller here tests ``corr > threshold``,
+    which inf passes. The whole frame then looks redundant with the constant.
+    """
+    rng = np.random.default_rng(1)
+    for n in (6165, 8301):
+        df = pd.DataFrame(
+            {
+                "CONST": np.full(n, 60.0),
+                "y": rng.normal(220, 10, n),
+                "z": rng.normal(0, 1, n),
+            }
+        )
+        corr = pairwise_complete_corr(df)
+        assert np.isnan(corr[0, 1]), f"n={n}: got {corr[0, 1]}"
+        assert not (corr[0, 1] > 0.95)
+        expected = np.abs(df.corr().to_numpy())
+        np.fill_diagonal(expected, np.nan)
+        assert np.allclose(corr, expected, equal_nan=True)
+
+
+def test_constant_side_does_not_win_a_redundancy_decision():
+    """A constant must not be able to evict a real feature."""
+    rng = np.random.default_rng(2)
+    n = 500
+    df = pd.DataFrame(
+        {
+            "A_CONST": np.full(n, 60.0),
+            "B_REAL": rng.normal(100, 5, n),
+            "C_REAL": rng.normal(50, 2, n),
+        }
+    )
+    dropped, _ = select_correlated_columns_to_drop(
+        df, default_threshold=0.95, overrides=None, preference=KeepPreference.build()
+    )
+    assert dropped == []

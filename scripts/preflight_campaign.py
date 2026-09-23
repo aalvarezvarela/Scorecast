@@ -232,6 +232,14 @@ def check_configs(
             "snapshot_minutes": c.data.snapshot_minutes,
             "no_overtime": c.data.exclude_overtime_from_training,
             "drop_playoffs": c.data.exclude_playoffs,
+            # Paired with max_na_per_row below, and the pairing is the point: on
+            # the intermediate dataset the older seasons are reachable ONLY by
+            # raising the row budget, so a campaign moving the floor without the
+            # budget admits nothing. Omitting this printed a design matrix that
+            # hid the headline variable of
+            # history_depth_line_error_2_5_2026_09, whose four arms differ in
+            # exactly this field.
+            "season_year_floor": c.data.season_year_floor,
             "max_na_per_row": c.cleaning.max_na_per_row,
             "nan_threshold": c.cleaning.nan_threshold,
             "exclude_cols": str(c.cleaning.exclude_cols_containing),

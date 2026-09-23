@@ -786,3 +786,63 @@ def test_rotation_leak_runs_before_correlation_pruning(frame):
 
     assert "N_ACTIVE_PLAYERS_BEFORE_TEAM_HOME" not in cleaned.columns
     assert "ROTATION_TWIN_BEFORE_TEAM_HOME" in cleaned.columns
+
+
+def test_constant_column_does_not_mass_drop_the_frame(snapshot_grain_frame):
+    """The bug this pins cost 64 runs their feature set.
+
+    ``TIME_TO_MATCH_MIN`` is protected (the scoring-sidecar join needs the
+    (game, snapshot) key) and becomes constant the moment a single horizon is
+    selected. Protection makes it rank first in the redundancy preference
+    order, so it was the first column kept and therefore the yardstick every
+    later column was measured against -- and its variance is zero, so the
+    correlation came back ``inf`` rather than ``NaN``. ``inf > 0.95`` is True,
+    so essentially the whole frame was dropped as "redundant" with a constant.
+    """
+    frame = snapshot_grain_frame.copy()
+    frame["TIME_TO_MATCH_MIN"] = 60.0  # what filter_to_snapshot leaves behind
+
+    cleaned, report = clean_dataframe_for_training(
+        frame,
+        repeated_measures=_policy(),
+        keep_columns=["TIME_TO_MATCH_MIN"],
+        verbose=0,
+        return_report=True,
+    )
+
+    assert "TIME_TO_MATCH_MIN" in cleaned.columns  # still carried for the join
+    assert "TIME_TO_MATCH_MIN" in report.correlation_exclusions
+    blamed = [
+        entry
+        for entry in report.column_drops
+        if "TIME_TO_MATCH_MIN" in entry.get("reason", "")
+    ]
+    assert blamed == [], f"{len(blamed)} columns dropped against a constant"
+
+
+def test_constant_column_is_excluded_from_the_comparison_not_dropped_by_it():
+    """A constant is neither redundant nor a reason to call anything redundant.
+
+    Judging it either way is meaningless, so it is held out of the comparison
+    and recorded separately from the drops -- the report has to answer "why was
+    this never compared?" differently from "why did this die?".
+    """
+    rng = np.random.default_rng(3)
+    n = 80
+    df = pd.DataFrame(
+        {
+            "GAME_ID": [f"002240000{i:02d}" for i in range(n)],
+            "TOTAL_POINTS": rng.normal(225, 20, n).round(),
+            "ODDS_TOTAL_LINE_bet365": rng.normal(224, 15, n).round(),
+            "FLAT_BEFORE_TEAM_HOME": np.full(n, 7.0),
+            "PACE_BEFORE_TEAM_HOME": rng.normal(100, 5, n),
+        }
+    )
+
+    _, report = clean_dataframe_for_training(
+        df, keep_columns=["FLAT_BEFORE_TEAM_HOME"], verbose=0, return_report=True
+    )
+
+    assert report.why_dropped("PACE_BEFORE_TEAM_HOME") is None
+    assert "FLAT_BEFORE_TEAM_HOME" in report.correlation_exclusions
+    assert "correlation_exclusions" in report.to_dict()
