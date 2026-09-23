@@ -165,3 +165,28 @@ Pace uses `FGA + 0.44*FTA - OREB + TOV` per segment. V3 player rebound rows
 carry cumulative offensive/defensive counts in `description`; those counts are
 decoded by the builder. Team rebounds without a player ID are currently not
 classified, so this is an estimated possession count, not an official count.
+
+## Evaluate the game projection against the line
+
+`evaluate_game_projection.py` regenerates the phase-F / phase-G numbers in
+`docs/lineup_projection_plan.md` from committed code. It computes the
+projection exactly as the `LU_*` features do (`data_processing/lineups/features.py`),
+then reports its MAE, the slope of `LINE_ERROR` on the absence counterfactual
+and on `proj - line` per season with date-clustered bootstrap intervals, and
+the directional accuracy of "OVER when impact > 0". 2025-26 is reported
+separately as the season no tuning has touched.
+
+```bash
+python scripts/lineups/build_player_ratings.py --last-season 2025 \
+  --as-of-from 2021-10-01 --as-of-to 2026-06-30 \
+  --lambda-offdef 1000 --lambda-pace 30000
+python scripts/lineups/evaluate_game_projection.py \
+  --lines data/train_data/training_data_2_3_20260909.csv \
+  --output-dir data/lineup_ratings/eval_projection
+```
+
+The default cache now covers 2021-10-19 to 2026-06-30 (1,038 rating dates).
+The same cache feeds the opt-in `--lineup-features` build of the training data.
+Before the phase-F results, the evaluation drivers were run ad hoc and not
+committed; a rebuild from the modules matches their slopes but not every game,
+so treat this script's output as the reference.
