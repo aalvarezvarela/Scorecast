@@ -31,6 +31,7 @@ def main(
     status_top_n: dict[str, int] | None = None,
     referee_history_seasons: int = DEFAULT_REFEREE_HISTORY_SEASONS,
     include_same_season_referee_variants: bool = False,
+    lineup_features: bool = False,
 ) -> None:
     """Create training data up to `limit_date_to_train`.
 
@@ -51,6 +52,7 @@ def main(
         status_top_n=status_top_n,
         referee_history_seasons=referee_history_seasons,
         include_same_season_referee_variants=include_same_season_referee_variants,
+        lineup_features=lineup_features,
     )
 
     if output is None:
@@ -62,6 +64,10 @@ def main(
         # Both variants use the current schema; the suffix distinguishes a
         # build without report-derived availability from the default build.
         variant = "" if injury_report_features else "_without_injury_reports"
+        # The lineup family is opt-in and experimental: same schema, own suffix,
+        # so the control arm of its campaign is the default build unchanged.
+        if lineup_features:
+            variant += "_with_lineup_features"
         output = (
             output_path / f"training_data_{TRAINING_DATA_SCHEMA_VERSION}_"
             f"{pd.to_datetime(limit_date_to_train).strftime('%Y%m%d')}{variant}.csv"
@@ -135,6 +141,15 @@ if __name__ == "__main__":
             "The current schema version is retained with a distinct filename suffix."
         ),
     )
+    parser.add_argument(
+        "--lineup-features",
+        action="store_true",
+        help=(
+            "Also emit the experimental LU_*_BEFORE lineup-projection family "
+            "(needs data/lineup_ratings/player_ratings.parquet). The current "
+            "schema version is retained with a distinct filename suffix."
+        ),
+    )
     for status, default in (("questionable", 2), ("probable", 1), ("doubtful", 1)):
         parser.add_argument(
             f"--n-top-{status}",
@@ -159,4 +174,5 @@ if __name__ == "__main__":
         },
         referee_history_seasons=args.referee_history_seasons,
         include_same_season_referee_variants=args.referee_same_season_variants,
+        lineup_features=args.lineup_features,
     )

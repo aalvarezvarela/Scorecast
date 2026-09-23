@@ -7,6 +7,7 @@ and statistics needed for model training, including injury data processing.
 """
 
 import warnings
+from pathlib import Path
 from zoneinfo import ZoneInfo
 
 import pandas as pd
@@ -40,6 +41,7 @@ from nba_ou.data_processing.injury_status.report_state import (
 from nba_ou.data_processing.injury_status.status_history import (
     load_player_box_history,
 )
+from nba_ou.data_processing.lineups.features import attach_lineup_features
 from nba_ou.data_processing.merged_home_away_data.add_features_after_merging import (
     add_betting_stats_differences,
     add_derived_features_after_computed_stats,
@@ -432,6 +434,8 @@ def create_df_to_predict(
     injury_report_state: InjuryReportState | None = None,
     referee_history_seasons: int = DEFAULT_REFEREE_HISTORY_SEASONS,
     include_same_season_referee_variants: bool = False,
+    lineup_features: bool = False,
+    lineup_rating_cache: Path | str | None = None,
 ) -> pd.DataFrame:
     """
     Create prediction dataset for NBA over/under prediction models.
@@ -490,6 +494,15 @@ def create_df_to_predict(
         include_same_season_referee_variants (bool, optional): Also emit
             ``REF_CREW_SS_*`` same-season-only tendencies, used to measure
             the value of multi-season history in-model. Default False.
+        lineup_features (bool, optional): Also emit the experimental
+            ``LU_*_BEFORE`` lineup-projection family
+            (``nba_ou.data_processing.lineups.features``). Default False: the
+            family is unproven, and off leaves the dataset unchanged, so a
+            build with it on differs from the default build by exactly those
+            columns. Needs the injury report state and a rating cache.
+        lineup_rating_cache (Path | str, optional): Walk-forward rating cache
+            for the lineup family; defaults to
+            ``data/lineup_ratings/player_ratings.parquet``.
 
     Returns:
         pd.DataFrame: Complete training dataset with all features
@@ -766,6 +779,20 @@ def create_df_to_predict(
     # Create difference features for betting stats (HOME - AWAY)
     df_merged = add_betting_stats_differences(df_merged)
     df_merged = add_fresh_absence_sums(df_merged)
+
+    if lineup_features:
+        print("Adding lineup projection features...")
+        if injury_report_state is None:
+            injury_report_state = load_injury_report_state()
+    df_merged = attach_lineup_features(
+        df_merged,
+        df_players,
+        enabled=lineup_features,
+        injury_statuses=(
+            injury_report_state.statuses if injury_report_state is not None else None
+        ),
+        rating_cache=lineup_rating_cache,
+    )
 
     # Add global market regime features (league-wide, game-date level)
     df_merged = add_global_market_features(df_merged)
