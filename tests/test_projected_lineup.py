@@ -211,3 +211,95 @@ def test_missing_columns_raise():
         add_projected_lineup_features(pd.DataFrame({"GAME_ID": ["1"]}), _history())
     with pytest.raises(ValueError, match="Player history is missing"):
         add_projected_lineup_features(_target(), pd.DataFrame({"GAME_ID": ["1"]}))
+
+
+def _traded_history():
+    """p9 covers for p1 in January, then stops appearing: he was traded away."""
+    rows = []
+    rows += _box("001", "2025-01-01", FIVE, bench=[("p9", 8.0), ("p8", 12.0)])
+    rows += _box(
+        "002", "2025-01-03", ["p9", "p2", "p3", "p4", "p5"], bench=[("p8", 12.0)]
+    )
+    # p9 never appears again; twelve further games pass.
+    for index in range(12):
+        rows += _box(
+            f"1{index:02d}",
+            f"2025-01-{5 + index:02d}",
+            FIVE,
+            bench=[("p8", 12.0), ("p7", 10.0)],
+        )
+    return pd.DataFrame(rows)
+
+
+def test_a_departed_player_is_never_projected_to_start():
+    """The trade bug: p9 covered this exact absence, but he has left."""
+    result = add_projected_lineup_features(
+        _target(date="2025-01-20"), _traded_history(), out_sets={("005", TEAM): ["p1"]}
+    )
+    projection = result.attrs["projected_lineups"][("005", TEAM)]
+    assert "p9" not in projection["projected_five"]
+    assert projection["replacements"] == ("p8",)
+
+
+def test_a_player_on_tonights_report_counts_as_on_the_roster():
+    """An acquired player has no box score yet; the report is how we know."""
+    history = _traded_history()
+    listed = {("005", TEAM): ["p9"]}
+    result = add_projected_lineup_features(
+        _target(date="2025-01-20"),
+        history,
+        out_sets={("005", TEAM): ["p1"]},
+        listed_sets=listed,
+    )
+    projection = result.attrs["projected_lineups"][("005", TEAM)]
+    # Back on the roster, and he is still the precedent for p1's absence.
+    assert projection["replacements"] == ("p9",)
+
+
+def test_season_opener_projects_from_the_previous_season():
+    """Something at the start of a season beats nothing, but it is flagged."""
+    previous = _history()
+    target = pd.DataFrame(
+        [
+            {
+                "GAME_ID": "900",
+                "TEAM_ID": TEAM,
+                "GAME_DATE": "2025-10-20",
+                "SEASON_YEAR": 2025,
+            }
+        ]
+    )
+    result = add_projected_lineup_features(target, previous, out_sets={})
+    projection = result.attrs["projected_lineups"][("900", TEAM)]
+    assert projection["projected_five"] == frozenset(FIVE)
+    # Zero games this season: the whole projection rests on last season.
+    assert result["LU_PROJ_GAMES_THIS_SEASON_BEFORE"].iloc[0] == 0
+
+
+def test_a_partial_report_at_an_opener_does_not_invent_departures():
+    """The report lists ~5 players, not a squad; it must not shrink the five.
+
+    Before the team has played a game this season there is no in-season
+    appearance evidence, so a season-scoped roster would be the listing alone
+    and four fifths of the returning five would look departed.
+    """
+    target = pd.DataFrame(
+        [
+            {
+                "GAME_ID": "900",
+                "TEAM_ID": TEAM,
+                "GAME_DATE": "2025-10-20",
+                "SEASON_YEAR": 2025,
+            }
+        ]
+    )
+    result = add_projected_lineup_features(
+        target,
+        _history(),
+        out_sets={},
+        listed_sets={("900", TEAM): ["p1", "p8"]},
+    )
+    projection = result.attrs["projected_lineups"][("900", TEAM)]
+    assert projection["departed"] == frozenset()
+    assert projection["projected_five"] == frozenset(FIVE)
+    assert result["LU_PROJ_GAMES_THIS_SEASON_BEFORE"].iloc[0] == 0

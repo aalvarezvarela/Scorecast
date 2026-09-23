@@ -848,6 +848,24 @@ zero **neither we nor the market have a basis**, which is precisely the
 condition under which a market overreaction is plausible. Expect it to earn its
 place as an interaction term, not as a main effect.
 
+**Open question: there is no roster feed.** Building D0 surfaced this. Nothing
+in the repo says who is on a team tonight. Box scores say who has already
+played, and the injury report lists about five players per team-game, not a
+squad. Two consequences, both measured on 2024-25:
+
+- A mid-season trade is handled by bounding roster membership to the last 10
+  in-season appearances, which cut projected replacements who never appear for
+  that team again from **5.4% to 2.8%** (52 to 27 of ~960). The residual is
+  mostly season-ending injuries, where the player *is* still rostered.
+- **A summer departure cannot be detected at all.** At a season opener there is
+  no in-season appearance evidence, and marking the unlisted as departed would
+  invent departures for four fifths of the returning five. The opener therefore
+  projects last season's five as-is, and `LU_PROJ_GAMES_THIS_SEASON_BEFORE`
+  (0 there) is the flag that says so.
+
+Acquiring a roster or transactions feed would close both. Until then, treat
+early-season `LU_*` values as weakly founded rather than wrong.
+
 **Sequencing consequence.** Both additions need a **projected starting five**,
 not the full §6.2 minutes model. That is a much lighter prerequisite —
 `starter_history.py` already supplies the latest five, and §6.2 already plans
