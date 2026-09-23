@@ -623,6 +623,50 @@ For any five, or any pair, as of date D:
   season and in the last 10 games.
 - Same temporal contract as §5.
 
+### 6.1b Phase D as built, and its null result (2026-09-23)
+
+`data_processing/lineups/synergy.py`, 22 tests. Residual per stint against the
+phase-C prediction, accumulated per pair and per exact five, decayed with a
+180-day half-life and shrunk by `w = n / (n + k)` with `k = 200` possessions.
+`k` is an explicit parameter rather than the expanding empirical-Bayes fit this
+section specifies: same idea, one fewer moving part while it is being tested.
+
+**Two scale traps, both hit before they were fixed.** Written naively the
+synergy term averaged **+14 points per 100** and took the projection's MAE from
+14.5 to **24.7**:
+
+- A pair inherits the residual of every lineup it appeared in, so its mean is a
+  *lineup-level* quantity. Summing a five's ten pairs without dividing by ten
+  inflates the term tenfold.
+- The league's own mean residual is **+2.75 points per 100** and is not synergy
+  at all — it is the same estimated-possessions calibration gap `total_offset`
+  already removes (7.1c). Every pair inherited it, ten times over.
+
+Both are fixed by reporting every value as a deviation from the running league
+mean, divided by the pairs on the floor. The term then has mean +0.28 and sd
+1.54, which are plausible magnitudes.
+
+**And it does not help.** On 2021-22 to 2024-25, 5,235 games:
+
+| | MAE |
+|---|---|
+| projection without synergy | **14.518** |
+| projection with synergy | 14.612 |
+
+Regressing `LINE_ERROR` on the synergy term alone: slope **-0.024, 95% CI
+[-0.325, +0.305]** — null, and the term makes the projection slightly worse.
+
+**Where that leaves the three levers.** Phase E moved the projection by 0.004
+MAE, phase D by -0.094, and only the absence counterfactual (7.1d) separates
+from zero. The structural reading from 6.3 survives: the team aggregate is
+dominated by the ratings and the possession count, and neither redividing the
+fixed 240 minutes (E) nor adding a shrunk lineup residual (D) disturbs it much.
+
+This is one parameterisation — `k = 200`, a 180-day half-life, pair-level
+rather than exact-five weighting — and a linear addition to the projection, so
+it does not prove synergy is worthless. It does mean the column should go into
+the campaign to be judged there rather than be argued for here.
+
 ### 6.2 Minutes model (`minutes_model.py`)
 
 **Target:** each player's actual minutes in each team-game (0 if they didn't
