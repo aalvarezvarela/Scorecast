@@ -1274,7 +1274,7 @@ pipeline explicitly keeps the compact schema.
 ## Lineup Projection Features (opt-in)
 
 `create_df_to_predict(..., lineup_features=True)` (CLI:
-`create_train_data.py --lineup-features`) adds five game-level columns from the
+`create_train_data.py --lineup-features`) adds sixteen game-level columns from the
 bottom-up lineup projection in `data_processing/lineups/features.py`. The
 default is **off**: the family is experimental, and off leaves the dataset
 exactly as it was, so a build with it on differs by these columns only. Same
@@ -1282,11 +1282,20 @@ schema version; the file gets a `_with_lineup_features` suffix.
 
 | Column | Meaning |
 |---|---|
-| `LU_PROJ_TOTAL_BEFORE` | projected total from minutes-weighted player lineup ratings and tonight's availability, calibrated walk-forward |
+| `LU_PROJ_TOTAL_BEFORE` | projected total from minutes-weighted player lineup ratings and tonight's availability, calibrated walk-forward per phase |
 | `LU_PROJ_POSS_BEFORE` | projected possessions |
 | `LU_PROJ_TOTAL_SD_BEFORE` | spread of the total across availability scenarios (Questionable players) |
+| `LU_PROJ_MARGIN_BEFORE` | projected home minus away points |
 | `LU_ABSENCE_IMPACT_PTS_BEFORE` | projected total with tonight's absences minus the same roster at full health |
-| `LU_ABSENCE_IMPACT_PACE_BEFORE` | the same difference in possessions |
+| `LU_ABSENCE_IMPACT_POSS_BEFORE` | the same difference in possessions |
+| `LU_ABSENCE_IMPACT_OFF_PTS_BEFORE` | the part of it the absentees would have scored |
+| `LU_ABSENCE_IMPACT_DEF_PTS_BEFORE` | the part they would have prevented (positive: losing a defender adds points) |
+| `LU_ABSENCE_IMPACT_PACE_PTS_BEFORE` | the rest: the possession change; the three channels sum to the impact |
+| `LU_ABSENCE_IMPACT_PTS_BEFORE_TEAM_HOME` / `_TEAM_AWAY` | each side's absences alone, the other at full health |
+| `LU_ABSENCE_IMPACT_MARGIN_BEFORE` | the absences' effect on the home margin |
+| `LU_PROJ_FG3A_RATE_BEFORE_TEAM_HOME` / `_TEAM_AWAY` | expected 3PA/FGA of that side's offense against the other's defense, tonight's rotations (`style_matchup.py`) |
+| `LU_MATCHUP_FG3A_INTERACTION_BEFORE` | the part of it the additive model misses, borrowed from the most similar past lineup pairs |
+| `LU_ABSENCE_SHIFT_FG3A_RATE_BEFORE` | how much tonight's absences shift the game's expected 3PA/FGA |
 
 Attached after the home/away merge, next to `add_fresh_absence_sums`. Inputs
 and cutoffs:
@@ -1295,16 +1304,28 @@ and cutoffs:
   average over his last `RECENT_GAMES` (10) appearances, rescaled to 240.
 - **Availability:** `InjuryReportState.statuses` (last report before tip)
   through `chance_out`, the same probability the report features use. An
-  unlisted player is taken as available.
+  unlisted player is taken as available. A G-League assignment removes the
+  player from that game's roster instead (he is not with the team, and not an
+  absence). Zero-minute box-score rows other than a coach's decision
+  (`DND - Injury/Illness`, `NWT ...`) are absences, not appearances.
 - **Ratings:** `data/lineup_ratings/player_ratings.parquet`, built by
   `scripts/lineups/build_player_ratings.py`. A game reads the latest cache date
   on or before its own date; every cache row was fitted on stints strictly
   before that date. A cache date older than 14 days gives NaN rather than a
   stale projection.
 - **Level calibration:** the mean `actual - projected` over the previous 200
-  games on earlier dates (stint possessions are estimated and run high).
+  games of the same phase (regular season or playoffs) on earlier dates;
+  stint possessions are estimated and run high, and playoff games score
+  well below a regular-season projection.
+
+The three-point columns read the stint store (`data/lineup_stints`) directly:
+player style traits and the pool of past lineup pairs are rebuilt on each run
+(~2 minutes), walk-forward, with the similar-pairs model refitted monthly.
+They are NaN when the newest stint evidence is over 180 days old.
 
 The absence columns do not need the calibration: it cancels in the difference.
+The channel split is where the evidence sits: defense and pace predict the
+line's error, offense does not (plan §8.6).
 
 **Coverage.** Ratings start in 2021-22, so earlier games are NaN. For any
 training window starting earlier, `find_season_gated_columns` will drop the
@@ -1316,7 +1337,7 @@ production model has been trained with these columns. Serving them needs the
 rating cache refreshed through the day before, which no daily job does yet.
 
 Leakage tests: `tests/test_lineup_leakage.py`. Evidence and evaluation:
-`docs/lineup_projection_plan.md` §8.5, `scripts/lineups/evaluate_game_projection.py`.
+`docs/lineup_projection_plan.md` §8.5-8.6, `scripts/lineups/evaluate_game_projection.py`.
 
 ## Travel And Schedule Features
 

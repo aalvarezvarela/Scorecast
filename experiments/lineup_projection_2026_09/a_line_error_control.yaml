@@ -1,0 +1,84 @@
+experiment_name: a_line_error_control
+prediction_strategy: line_error_regressor
+training_version: 2.6-lineup-projection-202609
+comparison_group: lineup_projection_2026_09_line_error
+hypothesis: 'Control: schema 2_6 without the LU_* lineup family. Read only against the line_error
+  lineup cell; the two differ in the CSV alone, and the CSVs differ in the LU_* columns
+  alone.'
+tags:
+- schema_2_6
+- lineup_projection
+- control
+device: cuda
+random_state: 16
+data:
+  csv_path: data/train_data/training_data_2_6_20260704_lineup_control.csv
+  data_version: 20260704-2_6-lineup-control
+  expected_checksum: null
+  dataset_type: closing_line
+  season_year_floor: 2021
+  extend_history_dropping_season_gated_columns: false
+  exclude_overtime_from_training: false
+  exclude_playoffs: true
+  allowed_season_types:
+  - Regular Season
+  - Play-In Tournament
+cleaning:
+  max_na_per_row: 300
+  corr_threshold: 0.95
+  corr_threshold_overrides:
+    ODDS_: 0.99
+holdout:
+  test_size: null
+  test_games: null
+  test_days: 90
+walk_forward:
+  strategy: test_anchored
+  test_games: 50
+  step_games_between_tests: 60
+  train_games: 4500
+  train_games_choices: null
+  min_train_games: 1250
+  max_folds: 12
+  fold_selection: latest
+  exclude_test_months:
+  - 5
+  - 6
+  require_same_season_test: true
+  eval_span_games: null
+  min_validation_games: null
+sample_weight:
+  enabled: false
+  lambda_: null
+  tune_lambda: false
+  allow_unweighted: false
+optuna:
+  n_trials: 150
+  timeout: null
+  persistent_storage: false
+  tune_n_estimators: false
+  objective_aggregation: pooled
+  pruner_warmup_steps: 13
+  search_space:
+    n_estimators: 1000
+    early_stopping_rounds: 70
+    n_estimators_range: null
+betting:
+  edge_thresholds:
+  - 0.0
+  - 0.1
+  - 0.5
+  - 1.0
+  - 1.5
+  - 2.0
+  - 3.0
+  - 4.0
+  - 6.0
+  primary_edge_threshold: 0.1
+  comparison_line_cols:
+  - ODDS_TOTAL_LINE_consensus_opener
+holdout_evaluation: daily_walk_forward
+evaluation_seeds:
+- 101
+- 202
+- 303

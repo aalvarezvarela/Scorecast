@@ -10,6 +10,7 @@ from nba_ou.data_processing.lineups.features import (
     RatingBook,
     add_lineup_features,
     attach_lineup_features,
+    game_phase,
     walk_forward_offset,
 )
 from nba_ou.data_processing.lineups.projection_eval import (
@@ -139,6 +140,26 @@ class TestWalkForwardOffset:
         assert offset.iloc[3] == pytest.approx(20.0)
 
 
+class TestPhaseAwareOffset:
+    def test_playoffs_and_regular_season_calibrate_separately(self):
+        ids = pd.Series(["0022400001", "0042400001", "0022400002", "0042400002"])
+        assert game_phase(ids).tolist() == [
+            "regular",
+            "playoffs",
+            "regular",
+            "playoffs",
+        ]
+        dates = pd.Series(
+            pd.to_datetime(["2025-04-01", "2025-04-20", "2025-10-22", "2025-10-23"])
+        )
+        raw = pd.Series([200.0, 200.0, 200.0, 200.0])
+        actual = pd.Series([203.0, 190.0, np.nan, np.nan])
+        offset = walk_forward_offset(dates, raw, actual, phases=game_phase(ids))
+        # The October opener reads the regular season (+3), not the playoffs (-10).
+        assert offset.iloc[2] == pytest.approx(3.0)
+        assert offset.iloc[3] == pytest.approx(-10.0)
+
+
 class TestAddLineupFeatures:
     def test_full_health_has_no_absence_impact(self):
         out = add_lineup_features(_merged(), _box(), RatingBook(_ratings()))
@@ -180,6 +201,7 @@ class TestSwitch:
             enabled=True,
             injury_statuses=_statuses((TARGET_GAME, H, STAR)),
             ratings=RatingBook(_ratings()),
+            stints=pd.DataFrame(),
         )
         assert set(out.columns) - set(before.columns) == set(LINEUP_FEATURE_COLUMNS)
         pd.testing.assert_frame_equal(out[before.columns], before)
@@ -198,6 +220,7 @@ class TestSwitch:
             enabled=True,
             injury_statuses=_statuses(),
             ratings=RatingBook(_ratings()),
+            stints=pd.DataFrame(),
         )
         selected = select_training_columns(out, original_columns=[])
         assert set(LINEUP_FEATURE_COLUMNS) <= set(selected.columns)
@@ -234,3 +257,67 @@ class TestProjectionEval:
         result = directional_accuracy(frame, "x", 1.0)
         assert result["n"] == 2
         assert result["accuracy"] == pytest.approx(0.5)
+
+
+def test_the_three_point_columns_are_filled_when_stints_are_given(monkeypatch):
+    """The matchup columns come from stints; without them they are NaN."""
+    import functools
+
+    from nba_ou.data_processing.lineups import features as features_module
+
+    from tests.test_style_matchup import DATES, _stints
+
+    # The synthetic pool is small; lower the model's minimum for this test only.
+    monkeypatch.setattr(
+        features_module,
+        "build_style_matchup_features",
+        functools.partial(
+            features_module.build_style_matchup_features, min_pool=200, neighbours=50
+        ),
+    )
+    ids = {f"h{i}": str(100 + i) for i in range(7)} | {
+        f"a{i}": str(200 + i) for i in range(7)
+    }
+    merged = pd.DataFrame(
+        {
+            "GAME_ID": ["0099999999"],
+            "GAME_DATE": [pd.Timestamp("2024-11-25")],
+            "TEAM_ID_TEAM_HOME": ["H"],
+            "TEAM_ID_TEAM_AWAY": ["A"],
+            "TOTAL_POINTS": [np.nan],
+        }
+    )
+    box = pd.DataFrame(
+        [
+            {
+                "GAME_ID": f"00{n:08d}",
+                "TEAM_ID": team,
+                "GAME_DATE": date,
+                "PLAYER_ID": pid,
+                "MIN": 34.0,
+            }
+            for n, date in enumerate(DATES[:50])
+            for team, prefix in (("H", "h"), ("A", "a"))
+            for key, pid in ids.items()
+            if key.startswith(prefix)
+        ]
+    )
+    ratings = RatingBook(
+        pd.DataFrame(
+            {
+                "as_of_date": pd.Timestamp("2024-11-25"),
+                "player_id": list(ids.values()),
+                "o_rating": 0.0,
+                "d_rating": 0.0,
+                "pace_rating": 0.0,
+                "league_ortg": 112.0,
+                "league_pace": 100.0,
+                "fit_max_game_date": pd.Timestamp("2024-11-24"),
+            }
+        )
+    )
+    with_stints = add_lineup_features(merged, box, ratings, stints=_stints(DATES))
+    without = add_lineup_features(merged, box, ratings)
+    column = "LU_PROJ_FG3A_RATE_BEFORE_TEAM_HOME"
+    assert without[column].isna().all()
+    assert with_stints[column].notna().all()

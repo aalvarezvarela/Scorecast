@@ -18,6 +18,21 @@ roster until he plays again.
 
 **A player belongs to one team.** When he appears for a new one he leaves the
 old one's roster, so a trade does not leave him projected for both.
+
+**Box-score rows with no minutes are not all alike.** Injured players are
+listed with 0 minutes and a comment -- ``DND - Injury/Illness``, ``NWT - ...``
+-- 700 to 1,400 times a season. Read as a 0-minute appearance, each one drags
+the player's average down and keeps him on the roster however long he is out,
+contradicting the first rule. Only a coach's decision (or a blank comment) is
+an appearance at zero minutes; any other zero-minute row is an absence.
+
+**A G-League assignment is not an absence, and not a player either.**
+``chance_out`` gives those listings ``p_out = 0``, which is right for the
+injury features (roster mechanics are not news) and wrong here: the player
+would take minutes from the team he is not with. :func:`roster_exclusions`
+removes him from both tonight's roster and the full-health counterfactual, so
+he neither plays nor registers as a loss. Since 2021-22 that is 11,596 listings
+of players who were on the projected roster, 1,103 of them regulars.
 """
 
 from __future__ import annotations
@@ -28,6 +43,10 @@ import numpy as np
 import pandas as pd
 
 from .game_projection import PlayerNight
+
+#: Report reasons that take a player off the team for the night without
+#: being an absence. Mirrors ``report_state.UNCOUNTED_REASON_CATEGORIES``.
+ROSTER_EXCLUSION_REASONS: frozenset[str] = frozenset({"g_league"})
 
 #: Team games behind a player's recent-minutes average, and by default the
 #: window a player may go unseen before leaving the roster.
@@ -78,12 +97,37 @@ def player_out_probabilities(
     }
 
 
+def roster_exclusions(statuses: pd.DataFrame) -> set[tuple[str, str, str]]:
+    """``(game_id, team_id, player_id)`` of players not with the team tonight.
+
+    See the module docstring: these leave the roster for that game rather
+    than counting as absences.
+    """
+    if statuses.empty or "reason_category" not in statuses.columns:
+        return set()
+    listed = statuses.loc[statuses["reason_category"].isin(ROSTER_EXCLUSION_REASONS)]
+    return {
+        (str(game_id).zfill(10), str(team_id), str(player_id))
+        for game_id, team_id, player_id in listed[
+            ["game_id", "team_id", "player_id"]
+        ].itertuples(index=False, name=None)
+    }
+
+
+def _is_appearance(minutes: pd.Series, comment: pd.Series) -> pd.Series:
+    """A row counts as an appearance unless it is a zero-minute absence."""
+    text = comment.fillna("").astype(str).str.strip()
+    coach = text.eq("") | text.str.contains("coach", case=False)
+    return minutes.gt(0) | coach
+
+
 def build_player_nights(
     df_team: pd.DataFrame,
     df_players: pd.DataFrame,
     p_out: dict[tuple[str, str, str], float] | None = None,
     recent_games: int = RECENT_GAMES,
     roster_games: int | None = None,
+    excluded: set[tuple[str, str, str]] | None = None,
 ) -> dict[tuple[str, str], list[PlayerNight]]:
     """``(game_id, team_id) ->`` the roster expected to share tonight's minutes.
 
@@ -97,6 +141,10 @@ def build_player_nights(
     separable because they pull in opposite directions -- a short average
     tracks a changing role, a long one is less noisy -- and holding them
     together makes a sweep of either uninterpretable.
+
+    ``excluded`` removes players from a specific game's roster
+    (:func:`roster_exclusions`). A ``COMMENT`` column, when present, marks
+    zero-minute absences so they are not read as appearances.
     """
     if recent_games <= 0:
         raise ValueError("recent_games must be positive")
@@ -108,8 +156,12 @@ def build_player_nights(
     if missing := _PLAYER_REQUIRED - set(df_players.columns):
         raise ValueError(f"Player history is missing {sorted(missing)}")
     p_out = p_out or {}
+    excluded = excluded or set()
 
-    players = df_players[list(_PLAYER_REQUIRED)].copy()
+    columns = list(_PLAYER_REQUIRED) + (
+        ["COMMENT"] if "COMMENT" in df_players.columns else []
+    )
+    players = df_players[columns].copy()
     for column in ("GAME_ID", "TEAM_ID", "PLAYER_ID"):
         players[column] = players[column].astype(str)
     players["GAME_ID"] = players["GAME_ID"].str.zfill(10)
@@ -120,6 +172,8 @@ def build_player_nights(
     players = players.dropna(subset=["GAME_DATE"]).drop_duplicates(
         ["GAME_ID", "TEAM_ID", "PLAYER_ID"]
     )
+    if "COMMENT" in players.columns:
+        players = players.loc[_is_appearance(players["MIN"], players["COMMENT"])]
 
     targets = df_team[list(_TEAM_REQUIRED)].copy()
     for column in ("GAME_ID", "TEAM_ID"):
@@ -153,6 +207,7 @@ def build_player_nights(
                 for player in rosters[team]
                 if minutes[(team, player)]
                 and last_seen.get((team, player), -1) > cutoff
+                and (row.GAME_ID, team, player) not in excluded
             ]
             if not roster:
                 continue
