@@ -677,6 +677,60 @@ say so.
 
 ---
 
+### 6.3 Phase E as built, and what it did not buy (2026-09-23)
+
+`data_processing/lineups/minutes_model.py`, 18 tests.
+`E[min] = P(play) * E[min | play]`, the regressor trained only on games the
+player actually played so an Out listing cannot be learned as "few minutes"
+instead of "no minutes". Twelve features; the plan's closing-spread size and
+days-since-trade are **absent**, the first because it needs an odds join this
+module avoids and the second because there is no transactions feed.
+
+**Go/no-go E passes decisively**, on 2021-22 to 2024-25, 149,541 player-games:
+
+| Subset | model MAE | last-5 baseline | gain |
+|---|---|---|---|
+| all | 5.227 | 6.858 | **+1.631 (23.8%)** |
+| >= 15 min of teammates missing (n=87,594) | 5.424 | 7.555 | +2.131 |
+| >= 30 min missing (n=59,118) | 5.546 | 8.098 | **+2.552** |
+
+The gain **grows** with the size of the absence, which is the criterion this
+gate exists for. The last-5 average degrades badly when players are missing
+(6.86 to 8.10) because it reallocates blindly; the model holds (5.23 to 5.55)
+because it knows who actually absorbs the minutes.
+
+**And it barely moves anything downstream.** Feeding those minutes into phase F
+instead of recent averages:
+
+| | recent averages | phase-E minutes |
+|---|---|---|
+| Projection MAE | 14.519 | **14.515** |
+| `absence_impact_points` slope | +0.291 [+0.100, +0.472] | **+0.318 [+0.101, +0.534]** |
+| Peak directional accuracy | 52.73% at \|impact\|>=2 | 53.26% at \|impact\|>=2 |
+| sd of the impact column | 2.58 | 2.32 |
+
+A 23.8% better minutes model buys **0.004 of game MAE** and leaves the slope
+inside the old interval. The accuracy still falls above \|impact\| >= 2 rather
+than concentrating, so the shape that was worrying did not invert.
+
+**Why, and it is structural.** The team aggregate is
+`sum_i (min_i / 48) * rating_i` with `sum_i min_i` pinned at 240. Reshuffling
+minutes between players of similar rating leaves that sum almost unchanged, so
+per-player minute errors largely cancel at team level. Minutes accuracy and
+team-total accuracy are much more weakly coupled than the plan assumed -- and
+than the agent predicted when it argued phase E was where the remaining value
+sat. It was not.
+
+**What follows.** Keep phase E: it passes its gate, it is the plan's
+specification, and better minutes feed other section 8.1 columns
+(`LU_PROJ_MIN_CHANGE_BEFORE`, the replacement columns). But stop treating it as
+the lever on the totals signal. Either minutes variant produces nearly the same
+feature, so the campaign can use either. The remaining untried lever is
+**phase D synergy and the 7.1b shared-minutes weighting**, which change the
+aggregate itself rather than how the fixed 240 is divided.
+
+---
+
 ## 7. Phase F: game projection (`game_projection.py`)
 
 ### 7.1 v1: minutes-weighted ratings
@@ -859,6 +913,15 @@ correlation that is not yet an exploitable one.
   story from the 53.4% OVER finding in section 5, which was about freshness.
   Both can be true; they are not the same effect, and neither should be used to
   argue for the other.
+
+**How to read the accuracy table (owner, 2026-09-23).** It is a *univariate
+linear* betting rule, which is not how the column will be used. The model is
+gradient-boosted and will see this alongside ~3,000 other columns, including
+interactions the rule cannot express, and the edge needed is small. The table
+is therefore a weak lower bound, not a verdict: the real test is the campaign
+in section 8.4 with `lineup_features` off and on. Do not cite it to argue the
+column is worthless, and do not cite the slope to argue it is valuable --
+settle it in the campaign.
 
 **What it justifies.** Phases D and E are worth building. The impact column is
 computed from a crude proportional minutes redistribution; a real minutes model
