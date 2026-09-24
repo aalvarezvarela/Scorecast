@@ -200,6 +200,44 @@ def enumerate_scenarios(
     return scenarios
 
 
+#: A team's starters are its top five by full-health minutes; everyone below
+#: them is the bench whose absorbed minutes are measured on their own.
+STARTERS = 5
+
+
+def bench_replacement(
+    players: list[PlayerNight],
+    ratings: TeamRatings,
+    max_enumerated: int = MAX_ENUMERATED_UNCERTAIN,
+) -> tuple[float, float, float]:
+    """Change in the healthy bench's (offense, defense, pace) from tonight's absences.
+
+    The bench is fixed at full health -- everyone below the top ``STARTERS``
+    by minutes -- so a reserve promoted into the starting five by an injury
+    still counts as bench. Only the bench players who *play* in a scenario
+    contribute, with ``(tonight's minutes - full-health minutes) / 48`` times
+    their rating; a bench player who sits is an absentee, and his loss belongs
+    to the absence itself, not to its replacement. Scenario-weighted like
+    :func:`project_game`, with empty scenarios dropped the same way.
+    """
+    healthy = allocate_minutes(players)
+    ranked = sorted(healthy, key=lambda player: (-healthy[player], player))
+    bench = ranked[STARTERS:]
+    change = np.zeros(3)
+    weight_sum = 0.0
+    for sitting, weight in enumerate_scenarios(players, max_enumerated):
+        minutes = allocate_minutes(players, sitting)
+        if not minutes:
+            continue
+        delta = {p: minutes[p] - healthy[p] for p in bench if p in minutes}
+        change += weight * np.asarray(team_aggregate(delta, ratings))
+        weight_sum += weight
+    if weight_sum <= 0:
+        return 0.0, 0.0, 0.0
+    off, dff, pace = change / weight_sum
+    return float(off), float(dff), float(pace)
+
+
 _AGGREGATE_KEYS = (
     "home_off",
     "home_def",
@@ -308,6 +346,13 @@ def project_with_counterfactual(
       would have *prevented* (defense), and the rest, which is the change in
       possessions (pace). Offense and defense are valued at full-health
       possessions, so the three add up to the total impact exactly.
+
+    And one slice of it on its own: ``absence_impact_bench_replacement``, the
+    defense + pace points carried by the minutes the healthy **bench** absorbs
+    (:func:`bench_replacement`). The market prices an absence by the player
+    who is out; who plays his minutes is priced worse, and the bench's share
+    worst (plan section 8.6, bench probe). Valued at full-health possessions
+    and points per possession, the same linearisation as the channels above.
     """
     actual = project_game(
         home_players,
@@ -361,6 +406,21 @@ def project_with_counterfactual(
     defense = -per_100 * sum(
         actual[key] - healthy[key] for key in ("home_def", "away_def")
     )
+    _, bench_def, bench_pace = np.add(
+        bench_replacement(home_players, home_ratings),
+        bench_replacement(away_players, away_ratings),
+    )
+    # d(total)/d(possessions) at full health: both teams' points per 100.
+    points_per_possession = (
+        2 * league_ortg
+        + healthy["home_off"]
+        + healthy["away_off"]
+        - healthy["home_def"]
+        - healthy["away_def"]
+    ) / 100.0
+    bench_points = -per_100 * bench_def + (
+        bench_pace * game_minutes / 48.0 * points_per_possession
+    )
     return actual | {
         "healthy_total": healthy["total"],
         "healthy_possessions": healthy["possessions"],
@@ -369,6 +429,7 @@ def project_with_counterfactual(
         "absence_impact_offense": offense,
         "absence_impact_defense": defense,
         "absence_impact_pace": impact - offense - defense,
+        "absence_impact_bench_replacement": float(bench_points),
         "absence_impact_home": home_only["total"] - healthy["total"],
         "absence_impact_away": away_only["total"] - healthy["total"],
         "margin": actual["home_points"] - actual["away_points"],

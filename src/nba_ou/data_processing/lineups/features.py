@@ -13,7 +13,9 @@ sections 8.5-8.6). The absence counterfactual is the one quantity with a
 non-null relation to ``LINE_ERROR``, and splitting it shows where: the
 **defense** and **pace** channels carry it while the offense channel is fully
 priced -- the market reacts to the points an absent player scores, not to the
-points he prevents. The per-side and margin columns let the model read the
+points he prevents. ``LU_ABSENCE_IMPACT_BENCH_DP_PTS_BEFORE`` isolates the
+slice of that defense + pace carried by the bench players who absorb the
+absentees' minutes, the part priced worst. The per-side and margin columns let the model read the
 two teams' news separately, which the spread target needs. Synergy and
 ``proj_total - line`` measured null and are left out.
 
@@ -65,6 +67,7 @@ _IMPACT_COLUMNS = {
     "LU_ABSENCE_IMPACT_OFF_PTS_BEFORE": "impact_offense",
     "LU_ABSENCE_IMPACT_DEF_PTS_BEFORE": "impact_defense",
     "LU_ABSENCE_IMPACT_PACE_PTS_BEFORE": "impact_pace",
+    "LU_ABSENCE_IMPACT_BENCH_DP_PTS_BEFORE": "impact_bench_replacement",
     "LU_ABSENCE_IMPACT_MARGIN_BEFORE": "impact_margin",
     "LU_ABSENCE_IMPACT_PTS_BEFORE_TEAM_HOME": "impact_home",
     "LU_ABSENCE_IMPACT_PTS_BEFORE_TEAM_AWAY": "impact_away",
@@ -236,6 +239,7 @@ def project_lineup_games(
                         "impact_offense",
                         "impact_defense",
                         "impact_pace",
+                        "impact_bench_replacement",
                         "impact_margin",
                         "impact_home",
                         "impact_away",

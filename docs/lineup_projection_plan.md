@@ -1420,6 +1420,10 @@ seasons that are: 2019-20 and 2020-21, being backfilled now.
 - *(added after the lineup-style probe below)* the absence-driven shift in
   **3PA per FGA** has a positive `LINE_ERROR` slope while the line does not
   move with it; the shift in **pace** has a positive slope.
+- *(added after the bench probe below)* `LU_ABSENCE_IMPACT_BENCH_DP_PTS_BEFORE`
+  has a positive `LINE_ERROR` slope **alongside** the rest of the defense +
+  pace impact (both in one regression), and its per-point slope is at least
+  the rest's.
 
 Caveats set in advance: 2020-21 rotation coverage is under 45% and ends
 around game 400, so ratings are thin, and the 14-day staleness rule leaves the
@@ -1544,12 +1548,45 @@ minutes (419 games). A replacement-level prior would fix the level, but the
 returning from an absence (a "change versus the recent rotation" column):
 null (-0.002).
 
-**Columns now** (`LINEUP_FEATURE_COLUMNS`, 16 -- the 12 below plus the four
+**The bench (2026-09-23).** The starting five is presumably what the market
+watches, so the probe asked whether the rest of the rotation carries line
+error the starters do not. Each team's rotation was split into the projected
+five and the bench (6+ by minutes), and the defense + pace impact into the
+absentee's own minutes (*lost*) and the change in everyone else's (*replaced*),
+with the bench's share of the latter separated. Pre-registered before running;
+fit 2021-24, replication 2025-26, slope per point of projected impact:
+
+| Quantity | 2021-24 | 2025-26 |
+|---|---|---|
+| lost (the absentee) | +0.47 [+0.23, +0.70] | +0.31 [-0.05, +0.68] |
+| replaced (everyone absorbing his minutes) | +0.59 [+0.23, +0.95] | +0.70 [+0.17, +1.24] |
+| of which absorbed by the healthy bench | +0.65 [+0.00, +1.29] | **+1.29** [+0.34, +2.24] |
+| bench level at full health, given the impact | -0.04 [-0.22, +0.14] | +0.29 [-0.04, +0.62] |
+| starters' level, given the impact | +0.00 | -0.02 |
+
+Null, and not pursued: bench and starter *offense*; the deep bench (9+) times
+the closing spread (garbage time); each team's empirical second-unit pace from
+stints with <= 2 of that night's starters on the floor. The closing spread's
+own size leans OVER (+0.63 per SD in both periods), but that is a market
+effect on a column the model already has.
+
+So the bench matters only through absences: the market prices a missing
+player by who he is, less by who plays his minutes, and least when a reserve
+does. The lost/replaced slopes are not yet distinguishable (p = 0.22 pooled),
+so this is carried as **one** column, `LU_ABSENCE_IMPACT_BENCH_DP_PTS_BEFORE`
+(`game_projection.bench_replacement`), pre-registered above. Through the
+evaluation script it reproduces the probe (r = 0.997): +0.50 [-0.11, +1.11]
+before the holdout, +1.05 [+0.26, +2.00] on it, positive in 4 of 5 seasons
+(2023-24 -0.65). Around 15 coefficients were read in the probe, so expect
+about one to look good by luck; 2019-20 and 2020-21 decide.
+
+**Columns now** (`LINEUP_FEATURE_COLUMNS`, 17 -- the 13 below plus the four
 three-point matchup columns of `style_matchup.py`): the level
 (`LU_PROJ_TOTAL_BEFORE`, `LU_PROJ_POSS_BEFORE`, `LU_PROJ_TOTAL_SD_BEFORE`,
 `LU_PROJ_MARGIN_BEFORE`), the impact (`LU_ABSENCE_IMPACT_PTS_BEFORE`,
 `LU_ABSENCE_IMPACT_POSS_BEFORE` -- renamed from `..._PACE_BEFORE`, which was
-in possessions), its channels (`LU_ABSENCE_IMPACT_{OFF,DEF,PACE}_PTS_BEFORE`),
+in possessions), its channels (`LU_ABSENCE_IMPACT_{OFF,DEF,PACE}_PTS_BEFORE`), the bench's
+share of the replacement (`LU_ABSENCE_IMPACT_BENCH_DP_PTS_BEFORE`),
 its sides (`LU_ABSENCE_IMPACT_PTS_BEFORE_TEAM_{HOME,AWAY}`) and its margin
 (`LU_ABSENCE_IMPACT_MARGIN_BEFORE`).
 
