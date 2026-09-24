@@ -63,6 +63,7 @@ REGRESSORS = (
     "impact_defense",
     "impact_pace",
     "impact_def_pace",
+    "impact_bench_replacement",
     "proj_minus_line",
 )
 

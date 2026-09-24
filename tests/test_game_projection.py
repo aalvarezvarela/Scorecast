@@ -9,6 +9,7 @@ from nba_ou.data_processing.lineups.game_projection import (
     PlayerNight,
     TeamRatings,
     allocate_minutes,
+    bench_replacement,
     enumerate_scenarios,
     project_game,
     project_totals,
@@ -322,3 +323,74 @@ class TestCounterfactualDecomposition:
         # Margin: the scorer costs home 5; the missing away defender gives
         # home 3 back.
         assert result["absence_impact_margin"] == pytest.approx(-5.0 + 3.0)
+
+
+class TestBenchReplacement:
+    """Plan section 8.6, bench probe: the minutes the healthy bench absorbs."""
+
+    @staticmethod
+    def _team(out=(), questionable=()):
+        # Five starters at 36 and two reserves at 30: 240 minutes at full health.
+        starters = [
+            PlayerNight(f"s{i}", 36.0, 1.0 if f"s{i}" in out else 0.0) for i in range(5)
+        ]
+        bench = [
+            PlayerNight(
+                f"b{i}",
+                30.0,
+                1.0 if f"b{i}" in out else 0.5 if f"b{i}" in questionable else 0.0,
+            )
+            for i in range(2)
+        ]
+        return starters + bench
+
+    def test_a_healthy_team_has_no_bench_replacement(self):
+        ratings = TeamRatings({}, {"b0": 4.0}, {"b0": 2.0})
+        assert bench_replacement(self._team(), ratings) == pytest.approx((0, 0, 0))
+
+    def test_only_the_bench_share_of_the_absorbed_minutes_counts(self):
+        # s0 out: 204 minutes left, scaled by 240/204, so b0 gains 30 * 36/204.
+        # The starter's own loss and the starters' gains are rated heavily
+        # and must not appear.
+        ratings = TeamRatings(
+            {"b0": 9.0}, {"s0": 10.0, "s1": 10.0, "b0": 4.0}, {"b0": 2.0}
+        )
+        off, dff, pace = bench_replacement(self._team(out={"s0"}), ratings)
+        gained = 30.0 * 36.0 / 204.0 / 48.0
+        assert dff == pytest.approx(gained * 4.0)
+        assert pace == pytest.approx(gained * 2.0)
+        assert off == pytest.approx(gained * 9.0)
+
+    def test_a_bench_player_who_sits_is_an_absence_not_a_replacement(self):
+        ratings = TeamRatings({}, {"b1": 6.0}, {})
+        assert bench_replacement(self._team(out={"b1"}), ratings)[1] == 0.0
+
+    def test_scenarios_are_probability_weighted(self):
+        ratings = TeamRatings({}, {"b0": 4.0}, {})
+        certain = bench_replacement(self._team(out={"b1"}), ratings)[1]
+        maybe = bench_replacement(self._team(questionable={"b1"}), ratings)[1]
+        # b1 sits in half the scenarios; b0 gains only in those.
+        assert maybe == pytest.approx(certain / 2)
+
+    def test_the_column_is_the_bench_share_in_points(self):
+        # Pure bench defender absorbing minutes: losing nothing of his own,
+        # he PREVENTS more points, so the column is negative. poss = 100.
+        ratings = TeamRatings({}, {"b0": 4.0}, {})
+        home = self._team(out={"s0"})
+        away = _roster(n=5, minutes=48.0, prefix="a")
+        result = project_with_counterfactual(home, away, ratings, ratings, 112.0, 100.0)
+        gained = 30.0 * 36.0 / 204.0 / 48.0
+        assert result["absence_impact_bench_replacement"] == pytest.approx(
+            -gained * 4.0
+        )
+
+    def test_bench_pace_is_valued_at_points_per_possession(self):
+        # One possession more per 48 is worth both teams' points per 100.
+        ratings = TeamRatings({}, {}, {"b0": 1.0})
+        home = self._team(out={"s0"})
+        away = _roster(n=5, minutes=48.0, prefix="a")
+        result = project_with_counterfactual(home, away, ratings, ratings, 112.0, 100.0)
+        gained = 30.0 * 36.0 / 204.0 / 48.0
+        assert result["absence_impact_bench_replacement"] == pytest.approx(
+            gained * 2 * 112.0 / 100.0
+        )

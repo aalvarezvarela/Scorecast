@@ -1274,7 +1274,7 @@ pipeline explicitly keeps the compact schema.
 ## Lineup Projection Features (opt-in)
 
 `create_df_to_predict(..., lineup_features=True)` (CLI:
-`create_train_data.py --lineup-features`) adds sixteen game-level columns from the
+`create_train_data.py --lineup-features`) adds seventeen game-level columns from the
 bottom-up lineup projection in `data_processing/lineups/features.py`. The
 default is **off**: the family is experimental, and off leaves the dataset
 exactly as it was, so a build with it on differs by these columns only. Same
@@ -1291,6 +1291,7 @@ schema version; the file gets a `_with_lineup_features` suffix.
 | `LU_ABSENCE_IMPACT_OFF_PTS_BEFORE` | the part of it the absentees would have scored |
 | `LU_ABSENCE_IMPACT_DEF_PTS_BEFORE` | the part they would have prevented (positive: losing a defender adds points) |
 | `LU_ABSENCE_IMPACT_PACE_PTS_BEFORE` | the rest: the possession change; the three channels sum to the impact |
+| `LU_ABSENCE_IMPACT_BENCH_DP_PTS_BEFORE` | the defense + pace points carried by the minutes the healthy bench (6+ by full-health minutes) absorbs from tonight's absentees; a slice of the two columns above, not a fourth channel |
 | `LU_ABSENCE_IMPACT_PTS_BEFORE_TEAM_HOME` / `_TEAM_AWAY` | each side's absences alone, the other at full health |
 | `LU_ABSENCE_IMPACT_MARGIN_BEFORE` | the absences' effect on the home margin |
 | `LU_PROJ_FG3A_RATE_BEFORE_TEAM_HOME` / `_TEAM_AWAY` | expected 3PA/FGA of that side's offense against the other's defense, tonight's rotations (`style_matchup.py`) |
