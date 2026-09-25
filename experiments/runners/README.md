@@ -13,6 +13,23 @@ accessing configs, datasets, logs, or artifacts.
   Both let Optuna choose 2,500, 3,000, 3,500, or the maximum for each horizon
   (3,775–4,788 games) on eight test-anchored folds of at least 80 games.
   Part 2 also runs the optional time-decay arm at T-360.
+- `run_closing_line_error_6x100_2_5_2026_09.sh`: schema-2.5 closing-line
+  line_error, always 6×100 test-anchored folds. Seven cells, each changing one
+  thing from the reference (NaN budget 300, window 6,200, ODDS_ corr 0.99):
+  a same-config replicate for the noise floor, windows 4,000 and 2,500, NaN
+  budgets 150 and 80, and ODDS_ corr 0.995. No lock; closing data is small.
+- `run_closing_spread_6x100_2_5_2026_09.sh` and
+  `run_closing_total_points_6x100_2_5_2026_09.sh`: schema-2.5 closing-line
+  spread and total_points, always 6×100 test-anchored folds. Five cells each:
+  reference, same-config replicate (noise floor), windows 6,200 and 2,500, and
+  NaN budget 150. No lock; closing data is small.
+- `run_promote_intermediate_line_error_2_5_2026_09_part1_t30_t420.sh` and
+  `run_promote_intermediate_line_error_2_5_2026_09_part2_t480_t1080_controls.sh`:
+  one line-error promotion candidate per intermediate horizon, T-30 .. T-1080
+  (16 cells, 8 per part). One recipe throughout: 2019 floor, max_na 800, each
+  horizon's longest feasible window (fixed), 6×100 folds. Part 2 then runs 5
+  controls: seed replicates at T-240 / T-840 and recent-only windows (2021-22
+  onward, same data) at T-240 / T-480 / T-960. Neither part locks.
 - `run_train_window_line_error_2_5_2026_09_part1_t60.sh` and
   `run_train_window_line_error_2_5_2026_09_part2_t720.sh`: does older data help?
   Six cells per horizon on ONE identical dataset (2019 floor, max_na 800 in

@@ -122,16 +122,18 @@ def load_run_hyperparameters(
     if trial_params.get(USE_SAMPLE_WEIGHT_PARAM) is False:
         lambda_ = None
 
+    # Same order as tuning.n_estimators_from_trial, which the holdout backtest
+    # uses -- a promoted model must fit the rounds the holdout measured.
     # Tuned value FIRST. A run that tuned n_estimators records it in params and
-    # writes no best_iteration attrs at all; a legacy run records the attrs and
-    # no param. Reading the attrs first would, for a hypothetical run carrying
-    # both, silently prefer the early-stopping median over the value the trial
-    # was actually scored at.
+    # writes no best_iteration attrs at all. An early-stopping run records the
+    # best_iteration attrs AND user_attrs["n_estimators"], but the latter is
+    # only the early-stopping cap (e.g. 1000 against a median of 51), so it
+    # must come last: reading it before the median refitted 20x the rounds.
     n_estimators = (
         trial_params.get("n_estimators")
-        or user_attrs.get("n_estimators")
         or user_attrs.get("median_best_iteration")
         or user_attrs.get("mean_best_iteration")
+        or user_attrs.get("n_estimators")
     )
     if not n_estimators:
         raise ValueError(
