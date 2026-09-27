@@ -6,9 +6,10 @@ Regenerates the numbers in ``docs/lineup_projection_plan.md`` sections 7.1d,
 season, with date-clustered bootstrap intervals and directional accuracy, and
 the same for the spread (``SPREAD_ERROR`` on the margin columns).
 
-The projection is computed exactly as the ``LU_*`` features are
-(``nba_ou.data_processing.lineups.features``), so a number here is a number
-about the column the model sees.
+The projection uses the same rating and availability components as ``LU_*``.
+Only games with both teams' pre-tip injury filings are evaluated. These are
+exploratory historical diagnostics; the revised ridge solver requires a rebuilt
+rating cache and a new run before the old reported numbers can be reused.
 
 Example::
 
@@ -121,26 +122,26 @@ def _style_summary(table: pd.DataFrame, nights, scored: pd.DataFrame) -> dict:
         left_on="GAME_ID",
         right_index=True,
     )
-    interaction = frame["LU_MATCHUP_FG3A_INTERACTION_BEFORE"]
+    neighbor_residual = frame["LU_FG3A_NEIGHBOR_RESIDUAL_BEFORE"]
     projected = (
         frame["LU_PROJ_FG3A_RATE_BEFORE_TEAM_HOME"]
         + frame["LU_PROJ_FG3A_RATE_BEFORE_TEAM_AWAY"]
     ) / 2
-    non_additive = frame["actual_fg3a_rate"] - (projected - interaction)
+    additive_error = frame["actual_fg3a_rate"] - (projected - neighbor_residual)
     lined = scored.merge(style, on="GAME_ID")
     return {
         "games": len(frame),
-        "corr_interaction_vs_non_additive_fg3a": float(
-            np.corrcoef(interaction, non_additive)[0, 1]
+        "corr_neighbor_residual_vs_additive_fg3a_error": float(
+            np.corrcoef(neighbor_residual, additive_error)[0, 1]
         ),
-        "mae_fg3a_additive": float(non_additive.abs().mean()),
-        "mae_fg3a_with_interaction": float(
+        "mae_fg3a_additive": float(additive_error.abs().mean()),
+        "mae_fg3a_with_neighbor_residual": float(
             (frame["actual_fg3a_rate"] - projected).abs().mean()
         ),
         "line_error_slopes": {
             column: line_error_slope(lined, column)
             for column in (
-                "LU_MATCHUP_FG3A_INTERACTION_BEFORE",
+                "LU_FG3A_NEIGHBOR_RESIDUAL_BEFORE",
                 "LU_ABSENCE_SHIFT_FG3A_RATE_BEFORE",
             )
         },
@@ -166,10 +167,12 @@ def main() -> None:
     parser.add_argument("--recent-games", type=int, default=RECENT_GAMES)
     parser.add_argument("--roster-games", type=int)
     parser.add_argument(
+        "--diagnostic-season",
         "--holdout-season",
+        dest="diagnostic_season",
         type=int,
         default=2025,
-        help="Season reported separately as untouched by tuning (2025 = 2025-26)",
+        help="Season reported separately for diagnostics (2025-26 was inspected during feature selection)",
     )
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument(
@@ -192,7 +195,18 @@ def main() -> None:
     players["MIN"] = _parse_minutes_series(players["MIN"]).fillna(0.0)
     players = players.merge(table[["GAME_ID", "GAME_DATE"]], on="GAME_ID")
 
-    statuses = load_injury_report_state(None).statuses
+    report = load_injury_report_state(None)
+    statuses = report.statuses
+    covered = {(str(game).zfill(10), str(team)) for game, team in report.covered}
+    table = table.loc[
+        table.apply(
+            lambda row: (
+                (row.GAME_ID, row.HOME_TEAM_ID) in covered
+                and (row.GAME_ID, row.AWAY_TEAM_ID) in covered
+            ),
+            axis=1,
+        )
+    ].copy()
     p_out = player_out_probabilities(statuses)
     ratings = load_rating_book(args.ratings)
 
@@ -243,8 +257,10 @@ def main() -> None:
     }
     windows = {
         "all": scored,
-        "before_holdout": scored.loc[scored["season"] < args.holdout_season],
-        "holdout": scored.loc[scored["season"].eq(args.holdout_season)],
+        "before_diagnostic_season": scored.loc[
+            scored["season"] < args.diagnostic_season
+        ],
+        "diagnostic_season": scored.loc[scored["season"].eq(args.diagnostic_season)],
     } | {
         f"season_{s}": scored.loc[scored["season"].eq(s)]
         for s in sorted(scored["season"].unique())
@@ -261,7 +277,7 @@ def main() -> None:
     if args.style:
         summary["style"] = _style_summary(table, nights, windows["all"])
     for column in ACCURACY_COLUMNS:
-        for name in ("before_holdout", "holdout"):
+        for name in ("before_diagnostic_season", "diagnostic_season"):
             summary["accuracy"][f"{column}:{name}"] = [
                 directional_accuracy(windows[name], column, threshold)
                 for threshold in ACCURACY_THRESHOLDS
@@ -288,10 +304,10 @@ def main() -> None:
     if "style" in summary:
         style = summary["style"]
         print(
-            f"\nThree-point matchup ({style['games']:,} games): interaction vs "
-            f"non-additive 3PA rate corr {style['corr_interaction_vs_non_additive_fg3a']:+.4f}; "
+            f"\nThree-point neighbour residual ({style['games']:,} games): "
+            f"corr with additive 3PA error {style['corr_neighbor_residual_vs_additive_fg3a_error']:+.4f}; "
             f"3PA-rate MAE {style['mae_fg3a_additive']:.4f} -> "
-            f"{style['mae_fg3a_with_interaction']:.4f}"
+            f"{style['mae_fg3a_with_neighbor_residual']:.4f}"
         )
         for column, row in style["line_error_slopes"].items():
             print(

@@ -81,6 +81,54 @@ def test_incremental_normal_equations_match_batch():
     )
 
 
+def test_weighted_ridge_matches_reference_with_free_intercept():
+    from scipy import sparse
+    from sklearn.linear_model import Ridge
+
+    x = np.array(
+        [
+            [1.0, 0.0, 1.0],
+            [1.0, 2.0, 0.0],
+            [1.0, 3.0, 1.0],
+            [1.0, 5.0, 0.0],
+            [1.0, 7.0, 1.0],
+        ]
+    )
+    y = np.array([3.0, 4.0, 7.0, 8.0, 12.0])
+    weights = np.array([1.0, 4.0, 2.0, 0.5, 6.0])
+    alpha = 3.5
+    normal = _NormalEquations(x.shape[1])
+    normal.add(sparse.csr_matrix(x), y, weights)
+    beta, intercept = normal.solve(alpha)
+    reference = Ridge(alpha=alpha, fit_intercept=True).fit(x, y, sample_weight=weights)
+    np.testing.assert_allclose(beta, reference.coef_, atol=1e-7)
+    assert intercept == pytest.approx(reference.intercept_, abs=1e-7)
+    assert beta[0] == pytest.approx(0.0, abs=1e-8)  # Intercept is unpenalized.
+    assert np.average(y - (intercept + x @ beta), weights=weights) == pytest.approx(
+        0.0, abs=1e-8
+    )
+
+
+def test_weighted_centering_survives_incremental_decay():
+    from scipy import sparse
+    from sklearn.linear_model import Ridge
+
+    x = np.array([[1.0, 2.0], [1.0, 3.0], [1.0, 5.0], [1.0, 8.0]])
+    y = np.array([1.0, 4.0, 6.0, 9.0])
+    weights = np.array([3.0, 1.0, 2.0, 4.0])
+    normal = _NormalEquations(x.shape[1])
+    normal.add(sparse.csr_matrix(x[:2]), y[:2], weights[:2])
+    normal.decay(0.25)
+    normal.add(sparse.csr_matrix(x[2:]), y[2:], weights[2:])
+    beta, intercept = normal.solve(2.0)
+    effective_weights = weights * np.array([0.25, 0.25, 1.0, 1.0])
+    reference = Ridge(alpha=2.0, fit_intercept=True).fit(
+        x, y, sample_weight=effective_weights
+    )
+    np.testing.assert_allclose(beta, reference.coef_, atol=1e-7)
+    assert intercept == pytest.approx(reference.intercept_, abs=1e-7)
+
+
 def test_target_and_same_day_changes_cannot_change_prior_ratings():
     history = pd.DataFrame(
         [

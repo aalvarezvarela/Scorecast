@@ -1,20 +1,17 @@
-"""Three-point volume of tonight's matchup, from similar lineup pairs in the past.
+"""Directional 3PA/FGA adjusted by residuals from similar past lineup pairs.
 
-Lineups combine additively for scoring, pace, free throws, rebounding and
-turnovers -- a matchup plays like the sum of its two sides
-(``docs/lineup_projection_plan.md`` section 8.6). **Three-point volume is the
-exception**: borrowing from the most similar past offense-five vs defense-five
-pairs, from any teams, predicts part of what the additive model misses. As
-built here, on tonight's rotations, the interaction correlates +0.065 with the
-game's non-additive 3PA rate (2021-2025; positive in four of five seasons).
+A weighted linear additive baseline uses the offense five's six style traits
+and the defense five's six traits. For each past stint direction, its residual
+is observed 3PA/FGA minus that baseline. A nearest-neighbour average of these
+residuals adjusts tonight's directional rate. This residual is not a pure
+home-by-away interaction: nonlinear effects of either side alone, omitted
+variables and noise can also remain after a linear additive fit.
 
-**What it is not, yet: a totals signal.** Against the closing line's error the
-interaction is null (+0.10 per SD, [-0.33, +0.53]), and so is the
-absence-driven 3PA shift (+0.17, [-0.27, +0.61]) -- an exploratory probe had
-the shift at +0.55, which this walk-forward construction does not reproduce.
-Three-point volume is not points. The columns are emitted so the campaign and
-the pre-registered 2019-20 / 2020-21 test can judge them with this code fixed
-in advance.
+In exploratory 2021-26 data, the adjustment correlates about +0.066 with the
+game's additive 3PA-rate error and changes rate MAE from 0.0370 to 0.0363.
+Its ``LINE_ERROR`` slope is +0.10 per SD [-0.33, +0.53]; this does not
+establish a useful totals or betting signal. The planned control/treatment
+campaign has not run.
 
 The method:
 
@@ -32,7 +29,7 @@ The method:
    expected-minutes-weighted mean of each side's traits, with tonight's
    absentees sitting -- give the additive expected 3PA rate, and the
    FGA-weighted mean residual of the ``k`` most similar past pairs gives the
-   interaction. The additive rate is also computed at full health; the
+   neighbour adjustment. The additive rate is also computed at full health; the
    difference is the absence-driven shift.
 
 **Temporal contract.** Traits read on date D use stints before D; the pool and
@@ -69,7 +66,7 @@ STYLE_STATS: dict[str, tuple[str, str, float]] = {
 #: keeps last year's profile relevant at an opener without letting it dominate.
 TRAIT_HALF_LIFE_DAYS = 365.0
 
-#: Neighbours behind the interaction. The probe found the effect stable from
+#: Neighbours behind the residual adjustment. The probe found the effect stable from
 #: 200 to 3,000 neighbours and the out-of-sample gain positive from 1,000.
 NEIGHBOURS = 1000
 
@@ -85,7 +82,7 @@ MAX_EVIDENCE_GAP_DAYS = 180
 STYLE_FEATURE_COLUMNS = (
     "LU_PROJ_FG3A_RATE_BEFORE_TEAM_HOME",
     "LU_PROJ_FG3A_RATE_BEFORE_TEAM_AWAY",
-    "LU_MATCHUP_FG3A_INTERACTION_BEFORE",
+    "LU_FG3A_NEIGHBOR_RESIDUAL_BEFORE",
     "LU_ABSENCE_SHIFT_FG3A_RATE_BEFORE",
 )
 
@@ -260,7 +257,7 @@ class _MonthlyModel:
     def additive(self, vector: np.ndarray) -> float:
         return float(self.coef[0] + vector @ self.coef[1:])
 
-    def interaction(self, vector: np.ndarray) -> float:
+    def neighbor_residual(self, vector: np.ndarray) -> float:
         """FGA-weighted mean residual of the most similar past pairs."""
         _, idx = self.index.kneighbors(((vector - self.mean) / self.scale)[None, :])
         w = self.weights[idx[0]]
@@ -343,7 +340,7 @@ def build_style_matchup_features(
                     for healthy in (False, True)
                     for side in ("o", "d")
                 }
-                rate, inter, shift = {}, [], 0.0
+                rate, residuals, shift = {}, [], 0.0
                 for off, dfn in (("H", "A"), ("A", "H")):
                     joint = np.concatenate(
                         [vec[(off, False, "o")], vec[(dfn, False, "d")]]
@@ -351,16 +348,16 @@ def build_style_matchup_features(
                     healthy = np.concatenate(
                         [vec[(off, True, "o")], vec[(dfn, True, "d")]]
                     )
-                    i = model.interaction(joint)
-                    rate[off] = model.additive(joint) + i
-                    inter.append(i)
+                    residual = model.neighbor_residual(joint)
+                    rate[off] = model.additive(joint) + residual
+                    residuals.append(residual)
                     shift += model.additive(joint) - model.additive(healthy)
                 rows.append(
                     {
                         "GAME_ID": game.GAME_ID,
                         "LU_PROJ_FG3A_RATE_BEFORE_TEAM_HOME": rate["H"],
                         "LU_PROJ_FG3A_RATE_BEFORE_TEAM_AWAY": rate["A"],
-                        "LU_MATCHUP_FG3A_INTERACTION_BEFORE": float(np.mean(inter)),
+                        "LU_FG3A_NEIGHBOR_RESIDUAL_BEFORE": float(np.mean(residuals)),
                         "LU_ABSENCE_SHIFT_FG3A_RATE_BEFORE": shift,
                     }
                 )

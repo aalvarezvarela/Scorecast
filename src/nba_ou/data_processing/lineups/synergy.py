@@ -42,7 +42,9 @@ from __future__ import annotations
 from collections import defaultdict
 from itertools import combinations
 
+import numpy as np
 import pandas as pd
+from scipy.optimize import linprog
 
 #: Possessions at which a pair or five carries half its raw residual.
 #:
@@ -265,32 +267,110 @@ def expected_shared_minutes(
     accumulator: SynergyAccumulator,
     available: list[str],
     team_minutes: float = 48.0,
+    projected_minutes: dict[str, float] | None = None,
 ) -> dict[tuple[str, str], float]:
-    """How long each available pair is expected to share the floor tonight.
+    """Project shared minutes from prior overlap, subject to court-time limits.
 
-    A pair's past overlap is only informative **among the players who are
-    actually going to play**, so the shares are renormalised over the available
-    pairs. When a starter is out, the pairs he was part of vanish and everyone
-    else's share rises, which is what makes the weighting react to news rather
-    than describe an average night.
-
-    The normalisation puts the total at ``PAIRS_ON_COURT * team_minutes``,
-    because ten pairs are on the floor at every instant.
+    Historical pair seconds provide the desired relative shares. The resulting
+    pair allocation must sum to ten pairs on court at each instant, must never
+    give one pair more than the game duration, and must give each player at most
+    four teammates' worth of court time. When ``projected_minutes`` is supplied,
+    that last constraint is an equality to four times the player's projection.
+    An L1 projection changes the historical shares only when they are invalid.
+    Fewer than five available players cannot form a valid lineup.
     """
-    if len(available) < 2:
+    players = sorted(set(available))
+    if len(players) < 5:
         return {}
-    shares = {
-        (one, other): accumulator.pair_seconds(one, other)
-        for one, other in combinations(sorted(available), 2)
-    }
-    total = sum(shares.values())
-    if total <= 0:
-        # No shared history at all: spread the floor time evenly rather than
-        # claiming nobody plays together.
-        even = PAIRS_ON_COURT * team_minutes / len(shares)
-        return dict.fromkeys(shares, even)
-    scale = PAIRS_ON_COURT * team_minutes / total
-    return {pair: value * scale for pair, value in shares.items()}
+    if team_minutes <= 0:
+        raise ValueError("team_minutes must be positive")
+    pairs = list(combinations(players, 2))
+    pair_count = len(pairs)
+    pair_total = PAIRS_ON_COURT * team_minutes
+    historical = np.array(
+        [accumulator.pair_seconds(one, other) for one, other in pairs], dtype=float
+    )
+    target = (
+        historical * (pair_total / historical.sum())
+        if historical.sum() > 0
+        else np.full(pair_count, pair_total / pair_count)
+    )
+    if projected_minutes is None:
+        player_limits = {player: 4.0 * team_minutes for player in players}
+    else:
+        if set(projected_minutes) != set(players):
+            raise ValueError(
+                "projected_minutes must cover exactly the available players"
+            )
+        minutes = np.array(
+            [projected_minutes[player] for player in players], dtype=float
+        )
+        if (
+            not np.isfinite(minutes).all()
+            or (minutes < 0).any()
+            or (minutes > team_minutes + 1e-8).any()
+            or not np.isclose(minutes.sum(), 5.0 * team_minutes, atol=1e-6)
+        ):
+            raise ValueError(
+                "projected_minutes must be feasible and sum to team minutes x 5"
+            )
+        player_limits = {
+            player: 4.0 * minute
+            for player, minute in zip(players, minutes, strict=True)
+        }
+
+    incidence = np.array(
+        [[float(player in pair) for pair in pairs] for player in players]
+    )
+    target_player_totals = incidence @ target
+    feasible = (
+        (target <= team_minutes + 1e-8).all()
+        and (
+            target_player_totals <= np.array(list(player_limits.values())) + 1e-8
+        ).all()
+        and (
+            projected_minutes is None
+            or np.allclose(
+                target_player_totals,
+                np.array(list(player_limits.values())),
+                atol=1e-6,
+            )
+        )
+    )
+    if feasible:
+        return dict(zip(pairs, target, strict=True))
+
+    # Variables are pair minutes x and absolute deviations d from the
+    # historical target. Minimize sum(d) under the physical constraints.
+    eye = np.eye(pair_count)
+    absolute_constraints = np.vstack([np.hstack([eye, -eye]), np.hstack([-eye, -eye])])
+    row_constraints = np.hstack([incidence, np.zeros((len(players), pair_count))])
+    equality = np.zeros((1, 2 * pair_count))
+    equality[0, :pair_count] = 1.0
+    equalities = [equality]
+    equality_values = [pair_total]
+    if projected_minutes is not None:
+        equalities.append(row_constraints)
+        equality_values.extend(player_limits.values())
+        row_constraints = np.empty((0, 2 * pair_count))
+    result = linprog(
+        np.r_[np.zeros(pair_count), np.ones(pair_count)],
+        A_ub=np.vstack([absolute_constraints, row_constraints]),
+        b_ub=np.r_[
+            target,
+            -target,
+            *([] if projected_minutes is not None else player_limits.values()),
+        ],
+        A_eq=np.vstack(equalities),
+        b_eq=np.asarray(equality_values),
+        bounds=[(0.0, team_minutes)] * pair_count + [(0.0, None)] * pair_count,
+        method="highs",
+    )
+    if not result.success:
+        raise RuntimeError(
+            f"Could not constrain projected pair minutes: {result.message}"
+        )
+    return dict(zip(pairs, result.x[:pair_count], strict=True))
 
 
 def projected_five_synergy(
@@ -315,15 +395,20 @@ def team_synergy(
     available: list[str],
     date: pd.Timestamp,
     team_minutes: float = 48.0,
+    projected_minutes: dict[str, float] | None = None,
 ) -> float:
     """Shared-minutes-weighted synergy for a team, in points per 100.
 
     ``sum_ij (m_ij / 48) * residual_ij``, which is section 7.1b's weighting and
     the same scale as the ratings: one five playing the whole game gives
     exactly the sum of its ten pair residuals, matching section 6.1's
-    definition of a five's value.
+    definition of a five's value. ``projected_minutes`` can constrain pair
+    exposure to an experimental rotation. This function is not used by the
+    production ``LU_*`` projection, which remains additive.
     """
-    minutes = expected_shared_minutes(accumulator, available, team_minutes)
+    minutes = expected_shared_minutes(
+        accumulator, available, team_minutes, projected_minutes
+    )
     if not minutes:
         return 0.0
     return sum(

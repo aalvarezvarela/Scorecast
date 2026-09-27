@@ -1,10 +1,12 @@
 # Lineup stints, projected minutes and a bottom-up game projection
 
-Status (2026-09-23): **A-F implemented; phase G features are built behind a
-default-off `lineup_features` flag, with leakage tests; a feature audit (§8.6)
-located the signal in the defense and pace channels and fixed three defects.
-The with/without campaign waits for the 2019-2020 backfill.** The paragraph below is the original
-2026-09-18 status, kept for history. Written 2026-09-18 on
+Status (2026-09-24): **A-F implemented; phase G features are built behind a
+default-off `lineup_features` flag. The exploratory feature audit (§8.6)
+selected defense and pace channels after inspecting 2021-22 through 2025-26.
+The weighted-ridge intercept and report-coverage safeguards have since been
+corrected. Existing rating caches and historical results are stale; the
+with/without campaign has not run and awaits the 2019-2020 backfill.**
+The paragraph below is the original 2026-09-18 status, kept for history. Written 2026-09-18 on
 `feat/pregame-rotation-features` for the agent that will implement it. Every
 API fact below was checked against the live `stats.nba.com` API that day (§2).
 Anything not checked is marked **(unverified)**.
@@ -77,7 +79,8 @@ Read these first:
 3. Rate each five-man lineup that will share the floor, using real on-court
    history (who played with whom, and against whom).
 4. Combine these into expected possessions and points per team (and per player).
-5. Emit the projection, its uncertainty and its components as `_BEFORE`
+5. Emit the projection, its availability-scenario uncertainty and its
+   components as `_BEFORE`
    features for both targets (`TOTAL_POINTS`, `LINE_ERROR`).
 
 **Why.** Schema 2_6 already has starter-stability features and injury-status
@@ -1143,7 +1146,7 @@ the merge. **Keep the set small and add more only on evidence.**
 | Column | Meaning |
 |---|---|
 | `LU_PROJ_TOTAL_BEFORE` | expected total |
-| `LU_PROJ_TOTAL_SD_BEFORE` | spread across scenarios |
+| `LU_PROJ_AVAILABILITY_TOTAL_SD_BEFORE` | standard deviation across availability scenarios only, not full predictive uncertainty |
 | `LU_PROJ_POSS_BEFORE` | expected possessions |
 | `LU_PROJ_TOTAL_MINUS_LINE_BEFORE` | projected total − closing total line (`total_line_col()`); probably the key input for `LINE_ERROR` |
 | `LU_STARTERS_VS_STARTERS_NET_BEFORE`, `LU_STARTERS_VS_STARTERS_PACE_BEFORE` | the two projected starting fives against each other |
@@ -1317,31 +1320,35 @@ same pipeline, one extra opt-in family.
 5. **Only then** flip the `lineup_features` default to `True` and bump the
    schema version to `2_7` (§8.2).
 
-### 8.5 Phase G as built, and the 2025-26 holdout (2026-09-23)
+### 8.5 Phase G as built, and the 2025-26 diagnostic season (2026-09-23)
 
 **New data.** The 2025-26 rotation backfill finished: stints for 1,303 of
 1,315 games (99.1%; 7 `bad_rotation_interval`, 2 `overlapping_player_intervals`,
 1 `points_mismatch`, 2 unclassified `ValueError`). The rating cache was rebuilt
 through 2026-06-30 with the same lambdas; it agrees with the previous cache
-on every shared date (max difference 1e-6). 2025-26 is the first season no
-lambda, window or `k` was tuned on.
+on every shared date (max difference 1e-6). No lambda, window or `k` was
+tuned on 2025-26, but later feature exploration inspected this season. The
+figures below predate the corrected weighted-ridge solver and report-coverage
+guard (2026-09-24); they must be regenerated from a rebuilt rating cache before
+being used as evidence for the corrected implementation.
 
 **Reproducibility.** The 7.1d / 6.3 / 6.1b numbers came from drivers that were
 never committed. `scripts/lineups/evaluate_game_projection.py` now regenerates
 them from the modules. A rebuild matches the 2021-24 slope (+0.288 against
 +0.291) but not every game (`impact` differs by more than 0.01 on ~25% of
 games, mostly early-season; the old calibration scheme could not be
-recovered). From here, the script's output is the reference.
+recovered). Those numbers describe the old cache and must be regenerated
+before interpreting the corrected pipeline.
 
 **Result** (`evaluate_game_projection.py`, `RECENT_GAMES = 10`, 6,588 games):
 
 | Window | n | `LINE_ERROR ~ impact` slope | 95% CI (date-clustered) |
 |---|---|---|---|
 | 2021-2024 | 5,266 | +0.289 | [+0.102, +0.474] |
-| **2025-26 holdout** | 1,322 | **+0.206** | [-0.113, +0.515] |
+| **2025-26 inspected diagnostic** | 1,322 | **+0.206** | [-0.113, +0.515] |
 | 2021-2025 | 6,588 | +0.269 | [+0.115, +0.423] |
 
-Positive in all five seasons (+0.40, +0.00, +0.25, +0.52, +0.21). The holdout
+Positive in all five seasons (+0.40, +0.00, +0.25, +0.52, +0.21). The 2025-26 diagnostic
 agrees in sign and size but is not significant on its own. `proj - line` stays
 null (+0.071, [-0.020, +0.164]). Controlling for `TOP1_INJURED_PLAYER_PTS` and
 the fresh-absence flag (OLS, date-clustered SEs) the impact slope **rises** to
@@ -1363,7 +1370,7 @@ window gives +0.272.
 |---|---|
 | `LU_PROJ_TOTAL_BEFORE` | F v1 total, calibrated on the previous 200 games |
 | `LU_PROJ_POSS_BEFORE` | projected possessions |
-| `LU_PROJ_TOTAL_SD_BEFORE` | spread across availability scenarios |
+| `LU_PROJ_AVAILABILITY_TOTAL_SD_BEFORE` | standard deviation across availability scenarios only |
 | `LU_ABSENCE_IMPACT_PTS_BEFORE` | total with absences minus full health |
 | `LU_ABSENCE_IMPACT_PACE_BEFORE` | the same in possessions |
 
@@ -1393,10 +1400,13 @@ not drive the result; fix it before the family is promoted.
 ### 8.6 Feature audit: where the signal is, and what was wrong (2026-09-23)
 
 The campaign was paused to check the calculations first. Everything below is
-measured with `evaluate_game_projection.py` on the committed code, 2021-22 to
-2025-26, 6,584 games, date-clustered 95% intervals.
+exploratory historical evidence from the pre-correction rating cache and
+pre-coverage-guard evaluator, measured over 2021-22 to 2025-26 (6,584 games,
+date-clustered 95% intervals). It is not a result for the corrected pipeline or
+a claim of betting edge. The control/treatment campaign has not run.
 
-**The absence impact splits by channel, and only two channels carry it.**
+**The absence impact splits by channel; the exploratory association is in
+defense and pace.**
 `project_with_counterfactual` now separates the impact into the points the
 absentees would have *scored* (offense), *prevented* (defense) and the
 possession change (pace); the three add up to the total exactly.
@@ -1408,22 +1418,27 @@ possession change (pace); the three add up to the total exactly.
 | **pace** | **+0.499** [+0.224, +0.769] | +0.52 |
 | defense + pace | **+0.451** [+0.268, +0.630]; 2025-26 alone +0.398 [+0.035, +0.730] | |
 
-The market prices an absence's **offense** fully and under-prices its
-**defense and pace**. That is also why the absentees' raw points per game
-predicts the error with a *positive* sign alongside the rating impact: the
-line over-reacts to "a scorer is out" and under-reacts to "a defender is out".
-Positive in all five seasons (+0.57, +0.26, +0.34, +0.68, +0.40).
+In this exploratory sample, the offense-channel slope overlaps zero while
+defense and pace slopes are positive. This pattern is consistent with different
+market treatment of offensive and defensive absences, but the feature split was
+chosen after looking at all five seasons and has not passed an independent test.
+The raw points-per-game association is also positive in this sample
+(+0.57, +0.26, +0.34, +0.68, +0.40 by season).
 
-The effect concentrates where it should. Betting the sign of defense + pace:
+Exploratory directional checks for the selected defense + pace quantity:
 57.9% at |x| >= 3 (n=859, 2021-24) and 54.9% (n=257) in 2025-26; the top
 decile's mean line error is +4.2. It survives removing the COVID window
 (Dec 2021 - Jan 2022), April and the playoffs (58.0% [54.6, 61.4] at |x| >= 3),
 and is mostly one-sided: an absent defender -> OVER.
 
-**Honesty about the search.** About fifteen candidate quantities were tried
-before this split was chosen, on all five seasons including 2025-26. 2025-26
-is therefore **not** an untouched test of this particular hypothesis. The
-seasons that are: 2019-20 and 2020-21, being backfilled now.
+**Feature-selection history.** About fifteen candidate quantities were tried
+before this split was chosen, on all five seasons from 2021-22 through 2025-26.
+The 2021-24 seasons were exploratory development data; 2025-26 was a temporal
+parameter-validation partition, then was inspected during feature selection.
+It is therefore not an untouched test of the selected channels. The planned
+2019-20 and 2020-21 backfill is a separate retrospective check that has not
+run. Genuinely prospective evaluation requires future games that have not
+influenced feature design, cache tuning or model selection.
 
 **Pre-registered for 2019-20 and 2020-21** (written before those stints exist):
 
@@ -1476,12 +1491,13 @@ matchups correlate +0.017 / +0.010 / +0.011 with the residual in points per 48
 both make the out-of-sample fit *worse*. The noise floor on a correlation
 there is about +/-0.045, so any interaction is below what this data can see.
 
-**Borrowing from similar vector pairs across all teams: one exception.**
+**Borrowing from similar vector pairs across all teams: a 3PA-rate residual.**
 The same question with a far larger pool: every 2022-23 stint (155,808
 offense-five vs defense-five pairs, any teams) described by the joint vector
 [offense five's 6 offensive traits, defense five's 6 defensive traits], and the
-K most similar pairs predicting the non-additive residual of 60,000 2024-25
-stints. Points per possession: null (game-level correlation -0.01 to -0.02).
+K most similar pairs predicting the residual after a linear additive fit
+on 60,000 2024-25 stints. That residual can include nonlinear effects from one
+side alone and is not an isolated cross-team interaction. Points per possession: null (game-level correlation -0.01 to -0.02).
 Pace: null and harmful. **3PA per FGA: a small, real non-additive component**
 -- stint correlation +0.016 to +0.019, game-level +0.067 to +0.079 (K = 200 to
 3,000; ~0.02 standard error), out-of-sample R2 gain +0.4-0.5% at K >= 1000.
@@ -1501,17 +1517,22 @@ queries per game, ~2 minutes for 2021-2026. Validated with
 
 | Check | Result |
 |---|---|
-| interaction vs the game's non-additive 3PA rate | **+0.066** (6,521 games; by season -0.05, +0.07, +0.12, +0.00, +0.08) |
-| 3PA-rate MAE, additive -> with interaction | 0.0370 -> 0.0363 |
-| `LINE_ERROR` ~ interaction | +0.10 per SD [-0.33, +0.53] -- null |
+| neighbour residual vs the game's additive 3PA-rate error | **+0.066** (6,521 games; by season -0.05, +0.07, +0.12, +0.00, +0.08) |
+| 3PA-rate MAE, additive -> with neighbour residual | 0.0370 -> 0.0363 |
+| `LINE_ERROR` ~ neighbour residual | +0.10 per SD [-0.33, +0.53] -- null |
 | `LINE_ERROR` ~ absence-driven 3PA shift | +0.17 per SD [-0.27, +0.61] -- null |
 
-The matchup effect on three-point **volume** is real and survives the move to
-rotation averages. It does not reach the totals line, and the probe's
+The neighbour residual modestly improves the observed game 3PA-rate proxy.
+It is not a pure offense-by-defense interaction: a nonlinear trait effect from
+one side alone survives the linear additive baseline. The displayed game-rate
+comparison averages the two directional predictions equally, whereas the
+observed game rate is FGA-weighted, so it is an approximate diagnostic. No
+statistically clear relationship to `LINE_ERROR` was found; total-points
+accuracy has not been established for this column. The probe's
 "3PA shift the line ignores" (+0.55 below) does **not** reproduce under this
 walk-forward construction -- most likely a product of testing six stats at
-once. The columns stay behind the flag so the pre-registered 2019-20 / 2020-21
-test judges this exact code. A 180-day evidence guard leaves games NaN when
+once. The columns stay behind the flag for a future retrospective check; the
+corrected ridge and report-coverage behavior must be used in a fresh run. A 180-day evidence guard leaves games NaN when
 the stint archive has a hole (it had projected 2019-20 from 2018 stints).
 
 **Player-vs-player matchups: not tested, data identified.** Stints carry team
@@ -1584,25 +1605,33 @@ stints with <= 2 of that night's starters on the floor. The closing spread's
 own size leans OVER (+0.63 per SD in both periods), but that is a market
 effect on a column the model already has.
 
-So the bench matters only through absences: the market prices a missing
-player by who he is, less by who plays his minutes, and least when a reserve
-does. The lost/replaced slopes are not yet distinguishable (p = 0.22 pooled),
+In this exploratory sample, the bench-replacement term is associated with
+line error when absences redistribute minutes. The lost/replaced slopes are
+not yet distinguishable (p = 0.22 pooled),
 so this is carried as **one** column, `LU_ABSENCE_IMPACT_BENCH_DP_PTS_BEFORE`
 (`game_projection.bench_replacement`), pre-registered above. Through the
 evaluation script it reproduces the probe (r = 0.997): +0.50 [-0.11, +1.11]
-before the holdout, +1.05 [+0.26, +2.00] on it, positive in 4 of 5 seasons
+before 2025-26, +1.05 [+0.26, +2.00] during the inspected 2025-26 season,
+positive in 4 of 5 seasons
 (2023-24 -0.65). Around 15 coefficients were read in the probe, so expect
 about one to look good by luck; 2019-20 and 2020-21 decide.
 
 **Columns now** (`LINEUP_FEATURE_COLUMNS`, 17 -- the 13 below plus the four
-three-point matchup columns of `style_matchup.py`): the level
-(`LU_PROJ_TOTAL_BEFORE`, `LU_PROJ_POSS_BEFORE`, `LU_PROJ_TOTAL_SD_BEFORE`,
+three-point style columns of `style_matchup.py`): the level
+(`LU_PROJ_TOTAL_BEFORE`, `LU_PROJ_POSS_BEFORE`, `LU_PROJ_AVAILABILITY_TOTAL_SD_BEFORE`,
 `LU_PROJ_MARGIN_BEFORE`), the impact (`LU_ABSENCE_IMPACT_PTS_BEFORE`,
 `LU_ABSENCE_IMPACT_POSS_BEFORE` -- renamed from `..._PACE_BEFORE`, which was
 in possessions), its channels (`LU_ABSENCE_IMPACT_{OFF,DEF,PACE}_PTS_BEFORE`), the bench's
 share of the replacement (`LU_ABSENCE_IMPACT_BENCH_DP_PTS_BEFORE`),
 its sides (`LU_ABSENCE_IMPACT_PTS_BEFORE_TEAM_{HOME,AWAY}`) and its margin
-(`LU_ABSENCE_IMPACT_MARGIN_BEFORE`).
+(`LU_ABSENCE_IMPACT_MARGIN_BEFORE`). The total impact is exactly the sum of
+offense, defense and pace impact by construction. Pace impact in points and in
+possessions is nearly the same signal on the existing projection artifact
+(correlation approximately 1). Keep these outputs for diagnostics; a compact
+XGBoost input set can use the existing training `cleaning.exclude_cols_containing`
+and `keep_columns` configuration. No compact subset has been validated yet.
+`LU_PROJ_AVAILABILITY_TOTAL_SD_BEFORE` is only the standard deviation of totals
+across availability scenarios, not the predictive SD of the final score.
 
 ---
 

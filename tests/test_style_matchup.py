@@ -9,6 +9,7 @@ from nba_ou.data_processing.lineups.game_projection import PlayerNight
 from nba_ou.data_processing.lineups.style_matchup import (
     STYLE_FEATURE_COLUMNS,
     StyleTraits,
+    _MonthlyModel,
     build_style_matchup_features,
     stint_directions,
 )
@@ -78,6 +79,18 @@ def _build(stints, nights, **kw):
     return build_style_matchup_features(
         stints, GAMES, nights, neighbours=50, min_pool=200, **kw
     ).set_index("GAME_ID")
+
+
+def test_neighbor_residual_can_be_a_noninteraction_nonlinearity():
+    # A nonlinear offense-only rate leaves a residual after a linear additive
+    # baseline, even though defense has no effect on the target.
+    offense = np.linspace(-1, 1, 101)
+    defense = np.tile([-1.0, 1.0], 51)[:101]
+    vectors = np.column_stack([offense, defense])
+    rates = 0.2 + 0.1 * offense**2
+    model = _MonthlyModel(vectors, rates, np.ones(len(rates)), neighbours=5)
+    assert model.neighbor_residual(np.array([1.0, 1.0])) > 0.02
+    assert model.neighbor_residual(np.array([1.0, -1.0])) > 0.02
 
 
 class TestStyleTraits:

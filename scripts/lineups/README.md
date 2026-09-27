@@ -221,6 +221,13 @@ python scripts/lineups/build_player_ratings.py --last-season 2025 \
   --lambda-offdef <chosen-value> --lambda-pace <chosen-value>
 ```
 
+The corrected weighted-ridge intercept uses solver version 2. The existing
+`data/lineup_ratings/player_ratings.parquet` cache and its earlier evaluation
+artifacts were built with the old solver; rebuild the cache before enabling
+`LU_*` features. The lineup feature loader rejects an old cache. Prior lambda choices
+were made on the old fit and should be treated as provisional until the planned
+validation is rerun.
+
 Then run the required Phase C comparison on identical games:
 
 ```bash
