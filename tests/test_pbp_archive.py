@@ -136,3 +136,18 @@ def test_an_archive_without_exactly_one_csv_is_refused(tmp_path: Path):
         download_season_csv(
             "https://example.test/a.tar.xz", tmp_path, opener=_fake_opener(buffer.getvalue())
         )
+
+
+def test_placeholder_zero_scores_after_a_basket_are_blanked():
+    # Some archive games write 0, not blank, on every non-scoring row, which
+    # would reset the running score mid-game.
+    rows = [
+        _action(actionNumber=1, scoreHome=0.0, scoreAway=0.0),
+        _action(actionNumber=2, scoreHome=0.0, scoreAway=2.0),
+        _action(actionNumber=3, scoreHome=0.0, scoreAway=0.0),
+        _action(actionNumber=4, scoreHome=3.0, scoreAway=2.0),
+    ]
+    actions = json.loads(game_payload(_frame(rows), "0021600051"))["game"]["actions"]
+    # Home's 0s are real until home scores; away's 0 after its basket is not.
+    assert [a["scoreHome"] for a in actions] == ["0", "0", "0", "3"]
+    assert [a["scoreAway"] for a in actions] == ["0", "2", "", "2"]

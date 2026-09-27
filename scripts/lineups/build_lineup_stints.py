@@ -50,7 +50,33 @@ def game_context(game_ids: list[str]) -> tuple[pd.DataFrame, pd.DataFrame]:
         box = pd.DataFrame(
             cur.fetchall(), columns=["GAME_ID", "TEAM_ID", "PLAYER_ID", "MIN"]
         )
+    missing = sorted(set(game_ids) - set(box.GAME_ID.astype(str)))
+    if missing:
+        box = pd.concat([box, local_box_minutes(missing)], ignore_index=True)
     return games, box
+
+
+def local_box_minutes(
+    game_ids: list[str], data_dir: Path = Path("data/season_games_data")
+) -> pd.DataFrame:
+    """Box minutes from the season CSVs, for games the database no longer holds.
+
+    ``scripts/clean_databases/delete_old_data.py`` keeps ``nba_players`` from
+    2018-19 on, but the per-season CSVs it was loaded from still cover earlier
+    seasons, and their ``MIN`` ("18.000000:18") parses like the database's.
+    """
+    columns = ["GAME_ID", "TEAM_ID", "PLAYER_ID", "MIN"]
+    frames = []
+    for season_year in sorted({2000 + int(game_id[3:5]) for game_id in game_ids}):
+        path = data_dir / f"nba_players_{season_year}_{(season_year + 1) % 100:02d}.csv"
+        if not path.exists():
+            continue
+        frame = pd.read_csv(path, usecols=columns, dtype={"GAME_ID": str, "MIN": str})
+        frame["GAME_ID"] = frame["GAME_ID"].str.zfill(10)
+        frames.append(frame.loc[frame.GAME_ID.isin(game_ids)])
+    if not frames:
+        return pd.DataFrame(columns=columns)
+    return pd.concat(frames, ignore_index=True)
 
 
 def build_archived(

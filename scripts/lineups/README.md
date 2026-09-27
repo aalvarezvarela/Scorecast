@@ -79,6 +79,40 @@ points or player minutes do not reconcile. `--force` rebuilds validated games
 after parser changes. The report prints pass rates and failure reasons; use
 `--with-db` to calculate raw coverage against all finished games.
 
+## Rebuild missing rotations from play-by-play
+
+Before 2021-22, `GameRotation` is built on demand behind a ~30 s server cap, and
+failures stay cached for about 3 h. Each retry pass recovers only about a fifth
+of the owed games. The archive's **PlayByPlayV2** (`nbastats_YYYY`, through
+2024-25) names both players in every substitution by ID, so the missing
+rotations can be rebuilt offline:
+
+```bash
+python scripts/lineups/rebuild_rotations_from_pbp.py --season 2020 --verify
+python scripts/lineups/rebuild_rotations_from_pbp.py --min-season 2018 --max-season 2020
+python scripts/lineups/build_lineup_stints.py --season 2020
+```
+
+- **Period starters** are the players who are subbed out, or appear in any
+  event, before being subbed in. Bench technicals, timeouts, ejections and
+  replays don't count. A starter who does nothing all period is invisible to
+  the play-by-play. The box score's minutes fill that slot with the teammate
+  whose recorded time falls furthest short.
+- **Every rebuilt game is checked before it is written:** five a side
+  throughout, and every player within 60 s of their box-score minutes.
+  Failures stay owed and keep a reason (`too_many_starters`,
+  `minutes_mismatch`, …). The stint builder then validates again against
+  points and minutes.
+- **Output** goes where a fetched rotation would, as GameRotation-shaped JSON
+  carrying `"source": "rebuilt_from_playbyplayv2"`. The manifest's `source`
+  column says the same; empty means the NBA API. `PLAYER_PTS`, `PT_DIFF` and
+  `USG_PCT` are null, since the stint builder never reads them.
+- **`--verify` writes nothing.** It rebuilds games that already have an API
+  rotation and reports how often the lineups agree second by second.
+- **PlayByPlayV2 is dead from 2025-26:** the API returns nothing. New seasons
+  still need `GameRotation`, or a rebuild from V3, which names the incoming
+  player only by surname.
+
 ## Where the data lives
 
 **The local Parquet store is the default destination.** `data/lineup_stints/`

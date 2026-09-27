@@ -16,7 +16,12 @@ COLUMNS = (
     "bytes",
     "http_status",
     "elapsed_s",
+    "source",
 )
+
+#: ``source`` of a rotation rebuilt from play-by-play rather than fetched; an
+#: empty ``source`` is the NBA API itself.
+REBUILT_SOURCE = "rebuilt_from_playbyplayv2"
 
 #: ``ok`` -- archived. ``empty`` -- the NBA has nothing for this game: a
 #: sub-second 5xx or a 200 without rows. ``server_timeout`` -- a slow 5xx, the
@@ -29,8 +34,9 @@ STATUSES = frozenset({"ok", "empty", "server_timeout", "failed"})
 def _normalise(frame: pd.DataFrame) -> pd.DataFrame:
     """Give a manifest every column, including one written before they existed.
 
-    Manifests from before 2026-09-24 carry no ``http_status``/``elapsed_s``;
-    their rows read as unknown rather than failing to load.
+    Manifests from before 2026-09-24 carry no ``http_status``/``elapsed_s``,
+    and from before 2026-09-27 no ``source``; their rows read as unknown rather
+    than failing to load.
     """
     frame = frame.copy()
     for column in COLUMNS:
@@ -42,6 +48,7 @@ def _normalise(frame: pd.DataFrame) -> pd.DataFrame:
     frame["elapsed_s"] = pd.to_numeric(frame["elapsed_s"], errors="coerce").astype(
         "float64"
     )
+    frame["source"] = frame["source"].astype("object")
     return frame[list(COLUMNS)]
 
 
@@ -94,6 +101,8 @@ class Manifest:
         self,
         season_year: int,
         rows: list[tuple[str, str, str, int]],
+        *,
+        source: str | None = None,
     ) -> None:
         """Record many results with a single parquet write.
 
@@ -113,6 +122,7 @@ class Manifest:
                 columns=list(COLUMNS[:5]),
             )
         )
+        incoming["source"] = source
         if not frame.empty:
             superseded = pd.MultiIndex.from_frame(
                 frame[["game_id", "endpoint"]]
@@ -140,6 +150,7 @@ class Manifest:
         *,
         http_status: int | None = None,
         elapsed_s: float | None = None,
+        source: str | None = None,
     ) -> None:
         if status not in STATUSES:
             raise ValueError(status)
@@ -156,6 +167,7 @@ class Manifest:
                         nbytes,
                         http_status,
                         elapsed_s,
+                        source,
                     )
                 ],
                 columns=list(COLUMNS),
