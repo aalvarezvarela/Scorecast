@@ -10,6 +10,7 @@ from __future__ import annotations
 import hashlib
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 import pandas as pd
@@ -110,15 +111,210 @@ def verify_dataset_checksum(path: str | Path, *, expected_checksum: str | None) 
     return actual
 
 
-def load_raw_training_csv(
-    csv_path: str | Path, *, date_col: str = "GAME_DATE"
+#: Extensions read as Parquet. Everything else is read as CSV, which is what
+#: every dataset was before scripts/convert_training_data_to_parquet.py.
+PARQUET_SUFFIXES = frozenset({".parquet", ".pq"})
+
+#: Parquet key-value metadata written by training_pipeline.parquet_dataset: the
+#: checksum of the CSV the file was converted from and verified against. It is
+#: what lets a config pinning that CSV read the Parquet copy instead.
+SOURCE_CSV_CHECKSUM_KEY = b"nba_ou.source_csv_checksum"
+
+
+def is_parquet(path: str | Path) -> bool:
+    return Path(path).suffix.lower() in PARQUET_SUFFIXES
+
+
+@dataclass(frozen=True)
+class DatasetSource:
+    """Which file to read for a configured dataset, and the checksum it stands for.
+
+    ``checksum`` is the dataset's identity as configs pin it. When a verified
+    Parquet copy stands in for a CSV, that is still the CSV's checksum -- the
+    copy was verified equal to exactly those bytes -- so run metadata and
+    registry specs stay comparable with every config that pinned it.
+    """
+
+    read_path: Path
+    checksum: str
+
+    @property
+    def substituted(self) -> bool:
+        return is_parquet(self.read_path)
+
+
+def parquet_source_checksum(path: str | Path) -> str | None:
+    """The CSV checksum a converted Parquet file records, or None."""
+    import pyarrow.parquet as pq
+
+    raw = (pq.read_schema(path).metadata or {}).get(SOURCE_CSV_CHECKSUM_KEY)
+    return raw.decode() if raw else None
+
+
+def resolve_dataset_source(
+    path: str | Path, *, expected_checksum: str | None
+) -> DatasetSource:
+    """Read a configured CSV from its verified Parquet copy when one exists.
+
+    Every config names a CSV, and the Parquet copy loads identically but in a
+    fraction of the time and memory, so it is used by default -- for
+    experiments, the pre-flight and promotion alike -- when it provably holds
+    the same data. "Provably" means the copy's recorded source checksum equals:
+
+    - the pinned ``expected_checksum``, which also makes the CSV itself
+      optional: it can be archived and deleted and the config still resolves;
+    - or, with nothing pinned, the checksum of the CSV as it is now. A CSV
+      regenerated in place after conversion therefore falls back to itself
+      rather than reading a stale copy.
+
+    Anything else -- no copy, a copy without provenance, a copy of different
+    bytes -- reads the CSV exactly as before, checksum check included.
+    """
+    path = Path(path)
+    if is_parquet(path):
+        return DatasetSource(
+            path, verify_dataset_checksum(path, expected_checksum=expected_checksum)
+        )
+
+    copy = path.with_suffix(".parquet")
+    if copy.exists():
+        source = parquet_source_checksum(copy)
+        if source is not None:
+            if expected_checksum is not None:
+                if source == expected_checksum:
+                    return DatasetSource(copy, source)
+            elif not path.exists() or compute_file_checksum(path) == source:
+                return DatasetSource(copy, source)
+
+    return DatasetSource(
+        path, verify_dataset_checksum(path, expected_checksum=expected_checksum)
+    )
+
+
+def read_dataset_columns(
+    path: str | Path, *, columns: list[str], dtype: dict[str, Any] | None = None
 ) -> pd.DataFrame:
-    """Load a training CSV the same way the example notebooks do: ID-like columns
-    forced to str (avoids mixed-type surprises from pandas' dtype inference on
-    large sparse columns), GAME_DATE parsed to a plain date string then back to
-    datetime for consistent downstream handling.
+    """A few named columns of a training dataset, CSV or Parquet.
+
+    For the cheap lookups -- key integrity, joining predictions back to games,
+    settlement lines -- that only need identity columns and one or two values.
+    ``dtype`` is applied after the read for Parquet, which already stores types.
+    """
+    if not is_parquet(path):
+        return pd.read_csv(path, usecols=columns, dtype=dtype)
+    frame = _normalize_missing_text(pd.read_parquet(path, columns=columns))
+    for col, kind in (dtype or {}).items():
+        if kind is str:
+            # astype(str) would turn a missing value into the text "nan";
+            # read_csv(dtype=str) keeps it missing.
+            frame[col] = frame[col].where(frame[col].isna(), frame[col].astype(str))
+        else:
+            frame[col] = frame[col].astype(kind)
+    return frame
+
+
+def _normalize_missing_text(df: pd.DataFrame) -> pd.DataFrame:
+    """Missing text as NaN, the way read_csv produces it.
+
+    Parquet hands a null in a string column back as None; read_csv gives NaN.
+    Both count as missing, but ``==``, ``map`` and set membership treat them
+    differently, so a Parquet read would not be the same frame without this.
+    """
+    for col in df.select_dtypes(include="object").columns:
+        missing = df[col].isna()
+        if missing.any():
+            df[col] = df[col].where(~missing, np.nan)
+    return df
+
+
+def finish_parquet_frame(df: pd.DataFrame, *, date_col: str) -> pd.DataFrame:
+    """The post-read step that makes a Parquet frame equal the CSV one.
+
+    Public because the converter verifies its output through exactly this step:
+    a check that normalized differently from the loader would pass while the
+    loader diverged.
+    """
+    df = _normalize_missing_text(df)
+    # Written from load_raw_training_csv's CSV output, so dates are already
+    # date-only; only the unit can differ after the round trip.
+    if date_col in df.columns:
+        df[date_col] = df[date_col].astype("datetime64[ns]")
+    return df
+
+
+def _read_parquet_rows(
+    path: Path, *, row_filter: tuple[str, int] | None
+) -> pd.DataFrame:
+    """Read a Parquet dataset, optionally keeping only ``column == value`` rows.
+
+    The filter is applied one row group at a time, so memory is the rows kept
+    plus one row group -- not the whole file. That is the point of the Parquet
+    path: the intermediate dataset holds 17 horizons and a single-horizon run
+    used to parse all of them (~14GB RSS) to keep one.
+
+    Kept rows are labelled with their position in the file, exactly as the CSV
+    path labels them when ``filter_to_snapshot`` subsets a full read, so both
+    paths hand the pipeline the same frame, index included.
+    """
+    import pyarrow.parquet as pq
+
+    parquet = pq.ParquetFile(path)
+    # No filter column means filter_to_snapshot must raise its own, clearer
+    # error about a closing-line file -- so read everything and let it.
+    if row_filter is None or row_filter[0] not in parquet.schema_arrow.names:
+        return parquet.read().to_pandas()
+
+    column, value = row_filter
+    parts: list[pd.DataFrame] = []
+    seen: set[float] = set()
+    offset = 0
+    for group in range(parquet.num_row_groups):
+        keys = pd.to_numeric(
+            parquet.read_row_group(group, columns=[column]).column(0).to_pandas(),
+            errors="coerce",
+        ).to_numpy()
+        seen.update(keys[~np.isnan(keys)].tolist())
+        hits = np.flatnonzero(keys == value)
+        if hits.size:
+            frame = parquet.read_row_group(group).take(hits).to_pandas()
+            frame.index = pd.Index(offset + hits)
+            parts.append(frame)
+        offset += len(keys)
+    if not parts:
+        raise ValueError(
+            f"data.snapshot_minutes={value} matched no rows. Horizons present "
+            f"in {column!r}: {sorted(int(v) for v in seen)}."
+        )
+    return pd.concat(parts)
+
+
+def load_raw_training_csv(
+    csv_path: str | Path,
+    *,
+    date_col: str = "GAME_DATE",
+    snapshot_col: str | None = None,
+    snapshot_minutes: int | None = None,
+) -> pd.DataFrame:
+    """Load a training dataset (CSV or Parquet) the way the example notebooks do:
+    ID-like columns as str (avoids mixed-type surprises from pandas' dtype
+    inference on large sparse columns), GAME_DATE as a date-only datetime.
+
+    ``snapshot_col``/``snapshot_minutes`` keep one horizon of an intermediate
+    dataset. Parquet applies it while reading; CSV cannot, so it reads
+    everything and leaves the filtering to ``filter_to_snapshot``, which runs
+    either way. Both produce the same frame.
     """
     csv_path = Path(csv_path)
+    if is_parquet(csv_path):
+        row_filter = (
+            (snapshot_col, snapshot_minutes)
+            if snapshot_col is not None and snapshot_minutes is not None
+            else None
+        )
+        return finish_parquet_frame(
+            _read_parquet_rows(csv_path, row_filter=row_filter), date_col=date_col
+        )
+
     header = pd.read_csv(csv_path, nrows=0)
     dtype_dict = {col: str for col in header.columns if "ID" in col.upper()}
 
@@ -865,10 +1061,21 @@ class PreparedDataset:
 
 
 def prepare_dataset(config: ExperimentConfig) -> PreparedDataset:
-    dataset_checksum = verify_dataset_checksum(
+    source = resolve_dataset_source(
         config.data.csv_path, expected_checksum=config.data.expected_checksum
     )
-    df = load_raw_training_csv(config.data.csv_path, date_col=config.data.date_col)
+    dataset_checksum = source.checksum
+    if source.substituted and not is_parquet(config.data.csv_path):
+        print(
+            f"Reading {source.read_path.name}, the verified Parquet copy of "
+            f"{Path(config.data.csv_path).name} ({source.checksum})."
+        )
+    df = load_raw_training_csv(
+        source.read_path,
+        date_col=config.data.date_col,
+        snapshot_col=config.data.snapshot_col,
+        snapshot_minutes=config.data.snapshot_minutes,
+    )
 
     # Before anything else measures the frame. Filtering to one horizon changes
     # the row count, the cleaning statistics and the meaning of every *_games

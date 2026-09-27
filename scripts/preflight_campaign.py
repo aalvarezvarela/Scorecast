@@ -47,8 +47,10 @@ if str(REPO_ROOT) not in sys.path:
 from training_pipeline.cli import load_config  # noqa: E402
 from training_pipeline.config import CVStrategy, ExperimentConfig  # noqa: E402
 from training_pipeline.data import (  # noqa: E402
-    compute_file_checksum,
+    DatasetSource,
     prepare_dataset,
+    read_dataset_columns,
+    resolve_dataset_source,
     training_eligible_mask,
 )
 from training_pipeline.splits import (  # noqa: E402
@@ -76,9 +78,9 @@ def _check_dataset_key_integrity(
         columns.append(data.snapshot_col)
 
     try:
-        frame = pd.read_csv(
+        frame = read_dataset_columns(
             csv,
-            usecols=columns,
+            columns=columns,
             dtype={data.game_id_col: "string", data.date_col: "string"},
         )
     except Exception as exc:  # noqa: BLE001 - turn parser failures into preflight output
@@ -175,24 +177,35 @@ def check_configs(
 
     # --- 2. datasets exist, and their bytes are the pinned ones -------------
     print("Datasets")
-    seen: dict[Path, str] = {}
+    # Resolved exactly as prepare_dataset resolves it, so a verified Parquet
+    # copy passes here (and is what the key check below reads) even when the
+    # CSV it stands for has been archived away.
+    seen: dict[tuple[Path, str | None], DatasetSource | str] = {}
+    read_paths: dict[str, Path] = {}
     for name, config in configs.items():
         csv = Path(config.data.csv_path)
         csv = csv if csv.is_absolute() else REPO_ROOT / csv
-        if not csv.exists():
-            problems.append(f"{name}: dataset missing -- {csv}")
-            print(f"  {FAIL}  {name}: missing {csv}")
+        pinned = config.data.expected_checksum
+        key = (csv, pinned)
+        if key not in seen:
+            try:
+                seen[key] = resolve_dataset_source(csv, expected_checksum=pinned)
+            except FileNotFoundError:
+                seen[key] = f"dataset missing -- {csv}"
+            except ValueError as exc:
+                seen[key] = str(exc)
+        source = seen[key]
+        if isinstance(source, str):
+            problems.append(f"{name}: {source}")
+            print(f"  {FAIL}  {name}: {source}")
             continue
-        if csv not in seen:
-            seen[csv] = compute_file_checksum(csv)
-        actual, pinned = seen[csv], config.data.expected_checksum
+        read_paths[name] = source.read_path
+        via = f" via {source.read_path.name}" if source.read_path != csv else ""
         if pinned is None:
-            print(f"  {WARN}  {name}: no expected_checksum pinned (actual {actual})")
-        elif pinned != actual:
-            problems.append(f"{name}: checksum mismatch, pinned {pinned} got {actual}")
-            print(f"  {FAIL}  {name}: checksum {pinned} != {actual}")
+            print(f"  {WARN}  {name}: no expected_checksum pinned "
+                  f"(actual {source.checksum}){via}")
         else:
-            print(f"  {OK}    {name}: {csv.name} matches {actual}")
+            print(f"  {OK}    {name}: {csv.name} matches {source.checksum}{via}")
     print()
 
     # A checksum can pin corrupt bytes just as faithfully as healthy ones. This
@@ -201,15 +214,16 @@ def check_configs(
     print("Dataset key integrity")
     checked_integrity: set[tuple[Path, str, str, str]] = set()
     for name, config in configs.items():
-        csv = Path(config.data.csv_path)
-        csv = csv if csv.is_absolute() else REPO_ROOT / csv
+        csv = read_paths.get(name)
+        if csv is None:
+            continue
         identity = (
             csv,
             config.data.game_id_col,
             config.data.date_col,
             config.data.snapshot_col,
         )
-        if identity in checked_integrity or not csv.exists():
+        if identity in checked_integrity:
             continue
         checked_integrity.add(identity)
         summary, integrity_problems = _check_dataset_key_integrity(csv, config)

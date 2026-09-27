@@ -58,6 +58,7 @@ from nba_ou.config.odds_columns import spread_line_home_col, total_line_col
 
 from training_pipeline.betting import evaluate_betting, outcome_from_predictions
 from training_pipeline.config import SNAPSHOT_COLUMN, PredictionStrategy
+from training_pipeline.data import read_dataset_columns, resolve_dataset_source
 from training_pipeline.reporting import coverage
 from training_pipeline.reporting.loaders import settle_bets
 from training_pipeline.reporting.theme import (
@@ -108,6 +109,18 @@ def target_line_column(
     return spread_line_home_col() if market is Market.SPREAD else total_line_col()
 
 
+def _readable_dataset(path: str | Path, *, missing: str) -> Path:
+    """The file to read for ``path``: its verified Parquet copy when one matches.
+
+    Nothing is pinned here, so data.resolve_dataset_source only substitutes a
+    copy of the CSV as it currently is (or of a CSV since archived away).
+    """
+    try:
+        return resolve_dataset_source(path, expected_checksum=None).read_path
+    except FileNotFoundError:
+        raise AlternativeLineError(f"Dataset {path} not found, {missing}.") from None
+
+
 def attach_game_ids(
     predictions: pd.DataFrame,
     source_csv: str | Path,
@@ -131,15 +144,12 @@ def attach_game_ids(
     Returns the matched rows and a report of what happened to the rest, so the
     caller can print the match rate rather than assume it.
     """
-    source_csv = Path(source_csv)
-    if not source_csv.exists():
-        raise AlternativeLineError(
-            f"Source dataset {source_csv} not found, so predictions cannot be "
-            "joined back to their games."
-        )
-    source = pd.read_csv(
+    source_csv = _readable_dataset(
+        source_csv, missing="so predictions cannot be joined back to their games"
+    )
+    source = read_dataset_columns(
         source_csv,
-        usecols=[game_id_col, date_col, outcome_col, line_col],
+        columns=[game_id_col, date_col, outcome_col, line_col],
         dtype={game_id_col: str},
     )
     source[date_col] = pd.to_datetime(source[date_col])
@@ -195,15 +205,12 @@ def read_snapshot_lines(
     minutes. Callers that want several horizons read here and then take a
     lookup per horizon from the result.
     """
-    snapshot_csv = Path(snapshot_csv)
-    if not snapshot_csv.exists():
-        raise AlternativeLineError(
-            f"Snapshot dataset {snapshot_csv} not found, so no alternative "
-            "line is available."
-        )
-    return pd.read_csv(
+    snapshot_csv = _readable_dataset(
+        snapshot_csv, missing="so no alternative line is available"
+    )
+    return read_dataset_columns(
         snapshot_csv,
-        usecols=[game_id_col, snapshot_col, line_col],
+        columns=[game_id_col, snapshot_col, line_col],
         dtype={game_id_col: str},
     )
 

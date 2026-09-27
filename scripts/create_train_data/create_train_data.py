@@ -32,12 +32,15 @@ def main(
     status_top_n: dict[str, int] | None = None,
     referee_history_seasons: int = DEFAULT_REFEREE_HISTORY_SEASONS,
     include_same_season_referee_variants: bool = False,
+    output_format: str = "csv",
 ) -> None:
     """Create training data up to `limit_date_to_train`.
 
     Args:
         limit_date_to_train: Date string YYYY-MM-DD (default: 2026-01-10)
         n_seasons_to_include: Number of seasons to include (default: None, uses all from 2017-18)
+        output_format: "csv", "parquet" (convert with verification, delete the
+            CSV) or "both". See training_pipeline.parquet_dataset.
     """
 
     # Call create_df_to_predict without a scheduled date (no todays prediction)
@@ -73,10 +76,12 @@ def main(
     # Save to CSV
     write_csv(df_train, output)
     print(f"Training data saved to {output}")
+    # The conversion reloads the CSV; free the build first.
+    del df_train
 
-    from training_pipeline.data import compute_file_checksum
+    from training_pipeline.parquet_dataset import finish_dataset_output
 
-    print(f'expected_checksum: "{compute_file_checksum(output)}"')
+    finish_dataset_output(output, output_format=output_format)
 
 
 if __name__ == "__main__":
@@ -100,7 +105,21 @@ if __name__ == "__main__":
         default=None,
         help="Number of seasons to include. Defaults to None (all from 2017-18)",
     )
-    parser.add_argument("--output", type=Path, default=None)
+    parser.add_argument(
+        "--output",
+        type=Path,
+        default=None,
+        help="CSV path to write. With --format parquet the .parquet file lands beside it.",
+    )
+    parser.add_argument(
+        "--format",
+        choices=("csv", "parquet", "both"),
+        default="csv",
+        help=(
+            "parquet: write the CSV, convert it with row-group verification, then "
+            "delete the CSV. both: keep the CSV too."
+        ),
+    )
     parser.add_argument(
         "--no-normalize-total-lines",
         action="store_true",
@@ -160,4 +179,5 @@ if __name__ == "__main__":
         },
         referee_history_seasons=args.referee_history_seasons,
         include_same_season_referee_variants=args.referee_same_season_variants,
+        output_format=args.format,
     )

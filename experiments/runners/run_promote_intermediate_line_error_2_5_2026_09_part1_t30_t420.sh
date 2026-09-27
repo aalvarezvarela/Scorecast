@@ -7,7 +7,8 @@
 # seed 16, evaluation seeds 101/202 -- so the cells differ only in the horizon.
 # See experiments/promote_intermediate_line_error_2_5_2026_09/README.md.
 #
-# The other half is run_promote_intermediate_line_error_2_5_2026_09_part2_t480_t1080.sh; the controls are run_promote_intermediate_line_error_2_5_2026_09_part3_controls.sh.
+# The other part (T-480 .. T-1080 plus the five controls) is
+# run_promote_intermediate_line_error_2_5_2026_09_part2_t480_t1080_controls.sh.
 set -uo pipefail
 
 cd "$(dirname "$0")/../.." || exit 1

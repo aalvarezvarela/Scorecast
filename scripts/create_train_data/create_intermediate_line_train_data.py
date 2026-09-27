@@ -6,9 +6,13 @@ separate output file, no shared state. Building one dataset cannot affect the
 other.
 
     poetry run python scripts/create_train_data/create_intermediate_line_train_data.py
+    poetry run python scripts/create_train_data/create_intermediate_line_train_data.py --format parquet
 
 The printed sha256 goes straight into a campaign config's
-``data.expected_checksum`` so a regenerated CSV cannot pass silently.
+``data.expected_checksum`` so a regenerated dataset cannot pass silently.
+``--format parquet`` writes the CSV, converts it with row-group verification
+(``training_pipeline.parquet_dataset``) and deletes it; single-horizon runs
+then load in seconds and ~1-2GB instead of minutes and ~14GB.
 
 **Read the row-count warning it prints.** Every window in
 ``experiments/_base.yaml`` named ``*_games`` is counted in ROWS, not games
@@ -20,6 +24,7 @@ for -- with no error raised. The script prints the rescaled values to use.
 from __future__ import annotations
 
 import argparse
+import gc
 from pathlib import Path
 
 import pandas as pd
@@ -70,7 +75,21 @@ def print_config_guidance(n_snapshots: int) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--output", type=Path, default=None)
+    parser.add_argument(
+        "--output",
+        type=Path,
+        default=None,
+        help="CSV path to write. With --format parquet the .parquet file lands beside it.",
+    )
+    parser.add_argument(
+        "--format",
+        choices=("csv", "parquet", "both"),
+        default="csv",
+        help=(
+            "parquet: write the CSV, convert it with row-group verification, then "
+            "delete the CSV. both: keep the CSV too. The scoring sidecar stays CSV."
+        ),
+    )
     parser.add_argument(
         "--seasons",
         type=str,
@@ -227,13 +246,18 @@ def main() -> None:
         f"Saved scoring sidecar to {scoring_path} (join on GAME_ID + TIME_TO_MATCH_MIN)"
     )
 
-    from training_pipeline.data import compute_file_checksum
-
-    print("Computing checksum ...", flush=True)
-    print(f'expected_checksum: "{compute_file_checksum(output_path)}"')
-
     print_row_retention(df)
     print_config_guidance(df["TIME_TO_MATCH_MIN"].nunique())
+
+    # Free the build before converting: the conversion reloads the CSV (~14GB
+    # for the full intermediate file), and holding both would not fit.
+    del df, scoring
+    gc.collect()
+
+    from training_pipeline.parquet_dataset import finish_dataset_output
+
+    print("\nFinishing output ...", flush=True)
+    finish_dataset_output(output_path, output_format=args.format)
 
 
 def print_row_retention(df: pd.DataFrame) -> None:
