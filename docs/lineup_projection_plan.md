@@ -183,6 +183,20 @@ actionType, subType, videoAvailable, shotValue, actionId`.
 
 ### 2.4 `GameRotation` coverage is not complete before 2021 (measured 2026-09-21)
 
+> **Superseded 2026-09-27.** The fast 500 is not a per-game hole. GameRotation
+> is built on demand behind a ~30 s cap, and failures are cached for about 3 h.
+> A game whose slow 500 was 2.5 h old answered with a fast 500, and one whose
+> slow 500 was 3.2 h old ran the full 30 s again. This now happens for 2025-26
+> too. The gaps are instead filled offline from PlayByPlayV2
+> (`scripts/lineups/rebuild_rotations_from_pbp.py`; see
+> `scripts/lineups/README.md`). Checked against the ~8,900 API rotations of
+> 2018-2024, 99.3% of games rebuild and pass the check, and 99.4-99.9% of
+> those agree on at least 99% of seconds. Nearly every disagreement is a
+> corrupt API rotation (29 have stints that end before they start). All 898
+> rebuilt gap games passed stint validation. Validated-stint coverage is now
+> 99.5-100% for every season from 2018-19 to 2024-25. The text below is kept
+> as the original record.
+
 Some games return **HTTP 500 with a zero-byte body**, in under a second. This
 is not throttling, and three separate tests say so:
 

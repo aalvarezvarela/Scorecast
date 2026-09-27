@@ -106,6 +106,27 @@ def _shot_value(row: pd.Series) -> int:
     return 3 if THREE_POINT_MARKER in str(row.get("description", "")) else 2
 
 
+def _blank_placeholder_scores(actions: list[dict]) -> None:
+    """Turn the archive's placeholder ``"0"`` scores back into the API's blank.
+
+    In some games (51 of 2016-17's, a handful elsewhere) the archive writes 0
+    rather than nothing on every non-scoring row, so the running score falls
+    back to 0 mid-game and no stint reconciles with the final. A side's score
+    never returns to 0 once it has scored, so such a 0 is always a placeholder;
+    in every other game this changes nothing.
+    """
+    for field in SCORE_FIELDS:
+        running = 0
+        for action in actions:
+            value = action[field]
+            if value == "":
+                continue
+            if value == "0" and running > 0:
+                action[field] = ""
+            else:
+                running = int(value)
+
+
 def game_payload(actions: pd.DataFrame, game_id: str) -> bytes:
     """Render one game's rows as the PlayByPlayV3 JSON the archive stores."""
     # Corrected actions share an actionNumber with the row they amend, so the
@@ -121,6 +142,7 @@ def game_payload(actions: pd.DataFrame, game_id: str) -> bytes:
             else:
                 action[field] = _scalar(field, row.get(field))
         rendered.append(action)
+    _blank_placeholder_scores(rendered)
     document = {
         "meta": {"version": 1, "request": "", "time": ""},
         "game": {
