@@ -62,12 +62,14 @@ nohup bash experiments/runners/run_lineup_projection_2026_09.sh > /dev/null 2>&1
 
 ## Pre-registration (written before any run)
 
-Status: **not run.** Waiting for the 2019-2020 backfill; the dataset and
-checksums will be regenerated then. The rating cache must first be rebuilt
-with the corrected weighted-ridge solver (version 2), and the resulting
-coverage-filtered `LU_*` values require fresh control/treatment CSVs. See plan §8.6 for the current evidence
-(the defense and pace channels, slope +0.45) and the pre-registered test on
-2019-20 and 2020-21.
+Status: **not run.** The 2016-2020 stints now exist, the rating cache was
+rebuilt with solver version 2 (2026-09-27), and the pre-registered 2019-20 /
+2020-21 check has run (plan §8.7): the defense + pace slope replicated
+(+0.41 pooled [+0.09, +0.74]), directional accuracy ~55% did not clearly clear
+break-even, and the bench claim split by season. Still to do before running:
+regenerate the control/treatment CSVs and their checksums from the new cache,
+and decide `season_year_floor` now that coverage reaches back to 2016-17
+(decide before any run, not after).
 
 What the lineup family can plausibly do is small. Its best columns' univariate
 hit rate is 55-58% on the largest values, against a 52.38% break-even. So:
