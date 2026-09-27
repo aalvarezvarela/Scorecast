@@ -106,8 +106,13 @@ def _game_table(games: pd.DataFrame) -> pd.DataFrame:
     )
 
 
-def _style_summary(table: pd.DataFrame, nights, scored: pd.DataFrame) -> dict:
-    """The three-point matchup columns: do they predict 3PA, and the line?"""
+def _style_summary(
+    table: pd.DataFrame, nights, scored: pd.DataFrame
+) -> tuple[dict, pd.DataFrame]:
+    """The three-point matchup columns: do they predict 3PA, and the line?
+
+    Also returns the per-game columns, so they are saved with the projection.
+    """
     from nba_ou.data_processing.lineups.stint_store import read_stints
     from nba_ou.data_processing.lineups.style_matchup import (
         build_style_matchup_features,
@@ -129,7 +134,7 @@ def _style_summary(table: pd.DataFrame, nights, scored: pd.DataFrame) -> dict:
     ) / 2
     additive_error = frame["actual_fg3a_rate"] - (projected - neighbor_residual)
     lined = scored.merge(style, on="GAME_ID")
-    return {
+    summary = {
         "games": len(frame),
         "corr_neighbor_residual_vs_additive_fg3a_error": float(
             np.corrcoef(neighbor_residual, additive_error)[0, 1]
@@ -146,6 +151,7 @@ def _style_summary(table: pd.DataFrame, nights, scored: pd.DataFrame) -> dict:
             )
         },
     }
+    return summary, style
 
 
 def main() -> None:
@@ -275,7 +281,8 @@ def main() -> None:
             for name, frame in windows.items()
         }
     if args.style:
-        summary["style"] = _style_summary(table, nights, windows["all"])
+        summary["style"], style = _style_summary(table, nights, windows["all"])
+        result = result.merge(style, on="GAME_ID", how="left")
     for column in ACCURACY_COLUMNS:
         for name in ("before_diagnostic_season", "diagnostic_season"):
             summary["accuracy"][f"{column}:{name}"] = [

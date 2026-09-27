@@ -1635,6 +1635,38 @@ across availability scenarios, not the predictive SD of the final score.
 
 ---
 
+### 8.7 The pre-registered 2019-20 / 2020-21 check (run 2026-09-27)
+
+The two seasons the feature selection never saw, now with stints for 99.5-100%
+of games (rotations rebuilt from PlayByPlayV2; the 45% coverage caveat above no
+longer applies). Rating cache rebuilt with solver version 2, warmed up from
+2016-17, lambdas unchanged (1000 / 30000). Evaluated on games with both teams'
+injury filings and a bet365 closing total; 2018-19 loaded only as warm-up.
+Reproduce with `scripts/lineups/check_preregistered_2019_2020.py`, whose
+docstring fixed how each check is read before it ran.
+
+| Check | 2019-20 (978) | 2020-21 (1,326) | Pooled (2,304) |
+|---|---|---|---|
+| 1. def + pace slope > 0 | +0.43 [-0.05, +0.90] | +0.40 [-0.03, +0.84] | **+0.41 [+0.09, +0.74]** |
+| 2. offense interval covers 0 | +0.18 [-0.59, +0.92] | -0.36 [-0.98, +0.26] | -0.10 [-0.57, +0.39] |
+| 3. accuracy at \|def + pace\| >= 3 > 52.38% | 55.9% (n=195) | 53.7% (n=201) | 54.8% [49.9, 59.7] (n=396) |
+| 4a. 3PA shift: positive slope, line flat | passes, intervals ~±150 | passes, intervals ~±135 | passes, uninformative |
+| 4b. pace (possessions) shift > 0 | +1.10 [-0.35, +2.46] | +1.41 [-0.09, +2.98] | **+1.28 [+0.26, +2.32]** |
+| 5. bench > 0 and >= rest, jointly | **fails**: 0.15 vs 0.44 | 1.56 vs 0.35 | 1.14 [-0.1, +2.5] vs 0.38; P = 0.87 |
+
+The same solver-2 cache on the exploratory seasons: def + pace +0.54
+[+0.34, +0.73] (2021-24) and +0.39 [+0.03, +0.73] (2025-26); offense null in
+both; accuracy at 3: 57.3% and 54.3%.
+
+**Reading.** The central finding replicates: defense + pace absence impact has
+a positive `LINE_ERROR` slope of about +0.4 per point in both unseen seasons,
+the same size as in selection, with offense priced. Seven seasons now agree.
+What does **not** follow is a betting edge: directional accuracy on the unseen
+seasons is ~55% with an interval reaching 50%. The 3PA-shift check passes only
+nominally and should not be cited. The bench-over-rest claim is split by
+season and stays a hypothesis. The campaign (§8.4) is the next test; this
+check only says it is worth running.
+
 ## 9. Phase 2 (after G passes)
 
 - **Intermediate dataset:** recompute the scenarios per snapshot, with injury
