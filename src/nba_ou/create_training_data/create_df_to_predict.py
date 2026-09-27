@@ -793,6 +793,9 @@ def create_df_to_predict(
         injury_statuses=(
             injury_report_state.statuses if injury_report_state is not None else None
         ),
+        report_covered=(
+            injury_report_state.covered if injury_report_state is not None else None
+        ),
         rating_cache=lineup_rating_cache,
     )
 

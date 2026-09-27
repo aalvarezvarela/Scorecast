@@ -6,6 +6,7 @@ import argparse
 import json
 from pathlib import Path
 
+from nba_ou.data_processing.lineups.player_ratings import RATING_SOLVER_VERSION
 from nba_ou.data_processing.lineups.rating_cache import build_player_rating_cache
 
 from scripts.lineups.stint_source import add_source_arguments, load_stints
@@ -42,6 +43,7 @@ def main() -> None:
     ratings.to_parquet(temporary, index=False)
     temporary.replace(args.output)
     metadata = {
+        "solver_version": RATING_SOLVER_VERSION,
         "first_season": args.first_season,
         "last_season": args.last_season,
         "as_of_from": args.as_of_from,

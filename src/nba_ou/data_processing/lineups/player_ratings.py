@@ -12,7 +12,10 @@ from collections.abc import Iterable
 import numpy as np
 import pandas as pd
 from scipy import sparse
-from scipy.sparse.linalg import cg, spsolve
+from scipy.sparse.linalg import LinearOperator, cg, spsolve
+
+#: Cache schema for the weighted ridge fit with a free intercept.
+RATING_SOLVER_VERSION = 2
 
 
 def _poss(row, side: str) -> float:
@@ -24,14 +27,38 @@ def _poss(row, side: str) -> float:
     )
 
 
-def _solve(matrix: sparse.csr_matrix, rhs: np.ndarray, alpha: float,
-           previous: np.ndarray | None = None) -> np.ndarray:
+def _solve(
+    matrix: sparse.csr_matrix,
+    rhs: np.ndarray,
+    alpha: float,
+    x_sum: np.ndarray,
+    weight: float,
+    previous: np.ndarray | None = None,
+) -> np.ndarray:
+    """Solve weighted ridge with an unpenalized, freely fitted intercept.
+
+    The centered normal matrix is ``X.T W X - s s.T / sum(w)``, where
+    ``s = X.T w``. Apply the rank-one correction as an operator so the daily
+    fits keep the sparse player design sparse.
+    """
     if not np.any(rhs):
         return np.zeros_like(rhs)
     regularized = matrix + alpha * sparse.eye(matrix.shape[0], format="csr")
-    result, info = cg(regularized, rhs, x0=previous, rtol=1e-7, maxiter=500)
+    centered = LinearOperator(
+        matrix.shape,
+        matvec=lambda beta: regularized @ beta - x_sum * (x_sum @ beta / weight),
+        dtype=float,
+    )
+    result, info = cg(centered, rhs, x0=previous, rtol=1e-7, maxiter=500)
     if info:
-        result = spsolve(regularized, rhs)
+        # The augmented system is equivalent to the centered normal equations
+        # and avoids constructing a dense outer product even on the fallback.
+        column = sparse.csr_matrix(x_sum[:, None])
+        system = sparse.bmat(
+            [[regularized, column], [column.T, sparse.csr_matrix([[weight]])]],
+            format="csr",
+        )
+        result = spsolve(system, np.r_[rhs, 0.0])[:-1]
     return np.asarray(result, dtype=float)
 
 
@@ -66,16 +93,25 @@ class _NormalEquations:
     def solve(self, alpha: float) -> tuple[np.ndarray, float]:
         mean = self.weighted_y / self.weight if self.weight else 0.0
         rhs = self.b_raw - mean * self.x_sum
-        self.previous = _solve(self.a, rhs, alpha, self.previous)
-        return self.previous, mean
+        self.previous = (
+            _solve(self.a, rhs, alpha, self.x_sum, self.weight, self.previous)
+            if self.weight
+            else np.zeros_like(self.b_raw)
+        )
+        intercept = (
+            mean - self.x_sum @ self.previous / self.weight if self.weight else 0.0
+        )
+        return self.previous, float(intercept)
 
 
 def _matrix(rows: list[dict[int, float]], n_features: int) -> sparse.csr_matrix:
     return sparse.csr_matrix(
         (
             [value for row in rows for value in row.values()],
-            ([i for i, row in enumerate(rows) for _ in row],
-             [key for row in rows for key in row]),
+            (
+                [i for i, row in enumerate(rows) for _ in row],
+                [key for row in rows for key in row],
+            ),
         ),
         shape=(len(rows), n_features),
     )
@@ -101,10 +137,20 @@ def walk_forward_player_ratings(
     """
     if lambda_offdef <= 0 or lambda_pace <= 0 or half_life_days <= 0:
         raise ValueError("Ridge lambdas and half-life must be positive")
-    required = {"game_date", "home_lineup", "away_lineup", "start_ds", "end_ds",
-                "home_pts", "away_pts"}
-    required |= {f"{side}_{stat}" for side in ("home", "away")
-                 for stat in ("fga", "fta", "oreb", "tov")}
+    required = {
+        "game_date",
+        "home_lineup",
+        "away_lineup",
+        "start_ds",
+        "end_ds",
+        "home_pts",
+        "away_pts",
+    }
+    required |= {
+        f"{side}_{stat}"
+        for side in ("home", "away")
+        for stat in ("fga", "fta", "oreb", "tov")
+    }
     if missing := required - set(stints):
         raise ValueError(f"Missing stint columns: {sorted(missing)}")
     history = stints.copy()
@@ -112,8 +158,13 @@ def walk_forward_player_ratings(
     history["home_lineup"] = history.home_lineup.map(_lineup)
     history["away_lineup"] = history.away_lineup.map(_lineup)
     players = sorted(
-        {pid for side in ("home", "away") for lineup in history[f"{side}_lineup"]
-         for pid in lineup}, key=int
+        {
+            pid
+            for side in ("home", "away")
+            for lineup in history[f"{side}_lineup"]
+            for pid in lineup
+        },
+        key=int,
     )
     index = {pid: i for i, pid in enumerate(players)}
     n = len(players)
@@ -138,13 +189,19 @@ def walk_forward_player_ratings(
             pace_beta, league_pace = pace.solve(lambda_pace)
             for pid, i in index.items():
                 if exposure[i] > 0:
-                    output.append(dict(
-                        as_of_date=day, player_id=pid,
-                        o_rating=beta[i], d_rating=beta[n + i],
-                        pace_rating=pace_beta[i], poss_weight=exposure[i],
-                        league_ortg=league_ortg, league_pace=league_pace,
-                        fit_max_game_date=latest_fit_date,
-                    ))
+                    output.append(
+                        dict(
+                            as_of_date=day,
+                            player_id=pid,
+                            o_rating=beta[i],
+                            d_rating=beta[n + i],
+                            pace_rating=pace_beta[i],
+                            poss_weight=exposure[i],
+                            league_ortg=league_ortg,
+                            league_pace=league_pace,
+                            fit_max_game_date=latest_fit_date,
+                        )
+                    )
         if day not in grouped:
             continue
         off_rows, off_y, off_w = [], [], []
@@ -162,10 +219,12 @@ def walk_forward_player_ratings(
                 (away, home, away_poss, row["away_pts"]),
             ):
                 if poss > 0:
-                    off_rows.append({
-                        **{index[pid]: 1.0 for pid in attacking},
-                        **{n + index[pid]: -1.0 for pid in defending},
-                    })
+                    off_rows.append(
+                        {
+                            **{index[pid]: 1.0 for pid in attacking},
+                            **{n + index[pid]: -1.0 for pid in defending},
+                        }
+                    )
                     off_y.append(100 * float(points) / poss)
                     off_w.append(poss)
                     for pid in attacking:

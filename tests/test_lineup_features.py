@@ -11,6 +11,7 @@ from nba_ou.data_processing.lineups.features import (
     add_lineup_features,
     attach_lineup_features,
     game_phase,
+    load_rating_book,
     walk_forward_offset,
 )
 from nba_ou.data_processing.lineups.projection_eval import (
@@ -100,6 +101,32 @@ def _statuses(*outs: tuple[str, str, str]) -> pd.DataFrame:
 
 
 TARGET_GAME = f"00{len(HISTORY_DATES):06d}01"
+
+
+def _coverage(merged: pd.DataFrame) -> set[tuple[str, str]]:
+    return {
+        (row.GAME_ID, team)
+        for row in merged.itertuples(index=False)
+        for team in (row.TEAM_ID_TEAM_HOME, row.TEAM_ID_TEAM_AWAY)
+    }
+
+
+def test_old_rating_cache_cannot_be_used_after_solver_correction(tmp_path):
+    import json
+
+    from nba_ou.data_processing.lineups.player_ratings import RATING_SOLVER_VERSION
+
+    cache = tmp_path / "ratings.parquet"
+    _ratings().to_parquet(cache)
+    with pytest.raises(ValueError, match="no solver metadata"):
+        load_rating_book(cache)
+    cache.with_suffix(".metadata.json").write_text(json.dumps({"solver_version": 1}))
+    with pytest.raises(ValueError, match="old ridge solver"):
+        load_rating_book(cache)
+    cache.with_suffix(".metadata.json").write_text(
+        json.dumps({"solver_version": RATING_SOLVER_VERSION})
+    )
+    assert isinstance(load_rating_book(cache), RatingBook)
 
 
 class TestRatingBook:
@@ -200,6 +227,7 @@ class TestSwitch:
             _box(),
             enabled=True,
             injury_statuses=_statuses((TARGET_GAME, H, STAR)),
+            report_covered=_coverage(merged),
             ratings=RatingBook(_ratings()),
             stints=pd.DataFrame(),
         )
@@ -219,11 +247,58 @@ class TestSwitch:
             _box(),
             enabled=True,
             injury_statuses=_statuses(),
+            report_covered=_coverage(_merged()),
             ratings=RatingBook(_ratings()),
             stints=pd.DataFrame(),
         )
         selected = select_training_columns(out, original_columns=[])
         assert set(LINEUP_FEATURE_COLUMNS) <= set(selected.columns)
+
+    def test_missing_team_filing_is_nan_even_without_status_rows(self):
+        merged = _merged()
+        coverage = _coverage(merged) - {(TARGET_GAME, A)}
+        out = attach_lineup_features(
+            merged,
+            _box(),
+            enabled=True,
+            injury_statuses=_statuses(),
+            report_covered=coverage,
+            ratings=RatingBook(_ratings()),
+            stints=pd.DataFrame(),
+        )
+        row = out.loc[out.GAME_ID.eq(TARGET_GAME), list(LINEUP_FEATURE_COLUMNS)]
+        assert row.isna().all().all()
+
+    def test_uncovered_past_game_cannot_calibrate_a_later_game(self):
+        merged = _merged()
+        prior = merged.loc[
+            merged.GAME_DATE.eq(pd.Timestamp("2025-01-04"))
+            & merged.TEAM_ID_TEAM_HOME.eq(H),
+            "GAME_ID",
+        ].iloc[0]
+        covered = _coverage(merged) - {(prior, H)}
+        with_gap = add_lineup_features(
+            merged, _box(), RatingBook(_ratings()), report_covered=covered
+        )
+        removed = merged.loc[merged.GAME_ID.ne(prior)].copy()
+        without_game = add_lineup_features(
+            removed,
+            _box(),
+            RatingBook(_ratings()),
+            report_covered=_coverage(removed),
+        )
+        column = "LU_PROJ_TOTAL_BEFORE"
+        target_with_gap = with_gap.loc[with_gap.GAME_ID.eq(TARGET_GAME), column].iloc[0]
+        target_without = without_game.loc[
+            without_game.GAME_ID.eq(TARGET_GAME), column
+        ].iloc[0]
+        assert target_with_gap == pytest.approx(target_without)
+        assert (
+            with_gap.loc[with_gap.GAME_ID.eq(prior), list(LINEUP_FEATURE_COLUMNS)]
+            .isna()
+            .all()
+            .all()
+        )
 
     def test_on_without_a_report_is_an_error(self):
         with pytest.raises(ValueError, match="injury report"):

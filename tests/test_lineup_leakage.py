@@ -96,6 +96,14 @@ def _world(seed: int = 0):
     return pd.DataFrame(box), pd.DataFrame(merged), pd.DataFrame(ratings)
 
 
+def _coverage(merged):
+    return {
+        (row.GAME_ID, team)
+        for row in merged.itertuples(index=False)
+        for team in (row.TEAM_ID_TEAM_HOME, row.TEAM_ID_TEAM_AWAY)
+    }
+
+
 def _target_values(box, merged, ratings, p_out=None) -> pd.Series:
     out = add_lineup_features(merged, box, RatingBook(ratings), p_out)
     return out.loc[out.GAME_ID.eq(TARGET), PROJECTION_COLUMNS].iloc[0]
@@ -203,6 +211,7 @@ class TestInjuryCutoff:
             box,
             enabled=True,
             injury_statuses=statuses,
+            report_covered=_coverage(merged),
             ratings=RatingBook(ratings),
             stints=pd.DataFrame(),
         )

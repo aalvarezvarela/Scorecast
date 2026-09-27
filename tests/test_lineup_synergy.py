@@ -217,15 +217,64 @@ class TestSharedMinutes:
         assert sum(minutes.values()) == pytest.approx(PAIRS_ON_COURT * 48.0)
 
     def test_an_absence_raises_everyone_elses_share(self):
-        """The mechanism that makes the weighting react to news."""
+        """A five-player roster still has ten real pairs after one absence."""
         accumulator = SynergyAccumulator()
         accumulator.observe(
             FIVE, residual=0.0, possessions=100.0, seconds=600.0, date=DAY
         )
-        full = expected_shared_minutes(accumulator, list(FIVE))
-        without = expected_shared_minutes(accumulator, ["a", "b", "c", "d"])
+        accumulator.observe(
+            ("a", "c", "d", "e", "f"),
+            residual=0.0,
+            possessions=100.0,
+            seconds=600.0,
+            date=DAY,
+        )
+        full = expected_shared_minutes(accumulator, [*FIVE, "f"])
+        without = expected_shared_minutes(accumulator, list(FIVE))
         assert without[("a", "b")] > full[("a", "b")]
-        assert ("a", "e") not in without
+        assert ("a", "f") not in without
+
+    def test_historical_normalization_cannot_assign_more_than_game_minutes(self):
+        accumulator = SynergyAccumulator()
+        accumulator.observe(
+            ("a", "b", "x", "y", "z"),
+            residual=0.0,
+            possessions=100.0,
+            seconds=600.0,
+            date=DAY,
+        )
+        # Only a-b has shared time among these six available players. The old
+        # global scaling assigned that pair the full 480 pair-minutes.
+        minutes = expected_shared_minutes(accumulator, list("abcdef"))
+        assert sum(minutes.values()) == pytest.approx(480.0)
+        assert max(minutes.values()) <= 48.0 + 1e-8
+        for player in "abcdef":
+            assert (
+                sum(value for pair, value in minutes.items() if player in pair)
+                <= 192.0 + 1e-8
+            )
+
+    def test_optional_player_minutes_fix_each_players_pair_exposure(self):
+        accumulator = SynergyAccumulator()
+        accumulator.observe(
+            ("a", "b", "x", "y", "z"),
+            residual=0.0,
+            possessions=100.0,
+            seconds=600.0,
+            date=DAY,
+        )
+        predicted = dict.fromkeys("abcdef", 40.0)
+        minutes = expected_shared_minutes(
+            accumulator, list(predicted), projected_minutes=predicted
+        )
+        for player in predicted:
+            assert sum(
+                value for pair, value in minutes.items() if player in pair
+            ) == pytest.approx(160.0)
+        assert max(minutes.values()) <= 48.0 + 1e-8
+
+    def test_less_than_five_available_players_has_no_physical_allocation(self):
+        assert expected_shared_minutes(SynergyAccumulator(), list("abcd")) == {}
 
     def test_no_shared_history_spreads_the_floor_evenly(self):
         accumulator = SynergyAccumulator()
@@ -248,6 +297,25 @@ class TestTeamSynergy:
         value = team_synergy(accumulator, list(FIVE), DAY)
         # Ten pairs, each contributing a tenth: the five's own deviation, once.
         assert value == pytest.approx(2.0, rel=1e-2)
+
+    def test_team_synergy_honors_supplied_projected_minutes(self):
+        accumulator = SynergyAccumulator(shrinkage_possessions=0.001)
+        _seed_league(accumulator)
+        accumulator.observe(
+            ("a", "b", "x", "y", "z"),
+            residual=10.0,
+            possessions=1000.0,
+            seconds=600.0,
+            date=DAY,
+        )
+        available = list("abcdef")
+        unconstrained = team_synergy(accumulator, available, DAY)
+        projected = {"a": 0.0, **dict.fromkeys("bcdef", 48.0)}
+        constrained = team_synergy(
+            accumulator, available, DAY, projected_minutes=projected
+        )
+        assert unconstrained > 0
+        assert constrained == pytest.approx(0.0)
 
     def test_a_team_with_no_history_has_no_synergy(self):
         assert team_synergy(SynergyAccumulator(), list(FIVE), DAY) == pytest.approx(0.0)

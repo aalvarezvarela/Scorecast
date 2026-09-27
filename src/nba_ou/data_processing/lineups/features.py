@@ -4,26 +4,24 @@ Everything here composes the phase-F pieces that already exist -- rosters and
 availability from ``availability``, the projection and its full-health
 counterfactual from ``game_projection``, ratings from the walk-forward cache --
 into one row per game. The evaluation script
-(``scripts/lineups/evaluate_game_projection.py``) calls the same
-:func:`project_lineup_games`, so the numbers the plan reports and the columns
-the model sees cannot drift apart.
+(``scripts/lineups/evaluate_game_projection.py``) shares the projection
+components, but its historical results must be regenerated after the corrected
+ridge fit and report-coverage guard.
 
-**Every column is here on evidence** (``docs/lineup_projection_plan.md``
-sections 8.5-8.6). The absence counterfactual is the one quantity with a
-non-null relation to ``LINE_ERROR``, and splitting it shows where: the
-**defense** and **pace** channels carry it while the offense channel is fully
-priced -- the market reacts to the points an absent player scores, not to the
-points he prevents. ``LU_ABSENCE_IMPACT_BENCH_DP_PTS_BEFORE`` isolates the
-slice of that defense + pace carried by the bench players who absorb the
-absentees' minutes, the part priced worst. The per-side and margin columns let the model read the
-two teams' news separately, which the spread target needs. Synergy and
-``proj_total - line`` measured null and are left out.
+The family retains the full diagnostic decomposition. In exploratory
+2021-22 through 2025-26 data, defense, pace and bench-replacement channels
+showed associations with ``LINE_ERROR`` after about fifteen candidate
+quantities had been inspected. Those associations are feature-selection
+hypotheses, not validated evidence of a betting edge. The per-side and margin
+columns expose the two teams' news separately. Synergy remains experimental
+and is not emitted here.
 
 **Temporal contract**, inherited from the pieces and checked by
 ``tests/test_lineup_leakage.py``:
 
 - rosters and minutes come from box scores on strictly earlier dates;
-- availability is the last injury report before tip-off;
+- availability is the last injury report before tip-off for the closing
+  prediction horizon; both teams must have submitted a report;
 - ratings are read from the latest cache date **on or before** the game date,
   and every cache row was fitted on games strictly before its own date;
 - the level calibration uses outcomes of games on strictly earlier dates.
@@ -36,6 +34,7 @@ it on a 2021-22+ window.
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import numpy as np
@@ -60,7 +59,7 @@ DEFAULT_RATING_CACHE = (
 #: separately because they need the calibration offset).
 _IMPACT_COLUMNS = {
     "LU_PROJ_POSS_BEFORE": "possessions",
-    "LU_PROJ_TOTAL_SD_BEFORE": "total_sd",
+    "LU_PROJ_AVAILABILITY_TOTAL_SD_BEFORE": "total_sd",
     "LU_PROJ_MARGIN_BEFORE": "margin",
     "LU_ABSENCE_IMPACT_PTS_BEFORE": "impact_points",
     "LU_ABSENCE_IMPACT_POSS_BEFORE": "impact_possessions",
@@ -73,6 +72,9 @@ _IMPACT_COLUMNS = {
     "LU_ABSENCE_IMPACT_PTS_BEFORE_TEAM_AWAY": "impact_away",
 }
 
+#: Complete diagnostic family. The total impact is exactly the sum of its
+#: offense, defense and pace components; training may select a compact subset
+#: with the existing cleaning configuration without deleting these outputs.
 LINEUP_FEATURE_COLUMNS = (
     "LU_PROJ_TOTAL_BEFORE",
     *_IMPACT_COLUMNS,
@@ -343,6 +345,7 @@ def add_lineup_features(
     recent_games: int = RECENT_GAMES,
     excluded: set[tuple[str, str, str]] | None = None,
     stints: pd.DataFrame | None = None,
+    report_covered: set[tuple[str, str]] | None = None,
 ) -> pd.DataFrame:
     """Attach ``LINEUP_FEATURE_COLUMNS`` to the merged one-row-per-game frame.
 
@@ -354,7 +357,9 @@ def add_lineup_features(
     Games the projection cannot cover -- before the rating cache starts, or
     with no roster history -- get NaN, which is the honest value: there is no
     projection, not a neutral one. ``stints`` feeds the three-point matchup
-    columns (``style_matchup``); without them those columns are NaN.
+    columns (``style_matchup``); without them those columns are NaN. If
+    ``report_covered`` is supplied, both teams must have filed before the
+    prediction cutoff. Uncovered games are NaN and cannot enter calibration.
     """
     required = {"GAME_ID", "GAME_DATE", "TEAM_ID_TEAM_HOME", "TEAM_ID_TEAM_AWAY"}
     if missing := required - set(df_merged.columns):
@@ -374,11 +379,33 @@ def add_lineup_features(
     projected = project_lineup_games(
         games, df_players, ratings, p_out, nights=nights
     ).set_index("GAME_ID")
+    covered_games = None
+    if report_covered is not None:
+        covered_pairs = {
+            (str(game).zfill(10), str(team)) for game, team in report_covered
+        }
+        covered_games = set(
+            games.loc[
+                games.apply(
+                    lambda row: (
+                        (row.GAME_ID, row.HOME_TEAM_ID) in covered_pairs
+                        and (row.GAME_ID, row.AWAY_TEAM_ID) in covered_pairs
+                    ),
+                    axis=1,
+                ),
+                "GAME_ID",
+            ]
+        )
+        # Mask before the walk-forward offset: an unreported game must not
+        # calibrate a later projection using a falsely certain availability.
+        projected = projected.loc[projected.index.isin(covered_games)]
     style = (
         build_style_matchup_features(stints, _targets(games), nights)
         if stints is not None
         else pd.DataFrame(columns=["GAME_ID", *STYLE_FEATURE_COLUMNS])
     ).set_index("GAME_ID")
+    if covered_games is not None:
+        style = style.loc[style.index.isin(covered_games)]
 
     aligned = projected.reindex(games["GAME_ID"])
     aligned.index = df_merged.index
@@ -419,6 +446,7 @@ def attach_lineup_features(
     *,
     enabled: bool,
     injury_statuses: pd.DataFrame | None,
+    report_covered: set[tuple[str, str]] | None = None,
     ratings: RatingBook | None = None,
     rating_cache: Path | str | None = None,
     stints: pd.DataFrame | None = None,
@@ -430,14 +458,15 @@ def attach_lineup_features(
     exactly ``LINEUP_FEATURE_COLUMNS`` are added and nothing else changes.
 
     ``injury_statuses`` is ``InjuryReportState.statuses``, the last report
-    before each tip: the same source the report-derived injury columns read, so
-    availability is scored identically in both families. ``stints`` defaults
+    before each tip. ``report_covered`` is ``InjuryReportState.covered``; it
+    distinguishes a filed report with no player listings from no team filing.
+    Both are required for a closing-horizon build. ``stints`` defaults
     to the whole local stint store (``data/lineup_stints``).
     """
     if not enabled:
         return df_merged
-    if injury_statuses is None:
-        raise ValueError("lineup_features needs the pre-game injury report statuses")
+    if injury_statuses is None or report_covered is None:
+        raise ValueError("lineup_features needs injury report statuses and coverage")
     from .availability import player_out_probabilities, roster_exclusions
 
     book = ratings if ratings is not None else load_rating_book(rating_cache)
@@ -452,6 +481,7 @@ def attach_lineup_features(
         player_out_probabilities(injury_statuses),
         excluded=roster_exclusions(injury_statuses),
         stints=stints,
+        report_covered=report_covered,
     )
 
 
@@ -461,6 +491,20 @@ def load_rating_book(path: Path | str | None = None) -> RatingBook:
     if not source.exists():
         raise FileNotFoundError(
             f"No lineup rating cache at {source}. Build it with "
+            "scripts/lineups/build_player_ratings.py."
+        )
+    from .player_ratings import RATING_SOLVER_VERSION
+
+    metadata_path = source.with_suffix(".metadata.json")
+    if not metadata_path.exists():
+        raise ValueError(
+            f"Rating cache at {source} has no solver metadata; rebuild with "
+            "scripts/lineups/build_player_ratings.py."
+        )
+    metadata = json.loads(metadata_path.read_text())
+    if metadata.get("solver_version") != RATING_SOLVER_VERSION:
+        raise ValueError(
+            f"Rating cache at {source} uses an old ridge solver; rebuild with "
             "scripts/lineups/build_player_ratings.py."
         )
     return RatingBook(pd.read_parquet(source))

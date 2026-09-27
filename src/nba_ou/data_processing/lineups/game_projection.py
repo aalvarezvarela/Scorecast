@@ -19,8 +19,9 @@ on.
 
 Players whose availability is genuinely uncertain generate **scenarios**: each
 combination of them playing or sitting is projected separately and weighted by
-its probability. The spread across scenarios is as useful as the mean, because
-it says how much tonight's total depends on news that has not settled.
+its probability. The standard deviation across these scenario totals measures
+uncertainty due to availability only. It excludes game-scoring noise, model
+error and other sources of predictive uncertainty.
 
 Two deliberate departures from the plan's section 7.1:
 
@@ -31,13 +32,11 @@ away side -- so the term is applied as ``+h/2`` and ``-h/2``. That keeps the
 margin right and leaves the total, which is what this project predicts,
 untouched.
 
-**Synergy is absent.** It is phase D and does not exist yet. The projection is
-additive in players for now, and section 7.1b's shared-minutes weighting plugs
-in at ``team_aggregate`` when it does.
+**Synergy is excluded.** The experimental pair/five residual estimates are
+not part of this production projection, which remains additive in players.
 
-Minutes are an input, not a model: phase E will supply them. Until it does,
-``allocate_minutes`` implements the fallback the plan specifies for a failed
-go/no-go E -- each player's recent average, rescaled to the team's 240.
+``allocate_minutes`` uses each player's recent average, rescaled to the
+team's 240 minutes. The experimental minutes model is not used here.
 """
 
 from __future__ import annotations
@@ -263,8 +262,9 @@ def project_game(
     """Project one game over its availability scenarios.
 
     Returns the probability-weighted mean of each quantity, plus ``total_sd``,
-    the weighted standard deviation of the total across scenarios: the
-    projection's own statement of how unsettled tonight's news is. The mean
+    the weighted standard deviation of the total across availability scenarios.
+    This is zero for settled availability, even though the game total remains
+    uncertain. The mean
     team aggregates (``home_off``, ``home_def``, ``home_pace`` and the away
     three) come along so a caller can say *which* channel a change runs through.
     """

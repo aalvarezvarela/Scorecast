@@ -1284,7 +1284,7 @@ schema version; the file gets a `_with_lineup_features` suffix.
 |---|---|
 | `LU_PROJ_TOTAL_BEFORE` | projected total from minutes-weighted player lineup ratings and tonight's availability, calibrated walk-forward per phase |
 | `LU_PROJ_POSS_BEFORE` | projected possessions |
-| `LU_PROJ_TOTAL_SD_BEFORE` | spread of the total across availability scenarios (Questionable players) |
+| `LU_PROJ_AVAILABILITY_TOTAL_SD_BEFORE` | standard deviation of projected totals across availability scenarios only; excludes scoring and model uncertainty |
 | `LU_PROJ_MARGIN_BEFORE` | projected home minus away points |
 | `LU_ABSENCE_IMPACT_PTS_BEFORE` | projected total with tonight's absences minus the same roster at full health |
 | `LU_ABSENCE_IMPACT_POSS_BEFORE` | the same difference in possessions |
@@ -1295,7 +1295,7 @@ schema version; the file gets a `_with_lineup_features` suffix.
 | `LU_ABSENCE_IMPACT_PTS_BEFORE_TEAM_HOME` / `_TEAM_AWAY` | each side's absences alone, the other at full health |
 | `LU_ABSENCE_IMPACT_MARGIN_BEFORE` | the absences' effect on the home margin |
 | `LU_PROJ_FG3A_RATE_BEFORE_TEAM_HOME` / `_TEAM_AWAY` | expected 3PA/FGA of that side's offense against the other's defense, tonight's rotations (`style_matchup.py`) |
-| `LU_MATCHUP_FG3A_INTERACTION_BEFORE` | the part of it the additive model misses, borrowed from the most similar past lineup pairs |
+| `LU_FG3A_NEIGHBOR_RESIDUAL_BEFORE` | mean residual of nearby historical lineup pairs after a linear additive 3PA/FGA baseline; may include nonlinear one-team effects |
 | `LU_ABSENCE_SHIFT_FG3A_RATE_BEFORE` | how much tonight's absences shift the game's expected 3PA/FGA |
 
 Attached after the home/away merge, next to `add_fresh_absence_sums`. Inputs
@@ -1304,8 +1304,10 @@ and cutoffs:
 - **Rosters and minutes:** box scores on strictly earlier dates; each player's
   average over his last `RECENT_GAMES` (10) appearances, rescaled to 240.
 - **Availability:** `InjuryReportState.statuses` (last report before tip)
-  through `chance_out`, the same probability the report features use. An
-  unlisted player is taken as available. A G-League assignment removes the
+  through `chance_out`, the same probability the report features use. Both
+  teams must have a filing in `InjuryReportState.covered`; otherwise every
+  `LU_*` column is NaN and that game cannot calibrate later projections. A
+  player unlisted on a covered report is taken as available. A G-League assignment removes the
   player from that game's roster instead (he is not with the team, and not an
   absence). Zero-minute box-score rows other than a coach's decision
   (`DND - Injury/Illness`, `NWT ...`) are absences, not appearances.
@@ -1313,7 +1315,8 @@ and cutoffs:
   `scripts/lineups/build_player_ratings.py`. A game reads the latest cache date
   on or before its own date; every cache row was fitted on stints strictly
   before that date. A cache date older than 14 days gives NaN rather than a
-  stale projection.
+  stale projection. The cache must be rebuilt with solver version 2 after the
+  weighted-ridge intercept correction; older caches are rejected.
 - **Level calibration:** the mean `actual - projected` over the previous 200
   games of the same phase (regular season or playoffs) on earlier dates;
   stint possessions are estimated and run high, and playoff games score
@@ -1325,13 +1328,23 @@ player style traits and the pool of past lineup pairs are rebuilt on each run
 They are NaN when the newest stint evidence is over 180 days old.
 
 The absence columns do not need the calibration: it cancels in the difference.
-The channel split is where the evidence sits: defense and pace predict the
-line's error, offense does not (plan §8.6).
+The old exploratory sample associated defense and pace impact with the
+closing line's error, but these features were selected after inspecting all
+2021-22 through 2025-26 seasons. No control/treatment XGBoost campaign has run,
+and no betting edge has been established (plan §8.6). The total impact is
+exactly offense + defense + pace impact; pace points and pace possessions are
+nearly redundant as model inputs. All outputs remain for diagnosis, while
+`cleaning.exclude_cols_containing` and `keep_columns` can define a compact
+training subset after validation.
 
 **Coverage.** Ratings start in 2021-22, so earlier games are NaN. For any
 training window starting earlier, `find_season_gated_columns` will drop the
 family, so evaluate it on a 2021-22+ window. Games with no roster history (a
-team's first game in the data) are NaN too.
+team's first game in the data) are NaN too. This is a closing-horizon
+family: historical availability uses the last report before tip, and live
+inference uses the report state available when the builder runs. For an earlier
+betting snapshot, both statuses and team-filing coverage must be cut off at
+that snapshot. The current closing builder does not recreate earlier horizons.
 
 **Serving.** `predict_nba_games.py` does not pass the flag, because no
 production model has been trained with these columns. Serving them needs the
