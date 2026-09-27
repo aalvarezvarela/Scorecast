@@ -28,6 +28,24 @@ class GameUnavailable(EmptyResponse):
     """The NBA cannot serve this game at all, however often we ask."""
 
 
+class ServerTimeout(RuntimeError):
+    """A 5xx that took the backend's full ~30 s: this attempt failed, not the game.
+
+    Deliberately *not* an ``EmptyResponse``. Audited 2026-09-24: of 28 games the
+    manifest held as ``empty``, 18 returned this slow 500 again on a re-probe,
+    and so did a control game whose rotation was already archived. A slow 500
+    therefore says nothing about whether the game has data, so it must never be
+    recorded as a hole.
+    """
+
+
+#: A 5xx answered faster than this is the NBA refusing the game outright (the
+#: deterministic sub-second 500 of ``docs/lineup_projection_plan.md`` section
+#: 2.4). A slower one is the backend giving up after its ~30 s limit. Measured
+#: 2026-09-24: fast 500s took 0.3-0.5 s, slow ones 30.4-30.7 s, nothing between.
+SLOW_SERVER_ERROR_SECONDS = 5.0
+
+
 class Pacer:
     def __init__(
         self,
@@ -116,6 +134,7 @@ class LineupClient:
         reset: Callable[[], None] = reset_nba_http_session,
         endpoints: dict | None = None,
         timeout: float = 30.0,
+        clock: Callable[[], float] = time.monotonic,
     ) -> None:
         self.pacer = pacer
         self.sleep = sleep
@@ -124,7 +143,13 @@ class LineupClient:
         # Every hung socket costs a full timeout before the session is reset,
         # so this is the main knob on how fast a flaky night recovers.
         self.timeout = timeout
+        self.clock = clock
         self.consecutive_blocks = 0
+        # The HTTP status and latency of the most recent attempt, whatever its
+        # outcome, so the caller can write them to the manifest. A fast and a
+        # slow 500 look identical once recorded without them.
+        self.last_status: int | None = None
+        self.last_elapsed: float | None = None
 
     def fetch(self, endpoint: str, game_id: str) -> bytes:
         """Return untouched API JSON bytes, or raise after bounded retries."""
@@ -134,17 +159,30 @@ class LineupClient:
         for block in range(4):
             for attempt in range(2):
                 self.pacer.wait()
+                self.last_status = None
+                started = self.clock()
                 try:
-                    response = self.endpoints[endpoint](
-                        game_id=game_id, timeout=self.timeout
-                    )
+                    try:
+                        response = self.endpoints[endpoint](
+                            game_id=game_id, timeout=self.timeout
+                        )
+                    finally:
+                        self.last_elapsed = self.clock() - started
                     status = _status_code(response)
-                    # A 5xx with an empty body is the NBA failing on this game,
-                    # not a throttle: neighbouring game IDs answer 200 in 0.2 s
-                    # while this one returns 500 on every attempt. Treating it
-                    # as a block costs 570 s per game, and four such games in a
-                    # row would open the circuit and end the run.
+                    self.last_status = status
+                    # A 5xx is never a throttle: neighbouring game IDs answer
+                    # 200 in 0.2 s meanwhile. Treating it as a block costs 570 s
+                    # per game, and four in a row would open the circuit and end
+                    # the run. Its latency says which of two things it is.
                     if status is not None and 500 <= status < 600:
+                        if self.last_elapsed >= SLOW_SERVER_ERROR_SECONDS:
+                            # The backend timed out on this attempt; the game
+                            # may well have data (see ServerTimeout).
+                            raise ServerTimeout(
+                                f"{endpoint} returned HTTP {status} for {game_id} "
+                                f"after {self.last_elapsed:.1f} s"
+                            )
+                        # A sub-second refusal: the NBA has nothing to serve.
                         raise GameUnavailable(
                             f"{endpoint} returned HTTP {status} for {game_id}"
                         )
@@ -154,7 +192,7 @@ class LineupClient:
                         raise EmptyResponse(f"{endpoint} returned no rows for {game_id}")
                     self.consecutive_blocks = 0
                     return raw.encode("utf-8") if isinstance(raw, str) else raw
-                except EmptyResponse:
+                except (EmptyResponse, ServerTimeout):
                     raise
                 except (ReadTimeout, ConnectionError, json.JSONDecodeError) as exc:
                     last_error = exc

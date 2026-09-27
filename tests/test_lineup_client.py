@@ -172,3 +172,127 @@ def test_a_healthy_response_still_reports_its_status():
         endpoints={"gamerotation": lambda **kwargs: Ok(ROTATION)},
     )
     assert json.loads(client.fetch("gamerotation", "0021800444")) == ROTATION
+
+
+def _server_error_after(fake, seconds, status=500):
+    """An endpoint that answers ``status`` with an empty body after ``seconds``."""
+
+    def call(**kwargs):
+        fake.now += seconds
+        return ServerError(status)
+
+    return call
+
+
+def test_a_slow_server_error_is_a_timeout_not_a_missing_game():
+    """Audited 2026-09-24: a ~30 s 500 came back for a game already archived.
+
+    It must not surface as ``EmptyResponse``, or the backfill records a game
+    that has data as a hole.
+    """
+    from nba_ou.fetch_data.nba_lineups.client import ServerTimeout
+
+    fake = FakeTime()
+    client = LineupClient(
+        pacer=Pacer(clock=fake.clock, sleep=fake.sleep),
+        sleep=fake.sleep,
+        reset=lambda: None,
+        clock=fake.clock,
+        endpoints={"gamerotation": _server_error_after(fake, 30.5)},
+    )
+    with pytest.raises(ServerTimeout) as caught:
+        client.fetch("gamerotation", "0021800427")
+    assert not isinstance(caught.value, EmptyResponse)
+    assert client.last_status == 500
+    assert client.last_elapsed == pytest.approx(30.5)
+    # Like a fast 500, it is not a throttle: no ladder, no breaker count.
+    assert fake.sleeps == []
+    assert client.consecutive_blocks == 0
+
+
+def test_a_fast_server_error_is_still_a_missing_game():
+    from nba_ou.fetch_data.nba_lineups.client import GameUnavailable
+
+    fake = FakeTime()
+    client = LineupClient(
+        pacer=Pacer(clock=fake.clock, sleep=fake.sleep),
+        sleep=fake.sleep,
+        reset=lambda: None,
+        clock=fake.clock,
+        endpoints={"gamerotation": _server_error_after(fake, 0.4)},
+    )
+    with pytest.raises(GameUnavailable):
+        client.fetch("gamerotation", "0021700029")
+    assert client.last_status == 500
+    assert client.last_elapsed == pytest.approx(0.4)
+
+
+def test_the_boundary_between_fast_and_slow_is_the_configured_threshold():
+    from nba_ou.fetch_data.nba_lineups.client import (
+        SLOW_SERVER_ERROR_SECONDS,
+        GameUnavailable,
+        ServerTimeout,
+    )
+
+    for seconds, expected in (
+        (SLOW_SERVER_ERROR_SECONDS - 0.01, GameUnavailable),
+        (SLOW_SERVER_ERROR_SECONDS, ServerTimeout),
+    ):
+        fake = FakeTime()
+        client = LineupClient(
+            pacer=Pacer(clock=fake.clock, sleep=fake.sleep),
+            sleep=fake.sleep,
+            reset=lambda: None,
+            clock=fake.clock,
+            endpoints={"gamerotation": _server_error_after(fake, seconds)},
+        )
+        with pytest.raises(expected):
+            client.fetch("gamerotation", "0021800001")
+
+
+def test_a_success_reports_its_status_and_latency():
+    class Ok(Response):
+        _status_code = 200
+
+    fake = FakeTime()
+
+    def call(**kwargs):
+        fake.now += 0.3
+        return Ok(ROTATION)
+
+    client = LineupClient(
+        pacer=Pacer(clock=fake.clock, sleep=fake.sleep),
+        sleep=fake.sleep,
+        clock=fake.clock,
+        endpoints={"gamerotation": call},
+    )
+    client.fetch("gamerotation", "0021800444")
+    assert client.last_status == 200
+    assert client.last_elapsed == pytest.approx(0.3)
+
+
+def test_a_timeout_leaves_no_stale_status_from_the_previous_call():
+    class Ok(Response):
+        _status_code = 200
+
+    fake = FakeTime()
+    outcomes = iter([Ok(ROTATION)])
+
+    def call(**kwargs):
+        fake.now += 1.0
+        try:
+            return next(outcomes)
+        except StopIteration:
+            raise ReadTimeout() from None
+
+    client = LineupClient(
+        pacer=Pacer(clock=fake.clock, sleep=fake.sleep),
+        sleep=fake.sleep,
+        reset=lambda: None,
+        clock=fake.clock,
+        endpoints={"gamerotation": call},
+    )
+    client.fetch("gamerotation", "0021800444")
+    with pytest.raises(CircuitOpen):
+        client.fetch("gamerotation", "0021800445")
+    assert client.last_status is None

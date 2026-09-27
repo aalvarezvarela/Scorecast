@@ -8,7 +8,41 @@ import pandas as pd
 
 from nba_ou.fetch_data.injury_reports.archive.storage import Storage
 
-COLUMNS = ("game_id", "endpoint", "fetched_at", "status", "bytes")
+COLUMNS = (
+    "game_id",
+    "endpoint",
+    "fetched_at",
+    "status",
+    "bytes",
+    "http_status",
+    "elapsed_s",
+)
+
+#: ``ok`` -- archived. ``empty`` -- the NBA has nothing for this game: a
+#: sub-second 5xx or a 200 without rows. ``server_timeout`` -- a slow 5xx, the
+#: backend timing out on that attempt; it says nothing about the game (see
+#: ``client.ServerTimeout``), so it must not be counted as a hole. ``failed`` --
+#: the circuit breaker opened on it. Everything but ``ok`` is retried next run.
+STATUSES = frozenset({"ok", "empty", "server_timeout", "failed"})
+
+
+def _normalise(frame: pd.DataFrame) -> pd.DataFrame:
+    """Give a manifest every column, including one written before they existed.
+
+    Manifests from before 2026-09-24 carry no ``http_status``/``elapsed_s``;
+    their rows read as unknown rather than failing to load.
+    """
+    frame = frame.copy()
+    for column in COLUMNS:
+        if column not in frame.columns:
+            frame[column] = pd.NA
+    frame["http_status"] = pd.array(
+        pd.to_numeric(frame["http_status"], errors="coerce"), dtype="Int64"
+    )
+    frame["elapsed_s"] = pd.to_numeric(frame["elapsed_s"], errors="coerce").astype(
+        "float64"
+    )
+    return frame[list(COLUMNS)]
 
 
 class Manifest:
@@ -28,7 +62,7 @@ class Manifest:
                 if raw is not None:
                     path.parent.mkdir(parents=True, exist_ok=True)
                     path.write_bytes(raw)
-            self._frames[season_year] = (
+            self._frames[season_year] = _normalise(
                 pd.read_parquet(path)
                 if path.exists()
                 else pd.DataFrame(columns=list(COLUMNS))
@@ -70,12 +104,14 @@ class Manifest:
             return
         frame = self.load(season_year)
         now = pd.Timestamp.now(tz="UTC")
-        incoming = pd.DataFrame(
-            [
-                (str(game_id), endpoint, now, status, nbytes)
-                for game_id, endpoint, status, nbytes in rows
-            ],
-            columns=list(COLUMNS),
+        incoming = _normalise(
+            pd.DataFrame(
+                [
+                    (str(game_id), endpoint, now, status, nbytes)
+                    for game_id, endpoint, status, nbytes in rows
+                ],
+                columns=list(COLUMNS[:5]),
+            )
         )
         if not frame.empty:
             superseded = pd.MultiIndex.from_frame(
@@ -101,14 +137,29 @@ class Manifest:
         endpoint: str,
         status: str,
         nbytes: int = 0,
+        *,
+        http_status: int | None = None,
+        elapsed_s: float | None = None,
     ) -> None:
-        if status not in {"ok", "empty", "failed"}:
+        if status not in STATUSES:
             raise ValueError(status)
         frame = self.load(season_year)
         mask = frame.game_id.eq(str(game_id)) & frame.endpoint.eq(endpoint)
-        row = pd.DataFrame(
-            [(str(game_id), endpoint, pd.Timestamp.now(tz="UTC"), status, nbytes)],
-            columns=list(COLUMNS),
+        row = _normalise(
+            pd.DataFrame(
+                [
+                    (
+                        str(game_id),
+                        endpoint,
+                        pd.Timestamp.now(tz="UTC"),
+                        status,
+                        nbytes,
+                        http_status,
+                        elapsed_s,
+                    )
+                ],
+                columns=list(COLUMNS),
+            )
         )
         existing = frame.loc[~mask]
         self._frames[season_year] = (

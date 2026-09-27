@@ -55,7 +55,7 @@ def update(
     done = _validated_game_ids(local_root, load_to_db=load_to_db)
     pending = [(season, game_id) for season, game_id in games if game_id not in done]
     blocked: CircuitOpen | None = None
-    counts = {"ok": 0, "empty": 0, "failed": 0, "skipped": 0}
+    counts = {"ok": 0, "empty": 0, "server_timeout": 0, "failed": 0, "skipped": 0}
     try:
         counts = backfill(
             pending,

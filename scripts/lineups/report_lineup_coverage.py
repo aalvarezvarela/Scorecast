@@ -15,6 +15,15 @@ def coverage(root: Path, *, expected: dict[int, int] | None = None) -> pd.DataFr
         year = int(path.parent.name.split("=", 1)[1])
         manifest = pd.read_parquet(path)
         total = manifest.game_id.nunique()
+        rotation = manifest.loc[manifest.endpoint.eq("gamerotation")]
+        empty = rotation.loc[rotation.status.eq("empty")]
+        # Rows written before the manifest kept a status code cannot say whether
+        # they were a real hole or a backend timeout; count them apart.
+        codes = (
+            empty["http_status"]
+            if "http_status" in empty.columns
+            else pd.Series(pd.NA, index=empty.index)
+        )
         good = manifest.loc[manifest.status.eq("ok")]
         paired = len(
             set(good.loc[good.endpoint.eq("gamerotation"), "game_id"])
@@ -33,6 +42,9 @@ def coverage(root: Path, *, expected: dict[int, int] | None = None) -> pd.DataFr
             season_year=year, expected_games=expected_games, games_seen=total,
             raw_complete=paired,
             raw_coverage=(paired / expected_games if expected_games else None),
+            rotation_empty=int(codes.notna().sum()),
+            rotation_empty_unverified=int(codes.isna().sum()),
+            rotation_server_timeout=int(rotation.status.eq("server_timeout").sum()),
             stint_ok=built, stint_failed=failed,
             stint_coverage=(built / paired if paired else None),
             stint_pass_rate=(built / (built + failed) if built + failed else None),
