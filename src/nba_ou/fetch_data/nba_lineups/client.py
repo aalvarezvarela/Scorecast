@@ -7,7 +7,7 @@ import logging
 import time
 from collections.abc import Callable
 
-from nba_api.stats.endpoints import GameRotation, PlayByPlayV3
+from nba_api.stats.endpoints import BoxScoreMatchupsV3, GameRotation, PlayByPlayV3
 from nba_api.stats.library.http import NBAStatsHTTP
 from requests.exceptions import ConnectionError, ReadTimeout
 
@@ -97,6 +97,7 @@ def _nba_request(endpoint_class):
 ENDPOINTS = {
     "gamerotation": _nba_request(GameRotation),
     "playbyplayv3": _nba_request(PlayByPlayV3),
+    "boxscorematchupsv3": _nba_request(BoxScoreMatchupsV3),
 }
 
 
@@ -108,6 +109,10 @@ def _status_code(response) -> int | None:
 def _nonempty(payload: dict, endpoint: str) -> bool:
     if endpoint == "playbyplayv3":
         return bool(payload.get("game", {}).get("actions"))
+    if endpoint == "boxscorematchupsv3":
+        # An untracked game still answers 200, with both teams' player lists empty.
+        box = payload.get("boxScoreMatchups", {})
+        return all(box.get(side, {}).get("players") for side in ("homeTeam", "awayTeam"))
     sets = payload.get("resultSets", payload.get("resultSet", []))
     if isinstance(sets, dict):
         if "name" in sets:

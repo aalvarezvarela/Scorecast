@@ -113,6 +113,44 @@ python scripts/lineups/build_lineup_stints.py --season 2020
   still need `GameRotation`, or a rebuild from V3, which names the incoming
   player only by surname.
 
+## Who guarded whom (matchups)
+
+`BoxScoreMatchupsV3` gives, per game, one row per offensive player × defender:
+matchup seconds, partial possessions, points, FG/3P/FT, assists, turnovers,
+blocks, switches and help defence. Tracking starts in 2017-18.
+
+```bash
+python scripts/lineups/import_matchups.py --min-season 2017 --max-season 2025
+python scripts/lineups/import_matchups.py --min-season 2017 --max-season 2025 \
+    --fill-missing --no-import
+```
+
+The first command downloads the `matchups_YYYY` / `matchups_po_YYYY` season files
+from `shufinskiy/nba_data`. It makes no NBA API calls and takes about a minute.
+The second fetches, through the paced lineup client, the finished games the
+archive lacks. It reads the games database and takes the lineup run lock, so it
+waits for a running rotation backfill. As of 2026-09-27 about 112 games are
+owed, 88 of them the 2020 bubble seeding games. The archive lacks those, but
+the API serves them.
+
+Output is `data/matchups/season=YYYY/matchups.parquet`, plus `games.parquet`,
+which records each game as `ok` (archive or API) or `empty`. `empty` means the
+NBA answered 200 with no tracking, as for a few 2017-18 games. A 5xx is never
+recorded, so the next run asks again. `--s3` mirrors both files to the bucket.
+
+**`off_*` is the offensive player and `def_*` the defender.** The archive calls
+them `person_id` / `matchups_person_id`, and nba_api labels the outer player's
+position `positionDef`, which is misleading. Checked against 2020-21 box scores:
+summed per outer player, points correlate 0.97 and assists 0.96. Summed per
+inner player, only blocks track that player's own stats (0.86).
+
+**2025-26 archive values are preliminary.** The NBA reprocesses tracking, and
+the 2025-26 archive was captured in-season. It differs from today's API by a
+median 1.9 s per pair, with totals within about 1%. Earlier seasons match the
+API exactly. A game fetched the morning after it is played is preliminary in
+the same way, which is also what a model could have known at the time.
+`source` records where each game came from.
+
 ## Where the data lives
 
 **The local Parquet store is the default destination.** `data/lineup_stints/`
