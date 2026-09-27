@@ -10,6 +10,7 @@ from nba_ou.fetch_data.nba_lineups.client import (
     CircuitOpen,
     EmptyResponse,
     LineupClient,
+    ServerTimeout,
 )
 from nba_ou.fetch_data.nba_lineups.manifest import Manifest
 from nba_ou.fetch_data.nba_lineups.run_lock import (
@@ -65,6 +66,32 @@ def pending_calls(
     return pending, skipped
 
 
+def _record(
+    manifest: Manifest,
+    client: LineupClient,
+    counts: dict[str, int],
+    call: tuple[int, str, str],
+    status: str,
+    nbytes: int = 0,
+) -> None:
+    """Write one call's outcome, with the status code and latency behind it.
+
+    Those two are what tell a real hole (a sub-second 500) from a backend
+    timeout (a ~30 s one) after the fact.
+    """
+    season, game_id, endpoint = call
+    manifest.record(
+        season,
+        game_id,
+        endpoint,
+        status,
+        nbytes,
+        http_status=getattr(client, "last_status", None),
+        elapsed_s=getattr(client, "last_elapsed", None),
+    )
+    counts[status] += 1
+
+
 def backfill(
     games: list[tuple[int, str]],
     *,
@@ -80,7 +107,7 @@ def backfill(
     pending, skipped = pending_calls(
         games, archive=archive, manifest=manifest, endpoints=endpoints
     )
-    counts = {"ok": 0, "empty": 0, "failed": 0, "skipped": skipped}
+    counts = {"ok": 0, "empty": 0, "server_timeout": 0, "failed": 0, "skipped": skipped}
     if limit is not None:
         pending = pending[:limit]
     # disable=None silences the bar when stdout is not a terminal, which is how
@@ -92,19 +119,20 @@ def backfill(
         disable=None,
     ) as bar:
         for season, game_id, endpoint in bar:
+            call = (season, game_id, endpoint)
             try:
                 raw = client.fetch(endpoint, game_id)
                 nbytes = archive.put(endpoint, season, game_id, raw)
             except EmptyResponse:
-                manifest.record(season, game_id, endpoint, "empty")
-                counts["empty"] += 1
+                _record(manifest, client, counts, call, "empty")
+            except ServerTimeout:
+                # Not a hole: retried on the next run like any non-ok call.
+                _record(manifest, client, counts, call, "server_timeout")
             except CircuitOpen:
-                manifest.record(season, game_id, endpoint, "failed")
-                counts["failed"] += 1
+                _record(manifest, client, counts, call, "failed")
                 raise
             else:
-                manifest.record(season, game_id, endpoint, "ok", nbytes)
-                counts["ok"] += 1
+                _record(manifest, client, counts, call, "ok", nbytes)
             bar.set_postfix(counts, refresh=False)
             if bar.disable and counts["ok"] and counts["ok"] % 100 == 0:
                 print(
