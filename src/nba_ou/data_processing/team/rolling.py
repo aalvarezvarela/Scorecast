@@ -300,26 +300,35 @@ def compute_trend_slope(
     include_home_away_relative: bool = True,
     relative_to_window: int | None = None,
 ):
-    """
-    Computes the slope of a linear regression line over the last `window` games
-    to determine whether a team's performance is increasing, decreasing, or stable.
+    """Compute team performance trends over the last window games.
 
-    Works on a dataframe with one row per team per game (2 rows per match).
+    Trends are grouped by TEAM_ID and SEASON_YEAR. Missing current-season slopes
+    fall back to the previous regular season's final computed slope, then zero.
+    Home/away slopes use the same fallback within their location group, before
+    subtracting the overall slope.
 
     Args:
-        df (pd.DataFrame): Must contain columns "TEAM_ID", "SEASON_YEAR", "GAME_DATE", "HOME", and `parameter`.
-        parameter (str): The statistic to analyze (e.g., "PTS").
-        window (int): Number of last games to consider.
-        shift_current_game (bool): Whether to exclude the current game from the trend calculation.
+        df (pd.DataFrame): Team game rows containing TEAM_ID, SEASON_YEAR,
+            GAME_DATE, HOME, and parameter. SEASON_TYPE enables the previous
+            regular-season fallback.
+        parameter (str): Statistic to analyze. Defaults to "PTS".
+        window (int): Number of games in the trend window. Defaults to 10.
+        shift_current_game (bool): Exclude the current game when True (default).
+        add_relative_column (bool): Add a relative trend when True (default).
+        include_home_away_relative (bool): Use home/away minus overall slope
+            for the relative trend when True (default).
+        relative_to_window (int, optional): Positive reference window used when
+            include_home_away_relative=False. The relative value is the reference
+            window slope minus the window slope.
 
     Returns:
-        pd.DataFrame: A modified DataFrame with new columns:
-            - f"{parameter}_TREND_SLOPE_LAST_{window}_GAMES_BEFORE" (strict all-games trend)
-            - Relative column (if add_relative_column=True):
-                - home/away minus strict (legacy name reused):
-                  f"{parameter}_TREND_SLOPE_LAST_{window}_HOME_AWAY_GAMES_BEFORE"
-                - OR strict-window diff:
-                  f"{parameter}_TREND_SLOPE_LAST_{relative_to_window}_MINUS_LAST_{window}_GAMES_BEFORE"
+        pd.DataFrame: Sorted team rows with
+            {parameter}_TREND_SLOPE_LAST_{window}_GAMES_BEFORE and, when enabled,
+            {parameter}_TREND_SLOPE_LAST_{window}_HOME_AWAY_GAMES_BEFORE or
+            {parameter}_TREND_SLOPE_LAST_{relative_to_window}_MINUS_LAST_{window}_GAMES_BEFORE.
+
+    Raises:
+        ValueError: If the selected relative_to_window is not positive.
     """
 
     def calculate_slope(series):

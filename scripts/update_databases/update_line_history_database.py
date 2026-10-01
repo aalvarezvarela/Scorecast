@@ -166,6 +166,11 @@ def main() -> int:
                     f"{result.inserted_ticks} tick(s) and "
                     f"{result.inserted_games} new game(s)"
                 )
+                if result.deferred_unfinished_games:
+                    print(
+                        f"  held back {result.deferred_unfinished_games} unfinished "
+                        "game(s); they are stored once final"
+                    )
                 if result.retimed_games:
                     print(
                         f"  moved {len(result.retimed_games)} stored game(s) to "

@@ -94,20 +94,19 @@ def adjust_overtime(df):
 
 
 def fix_home_away_parsing_errors(df_team: pd.DataFrame) -> pd.DataFrame:
-    """
-    Fix parsing errors in home/away team data.
+    """Repair HOME flags for games with duplicate home/away assignments.
 
-    This function:
-    - Ensures TEAM_IDs are strings
-    - Swaps HOME_TEAM_ID and AWAY_TEAM_ID if they are incorrectly assigned
-      based on the PTS scored by each team
-    - Fixes HOME column by parsing MATCHUP (team after @ is home)
+    For rows sharing the same GAME_ID and HOME value, infer the home team from
+    MATCHUP and compare it with TEAM_ABBREVIATION. Column lookup accepts uppercase
+    or lowercase names. The input is returned unchanged when GAME_ID or HOME is
+    absent; team IDs and points are not modified.
 
     Args:
-        df (pd.DataFrame): Team game statistics DataFrame with HOME_TEAM_ID and AWAY_TEAM_ID columns
+        df_team (pd.DataFrame): Team game rows with GAME_ID and HOME. MATCHUP and
+            TEAM_ABBREVIATION are needed to repair the flagged rows.
 
     Returns:
-        pd.DataFrame: DataFrame with corrected HOME column
+        pd.DataFrame: The input frame with repaired HOME values where possible.
     """
 
     # Helper function to get column name regardless of case

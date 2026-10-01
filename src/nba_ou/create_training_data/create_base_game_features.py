@@ -80,6 +80,9 @@ from nba_ou.data_processing.players.attach_player_features import (
 from nba_ou.data_processing.players.roster_continuity import (
     add_roster_continuity_feature,
 )
+from nba_ou.data_processing.scheduled_games.merge_scheduled_with_existing_data import (
+    standardize_and_merge_scheduled_games_to_players_data,
+)
 from nba_ou.data_processing.team.merge_game_df_with_odds_by_game_id import (
     merge_remaining_odds_by_game_id,
 )
@@ -252,6 +255,53 @@ def _build_roster_injury_dict(
     return _lag_injured_dict_by_one_team_game(injured_dict, game_context)
 
 
+def _season_bucket(game_ids: pd.Series, season_years: pd.Series) -> pd.Series:
+    """``create_player_lookup``'s season key: game type digit + season year.
+
+    ``0022501171`` in 2025 -> ``"22025"`` (regular season); a play-in game ->
+    ``"52025"``; a preseason game -> ``"12025"``.
+    """
+    years = pd.to_numeric(season_years, errors="coerce").astype("Int64").astype(str)
+    return game_ids.astype(str).str[2] + years
+
+
+def _same_bucket_roster(placeholders: pd.DataFrame, df_players: pd.DataFrame) -> pd.DataFrame:
+    """Keep tonight's placeholders to what the training lookup would see.
+
+    ``create_player_lookup`` decides a game's roster from box scores strictly
+    before it, within the game's own season *bucket* -- the regular season for a
+    regular-season game -- and only when that bucket is empty (opening night,
+    a first play-in game) falls back to the whole season year, preseason
+    included, and then to the previous season's last assignments.
+
+    ``standardize_and_merge_scheduled_games_to_players_data`` instead stamps a
+    placeholder for every player's latest row across all loaded history. Those
+    rows land in tonight's bucket, so they both add players (last seen seasons
+    ago, or cut in training camp) and stop the opening-night fallback from
+    running. Keeping only players who already have a row in tonight's bucket
+    restores both: the real lookup then returned the training roster for
+    30/30 team-games on 2026-04-10, 4/4 on the 2025-10-21 opener, 24/24 on
+    2025-10-22 and 24/24 on 2025-10-24. Unfiltered, it added 9-16 players per
+    team; restricting to the season year (preseason included) still added ~7
+    camp cuts by the third day of the season.
+    """
+    if placeholders.empty or df_players.empty:
+        return placeholders
+    tonight = _season_bucket(placeholders["GAME_ID"], placeholders["SEASON_YEAR"])
+    history = pd.DataFrame(
+        {
+            "bucket": _season_bucket(df_players["GAME_ID"], df_players["SEASON_YEAR"]),
+            "PLAYER_ID": df_players["PLAYER_ID"].astype(str),
+        }
+    ).drop_duplicates()
+    seen = set(zip(history["bucket"], history["PLAYER_ID"], strict=True))
+    keep = [
+        (bucket, str(player)) in seen
+        for bucket, player in zip(tonight, placeholders["PLAYER_ID"], strict=True)
+    ]
+    return placeholders[keep].reset_index(drop=True)
+
+
 def _inject_player_placeholders(df: pd.DataFrame) -> pd.DataFrame:
     """Add the columns ``merge_home_away_data`` indexes unconditionally."""
     out = df.copy()
@@ -276,6 +326,7 @@ def create_base_game_features(
     exclude_caesars: bool = False,
     combine_fanatics_and_caesars: bool | None = None,
     return_injury_context: bool = False,
+    scheduled_games: pd.DataFrame | None = None,
     verbose: bool = True,
 ) -> pd.DataFrame | tuple[pd.DataFrame, BaseInjuryContext]:
     """One row per game, carrying only leakage-safe pre-game team features.
@@ -307,6 +358,15 @@ def create_base_game_features(
     discontinued Caesars book with fanatics_sportsbook. Combining is the
     default; passing ``exclude_caesars=True`` switches to dropping it instead.
     See ``nba_ou.data_processing.odds.book_combination``.
+
+    ``scheduled_games`` (``get_schedule_games`` rows) adds tonight's games, which
+    the database does not hold until they are played. They go through the same
+    steps ``create_df_to_predict`` uses for them: team rows appended before the
+    rolling statistics, placeholder player rows (each player's latest team, no
+    minutes) for the roster stages, and their GAME_IDs in the game context so
+    the lagged roster report reaches them. Every feature they get is built from
+    earlier games; their outcome columns are NaN. ``recent_limit_to_include``
+    must then be the day before, so history stops where tonight begins.
     """
     if recent_limit_to_include is None:
         recent_limit_to_include = pd.Timestamp.now(
@@ -376,13 +436,46 @@ def create_base_game_features(
 
     if verbose:
         print("Processing team statistics...")
+    has_scheduled = scheduled_games is not None and not scheduled_games.empty
+    scheduled_game_ids = (
+        sorted(scheduled_games["GAME_ID"].astype(str).unique()) if has_scheduled else []
+    )
     df = process_team_statistics_for_training(
         df,
         df_odds,
-        scheduled_games=None,
+        scheduled_games=scheduled_games if has_scheduled else None,
         spread_ml_book=DEFAULT_BOOK,
         total_line_book=DEFAULT_BOOK,
     )
+    # Roster continuity must not see tonight's placeholders. It treats a
+    # scheduled placeholder as known on game day, but for a stored game only the
+    # earlier box scores and the (lagged) report exist before tip -- its own box
+    # score counts from the next day. Measured on a 2026-04-10 replay: with the
+    # placeholders, 12 ROSTER_* features differed from the training rows by up
+    # to 0.21 in 13 of 15 games; without them the rows match.
+    df_players_history = df_players
+    if has_scheduled:
+        # Tonight's players: each one's latest team, no minutes -- the placeholder
+        # contract create_player_lookup reads as "scheduled, not played". Used by
+        # the all-star stage only.
+        placeholders = _same_bucket_roster(
+            standardize_and_merge_scheduled_games_to_players_data(
+                scheduled_games, df_players
+            ),
+            df_players,
+        )
+        if not placeholders.empty:
+            df_players = pd.concat(
+                [df_players, placeholders], ignore_index=True, sort=False
+            ).drop_duplicates(keep="first")
+        # The lagged roster report re-keys each game's report onto the team's
+        # NEXT game in this context; without tonight here, the last stored
+        # game's report would have nowhere to go.
+        tonight = df[df["GAME_ID"].astype(str).isin(scheduled_game_ids)]
+        context_columns = [c for c in df_team_player_context.columns if c in tonight]
+        df_team_player_context = pd.concat(
+            [df_team_player_context, tonight[context_columns]], ignore_index=True
+        )
     injury_context = (
         BaseInjuryContext(
             team_games=df.copy(),
@@ -407,11 +500,11 @@ def create_base_game_features(
             )
         df = add_roster_continuity_feature(
             df,
-            df_players,
+            df_players_history,
             injured_dict=_build_roster_injury_dict(
                 roster_injury_reports,
                 player_context_seasons,
-                df_players,
+                df_players_history,
                 df_team_player_context,
             ),
             df_game_context=df_team_player_context,

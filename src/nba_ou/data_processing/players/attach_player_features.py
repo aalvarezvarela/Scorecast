@@ -110,20 +110,19 @@ def _parse_minutes_series(min_series: pd.Series) -> pd.Series:
 
 
 def clear_player_statistics(df_players, df_team):
-    """
-    Process player statistics and prepare for training.
+    """Attach game metadata and clean player box-score rows.
 
-    This function handles:
-    - Merging player data with game dates from team data
-    - Converting player minutes from MM:SS format to decimal
-    - Cleaning and deduplicating player data
+    Merge missing game-date and season columns from df_team, discard rows without
+    a game date, parse minutes into decimal values rounded to three places, and
+    remove duplicate rows. Missing or unparseable minutes become zero.
 
     Args:
-        df_players (pd.DataFrame): Player statistics DataFrame
-        df (pd.DataFrame): Processed team DataFrame with GAME_ID, GAME_DATE, SEASON_ID
+        df_players (pd.DataFrame): Player rows with GAME_ID and MIN.
+        df_team (pd.DataFrame): Game metadata with GAME_ID and GAME_DATE, and
+            optionally SEASON_ID and SEASON_YEAR.
 
     Returns:
-        pd.DataFrame: Processed player DataFrame
+        pd.DataFrame: Cleaned player rows with datetime GAME_DATE values.
     """
     desired_cols = ["GAME_ID", "GAME_DATE", "SEASON_ID", "SEASON_YEAR"]
     merge_cols = ["GAME_ID"] + [

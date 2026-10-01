@@ -288,8 +288,7 @@ def load_and_merge_odds_yahoo_sportsbookreview(
     combine_fanatics_and_caesars: bool | None = None,
     repair_closing_lines_from_history: bool = True,
 ) -> pd.DataFrame:
-    """
-    Load odds data from Yahoo and Sportsbook databases, merge them, and merge with games.
+    """Load odds data from Yahoo and Sportsbook databases, merge them, and merge with games.
 
     This function:
     1. Loads Yahoo odds data
@@ -300,6 +299,9 @@ def load_and_merge_odds_yahoo_sportsbookreview(
 
     Args:
         season_years (list[str], optional): List of seasons to load (e.g., ["2023-24", "2024-25"])
+        extra_game_ids (list, optional): Game IDs loaded in addition to the
+            selected seasons for odds and game metadata. With None or empty
+            season_years, these IDs restrict the database queries.
         normalize_total_lines (bool): Whether to center asymmetrically priced
             total markets. Defaults to True.
         normalize_spread_lines (bool): Whether to center asymmetrically priced

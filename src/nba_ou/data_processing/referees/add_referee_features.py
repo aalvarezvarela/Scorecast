@@ -267,17 +267,25 @@ def process_referee_data_for_training(
     extra_game_ids=None,
     include_ref_trio_features: bool = False,
 ):
-    """
-    Load referee data from database, transform it, merge with training data,
-    and compute referee-specific features.
+    """Load assignments and compute historical referee features.
 
     Args:
-        seasons (list): List of seasons to load (e.g., ["2023-24", "2022-23"])
-        df_merged (pd.DataFrame): Training DataFrame with GAME_ID, GAME_DATE, SEASON_YEAR,
-                                TOTAL_POINTS, and TOTAL_LINE_<main_book> columns
-        new_ref_data (pd.DataFrame, optional): New referee data from scheduled games
+        seasons (list[str]): Seasons to load, such as ["2023-24", "2022-23"].
+        df_merged (pd.DataFrame): Game rows with GAME_ID, GAME_DATE, SEASON_YEAR,
+            TOTAL_POINTS, TOTAL_PF, and a resolvable main-book total-line column.
+        df_referees_scheduled (pd.DataFrame, optional): Scheduled assignments
+            with GAME_ID, REF_1, REF_2, and REF_3; preferred over stored assignments.
+        extra_game_ids (list, optional): Assignment game IDs included in addition
+            to the selected seasons.
+        include_ref_trio_features (bool): Also compute crew-trio features when
+            True. Defaults to False.
+
     Returns:
-        pd.DataFrame: DataFrame with referee features, or None if no referee data available
+        pd.DataFrame | None: Assignment rows joined to game context and referee
+            features, or None when no historical assignments are available.
+
+    Raises:
+        ValueError: If a main-book total-line column cannot be resolved.
     """
     df_refs = get_refs_data_from_db(seasons, extra_game_ids=extra_game_ids)
 
@@ -405,15 +413,22 @@ def add_referee_features_to_training_data(
     extra_game_ids=None,
     include_ref_trio_features: bool = False,
 ):
-    """
-    Add referee-specific features to the training DataFrame.
+    """Add historical referee features to the training DataFrame.
 
     Args:
-        seasons (list): List of seasons to load (e.g., ["2023-24", "2022-23"])
-        df_merged (pd.DataFrame): Training DataFrame with GAME_ID, GAME_DATE, SEASON_YEAR,
-                                TOTAL_POINTS, and TOTAL_LINE_<main_book> columns
+        seasons (list[str]): Seasons to load, such as ["2023-24", "2022-23"].
+        df_merged (pd.DataFrame): Game rows with GAME_ID, GAME_DATE, SEASON_YEAR,
+            TOTAL_POINTS, TOTAL_PF, and a resolvable main-book total-line column.
+        df_referees_scheduled (pd.DataFrame, optional): Scheduled assignments
+            with GAME_ID, REF_1, REF_2, and REF_3; preferred over stored assignments.
+        extra_game_ids (list, optional): Assignment game IDs included in addition
+            to the selected seasons.
+        include_ref_trio_features (bool): Also compute crew-trio features when
+            True. Defaults to False.
+
     Returns:
-        pd.DataFrame: Training DataFrame with added referee features
+        pd.DataFrame: Game rows with referee features merged by GAME_ID, or the
+            input frame when no historical assignments are available.
     """
     df_refs_pivot = process_referee_data_for_training(
         seasons,

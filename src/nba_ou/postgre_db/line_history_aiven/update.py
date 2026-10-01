@@ -72,6 +72,9 @@ class UpdateResult:
     scraped_games: int = 0
     inserted_ticks: int = 0
     inserted_games: int = 0
+    #: Scraped but not written because SBR did not list them as final yet;
+    #: a later run stores them whole (see ingest.is_finished).
+    deferred_unfinished_games: int = 0
     retimed_games: list[str] = field(default_factory=list)
     failed_dates: list[str] = field(default_factory=list)
 
@@ -347,6 +350,7 @@ def update_line_history_database(
         )
         result.inserted_ticks += stats.inserted_ticks
         result.inserted_games += stats.inserted_games
+        result.deferred_unfinished_games += stats.dropped.get("unfinished_game", 0)
         result.retimed_games.extend(stats.retimed_games)
         batch.clear()
 

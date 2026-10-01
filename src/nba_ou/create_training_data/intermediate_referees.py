@@ -47,8 +47,18 @@ def _legacy_referee_features(
     *,
     first_output_year: int,
     book: str,
+    tonight: pd.DataFrame | None = None,
+    scheduled_crews: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
-    """Run the existing legacy estimator once per game, using closing history."""
+    """Run the existing legacy estimator once per game, using closing history.
+
+    ``tonight`` (GAME_ID, GAME_DATE, SEASON_YEAR) are games not played yet; they
+    join as rows with no outcome, so they get features from earlier games only
+    and add nothing to anyone's history. Their crew comes from
+    ``scheduled_crews`` (GAME_ID, REF_1..REF_3). A game without one drops out of
+    the crew join below, and the caller's left merge leaves its features NaN --
+    the same NaN a snapshot before the 09:00 ET release gets in training.
+    """
     team_games = team_games[team_games["SEASON_YEAR"] >= first_output_year - 1]
     games = team_games.groupby("GAME_ID", as_index=False).agg(
         GAME_DATE=("GAME_DATE", "first"),
@@ -56,6 +66,10 @@ def _legacy_referee_features(
         TOTAL_POINTS=("PTS", "sum"),
         TOTAL_PF=("PF", "sum"),
     )
+    if tonight is not None and not tonight.empty:
+        games = pd.concat(
+            [games, tonight[["GAME_ID", "GAME_DATE", "SEASON_YEAR"]]], ignore_index=True
+        )
     raw_line = f"total_{book}_line_over"
     games = games.merge(
         odds[["game_id", raw_line]].rename(
@@ -74,6 +88,16 @@ def _legacy_referee_features(
         .unstack()
         .reset_index()
     )
+    if scheduled_crews is not None and not scheduled_crews.empty:
+        slots = ["REF_1", "REF_2", "REF_3"]
+        scheduled = scheduled_crews[["GAME_ID", *slots]].copy()
+        scheduled["GAME_ID"] = scheduled["GAME_ID"].astype(str)
+        scheduled[slots] = scheduled[slots].apply(_normalize_referee_slots, axis=1)
+        scheduled = scheduled.dropna(subset=slots, how="all")
+        crews = pd.concat(
+            [crews[~crews["GAME_ID"].isin(scheduled["GAME_ID"])], scheduled],
+            ignore_index=True,
+        )
     games = games.merge(crews, on="GAME_ID", how="inner", validate="one_to_one")
     games["DIFF_FROM_LINE"] = games["TOTAL_POINTS"] - games[total_line_col(book)]
     estimated = compute_referee_features(games)
@@ -95,8 +119,16 @@ def add_intermediate_referee_features(
     null_extreme_spread_prices: bool = True,
     exclude_caesars: bool = False,
     combine_fanatics_and_caesars: bool | None = None,
+    df_referees_scheduled: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
-    """Attach the 2_5 referee families before games expand into snapshots."""
+    """Attach the 2_5 referee families before games expand into snapshots.
+
+    Games in ``base`` that the database has not recorded yet are tonight's.
+    They get referee features from earlier games only, with their crew from
+    ``df_referees_scheduled`` (``get_all_info_for_scheduled_games``'s referee
+    frame). No crew -- not released yet, or not found -- means NaN features,
+    never a fallback: snapshots before 09:00 ET are NaN in training too.
+    """
     first_year = int(base["SEASON_YEAR"].min())
     last_year = int(base["SEASON_YEAR"].max())
     seasons = _season_labels(first_year - history_seasons, last_year)
@@ -119,8 +151,18 @@ def add_intermediate_referee_features(
         raise RuntimeError("Could not load referee assignments for intermediate games.")
 
     book = get_main_book()
+    stored = set(team_games["GAME_ID"])
+    tonight = base.loc[
+        ~base["GAME_ID"].astype(str).isin(stored), ["GAME_ID", "GAME_DATE", "SEASON_YEAR"]
+    ].assign(GAME_ID=lambda frame: frame["GAME_ID"].astype(str))
     legacy = _legacy_referee_features(
-        team_games, odds, refs, first_output_year=first_year, book=book
+        team_games,
+        odds,
+        refs,
+        first_output_year=first_year,
+        book=book,
+        tonight=tonight,
+        scheduled_crews=df_referees_scheduled,
     )
     out = base.merge(legacy, on="GAME_ID", how="left", validate="one_to_one")
     return add_referee_tendency_features(
@@ -132,6 +174,7 @@ def add_intermediate_referee_features(
         spread_book=book,
         max_history_days=history_seasons * 365,
         include_same_season_variants=include_same_season_variants,
+        df_referees_scheduled=df_referees_scheduled,
     )
 
 

@@ -122,11 +122,19 @@ def load_refs_from_db(seasons=None) -> pd.DataFrame | None:
 
 
 def load_all_nba_data_from_db(seasons=None, extra_game_ids=None):
-    """
-    Load both games and players from Postgres and normalize column names.
+    """Load games and players from Postgres with uppercase column names.
+
+    Args:
+        seasons (list[str], optional): Seasons such as ["2023-24", "2024-25"].
+            None or an empty list leaves the season filter unset.
+        extra_game_ids (list, optional): Game IDs included in addition to the
+            selected seasons. With no seasons, these IDs restrict the query.
 
     Returns:
-        (df_games, df_players) or (None, None)
+        tuple[pd.DataFrame, pd.DataFrame]: Game rows and player rows.
+
+    Raises:
+        ValueError: If either database loader returns None.
     """
     print("Loading NBA data from PostgreSQL...")
 

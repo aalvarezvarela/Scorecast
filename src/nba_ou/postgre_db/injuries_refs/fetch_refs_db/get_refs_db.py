@@ -22,11 +22,13 @@ def _normalize_game_ids(game_ids) -> list[str]:
 
 
 def get_refs_data_from_db(seasons=None, extra_game_ids=None):
-    """
-    Load referee data from database for the specified seasons.
+    """Load referee data from database for the specified seasons.
 
     Args:
         seasons (list): List of seasons to load (e.g., ["2023-24", "2022-23"])
+        extra_game_ids (list, optional): Game IDs included in addition to the
+            selected seasons. With None or empty seasons, these IDs restrict the
+            query; without either filter, all rows are loaded.
 
     Returns:
         pd.DataFrame: Combined referee data for all seasons

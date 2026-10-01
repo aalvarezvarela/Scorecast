@@ -43,6 +43,13 @@ TOTALS_TARGETS = frozenset(
 #: was trained FOR.
 DEFAULT_HORIZON_TOLERANCE_MINUTES = 45
 
+#: Dataset types whose features the daily prediction frame carries. The frame
+#: comes from ``create_df_to_predict``, which builds closing-line features only;
+#: an intermediate-line model also needs the ODDS_SNAP_* family, which only
+#: ``create_intermediate_line_df`` produces. Such a slot is skipped, not failed,
+#: until the live snapshot features exist -- then add "intermediate_line" here.
+SERVABLE_DATASET_TYPES: frozenset[str] = frozenset({"closing_line"})
+
 #: Map a registry target onto this module's prediction target.
 REGISTRY_TARGET_TO_PREDICTION_TARGET: dict[str, PredictionTarget] = {
     "line_error": PREDICTION_TARGET_LINE_ERROR,
@@ -731,6 +738,7 @@ def load_registry_model_and_predict(
     spread_pick_line_col: str | None = None,
     shap_top_n: int = 20,
     horizon_tolerance_minutes: int = DEFAULT_HORIZON_TOLERANCE_MINUTES,
+    servable_dataset_types: frozenset[str] = SERVABLE_DATASET_TYPES,
     channel=None,
 ) -> pd.DataFrame:
     """Predict with whatever a slot's channel currently points at.
@@ -755,6 +763,19 @@ def load_registry_model_and_predict(
     )
     spec = resolved.spec
     fit = resolved.fit
+
+    dataset_type = str(spec.identity.dataset_type)
+    if dataset_type not in servable_dataset_types:
+        # Same contract as the horizon guard below: an empty frame means "not
+        # this model's turn", which the daily job skips without failing. The
+        # alternative was a ValueError for ~1,000 missing features, which the
+        # job re-raises -- one un-servable slot then took down every slot after
+        # it, baselines included.
+        print(
+            f"  {slot.describe()}: a {dataset_type} model, and the prediction "
+            f"frame only carries {sorted(servable_dataset_types)} features; skipping."
+        )
+        return pd.DataFrame()
 
     prediction_target = resolve_prediction_target(spec.identity.target)
 

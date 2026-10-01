@@ -51,6 +51,19 @@ from .transform import (
 TIPOFF_TOLERANCE_MINUTES = 15
 
 
+def is_finished(game: ScrapedGame) -> bool:
+    """Whether SBR reports the game as over ("Final", "Final/OT", ...).
+
+    Only finished games are stored. A game still to be played -- or being
+    played -- has a partial line history: the store would hold it until a later
+    refresh topped it up, and anything built in between would read a history
+    that is not the one it will finally have. Tonight's games are read live, in
+    memory, by the prediction job (``live.fetch_live_line_history``) and land
+    here the day after, complete -- the same rule the closing-odds tables follow.
+    """
+    return game.status_text.strip().lower().startswith("final")
+
+
 @dataclass
 class IngestStats:
     scraped_games: int = 0
@@ -467,8 +480,16 @@ def ingest_scraped_games(
     schedule: pd.DataFrame | None = None,
     dry_run: bool = False,
 ) -> IngestStats:
-    """Resolve, encode and insert a batch of scraped games. Safe to re-run."""
+    """Resolve, encode and insert a batch of scraped games. Safe to re-run.
+
+    Games that are not finished are never written (see ``is_finished``): they
+    are counted under ``dropped["unfinished_game"]`` and picked up by a later
+    run once they are final.
+    """
     stats = IngestStats()
+    finished = [game for game in games if is_finished(game)]
+    stats.drop("unfinished_game", len(games) - len(finished))
+    games = finished
     if not games:
         return stats
 

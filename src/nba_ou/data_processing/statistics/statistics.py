@@ -19,8 +19,7 @@ def compute_rolling_stats(
     include_home_away_relative: bool = True,
     relative_to_window: int | None = None,
 ) -> pd.DataFrame:
-    """
-    Computes rolling averages for a given `param`, excluding the current row's game.
+    """Computes rolling averages for a given `param`, excluding the current row's game.
 
     Creates:
       - f"{param}_LAST_ALL_{window}_MATCHES_BEFORE"
@@ -54,6 +53,9 @@ def compute_rolling_stats(
         and (TEAM_ID, SEASON_YEAR, HOME) for home/away split when needed.
       - When group_by_season=False: computes rolling within (TEAM_ID) for "ANY"
         and (TEAM_ID, HOME) for home/away split when needed, allowing previous seasons.
+      - Season averages group by (TEAM_ID, SEASON_YEAR, HOME). Missing values
+        fall back to the previous season's mean for the same team/location, then
+        the strict rolling average. Without any history they remain NaN.
       - Keeps final sort by GAME_DATE descending to match your pipeline style
     """
     if param not in df.columns:

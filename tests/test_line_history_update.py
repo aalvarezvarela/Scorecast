@@ -374,6 +374,7 @@ class TestFlushing:
                     "inserted_ticks": 2 * len(batch),
                     "inserted_games": 0,
                     "retimed_games": [],
+                    "dropped": {"unfinished_game": 1},
                 },
             )
             return stats()
@@ -393,6 +394,8 @@ class TestFlushing:
         assert calls == [7, 7, 1]
         assert result.scraped_games == 15
         assert result.inserted_ticks == 30  # summed across flushes, not overwritten
+        # One unfinished game held back per flush, reported rather than lost.
+        assert result.deferred_unfinished_games == 3
 
     def test_zero_writes_once(self, monkeypatch):
         calls, _ = self._run(monkeypatch, n_dates=15, flush_every=0)

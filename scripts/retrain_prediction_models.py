@@ -146,6 +146,7 @@ def main() -> int:
 
     failures = 0
     staged = 0
+    unavailable = 0
     for (dataset_type, schema_version), group in by_dataset.items():
         label = f"{dataset_type} / schema {schema_version}"
         try:
@@ -158,10 +159,17 @@ def main() -> int:
                         specs[group[0].describe()], limit_date=limit_date
                     )
         except TrainingFrameUnavailable as exc:
-            failures += len(group)
+            # Not a failure: there is no daily build of this dataset yet
+            # (docs/model_registry_reorg_plan.md section 5), so these slots keep
+            # serving the build they already have -- nothing is staged, so
+            # promote_build leaves them alone. Counting them as failures made
+            # the job exit 1, and the workflow's smoke-test and promote steps
+            # (if: success()) then skipped EVERY slot, freezing the closing
+            # models over an intermediate slot that could never refit.
+            unavailable += len(group)
             print(
-                f"[{label}] unavailable: {exc}\n"
-                f"  skipping {len(group)} slot(s): "
+                f"[{label}] no daily training frame yet: {exc}\n"
+                f"  keeping the current build for {len(group)} slot(s): "
                 f"{', '.join(slot.describe() for slot in group)}\n",
                 file=sys.stderr,
             )
@@ -212,7 +220,10 @@ def main() -> int:
                 f"{result.fit.train_date_max.date()})\n"
             )
 
-    print(f"{staged} build(s) staged, {failures} failure(s).")
+    print(
+        f"{staged} build(s) staged, {failures} failure(s), "
+        f"{unavailable} slot(s) kept on their current build (no daily dataset yet)."
+    )
     if staged and not args.dry_run:
         print("Promote them with: python scripts/promote_build.py --execute")
     return 1 if failures else 0

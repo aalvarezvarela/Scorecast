@@ -14,19 +14,21 @@ def _normalize_scheduled_season_fields(games: pd.DataFrame) -> pd.DataFrame:
 
 
 def standardize_and_merge_scheduled_games_to_team_data(df, scheduled_games):
-    """
-    Standardizes the `games` DataFrame to match `df` and merges them.
+    """Append scheduled games as home and away team rows.
 
-    - Renames columns to align with `df`
-    - Expands `games` to include separate home and away team rows
-    - Merges while keeping only relevant columns
+    Normalize game and season keys, attach the latest historical team metadata,
+    and keep the historical columns plus GAME_TIME when provided. Scheduled
+    outcome statistics are null. Deduplicate by TEAM_ID and GAME_DATE, keeping
+    the last row, and sort by descending date.
 
-    Parameters:
-        df (pd.DataFrame): Main DataFrame containing existing game stats.
-        games (pd.DataFrame): DataFrame containing new game records.
+    Args:
+        df (pd.DataFrame): Historical team statistics and team metadata.
+        scheduled_games (pd.DataFrame): Scheduled rows with GAME_ID,
+            GAME_DATE_EST, SEASON, HOME_TEAM_ID, VISITOR_TEAM_ID, and optional
+            GAME_TIME.
 
     Returns:
-        pd.DataFrame: Merged and standardized DataFrame.
+        pd.DataFrame: Historical and scheduled team rows.
     """
     # Ensure column names match
     games_renamed = scheduled_games.rename(
@@ -124,6 +126,23 @@ def standardize_and_merge_scheduled_games_to_team_data(df, scheduled_games):
 def standardize_and_merge_scheduled_games_to_players_data(
     games_original, df_players_original
 ):
+    """Build scheduled player placeholders from each player's latest team row.
+
+    Assign players to scheduled games using their latest loaded TEAM_ID. Preserve
+    columns preceding START_POSITION and clear the remaining box-score values,
+    including MIN. Replace the game-date and season keys with the scheduled
+    values. Null MIN marks these rows as scheduled roster evidence.
+
+    Args:
+        games_original (pd.DataFrame): Scheduled rows with GAME_ID, GAME_DATE_EST,
+            SEASON, HOME_TEAM_ID, and VISITOR_TEAM_ID.
+        df_players_original (pd.DataFrame): Player history with PLAYER_ID,
+            TEAM_ID, GAME_DATE, and box-score columns in their original order.
+
+    Returns:
+        pd.DataFrame: Placeholder rows only, ready to append to player history;
+            an empty frame if no team-game placeholders can be built.
+    """
     games = _normalize_scheduled_season_fields(games_original)
     df_players = df_players_original.copy()
     games = games.rename(columns={"GAME_DATE_EST": "GAME_DATE"})

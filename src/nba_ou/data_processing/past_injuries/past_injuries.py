@@ -127,17 +127,23 @@ def get_injured_players_dict(df_injuries, df_players=None):
 
 
 def create_player_lookup(df_players, injured_dict=None):
-    """
-    Precompute all necessary indexes for fast player lookups.
-    Returns a function that can be called with (season_id, team_id, date_to_filter)
-    to get the same result as get_players_for_team_in_season but much faster.
+    """Precompute indexes for player roster and statistic lookups.
+
+    Keep zero-minute box scores and scheduled placeholders with null minutes.
+    Prior box scores establish roster membership; current-game box scores do not.
+    Scheduled placeholders and the game's injury report can establish same-day
+    membership. Reported players may use statistic rows from their prior team.
 
     Args:
-        df_players (pd.DataFrame): Player statistics DataFrame (already sorted by PLAYER_ID, GAME_DATE)
+        df_players (pd.DataFrame): Player history with player/team IDs, season
+            keys, GAME_DATE, and MIN, plus the statistics to return.
+        injured_dict (dict, optional): GAME_ID -> TEAM_ID -> player IDs. A game's
+            report supplements roster candidates and their team assignments.
 
     Returns:
-        callable: A lookup function with signature
-            (season_id, team_id, date_to_filter, game_id=None) -> pd.DataFrame
+        callable: A lookup accepting
+            (season_id, team_id, date_to_filter, game_id=None) and returning a
+            DataFrame of eligible player rows.
     """
     # Ensure GAME_DATE is datetime
     df_players = df_players.copy()

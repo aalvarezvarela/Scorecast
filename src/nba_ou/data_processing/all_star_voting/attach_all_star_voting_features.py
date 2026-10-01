@@ -46,6 +46,18 @@ NO_CANDIDATE_IN_GROUP_SCORE = 1000.0
 
 
 def all_star_season_year_for_game_date(game_date) -> int:
+    """Return the season start year of the latest eligible all-star ballot.
+
+    The current calendar year's ballot becomes eligible on March 1. Earlier
+    January and February games use the previous calendar year's ballot. Return
+    the ballot's NBA season start year (its calendar year minus one).
+
+    Args:
+        game_date: Date accepted by pandas.Timestamp.
+
+    Returns:
+        int: Season start year used to select all-star voting rows.
+    """
     d = pd.Timestamp(game_date)
     all_star_calendar_year = d.year if d >= pd.Timestamp(d.year, 3, 1) else d.year - 1
     return all_star_calendar_year - 1

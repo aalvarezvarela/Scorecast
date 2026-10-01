@@ -103,6 +103,78 @@ def test_legacy_referee_history_excludes_the_current_game_result():
     assert rebuilt.loc["g3", column] == initial.loc["g3", column]
 
 
+def _history():
+    games = pd.DataFrame(
+        {
+            "GAME_ID": ["g1", "g1", "g2", "g2", "g3", "g3"],
+            "GAME_DATE": pd.to_datetime(
+                ["2025-11-01"] * 2 + ["2025-11-02"] * 2 + ["2025-11-03"] * 2
+            ),
+            "SEASON_YEAR": [2025] * 6,
+            "PTS": [50, 50, 60, 60, 70, 70],
+            "PF": [10] * 6,
+        }
+    )
+    odds = pd.DataFrame(
+        {"game_id": ["g1", "g2", "g3", "g4"],
+         "total_bet365_line_over": [105.0, 115.0, 130.0, np.nan]}
+    )
+    refs = pd.DataFrame(
+        {"GAME_ID": ["g1", "g2", "g3"], "FIRST_NAME": ["Ref"] * 3,
+         "LAST_NAME": ["A", "B", "A"]}
+    )
+    return games, odds, refs
+
+
+def test_tonights_game_gets_the_features_it_would_have_once_stored():
+    """Tonight is not in the database until it is played. Given its released
+    crew, it must get exactly the features a stored game with that crew gets --
+    they only ever read earlier games."""
+    games, odds, refs = _history()
+    tonight = pd.DataFrame(
+        {"GAME_ID": ["g4"], "GAME_DATE": pd.to_datetime(["2025-11-04"]),
+         "SEASON_YEAR": [2025]}
+    )
+    crews = pd.DataFrame({"GAME_ID": ["g4"], "REF_1": ["Ref A"], "REF_2": [None],
+                          "REF_3": [None]})
+    live = _legacy_referee_features(
+        games, odds, refs, first_output_year=2025, book="bet365",
+        tonight=tonight, scheduled_crews=crews,
+    ).set_index("GAME_ID")
+
+    stored_games = pd.concat(
+        [games, pd.DataFrame({"GAME_ID": ["g4", "g4"],
+                              "GAME_DATE": pd.to_datetime(["2025-11-04"] * 2),
+                              "SEASON_YEAR": [2025] * 2, "PTS": [999, 999],
+                              "PF": [99, 99]})]
+    )
+    stored_refs = pd.concat(
+        [refs, pd.DataFrame({"GAME_ID": ["g4"], "FIRST_NAME": ["Ref"],
+                             "LAST_NAME": ["A"]})]
+    )
+    stored = _legacy_referee_features(
+        stored_games, odds, stored_refs, first_output_year=2025, book="bet365"
+    ).set_index("GAME_ID")
+
+    pd.testing.assert_series_equal(live.loc["g4"], stored.loc["g4"])
+    assert live.loc["g4"].notna().any()
+
+
+def test_tonight_without_a_released_crew_has_no_referee_features():
+    """No fallback crew: before release the features are NaN, as a snapshot
+    before 09:00 ET is in training."""
+    games, odds, refs = _history()
+    tonight = pd.DataFrame(
+        {"GAME_ID": ["g4"], "GAME_DATE": pd.to_datetime(["2025-11-04"]),
+         "SEASON_YEAR": [2025]}
+    )
+    live = _legacy_referee_features(
+        games, odds, refs, first_output_year=2025, book="bet365",
+        tonight=tonight, scheduled_crews=None,
+    )
+    assert "g4" not in set(live["GAME_ID"])  # the caller's left merge -> NaN
+
+
 def test_referee_spread_interaction_uses_snapshot_quote():
     frame = pd.DataFrame(
         {

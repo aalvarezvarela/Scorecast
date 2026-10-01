@@ -70,6 +70,7 @@ from nba_ou.create_training_data.intermediate_referees import (
     add_snapshot_referee_interactions,
     mask_referees_before_release,
 )
+from nba_ou.create_training_data.live_game_day import LiveGameDay
 from nba_ou.create_training_data.select_intermediate_columns import (
     assert_no_bare_closing_odds,
     audit_closing_line_reconstruction,
@@ -110,6 +111,7 @@ from nba_ou.postgre_db.line_history_aiven.fetch import (
     fetch_games,
     fetch_pregame_ticks,
 )
+from nba_ou.postgre_db.line_history_aiven.live import LiveLineHistory
 
 MARKET_SHORT = {MARKET_TOTALS: "TOT", MARKET_SPREAD: "SPR", MARKET_MONEYLINE: "ML"}
 
@@ -453,6 +455,36 @@ def _build_scoring_frame(merged: pd.DataFrame, gated: pd.DataFrame) -> pd.DataFr
     return scoring.sort_values(SCORING_KEYS).reset_index(drop=True)
 
 
+def append_live_line_history(
+    ticks: pd.DataFrame,
+    lh_games: pd.DataFrame,
+    live: LiveLineHistory,
+    *,
+    exclude_books: tuple[str, ...] = (),
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Stored ticks and games plus the live ones, live winning per GAME_ID.
+
+    Live rows replace stored rows of the same game rather than being added to
+    them: live they are tonight's games, which the store never holds; replayed,
+    they are a past game truncated "as of" an earlier moment, and mixing in the
+    stored full history would defeat the replay. The same book exclusions as
+    the store read apply.
+    """
+    live_ids = set(live.games["game_id"].astype(str))
+    live_ticks = live.ticks[~live.ticks["book"].isin(exclude_books)]
+    stored_ticks = ticks[~ticks["game_id"].astype(str).isin(live_ids)]
+    stored_games = lh_games[~lh_games["game_id"].astype(str).isin(live_ids)]
+    frames = [frame for frame in (stored_ticks, live_ticks) if not frame.empty]
+    merged_ticks = (
+        pd.concat(frames, ignore_index=True) if frames else stored_ticks
+    ).sort_values(["game_id", "market", "book", "line_ts"], kind="stable")
+    game_frames = [frame for frame in (stored_games, live.games) if not frame.empty]
+    merged_games = (
+        pd.concat(game_frames, ignore_index=True) if game_frames else stored_games
+    ).sort_values(["game_date", "game_id"], kind="stable")
+    return merged_ticks.reset_index(drop=True), merged_games.reset_index(drop=True)
+
+
 def create_intermediate_line_df(
     *,
     recent_limit_to_include: str | pd.Timestamp | None = None,
@@ -473,6 +505,7 @@ def create_intermediate_line_df(
     include_ridge_movement: bool = True,
     include_market_dynamics: bool = True,
     return_scoring: bool = False,
+    live: LiveGameDay | None = None,
     verbose: bool = True,
 ) -> pd.DataFrame | tuple[pd.DataFrame, pd.DataFrame]:
     """Build the (game, snapshot) dataset.
@@ -524,6 +557,16 @@ def create_intermediate_line_df(
     relying on the training config's ``cleaning.exclude_cols_containing`` keeps
     unwanted columns out of the CSV entirely, so they also cannot inflate
     ``max_na_per_row`` for earlier rows.
+    ``live`` adds tonight -- games the database does not hold until they are
+    finished, read in memory by ``live_game_day.fetch_live_game_day`` and never
+    written. Its line history is added to the ticks and games read from the
+    store (replacing any stored rows of the same GAME_ID, which is what lets a
+    past date be replayed "as of" an earlier moment to test train/serve
+    parity), its schedule adds tonight's base rows, built from earlier games
+    only, and its referee crews, where released, feed the referee features --
+    NaN otherwise, as before the 09:00 ET release in training. History then
+    stops the day before (``recent_limit_to_include`` defaults to it), and the
+    live season is admitted even before the store holds any of it.
     """
     # Argument validation before any I/O: a bad call should fail immediately,
     # not after opening a database connection.
@@ -550,6 +593,13 @@ def create_intermediate_line_df(
         excluded_books += (CAESARS_BOOK,)
 
     store_seasons = available_seasons()
+    if live is not None and not live.line_history.games.empty:
+        store_seasons = sorted(
+            set(store_seasons)
+            | set(int(y) for y in live.line_history.games["season_year"].unique())
+        )
+    if live is not None and recent_limit_to_include is None:
+        recent_limit_to_include = live.history_limit
     if season_years is None:
         season_years = store_seasons
     else:
@@ -573,6 +623,10 @@ def create_intermediate_line_df(
     stage(f"Fetching pre-game ticks for {len(season_years)} season(s) ...")
     ticks = fetch_pregame_ticks(season_years, exclude_books=excluded_books)
     lh_games = fetch_games(season_years)
+    if live is not None:
+        ticks, lh_games = append_live_line_history(
+            ticks, lh_games, live.line_history, exclude_books=excluded_books
+        )
     if ticks.empty:
         raise ValueError("No pre-game ticks returned for the requested seasons.")
     if combine_books:
@@ -711,6 +765,7 @@ def create_intermediate_line_df(
         exclude_caesars=exclude_caesars,
         combine_fanatics_and_caesars=combine_books,
         return_injury_context=True,
+        scheduled_games=live.scheduled_games if live is not None else None,
         verbose=verbose,
     )
     base["GAME_ID"] = base["GAME_ID"].astype(str)
@@ -725,7 +780,9 @@ def create_intermediate_line_df(
         null_extreme_spread_prices=null_extreme_spread_prices,
         exclude_caesars=exclude_caesars,
         combine_fanatics_and_caesars=combine_books,
+        df_referees_scheduled=live.df_referees_scheduled if live is not None else None,
     )
+
     # Availability-effect history reads completed games' closing lines. Keep
     # this per-game frame before the current game's closing columns are renamed
     # into the scoring-only namespace below.
