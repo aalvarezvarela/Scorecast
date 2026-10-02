@@ -255,53 +255,6 @@ def _build_roster_injury_dict(
     return _lag_injured_dict_by_one_team_game(injured_dict, game_context)
 
 
-def _season_bucket(game_ids: pd.Series, season_years: pd.Series) -> pd.Series:
-    """``create_player_lookup``'s season key: game type digit + season year.
-
-    ``0022501171`` in 2025 -> ``"22025"`` (regular season); a play-in game ->
-    ``"52025"``; a preseason game -> ``"12025"``.
-    """
-    years = pd.to_numeric(season_years, errors="coerce").astype("Int64").astype(str)
-    return game_ids.astype(str).str[2] + years
-
-
-def _same_bucket_roster(placeholders: pd.DataFrame, df_players: pd.DataFrame) -> pd.DataFrame:
-    """Keep tonight's placeholders to what the training lookup would see.
-
-    ``create_player_lookup`` decides a game's roster from box scores strictly
-    before it, within the game's own season *bucket* -- the regular season for a
-    regular-season game -- and only when that bucket is empty (opening night,
-    a first play-in game) falls back to the whole season year, preseason
-    included, and then to the previous season's last assignments.
-
-    ``standardize_and_merge_scheduled_games_to_players_data`` instead stamps a
-    placeholder for every player's latest row across all loaded history. Those
-    rows land in tonight's bucket, so they both add players (last seen seasons
-    ago, or cut in training camp) and stop the opening-night fallback from
-    running. Keeping only players who already have a row in tonight's bucket
-    restores both: the real lookup then returned the training roster for
-    30/30 team-games on 2026-04-10, 4/4 on the 2025-10-21 opener, 24/24 on
-    2025-10-22 and 24/24 on 2025-10-24. Unfiltered, it added 9-16 players per
-    team; restricting to the season year (preseason included) still added ~7
-    camp cuts by the third day of the season.
-    """
-    if placeholders.empty or df_players.empty:
-        return placeholders
-    tonight = _season_bucket(placeholders["GAME_ID"], placeholders["SEASON_YEAR"])
-    history = pd.DataFrame(
-        {
-            "bucket": _season_bucket(df_players["GAME_ID"], df_players["SEASON_YEAR"]),
-            "PLAYER_ID": df_players["PLAYER_ID"].astype(str),
-        }
-    ).drop_duplicates()
-    seen = set(zip(history["bucket"], history["PLAYER_ID"], strict=True))
-    keep = [
-        (bucket, str(player)) in seen
-        for bucket, player in zip(tonight, placeholders["PLAYER_ID"], strict=True)
-    ]
-    return placeholders[keep].reset_index(drop=True)
-
-
 def _inject_player_placeholders(df: pd.DataFrame) -> pd.DataFrame:
     """Add the columns ``merge_home_away_data`` indexes unconditionally."""
     out = df.copy()
@@ -458,11 +411,10 @@ def create_base_game_features(
         # Tonight's players: each one's latest team, no minutes -- the placeholder
         # contract create_player_lookup reads as "scheduled, not played". Used by
         # the all-star stage only.
-        placeholders = _same_bucket_roster(
-            standardize_and_merge_scheduled_games_to_players_data(
-                scheduled_games, df_players
-            ),
-            df_players,
+        # Only players already in tonight's season bucket -- the roster training
+        # reads for a stored game (see the function's docstring).
+        placeholders = standardize_and_merge_scheduled_games_to_players_data(
+            scheduled_games, df_players
         )
         if not placeholders.empty:
             df_players = pd.concat(

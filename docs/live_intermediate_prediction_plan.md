@@ -170,13 +170,36 @@ tested by replaying past dates.
 - [ ] **Commit** the parquet, naming, daily-job and live line-history changes.
 - [ ] Pre-existing lint in `line_history_aiven/tipoff_corrections.py` (import
       order) -- unrelated, left alone.
-- [ ] **Closing prediction path: same roster inflation.** `create_df_to_predict`
-      builds tonight's placeholders with the same shared function over the
-      current, previous and roster-context seasons, so players who left a team
-      a season or two ago are counted on tonight's roster in production. On the
-      intermediate replay that was +8.9 players per team, all bench counts off
-      by ~8 and active-weighted ratings off by ~1. Apply the same this-season
-      restriction there and measure with a closing replay first.
+- [x] **Closing prediction path: same roster inflation** (fixed 2026-10-02).
+      The shared `standardize_and_merge_scheduled_games_to_players_data` now
+      builds a placeholder only for players with a row in tonight's season
+      bucket, so both prediction paths get training's roster. Prediction-only:
+      training builds never call it. Checked on the closing path's data with the
+      real lookup: rosters identical 4/4 (2025-10-21 opener, 0 placeholders ->
+      same fallback as training), 24/24 (2025-10-24), 30/30 (2026-04-10);
+      roster continuity identical on the first two, 7/30 team-games off by at
+      most 0.0005 on 2026-04-10 (was up to 0.21). Before: e.g. Charlotte 37
+      players vs 19, Lakers 30 vs 18. Tests in tests/test_scheduled_player_rows.py.
+- [ ] **Residual player-feature gap: verified, a small training-side dependence
+      on tonight's box score** (2026-10-02). With identical rosters, a player's
+      stats come from his latest row on or before game day
+      (`latest_player_states`, available branch). In training that is tonight's
+      box-score row if he appeared (stats already shifted, so pre-game
+      averages), otherwise his previous game's row -- whose average stops before
+      that game, one game stale. Live, every roster player has tonight's
+      placeholder. On 2026-04-10, 589 roster players: all 400 who appeared in
+      the box score match exactly; 117 of the 189 who did not differ (all of them
+      taken from an earlier row in training); the other 72 had nothing new in
+      their last game. In the pipeline the out/questionable players are removed
+      first, so the affected ones are those who neither dressed nor were listed
+      (two-way, G League, not with team). Effect on features: active-weighted
+      ratings ~0.11 vs a spread of 3.8, top-player stats mostly tiny, one team's
+      `TOP3_AVAILABILITY_EFFECT_*` ~1.8. Same mechanism in the closing dataset
+      (shared `add_player_history_features`). Live cannot reproduce it -- it
+      would need to know who will be in tonight's box score. The fix belongs in
+      training: give every roster player a state as of game day regardless of
+      whether he appeared. That changes the datasets, so it needs a rebuild and
+      retraining; best folded into the next planned dataset rebuild.
 - [ ] **SBR revises quotes after the fact**: ~0.8% of a day's ticks (49 of
       6,059 on 2026-04-10) have a different line/price when re-scraped the next
       day. Live features see the then-current view; the stored history (and so
