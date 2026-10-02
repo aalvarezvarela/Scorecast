@@ -5,8 +5,10 @@ where it is stored, how it reaches each dataset, and which module builds each
 feature family. It is a map, not the full reference, so it links to the
 detailed documents below rather than repeating them.
 
-Snapshot of the code as of 2026-09-17, schema version `2_6`
-(`src/nba_ou/config/dataset_versions.py`).
+Snapshot of the code as of 2026-10-02, schema version `2_6`
+(`src/nba_ou/config/dataset_versions.py`). The builders produce the frozen base
+`2_5`; `2_6` and later are layers that only add columns
+(`src/nba_ou/create_training_data/schema_layers/`).
 
 ## Where the detail lives
 
@@ -127,8 +129,8 @@ intermediate dataset.
 | Fresh absences | `INJ_FRESH_OUT_<stat>_BEFORE_*`, `INJ_KEY_PLAYER_FIRST_GAME_OUT_*` | `players/fresh_absence.py`, `add_fresh_absence_sums` | box scores, injuries | C, I |
 | Availability effects (empirical-Bayes with/without deltas) | `TOP3_AVAILABILITY_EFFECT_*`, `TOP3_INJURED_*`, `TOP2_QUESTIONABLE_*` | `past_injuries/injury_effects.py` | box scores, closing lines of **earlier** games | C, I (per snapshot) |
 | Roster continuity | `ROSTER_MINUTES_CONTINUITY_*_PCT_BEFORE_*`, `ROSTER_NET_MINUTES_*` | `players/roster_continuity.py` | box scores | C, I |
-| Starter history | `STARTER_OVERLAP_LAST_TWO_GAMES_BEFORE_*`, `STARTER_LATEST_FIVE_MINUTES_SHARE_LAST_5_GAMES_BEFORE_*` | `players/starter_history.py` | completed player box scores only | C, I |
-| Lineup projection (**opt-in**, `lineup_features=True`) | `LU_ABSENCE_IMPACT_{OFF,DEF,PACE}_PTS_BEFORE`, `LU_ABSENCE_IMPACT_BENCH_DP_PTS_BEFORE`, `LU_PROJ_TOTAL_BEFORE` | `lineups/features.py` | box scores, Aiven `injury_report`, walk-forward lineup rating cache (2021-22+) | C |
+| Starter history (2_6 layer) | `STARTER_OVERLAP_LAST_TWO_GAMES_BEFORE_*`, `STARTER_LATEST_FIVE_MINUTES_SHARE_LAST_5_GAMES_BEFORE_*` | `players/starter_history.py` | completed player box scores only | C, I |
+| Lineup projection (2_6 layer) | `LU_ABSENCE_IMPACT_{OFF,DEF,PACE}_PTS_BEFORE`, `LU_ABSENCE_IMPACT_BENCH_DP_PTS_BEFORE`, `LU_PROJ_TOTAL_BEFORE` | `lineups/features.py` | box scores, Aiven `injury_report`, walk-forward lineup rating cache (2021-22+) | C |
 | All-Star voting | `ALL_STAR_*_INJURED_*`, `ALL_STAR_*_QUESTIONABLE_*` | `all_star_voting/attach_all_star_voting_features.py` | `nba_all_star_voting` | C, I (per snapshot) |
 | **G1** injury news up to the snapshot (change in expected missing points) | `INJ_SNAP_*_BEFORE_TEAM_{HOME,AWAY}` | `injury_status/news.py` | Aiven `injury_report`, player form | I |
 
@@ -184,14 +186,15 @@ builder.
 
 ## 6. Open work
 
-- The lineup projection family (`LU_*`, `docs/lineup_projection_plan.md` §8.5)
-  is behind a default-off `lineup_features` flag in the closing builder only.
-  Its with/without campaign decides whether the default flips and the schema
-  moves to 2_7. It is not wired into the intermediate builder or the serving
-  path yet.
+- Schema 2_6 is the first layered version: starter history (both datasets)
+  and the `LU_*` lineup projection (`docs/lineup_projection_plan.md` §8.5,
+  closing dataset only). Its with/without campaign
+  (`experiments/lineup_projection_2026_09`) has not run. `LU_*` is not in the
+  intermediate dataset yet: it needs availability as of each snapshot, a later
+  layer. Serving a 2_6 slot also needs the rating cache and stints where the
+  daily job runs.
 
-- Schema 2_6 adds prior-game starter stability and recent-minutes-share features
-  to both builders. A fresh 2_6 dataset and controlled ablation are still needed.
+- A fresh 2_6 dataset and a controlled starter-history ablation are still needed.
   Injury-adjusted projected minutes and actual on-court overlap require separate
   work; neither is inferred from a target game's final box score.
 - G1–G4 are implemented on `feat/intermediate-market-dynamics`, but the full

@@ -1271,14 +1271,36 @@ flags are omitted. They remain available for diagnostics through
 `include_detailed_sample_size_features=True`, but the training and prediction
 pipeline explicitly keeps the compact schema.
 
-## Lineup Projection Features (opt-in)
+## Schema 2_6 Layer: Starter History And Lineup Projection
 
-`create_df_to_predict(..., lineup_features=True)` (CLI:
-`create_train_data.py --lineup-features`) adds seventeen game-level columns from the
-bottom-up lineup projection in `data_processing/lineups/features.py`. The
-default is **off**: the family is experimental, and off leaves the dataset
-exactly as it was, so a build with it on differs by these columns only. Same
-schema version; the file gets a `_with_lineup_features` suffix.
+`create_df_to_predict()` builds the base schema, `2_5`, and nothing newer. The
+columns below belong to schema `2_6` and are added by the 2_6 layer
+(`nba_ou.create_training_data.schema_layers.v2_6`) to a finished 2_5 frame or
+file; see [Schema Versions And Layers](#schema-versions-and-layers). The layer
+reads only each game's `GAME_ID`, `GAME_DATE`, `TEAM_ID_TEAM_HOME/AWAY` and
+`TOTAL_POINTS`, and loads its own inputs: player box scores (the output seasons
+plus one prior season, cleaned exactly as `create_df_to_predict` cleans them),
+the injury report state, the rating cache and the stint store.
+
+### Starter history (both datasets)
+
+Four per side, from `data_processing/players/starter_history.py`. Only box
+scores on dates strictly before the game, with exactly five starters and real
+minutes, enter history; games on the same date are held back together.
+
+| Column (`_TEAM_HOME` / `_TEAM_AWAY`) | Meaning |
+|---|---|
+| `STARTER_OVERLAP_LAST_TWO_GAMES_BEFORE` | starters shared by the team's last two starting fives |
+| `STARTER_UNIQUE_LAST_5_GAMES_BEFORE` | distinct starters over the last five games |
+| `STARTER_REPEAT_RATE_LAST_5_GAMES_BEFORE` | share of consecutive games among the last five that kept the same five |
+| `STARTER_LATEST_FIVE_MINUTES_SHARE_LAST_5_GAMES_BEFORE` | share of the team's minutes over the last five games played by its most recent starting five |
+
+### Lineup projection (closing dataset only)
+
+Seventeen game-level columns from the bottom-up lineup projection in
+`data_processing/lineups/features.py`. The intermediate dataset does not get
+them in 2_6: a snapshot needs availability as of the snapshot, not the closing
+report.
 
 | Column | Meaning |
 |---|---|
@@ -1298,8 +1320,7 @@ schema version; the file gets a `_with_lineup_features` suffix.
 | `LU_FG3A_NEIGHBOR_RESIDUAL_BEFORE` | mean residual of nearby historical lineup pairs after a linear additive 3PA/FGA baseline; may include nonlinear one-team effects |
 | `LU_ABSENCE_SHIFT_FG3A_RATE_BEFORE` | how much tonight's absences shift the game's expected 3PA/FGA |
 
-Attached after the home/away merge, next to `add_fresh_absence_sums`. Inputs
-and cutoffs:
+Inputs and cutoffs:
 
 - **Rosters and minutes:** box scores on strictly earlier dates; each player's
   average over his last `RECENT_GAMES` (10) appearances, rescaled to 240.
@@ -1320,7 +1341,12 @@ and cutoffs:
 - **Level calibration:** the mean `actual - projected` over the previous 200
   games of the same phase (regular season or playoffs) on earlier dates;
   stint possessions are estimated and run high, and playoff games score
-  well below a regular-season projection.
+  well below a regular-season projection. The layer orders games by
+  (`GAME_DATE`, `GAME_ID`) first, so when the 200-game window starts in the
+  middle of a date the games kept do not depend on the parent file's row order.
+  Builds made before the layer (`--lineup-features`) cut that boundary by an
+  unstable sort instead, so their `LU_PROJ_TOTAL_BEFORE` can differ by up to
+  ~0.5 points on those dates; every other column is unchanged.
 
 The three-point columns read the stint store (`data/lineup_stints`) directly:
 player style traits and the pool of past lineup pairs are rebuilt on each run
@@ -1581,9 +1607,51 @@ The pipeline uses several controls to avoid target leakage:
 - Raw original boxscore columns are blocked from final selection unless they are
   static, explicitly allowed, or transformed into `_BEFORE` features.
 
+## Schema Versions And Layers
+
+`2_5` is the frozen **base**: `create_df_to_predict()` and
+`create_intermediate_line_df()` produce exactly it. Every later version is a
+layer in `src/nba_ou/create_training_data/schema_layers/` that **only adds
+columns** to its parent (`2_6` = `2_5` + its columns, `2_7` = `2_6` + its
+columns). The rule is enforced each time a layer runs
+(`schema_layers.contract`): same rows in the same order, exactly the declared
+columns, no existing column overwritten, every name `_BEFORE` and outside the
+known leak families. Changing an existing column's values or meaning is a new
+base (`3_0`), not a layer.
+
+- **Build both:** `create_train_data.py` and
+  `create_intermediate_line_train_data.py` write the 2_5 file, then layer
+  `--schema-version` (default: newest) onto that file.
+- **Upgrade an existing file:**
+  `scripts/create_train_data/build_schema_version.py <2_5 file> --to 2_6`.
+  Only the key columns are read. A Parquet parent is streamed row group by row
+  group, so its columns come out bit-identical; an older CSV parent is loaded
+  and written once. The output is always Parquet
+  (`closing_line_data_2_6_<date>.parquet`), and the parent is never modified.
+  An intermediate file keeps its parent's `_scoring` sidecar.
+- **Which file is which:** the version is in the filename, and
+  `<name>.manifest.json` beside it records the layers applied, the columns each
+  version added, the parent file's checksum and the building commit:
+  `python -m nba_ou.create_training_data.schema_layers describe <file>`;
+  `... diff 2_5 2_6` lists a version's columns; `... versions` lists them all.
+- **Serving and refit:** each `ENABLED_MODELS` row names its schema version.
+  `predict_nba_games.py` layers the frame up to the newest enabled version,
+  which serves every slot; `refit.resolve_training_frame` builds the base once
+  per run and layers it up to each spec's version.
+
 ## Adding Or Modifying Features
 
 Use these guidelines when extending the training data:
+
+0. Add new columns as a new schema layer, never inside the base builders.
+   - Write `schema_layers/vX_Y.py` with one `SchemaLayer` (parent = current
+     newest version), declare its columns per dataset and the parent columns it
+     reads, register it in `schema_layers/registry.py`, bump
+     `TRAINING_DATA_SCHEMA_VERSION` and add a history entry in
+     `nba_ou.config.dataset_versions`.
+   - The feature function itself still lives in `data_processing/`; the layer
+     only feeds it and lines its output up with the parent's rows.
+   - Editing the base builders changes 2_5 under every model trained on it.
 
 1. Decide whether the feature is team-level or game-level.
    - Team-level features should usually be added before `merge_home_away_data()`.
@@ -1627,7 +1695,8 @@ Use these guidelines when extending the training data:
 
 ## Output Shape
 
-The final DataFrame returned by `create_df_to_predict()` is game-level:
+The final DataFrame returned by `create_df_to_predict()` is the base schema
+(`2_5`); newer versions append their layers' columns to it. It is game-level:
 
 - One row per game.
 - Side-specific home and away feature columns.

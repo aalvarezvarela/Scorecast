@@ -1242,6 +1242,12 @@ mechanism:
 - `include_same_season_referee_variants` — a default-`False` additive flag
   threaded from an `argparse` `store_true` down into the builder.
 
+> **Superseded 2026-10-02.** The flag below was replaced by schema layers: the
+> `LU_*` family is part of schema `2_6`, added to a finished 2_5 frame or file
+> by `nba_ou.create_training_data.schema_layers.v2_6`, and the builders no
+> longer take `lineup_features`. See `nba_ou.config.dataset_versions`. The
+> original design is kept below as a record.
+
 Thread `lineup_features: bool = False` the same way:
 
 | Layer | Change |
