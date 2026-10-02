@@ -166,11 +166,19 @@ def count_games(df: pd.DataFrame, *, game_id_col: str | None = GAME_ID_COLUMN) -
 
 
 def resolve_training_frame(
-    spec: ModelSpec, *, limit_date: str | None = None
+    spec: ModelSpec,
+    *,
+    limit_date: str | None = None,
+    base_frames: dict[tuple[str, str | None], pd.DataFrame] | None = None,
+    layer_context=None,
 ) -> TrainingFrame:
     """Produce the frame this spec should be refitted on.
 
-    Closing-line specs are built in-process, as the daily job already does.
+    Closing-line specs are built in-process, as the daily job already does: the
+    builder produces the base schema, and a spec of a newer version gets that
+    frame plus its layers (``nba_ou.create_training_data.schema_layers``).
+    Pass the same ``base_frames`` dict (and ``layer_context``) for every spec of
+    one run and the base is built, and each layer input loaded, only once.
 
     Intermediate-line specs are NOT yet supported, and the gap is a design
     decision rather than a missing function: the intermediate dataset is built
@@ -179,17 +187,41 @@ def resolve_training_frame(
     strategy, storage, build selection and staleness before it can be wired up.
     See section 5 and work item 10 of the plan.
     """
-    dataset_type = spec.identity.dataset_type
-    if dataset_type == "closing_line":
-        from nba_ou.create_training_data.create_df_to_predict import (
-            create_df_to_predict,
-        )
+    from nba_ou.create_training_data.schema_layers import (
+        CLOSING_LINE,
+        apply_layers,
+        available_versions,
+        is_layered,
+    )
 
-        df = create_df_to_predict(
-            todays_prediction=False,
-            recent_limit_to_include=limit_date,
-            older_season_limit=None,
-        )
+    dataset_type = spec.identity.dataset_type
+    schema_version = spec.identity.schema_version
+    if dataset_type == "closing_line":
+        if is_layered(schema_version) and schema_version not in available_versions():
+            raise TrainingFrameUnavailable(
+                f"Spec {spec.spec_id} needs a {schema_version} dataset, and this "
+                f"checkout builds only {', '.join(available_versions())}."
+            )
+        cache = base_frames if base_frames is not None else {}
+        key = (dataset_type, limit_date)
+        if key not in cache:
+            from nba_ou.create_training_data.create_df_to_predict import (
+                create_df_to_predict,
+            )
+
+            cache[key] = create_df_to_predict(
+                todays_prediction=False,
+                recent_limit_to_include=limit_date,
+                older_season_limit=None,
+            )
+        df = cache[key]
+        if is_layered(schema_version):
+            df = apply_layers(
+                df,
+                to_version=schema_version,
+                dataset_type=CLOSING_LINE,
+                ctx=layer_context,
+            )
         return TrainingFrame(df=df, build_id=None, checksum=None)
 
     raise TrainingFrameUnavailable(

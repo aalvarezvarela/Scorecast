@@ -10,6 +10,12 @@ from nba_ou.create_training_data.create_df_to_predict import (
 from nba_ou.create_training_data.get_all_info_for_scheduled_games import (
     get_all_info_for_scheduled_games,
 )
+from nba_ou.create_training_data.schema_layers import (
+    CLOSING_LINE,
+    apply_layers,
+    is_layered,
+    newest_version,
+)
 from nba_ou.postgre_db.update_all.update_all_databases import update_all_databases
 from nba_ou.prediction.baseline_predictions import (
     load_baseline_predictions_for_nba_games,
@@ -158,6 +164,17 @@ def predict_nba_games(
             normalize_spread_lines=normalize_spread_lines,
             null_extreme_spread_prices=null_extreme_spread_prices,
         )
+        # The builder produces the base schema. Each slot reads its own
+        # feature_names, and newer versions only add columns, so one frame at
+        # the newest version any enabled slot needs serves every slot.
+        frame_version = newest_version(slot.schema_version for slot in configured_slots)
+        if is_layered(frame_version):
+            print(f"Adding schema layers up to {frame_version} ...")
+            df_to_predict_total = apply_layers(
+                df_to_predict_total,
+                to_version=frame_version,
+                dataset_type=CLOSING_LINE,
+            )
         df_to_predict = df_to_predict_total[
             df_to_predict_total["GAME_DATE"] == date_to_predict
         ].copy()

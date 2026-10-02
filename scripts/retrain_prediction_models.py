@@ -22,6 +22,7 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 
 from nba_ou.config.settings import SETTINGS
+from nba_ou.create_training_data.schema_layers import LayerContext
 from nba_ou.modeling.refit import (
     TrainingFrame,
     TrainingFrameUnavailable,
@@ -129,6 +130,11 @@ def main() -> int:
     # One frame per dataset flavour, shared by every slot that wants it: the
     # marginal cost of an extra slot should be one fit, not one dataset build.
     frames: dict[tuple[str, str], TrainingFrame] = {}
+    # Every schema version starts from the same base frame; newer versions add
+    # their layers to it (nba_ou.create_training_data.schema_layers), so the
+    # base is built once per run however many versions are enabled.
+    base_frames: dict = {}
+    layer_context = LayerContext()
     specs = {}
     for slot in slots:
         try:
@@ -156,7 +162,10 @@ def main() -> int:
                 else:
                     print(f"[{label}] building training frame...")
                     frames[(dataset_type, schema_version)] = resolve_training_frame(
-                        specs[group[0].describe()], limit_date=limit_date
+                        specs[group[0].describe()],
+                        limit_date=limit_date,
+                        base_frames=base_frames,
+                        layer_context=layer_context,
                     )
         except TrainingFrameUnavailable as exc:
             # Not a failure: there is no daily build of this dataset yet
