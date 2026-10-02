@@ -362,6 +362,7 @@ def merge_total_spread_moneyline_by_game_id(
         ("bet365", "total_bet365_line_over"),
         ("draftkings", "total_draftkings_line_over"),
         ("fanatics_sportsbook", "total_fanatics_sportsbook_line_over"),
+        ("betrivers", "total_betrivers_line_over"),
     ]
 
     total_selected_col = f"total_{total_line_book}_line_over"
@@ -559,6 +560,7 @@ def merge_remaining_odds_by_game_id(
             "bet365",
             "draftkings",
             "fanatics_sportsbook",
+            "betrivers",
         ]
         for book in known_total_sources:
             # Check if the uppercase version already exists in df_merged

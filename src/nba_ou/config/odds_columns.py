@@ -13,6 +13,66 @@ BOOK_ALIASES = {
 }
 
 
+#: Books collected into the odds stores (Supabase ``odds_sportsbook`` and the
+#: Aiven line history) but not yet admitted as model features. Both dataset
+#: builders drop them at read time, so storing a new book never changes a
+#: training frame silently. Remove a slug only as a deliberate feature change.
+#:
+#: Hard Rock Bet: SBR's eighth book, carried in the page payload but not drawn
+#: in the closing table, so only line history stores it. Its ticks cover 194
+#: games, all in 2025-26 and 143 of them in April 2026: as a feature it would
+#: mark late-season and playoff rows, exactly where the holdout sits.
+#:
+#: BetRivers left this tuple on 2026-09-17. Its SBR history starts with the
+#: 2021-22 season, which is the default ``season_year_floor``, so within the
+#: default window its presence does not encode the season. It is missing on 46
+#: games of 2021-22 opening week, 12 of 2024-03-29 (no book priced that date) and
+#: 19 of 2025-02-11/12; below the floor (``EXTENDED_SEASON_YEAR_FLOOR``) it is
+#: absent entirely, and there it does.
+HISTORY_ONLY_BOOKS: tuple[str, ...] = ("hard_rock_bet",)
+
+
+#: Provenance columns of the ``odds_sportsbook`` table: when SBR was scraped, the
+#: start time and status SBR showed at that moment, and when the per-book closes
+#: were rewritten from line history. Bookkeeping only -- whether a row was
+#: scraped mid-game or needed repair is correlated with the game itself, so no
+#: read path may pass them on as columns.
+SPORTSBOOK_METADATA_COLUMNS: tuple[str, ...] = (
+    "scraped_at",
+    "sbr_start_time_utc",
+    "sbr_status_at_scrape",
+    "closes_repaired_at",
+)
+
+
+def drop_sportsbook_metadata_columns(df: pd.DataFrame) -> pd.DataFrame:
+    """Drop ``SPORTSBOOK_METADATA_COLUMNS`` where present."""
+    drop = [c for c in SPORTSBOOK_METADATA_COLUMNS if c in df.columns]
+    return df.drop(columns=drop) if drop else df
+
+
+def is_book_column(column: str, book: str) -> bool:
+    """True if ``column`` belongs to ``book`` (``total_betrivers_line_over``, ...).
+
+    Matches the slug as a whole ``_``-delimited token, so ``bet365`` never
+    matches a hypothetical ``bet3650`` and a slug that is a prefix of another
+    cannot capture the longer book's columns.
+    """
+    tokens = column.lower().split("_")
+    slug = book.lower().split("_")
+    width = len(slug)
+    return any(tokens[i : i + width] == slug for i in range(len(tokens) - width + 1))
+
+
+def drop_history_only_book_columns(
+    df: pd.DataFrame, books: Iterable[str] = HISTORY_ONLY_BOOKS
+) -> pd.DataFrame:
+    """Drop the columns of books that are stored but not yet model features."""
+    books = tuple(books)
+    drop = [c for c in df.columns if any(is_book_column(c, b) for b in books)]
+    return df.drop(columns=drop) if drop else df
+
+
 def get_main_book() -> str:
     configured = getattr(SETTINGS, "main_sportsbook", None)
     if configured is None:

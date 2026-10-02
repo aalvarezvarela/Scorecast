@@ -139,6 +139,45 @@ History
     * Optional ``REF_CREW_SS_*`` same-season-only variants when built with
       ``include_same_season_referee_variants=True``.
     * The legacy ``REF_AVG/STD/SUM_*`` columns stay for comparison.
+
+    In intermediate-line snapshots these referee columns are populated only at
+    or after 09:00 Eastern on the game's date; earlier snapshots carry NaN.
+    Injury features use the most recent filed report strictly before each
+    snapshot's UTC timestamp. An unfiled team gets a coverage flag of 0 and
+    NaN for its injury-derived values. The intermediate pipeline keeps the
+    ``2_5`` schema version for these changes.
+
+    Intermediate-line builds only, added later under the same 2_5 label:
+
+    * The per-book ``DEVIATION_FROM_CONSENSUS``, ``ABS_DEVIATION_FROM_CONSENSUS``,
+      ``DEVIATION_Z`` and ``IS_OUTLIER_BOOK`` columns keep their names but now
+      measure against the leave-one-book-out peer median, with grossly
+      discrepant peers removed and the gap capped. **Intermediate 2_5 files
+      built before and after this change are not directly comparable** on
+      those columns; rebuild rather than mixing them.
+    * New anchor-total path columns ``ODDS_SNAP_TOT_<ANCHOR>_*``:
+      ``MINUTES_SINCE_LAST_LEVEL_MOVE``, ``PEERS_MOVED_ANCHOR_STILL_60``,
+      ``ABS_LEVEL_PATH_60``, ``SIGNED_MOVE_STREAK_60`` and
+      ``LAST_TWO_LEVEL_MOVES_GAP_MIN``, plus the walk-forward Ridge
+      ``ODDS_LINE_HIST_RIDGE_EXPECTED_TOTAL_MOVE_TO_CLOSE``.
+    * Market dynamics (``include_market_dynamics``, on by default;
+      ``docs/intermediate_market_dynamics_plan.md``):
+
+      - ``INJ_SNAP_*_BEFORE_TEAM_{HOME,AWAY}`` -- injury news: change in
+        expected missing points (p_out x ``FORM_PTS``) over 60 and 240 minutes
+        and since the previous game, the largest single-player change, minutes
+        since the last material change and a 240-minute flag. NaN for a team
+        with no filing at the snapshot.
+      - ``ODDS_SNAP_NEWS_{TOT,SPR,ML}_*`` -- move expected from recent news, the
+        anchor and consensus move since 60 minutes before the latest material
+        news, the anchor's reaction residual, books moved, and (totals, spread)
+        the 180-minute move not explained by news. The per-point price of news
+        is fitted walk-forward on games already tipped off.
+      - ``ODDS_SNAP_XMKT_*`` -- moneyline-implied margin minus spread (level,
+        60-minute move, move from open, versus the previous 30 game days) and
+        total moves without side-market moves.
+      - ``ODDS_LINE_HIST_RIDGE_EXPECTED_{SPREAD,ML}_MOVE_TO_CLOSE`` -- the total
+        Ridge generalised to spread (with cross-market inputs) and moneyline.
 """
 
 from __future__ import annotations

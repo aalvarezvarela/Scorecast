@@ -29,6 +29,10 @@ leakage-safe columns are selected via ``_BEFORE``.
 
 from __future__ import annotations
 
+import gc
+import time
+from collections.abc import Callable
+
 import pandas as pd
 
 from nba_ou.config.market_columns import (
@@ -41,6 +45,7 @@ from nba_ou.config.market_columns import (
     spread_line_home_from_implied_margin,
 )
 from nba_ou.config.odds_columns import (
+    HISTORY_ONLY_BOOKS,
     get_main_book,
     spread_line_home_col,
     total_line_col,
@@ -48,10 +53,31 @@ from nba_ou.config.odds_columns import (
 from nba_ou.create_training_data.create_base_game_features import (
     create_base_game_features,
 )
+from nba_ou.create_training_data.historical_ridge_movement import (
+    EXPECTED_MOVE_COLUMNS,
+    add_historical_ridge_movement,
+    current_line_column,
+    ridge_input_columns,
+)
+from nba_ou.create_training_data.intermediate_injuries import (
+    add_snapshot_injury_features,
+)
+from nba_ou.create_training_data.intermediate_market_dynamics import (
+    add_intermediate_market_dynamics,
+)
+from nba_ou.create_training_data.intermediate_referees import (
+    add_intermediate_referee_features,
+    add_snapshot_referee_interactions,
+    mask_referees_before_release,
+)
+from nba_ou.create_training_data.live_game_day import LiveGameDay
 from nba_ou.create_training_data.select_intermediate_columns import (
     assert_no_bare_closing_odds,
     audit_closing_line_reconstruction,
     select_intermediate_training_columns,
+)
+from nba_ou.data_processing.line_history.anchor_total_path import (
+    add_anchor_total_path_features,
 )
 from nba_ou.data_processing.line_history.book_merge import (
     CAESARS_BOOK,
@@ -73,6 +99,9 @@ from nba_ou.data_processing.line_history.snapshots import (
     build_snapshot_panel,
 )
 from nba_ou.data_processing.odds.book_combination import resolve_combine_books
+from nba_ou.data_processing.referees.referee_tendencies import (
+    DEFAULT_REFEREE_HISTORY_SEASONS,
+)
 from nba_ou.postgre_db.line_history_aiven.fetch import (
     MARKET_MONEYLINE,
     MARKET_SPREAD,
@@ -82,6 +111,7 @@ from nba_ou.postgre_db.line_history_aiven.fetch import (
     fetch_games,
     fetch_pregame_ticks,
 )
+from nba_ou.postgre_db.line_history_aiven.live import LiveLineHistory
 
 MARKET_SHORT = {MARKET_TOTALS: "TOT", MARKET_SPREAD: "SPR", MARKET_MONEYLINE: "ML"}
 
@@ -205,6 +235,18 @@ CONSENSUS_FEATURES: tuple[str, ...] = (
     "steam_net",
     "steam_fraction",
 )
+
+
+def _stage_logger(verbose: bool) -> Callable[[str], None]:
+    """Print ``[mm:ss] message`` stage markers, timed from the logger's creation."""
+    started = time.perf_counter()
+
+    def stage(message: str) -> None:
+        if verbose:
+            minutes, seconds = divmod(int(time.perf_counter() - started), 60)
+            print(f"[{minutes:02d}:{seconds:02d}] {message}", flush=True)
+
+    return stage
 
 
 def _windowed_feature_names(windows: tuple[int, ...]) -> tuple[str, ...]:
@@ -352,6 +394,27 @@ def _resolve_target_spread_line(panel: pd.DataFrame, *, anchor: str) -> pd.DataF
     )
 
 
+def _ridge_closing_lines(
+    panel: pd.DataFrame, *, market: str, anchor: str
+) -> pd.DataFrame:
+    """The anchor's 0-minute tick-series value per game, in Ridge label units.
+
+    Totals and spread use ``norm_line`` (the same centred line as the targets),
+    the moneyline its ``level`` (de-vigged home probability).
+    """
+    value = "level" if market == MARKET_MONEYLINE else "norm_line"
+    rows = panel.loc[
+        panel["market"].eq(market)
+        & panel["book"].eq(anchor)
+        & panel["snapshot_minutes"].eq(0),
+        ["game_id", value],
+    ]
+    closes = rows.rename(columns={"game_id": "GAME_ID", value: "CLOSING_LINE"})
+    if not closes["GAME_ID"].is_unique:
+        raise ValueError(f"Ridge close must be unique for each game ({market})")
+    return closes
+
+
 #: Columns that belong beside the predictions, never in the feature matrix.
 #: Keyed by (GAME_ID, TIME_TO_MATCH_MIN) so they can be joined back after
 #: scoring.
@@ -392,11 +455,43 @@ def _build_scoring_frame(merged: pd.DataFrame, gated: pd.DataFrame) -> pd.DataFr
     return scoring.sort_values(SCORING_KEYS).reset_index(drop=True)
 
 
+def append_live_line_history(
+    ticks: pd.DataFrame,
+    lh_games: pd.DataFrame,
+    live: LiveLineHistory,
+    *,
+    exclude_books: tuple[str, ...] = (),
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Stored ticks and games plus the live ones, live winning per GAME_ID.
+
+    Live rows replace stored rows of the same game rather than being added to
+    them: live they are tonight's games, which the store never holds; replayed,
+    they are a past game truncated "as of" an earlier moment, and mixing in the
+    stored full history would defeat the replay. The same book exclusions as
+    the store read apply.
+    """
+    live_ids = set(live.games["game_id"].astype(str))
+    live_ticks = live.ticks[~live.ticks["book"].isin(exclude_books)]
+    stored_ticks = ticks[~ticks["game_id"].astype(str).isin(live_ids)]
+    stored_games = lh_games[~lh_games["game_id"].astype(str).isin(live_ids)]
+    frames = [frame for frame in (stored_ticks, live_ticks) if not frame.empty]
+    merged_ticks = (
+        pd.concat(frames, ignore_index=True) if frames else stored_ticks
+    ).sort_values(["game_id", "market", "book", "line_ts"], kind="stable")
+    game_frames = [frame for frame in (stored_games, live.games) if not frame.empty]
+    merged_games = (
+        pd.concat(game_frames, ignore_index=True) if game_frames else stored_games
+    ).sort_values(["game_date", "game_id"], kind="stable")
+    return merged_ticks.reset_index(drop=True), merged_games.reset_index(drop=True)
+
+
 def create_intermediate_line_df(
     *,
     recent_limit_to_include: str | pd.Timestamp | None = None,
     season_years: list[int] | None = None,
     base_lookback_seasons: int = DEFAULT_BASE_LOOKBACK_SEASONS,
+    referee_history_seasons: int = DEFAULT_REFEREE_HISTORY_SEASONS,
+    include_same_season_referee_variants: bool = False,
     snapshot_grid: tuple[int, ...] = DEFAULT_SNAPSHOT_GRID,
     windows: tuple[int, ...] = DEFAULT_WINDOWS,
     anchor_book: str | None = None,
@@ -407,7 +502,10 @@ def create_intermediate_line_df(
     normalize_total_lines: bool = True,
     normalize_spread_lines: bool = True,
     null_extreme_spread_prices: bool = True,
+    include_ridge_movement: bool = True,
+    include_market_dynamics: bool = True,
     return_scoring: bool = False,
+    live: LiveGameDay | None = None,
     verbose: bool = True,
 ) -> pd.DataFrame | tuple[pd.DataFrame, pd.DataFrame]:
     """Build the (game, snapshot) dataset.
@@ -424,6 +522,17 @@ def create_intermediate_line_df(
     store holds no ticks for cannot become a row. Adding older years to
     ``season_years`` does **not** achieve this -- they are intersected against
     the store's own seasons and dropped.
+
+    ``include_ridge_movement`` adds a walk-forward estimate of the anchor
+    total's remaining move to its tick-series closing line. It uses only
+    completed prior games; set it to False to omit the column and its fitting
+    work entirely.
+
+    ``include_market_dynamics`` adds how injury news and the markets evolved up
+    to each snapshot: injury news (``INJ_SNAP_*``), the market's reaction to it
+    (``ODDS_SNAP_NEWS_*``), cross-market coherence (``ODDS_SNAP_XMKT_*``) and the
+    walk-forward spread and moneyline move-to-close estimates. See
+    ``docs/intermediate_market_dynamics_plan.md``.
 
     ``fanatics_sportsbook`` only exists from season 2025 and the odds-fetching
     pipeline no longer scrapes the now-discontinued Caesars, so left alone
@@ -448,6 +557,16 @@ def create_intermediate_line_df(
     relying on the training config's ``cleaning.exclude_cols_containing`` keeps
     unwanted columns out of the CSV entirely, so they also cannot inflate
     ``max_na_per_row`` for earlier rows.
+    ``live`` adds tonight -- games the database does not hold until they are
+    finished, read in memory by ``live_game_day.fetch_live_game_day`` and never
+    written. Its line history is added to the ticks and games read from the
+    store (replacing any stored rows of the same GAME_ID, which is what lets a
+    past date be replayed "as of" an earlier moment to test train/serve
+    parity), its schedule adds tonight's base rows, built from earlier games
+    only, and its referee crews, where released, feed the referee features --
+    NaN otherwise, as before the 09:00 ET release in training. History then
+    stops the day before (``recent_limit_to_include`` defaults to it), and the
+    live season is admitted even before the store holds any of it.
     """
     # Argument validation before any I/O: a bad call should fail immediately,
     # not after opening a database connection.
@@ -456,6 +575,8 @@ def create_intermediate_line_df(
             "base_lookback_seasons must be >= 0; it only ever loads history "
             "EARLIER than the first line-history season."
         )
+    if referee_history_seasons < 1:
+        raise ValueError("referee_history_seasons must be >= 1")
     combine_books = resolve_combine_books(
         combine=combine_fanatics_and_caesars,
         exclude_caesars=exclude_caesars,
@@ -463,13 +584,22 @@ def create_intermediate_line_df(
     )
 
     anchor = anchor_book or get_main_book()
-    excluded_books: tuple[str, ...] = ()
+    # Books stored in line history but not yet admitted as features are
+    # excluded unconditionally, see HISTORY_ONLY_BOOKS.
+    excluded_books: tuple[str, ...] = HISTORY_ONLY_BOOKS
     if exclude_fanatics:
         excluded_books += PARTIAL_COVERAGE_BOOKS
     if exclude_caesars:
         excluded_books += (CAESARS_BOOK,)
 
     store_seasons = available_seasons()
+    if live is not None and not live.line_history.games.empty:
+        store_seasons = sorted(
+            set(store_seasons)
+            | set(int(y) for y in live.line_history.games["season_year"].unique())
+        )
+    if live is not None and recent_limit_to_include is None:
+        recent_limit_to_include = live.history_limit
     if season_years is None:
         season_years = store_seasons
     else:
@@ -480,35 +610,66 @@ def create_intermediate_line_df(
             f"(available: {store_seasons})."
         )
 
+    stage = _stage_logger(verbose)
+
+    def progress(label: str) -> str | None:
+        return label if verbose else None
+
     if verbose:
         print(f"Line-history seasons in scope: {season_years}")
+        print(f"Snapshot grid ({len(snapshot_grid)}): {sorted(snapshot_grid)}")
 
     # ---- snapshot side -------------------------------------------------
+    stage(f"Fetching pre-game ticks for {len(season_years)} season(s) ...")
     ticks = fetch_pregame_ticks(season_years, exclude_books=excluded_books)
     lh_games = fetch_games(season_years)
+    if live is not None:
+        ticks, lh_games = append_live_line_history(
+            ticks, lh_games, live.line_history, exclude_books=excluded_books
+        )
     if ticks.empty:
         raise ValueError("No pre-game ticks returned for the requested seasons.")
     if combine_books:
         ticks = merge_caesars_into_fanatics_ticks(ticks)
     if verbose:
         print(f"✓ {len(ticks):,} pre-game ticks over {ticks.game_id.nunique()} games")
+    stage("Building the snapshot panel ...")
 
+    # Ridge labels are the 0-minute snapshot from this very tick series.
+    # Generate it internally even if the caller omits 0 from the output grid.
+    ridge_markets = [
+        market
+        for market, wanted in (
+            (MARKET_TOTALS, include_ridge_movement),
+            (MARKET_SPREAD, include_market_dynamics),
+            (MARKET_MONEYLINE, include_market_dynamics),
+        )
+        if wanted
+    ]
+    panel_grid = (
+        tuple(sorted(set(snapshot_grid) | {0})) if ridge_markets else snapshot_grid
+    )
     panel = build_snapshot_panel(
         ticks,
-        grid=snapshot_grid,
+        grid=panel_grid,
         normalize_total_lines=normalize_total_lines,
         normalize_spread_lines=normalize_spread_lines,
         null_extreme_spread_prices=null_extreme_spread_prices,
+        progress=progress("As-of snapshots"),
     )
+    stage("Adding movement features ...")
     panel = add_movement_features(
         panel,
         ticks,
-        grid=snapshot_grid,
+        grid=panel_grid,
         windows=windows,
         null_extreme_spread_prices=null_extreme_spread_prices,
+        progress=progress("Movement"),
     )
+    stage("Cross-book consensus and anchor path ...")
     consensus = aggregate_across_books(panel)
-    panel = add_book_deviation(panel, consensus)
+    panel = add_book_deviation(panel)
+    anchor_path = add_anchor_total_path_features(panel, ticks, anchor=anchor)
     if verbose:
         print(f"✓ Snapshot panel: {len(panel):,} (game, market, book, snapshot) rows")
 
@@ -517,14 +678,28 @@ def create_intermediate_line_df(
 
     # Same fields for every book, including all configured movement windows.
     book_features = FULL_BOOK_FEATURES + _windowed_feature_names(windows)
+    stage(f"Pivoting {len(books)} book(s) to wide snapshot rows ...")
     wide_parts = [
         _pivot_book_features(panel, book_features, [anchor]),
         _pivot_book_features(panel, book_features, other_books),
         _pivot_consensus(consensus),
     ]
     snapshot_wide = _merge_wide_parts(wide_parts)
+    del wide_parts, consensus
+    snapshot_wide = snapshot_wide.merge(
+        anchor_path, on=["game_id", "snapshot_minutes"], how="left", validate="one_to_one"
+    )
 
     target_line = _resolve_target_line(panel, anchor=anchor)
+    ridge_closing_lines = {
+        market: _ridge_closing_lines(panel, market=market, anchor=anchor)
+        for market in ridge_markets
+    }
+    # Internal closing snapshots must not appear in the requested CSV.
+    if 0 not in snapshot_grid:
+        snapshot_wide = snapshot_wide[
+            snapshot_wide["snapshot_minutes"].isin(snapshot_grid)
+        ].copy()
     snapshot_wide = snapshot_wide.merge(
         target_line, on=["game_id", "snapshot_minutes"], how="left"
     )
@@ -537,6 +712,12 @@ def create_intermediate_line_df(
     snapshot_wide = snapshot_wide.merge(
         target_spread, on=["game_id", "snapshot_minutes"], how="left"
     )
+    # The long panel is millions of (game, market, book, snapshot) rows and
+    # nothing reads it past this point: every frame derived from it is built
+    # above. Holding it through the join below is what made the wide merge --
+    # the single largest allocation in the build -- run out of memory.
+    del panel, anchor_path, target_line, target_spread
+    gc.collect()
 
     # ---- historical line dynamics (prior games only) -------------------
     # Per market: how a team's spread and moneyline get re-priced is different
@@ -544,6 +725,7 @@ def create_intermediate_line_df(
     # two thirds of it away.
     history = lh_games[["game_id"]].copy()
     for market in (MARKET_TOTALS, MARKET_SPREAD, MARKET_MONEYLINE):
+        stage(f"Prior-game line dynamics ({MARKET_SHORT[market]}) ...")
         market_history = add_prior_game_line_dynamics(lh_games, ticks, market=market)
         suffix = MARKET_SHORT[market]
         market_history = market_history.rename(
@@ -572,7 +754,8 @@ def create_intermediate_line_df(
             "The extra season(s) carry team and player history but no odds, so "
             "they lengthen the build without warming any odds rollup."
         )
-    base = create_base_game_features(
+    stage("Creating base game features (closing pipeline) ...")
+    base, injury_context = create_base_game_features(
         recent_limit_to_include=recent_limit_to_include,
         season_start_date=pd.Timestamp(year=base_start_year, month=10, day=1),
         categorical_team_encoding=categorical_team_encoding,
@@ -581,9 +764,29 @@ def create_intermediate_line_df(
         null_extreme_spread_prices=null_extreme_spread_prices,
         exclude_caesars=exclude_caesars,
         combine_fanatics_and_caesars=combine_books,
+        return_injury_context=True,
+        scheduled_games=live.scheduled_games if live is not None else None,
         verbose=verbose,
     )
     base["GAME_ID"] = base["GAME_ID"].astype(str)
+    stage(f"✓ Base features: {base.shape[0]:,} games x {base.shape[1]:,} columns")
+    stage("Referee features ...")
+    base = add_intermediate_referee_features(
+        base,
+        history_seasons=referee_history_seasons,
+        include_same_season_variants=include_same_season_referee_variants,
+        normalize_total_lines=normalize_total_lines,
+        normalize_spread_lines=normalize_spread_lines,
+        null_extreme_spread_prices=null_extreme_spread_prices,
+        exclude_caesars=exclude_caesars,
+        combine_fanatics_and_caesars=combine_books,
+        df_referees_scheduled=live.df_referees_scheduled if live is not None else None,
+    )
+
+    # Availability-effect history reads completed games' closing lines. Keep
+    # this per-game frame before the current game's closing columns are renamed
+    # into the scoring-only namespace below.
+    injury_base = base
 
     # Closing lines are renamed, not kept: they leave in the scoring sidecar so
     # they cannot reach the feature matrix. The opener is deliberately NOT swept
@@ -644,9 +847,18 @@ def create_intermediate_line_df(
     )
 
     # ---- join ----------------------------------------------------------
+    stage("Joining base features onto snapshot rows ...")
+    # Merged in two steps rather than one chained expression so each right-hand
+    # side can be released immediately; chaining keeps both alive alongside the
+    # intermediate result.
     merged = base.merge(
         snapshot_wide, left_on="GAME_ID", right_on="game_id", how="inner"
-    ).merge(history, left_on="GAME_ID", right_on="game_id", how="left")
+    )
+    del snapshot_wide
+    gc.collect()
+    merged = merged.merge(history, left_on="GAME_ID", right_on="game_id", how="left")
+    del history
+    gc.collect()
     merged = merged.drop(
         columns=[
             c for c in ["game_id_x", "game_id_y", "game_id"] if c in merged.columns
@@ -664,8 +876,18 @@ def create_intermediate_line_df(
     merged["SNAPSHOT_TS_UTC"] = merged["TIPOFF_UTC"] - pd.to_timedelta(
         merged["TIME_TO_MATCH_MIN"], unit="m"
     )
-
+    stage(f"✓ Joined: {merged.shape[0]:,} rows x {merged.shape[1]:,} columns")
+    stage("Snapshot injury features (per horizon) ...")
+    merged = add_snapshot_injury_features(
+        merged, injury_base, injury_context, progress=progress("Injuries")
+    )
+    if include_market_dynamics:
+        stage("Market dynamics (injury news, cross-market, news betas) ...")
+        merged = add_intermediate_market_dynamics(
+            merged, ticks=ticks, anchor=anchor, verbose=verbose
+        )
     # ---- targets -------------------------------------------------------
+    stage("Targets, referee masking and the leakage gate ...")
     main_line_column = total_line_col(anchor)
     # The main-book column now holds the SNAPSHOT line, so the derived target
     # and the settlement price are the same number. See the module docstring.
@@ -688,6 +910,10 @@ def create_intermediate_line_df(
     merged[main_spread_column] = spread_line_home_from_implied_margin(
         merged["target_spread_line"]
     )
+    merged = add_snapshot_referee_interactions(merged, book=anchor)
+    # This masks the legacy, crew tendency and interaction families together.
+    # Earlier snapshots must not inherit that game's eventual referee crew.
+    merged = mask_referees_before_release(merged)
     missing_scores = [
         column
         for column in (PTS_HOME_COL, PTS_AWAY_COL)
@@ -730,15 +956,41 @@ def create_intermediate_line_df(
             main_spread_column: merged[main_spread_column],
         }
     )
-    assert_no_bare_closing_odds(
-        gated, allowed=(main_line_column, main_spread_column)
-    )
+    for market in ridge_markets:
+        stage(f"Walk-forward ridge move-to-close ({MARKET_SHORT[market]}) ...")
+        # The training frame is thousands of columns wide. Keep this fit on a
+        # narrow view so adding one feature does not copy the whole dataset.
+        line_column = current_line_column(market, anchor)
+        ridge_columns = list(
+            dict.fromkeys(
+                [
+                    "GAME_ID",
+                    "SEASON_YEAR",
+                    "TIME_TO_MATCH_MIN",
+                    line_column,
+                    *ridge_input_columns(gated.columns, market, anchor),
+                ]
+            )
+        )
+        ridge_input = gated[ridge_columns].join(
+            merged[["TIPOFF_UTC", "SNAPSHOT_TS_UTC"]]
+        )
+        ridge_feature = add_historical_ridge_movement(
+            ridge_input,
+            ridge_closing_lines[market],
+            anchor=anchor,
+            market=market,
+        )
+        output = EXPECTED_MOVE_COLUMNS[market]
+        gated[output] = ridge_feature[output]
+    assert_no_bare_closing_odds(gated, allowed=(main_line_column, main_spread_column))
 
     # Audit BOTH markets. The spread audit is not optional politeness: the
     # snapshot spread family (ODDS_SNAP_SPR_*) contains a raw line, a normalised
     # line, an opener and a move-from-open, and an opener plus its total movement
     # reconstructs the current line exactly -- the same additive-pair shape the
     # totals audit was built to catch.
+    stage("Auditing closing-line reconstruction ...")
     for market_name, anchor_column in (
         ("total", main_line_column),
         ("spread", main_spread_column),
@@ -759,6 +1011,7 @@ def create_intermediate_line_df(
     gated = gated.reset_index(drop=True)
     scoring = _build_scoring_frame(merged, gated)
 
+    stage("Done.")
     if verbose:
         print()
         print("--" * 20)

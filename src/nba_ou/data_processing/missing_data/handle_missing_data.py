@@ -68,6 +68,7 @@ MARKET_KEEP_NA_SUBSTRINGS = [
     "_caesars_",
     "_draftkings_",
     "_fanduel_",
+    "_betrivers_",
     "_pinnacle_",
     "_bovada_",
     "_betonline_",

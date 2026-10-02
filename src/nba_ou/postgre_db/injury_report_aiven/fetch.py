@@ -120,7 +120,95 @@ def coverage_at(
 # ``valid_from < tipoff_utc``, and ``valid_to >= tipoff_utc`` selects the span
 # still open at tip (spans are clamped there, so it is the last one).
 
-_SEASON_FILTER = "(%(season_years)s::smallint[] IS NULL OR g.season_year = ANY(%(season_years)s))"
+_SEASON_FILTER = (
+    "(%(season_years)s::smallint[] IS NULL OR g.season_year = ANY(%(season_years)s))"
+)
+
+# Snapshot cutoffs come from the line-history game clock, not ir_game.tipoff_utc:
+# the former is the timestamp used to resolve each market quote in the
+# intermediate dataset. Passing explicit (game, horizon, timestamp) triples
+# also makes the strict report boundary testable without guessing from tipoff.
+_SNAPSHOT_CUTOFFS = """
+    WITH cutoffs AS (
+        SELECT * FROM unnest(
+            %(game_ids)s::text[],
+            %(snapshot_minutes)s::integer[],
+            %(as_of)s::timestamptz[]
+        ) AS c(game_id, snapshot_minutes, as_of)
+    )
+"""
+
+_STATUS_AT_SNAPSHOTS = (
+    _SNAPSHOT_CUTOFFS
+    + f"""
+    SELECT c.game_id, c.snapshot_minutes,
+           t.nba_team_id::text AS team_id, s.player_id::text AS player_id,
+           st.code AS status, rc.code AS reason_category,
+           r.detail AS reason_detail, g.game_date, g.season_year
+    FROM cutoffs c
+    JOIN {SCHEMA}.ir_status_span s ON s.game_id = c.game_id
+        AND s.valid_from < c.as_of AND s.valid_to >= c.as_of
+    JOIN {SCHEMA}.ir_game g ON g.game_id = c.game_id
+    JOIN {SCHEMA}.ir_team t ON t.team_id = s.team_id
+    JOIN {SCHEMA}.ir_reason r ON r.reason_id = s.reason_id
+    JOIN {SCHEMA}.ir_reason_category rc ON rc.category_id = r.category_id
+    JOIN {SCHEMA}.ir_status st ON st.status_id = s.status_id
+"""
+)
+
+_FILING_AT_SNAPSHOTS = (
+    _SNAPSHOT_CUTOFFS
+    + f"""
+    SELECT c.game_id, c.snapshot_minutes,
+           t.nba_team_id::text AS team_id, f.submitted
+    FROM cutoffs c
+    JOIN {SCHEMA}.ir_filing_span f ON f.game_id = c.game_id
+        AND f.valid_from < c.as_of AND f.valid_to >= c.as_of
+    JOIN {SCHEMA}.ir_team t ON t.team_id = f.team_id
+"""
+)
+
+_REPORT_AGE_AT_SNAPSHOTS = (
+    _SNAPSHOT_CUTOFFS
+    + f"""
+    SELECT c.game_id, c.snapshot_minutes,
+           EXTRACT(EPOCH FROM (c.as_of - last.observed_at)) / 60
+               AS report_age_minutes
+    FROM cutoffs c
+    LEFT JOIN LATERAL (
+        SELECT max(r.observed_at) AS observed_at
+        FROM {SCHEMA}.ir_report r
+        WHERE r.observed_at < c.as_of AND r.parse_ok
+    ) last ON TRUE
+"""
+)
+
+
+def report_state_at_snapshots(
+    conn: psycopg.Connection, cutoffs: pd.DataFrame
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    """Status, filing and report age at every explicit pre-game UTC cutoff."""
+    required = {"game_id", "snapshot_minutes", "as_of"}
+    if not required.issubset(cutoffs.columns):
+        raise ValueError(
+            f"Snapshot cutoffs are missing {sorted(required - set(cutoffs))}"
+        )
+    if cutoffs.duplicated(["game_id", "snapshot_minutes"]).any():
+        raise ValueError("Snapshot cutoffs must be unique per game and horizon")
+    timestamps = pd.to_datetime(cutoffs["as_of"], utc=True)
+    if timestamps.isna().any():
+        raise ValueError("Snapshot cutoffs must have a UTC timestamp")
+    params = {
+        "game_ids": cutoffs["game_id"].astype(str).tolist(),
+        "snapshot_minutes": cutoffs["snapshot_minutes"].astype(int).tolist(),
+        "as_of": [value.to_pydatetime() for value in timestamps],
+    }
+    return (
+        pd.read_sql_query(_STATUS_AT_SNAPSHOTS, conn, params=params),
+        pd.read_sql_query(_FILING_AT_SNAPSHOTS, conn, params=params),
+        pd.read_sql_query(_REPORT_AGE_AT_SNAPSHOTS, conn, params=params),
+    )
+
 
 _LAST_STATUS_BEFORE_TIP = f"""
     SELECT s.game_id,
@@ -200,7 +288,13 @@ _LISTED_PAIRS = f"""
 
 
 def _season_params(season_years: list[int] | None) -> dict:
-    return {"season_years": None if season_years is None else list(season_years)}
+    # Plain ints: numpy integers mixed with Python ints cannot be dumped as one
+    # Postgres array.
+    return {
+        "season_years": (
+            None if season_years is None else [int(season) for season in season_years]
+        )
+    }
 
 
 def last_status_before_tip(
@@ -246,6 +340,98 @@ def listed_pairs(
 ) -> pd.DataFrame:
     """Every (game, player) with any pre-tip designation, of any status."""
     return pd.read_sql_query(_LISTED_PAIRS, conn, params=_season_params(season_years))
+
+
+# --------------------------------------------------------------------------------
+# Full span history (intermediate injury-news features)
+# --------------------------------------------------------------------------------
+#
+# Snapshot news needs every change before tip, not the state at one instant. The
+# reads stay pre-tip (``valid_from < tipoff_utc``); a snapshot's own strict
+# ``valid_from < T`` rule is applied by the caller, per snapshot.
+
+_STATUS_SPANS = f"""
+    SELECT s.game_id,
+           t.nba_team_id::text AS team_id,
+           s.player_id::text   AS player_id,
+           st.code             AS status,
+           rc.code             AS reason_category,
+           s.valid_from,
+           s.valid_to,
+           g.game_date,
+           g.season_year,
+           g.tipoff_utc
+    FROM {SCHEMA}.ir_status_span s
+    JOIN {SCHEMA}.ir_game            g  ON g.game_id      = s.game_id
+    JOIN {SCHEMA}.ir_team            t  ON t.team_id      = s.team_id
+    JOIN {SCHEMA}.ir_reason          r  ON r.reason_id    = s.reason_id
+    JOIN {SCHEMA}.ir_reason_category rc ON rc.category_id = r.category_id
+    LEFT JOIN {SCHEMA}.ir_status     st ON st.status_id   = s.status_id
+    WHERE s.valid_from < g.tipoff_utc
+      AND {_SEASON_FILTER}
+"""
+
+_FILING_SPANS = f"""
+    SELECT f.game_id,
+           t.nba_team_id::text AS team_id,
+           f.valid_from,
+           f.valid_to,
+           f.submitted
+    FROM {SCHEMA}.ir_filing_span f
+    JOIN {SCHEMA}.ir_game g ON g.game_id = f.game_id
+    JOIN {SCHEMA}.ir_team t ON t.team_id = f.team_id
+    WHERE f.valid_from < g.tipoff_utc
+      AND {_SEASON_FILTER}
+"""
+
+# The previous game is taken over the WHOLE game table and filtered afterwards,
+# so the first game of a requested season still finds its predecessor.
+# Preseason (001) and All-Star (003) games are left out: they carry no report,
+# so a regular-season opener would otherwise inherit an unreported predecessor.
+_TEAM_GAME_SCHEDULE = f"""
+    WITH team_games AS (
+        SELECT g.game_id, g.game_date, g.season_year, g.tipoff_utc,
+               t.nba_team_id::text AS team_id
+        FROM {SCHEMA}.ir_game g
+        JOIN {SCHEMA}.ir_team t ON t.tricode IN (g.team_home, g.team_away)
+        WHERE left(g.game_id, 3) NOT IN ('001', '003')
+    ), ordered AS (
+        SELECT *, lag(game_id) OVER (
+                   PARTITION BY team_id ORDER BY tipoff_utc, game_id
+               ) AS prev_game_id
+        FROM team_games
+    )
+    SELECT game_id, team_id, game_date, season_year, tipoff_utc, prev_game_id
+    FROM ordered g
+    WHERE {_SEASON_FILTER}
+"""
+
+
+def status_spans(
+    conn: psycopg.Connection, season_years: list[int] | None = None
+) -> pd.DataFrame:
+    """Every pre-tip status span, including drop-offs (``status`` NULL).
+
+    A NULL status means the player left the report; it is a change, so it is
+    kept rather than filtered out as the as-of reads do.
+    """
+    return pd.read_sql_query(_STATUS_SPANS, conn, params=_season_params(season_years))
+
+
+def filing_spans(
+    conn: psycopg.Connection, season_years: list[int] | None = None
+) -> pd.DataFrame:
+    """Every pre-tip filing span per team-game, with its ``submitted`` flag."""
+    return pd.read_sql_query(_FILING_SPANS, conn, params=_season_params(season_years))
+
+
+def team_game_schedule(
+    conn: psycopg.Connection, season_years: list[int] | None = None
+) -> pd.DataFrame:
+    """One row per (game, team), with the team's previous game by tip-off."""
+    return pd.read_sql_query(
+        _TEAM_GAME_SCHEDULE, conn, params=_season_params(season_years)
+    )
 
 
 def _require_aware(as_of: datetime) -> None:

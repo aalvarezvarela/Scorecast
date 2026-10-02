@@ -19,8 +19,7 @@ def compute_rolling_stats(
     include_home_away_relative: bool = True,
     relative_to_window: int | None = None,
 ) -> pd.DataFrame:
-    """
-    Computes rolling averages for a given `param`, excluding the current row's game.
+    """Computes rolling averages for a given `param`, excluding the current row's game.
 
     Creates:
       - f"{param}_LAST_ALL_{window}_MATCHES_BEFORE"
@@ -54,6 +53,9 @@ def compute_rolling_stats(
         and (TEAM_ID, SEASON_YEAR, HOME) for home/away split when needed.
       - When group_by_season=False: computes rolling within (TEAM_ID) for "ANY"
         and (TEAM_ID, HOME) for home/away split when needed, allowing previous seasons.
+      - Season averages group by (TEAM_ID, SEASON_YEAR, HOME). Missing values
+        fall back to the previous season's mean for the same team/location, then
+        the strict rolling average. Without any history they remain NaN.
       - Keeps final sort by GAME_DATE descending to match your pipeline style
     """
     if param not in df.columns:
@@ -286,21 +288,25 @@ def compute_rolling_weighted_stats(
 
     series = pd.to_numeric(out[param], errors="coerce")
 
-    def weighted_moving_average(x: pd.Series) -> float:
+    def weighted_moving_average(x: np.ndarray) -> float:
         """
         Compute weighted moving average with consistent relative weighting.
         Uses exponential-like weights that scale properly for any window size.
+
+        Takes the raw window (``raw=True``): the same float64 values and the
+        same numpy reductions as the Series version it replaced, without
+        building a Series for every window.
         """
         n = len(x)
-        if x.isna().all():
+        mask = ~np.isnan(x)
+        if not mask.any():
             return np.nan
 
         # Generate weights for the actual window size (1 to n)
         # This ensures consistent relative weighting regardless of window size
         w = np.arange(1, n + 1, dtype=float)
 
-        mask = ~x.isna()
-        return float((x[mask] * w[mask.to_numpy()]).sum() / w[mask.to_numpy()].sum())
+        return float((x[mask] * w[mask]).sum() / w[mask].sum())
 
     # Build groupby keys
     if group_by_season:
@@ -315,7 +321,7 @@ def compute_rolling_weighted_stats(
         lambda s: (
             s.shift(1)
             .rolling(window, min_periods=1)
-            .apply(weighted_moving_average, raw=False)
+            .apply(weighted_moving_average, raw=True)
         )
     )
 
@@ -329,7 +335,7 @@ def compute_rolling_weighted_stats(
                 lambda s: (
                     s.shift(1)
                     .rolling(window, min_periods=1)
-                    .apply(weighted_moving_average, raw=False)
+                    .apply(weighted_moving_average, raw=True)
                 )
             )
             out[last_n_split_col] = split_wma - out[last_n_wma_col]
@@ -348,7 +354,7 @@ def compute_rolling_weighted_stats(
                     lambda s: (
                         s.shift(1)
                         .rolling(relative_to_window, min_periods=1)
-                        .apply(weighted_moving_average, raw=False)
+                        .apply(weighted_moving_average, raw=True)
                     )
                 )
             out[relative_col] = ref_wma - out[last_n_wma_col]

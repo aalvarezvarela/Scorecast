@@ -697,11 +697,9 @@ class WalkForwardConfig(BaseModel):
     #: Discrete training-window sizes for Optuna to choose between. When set,
     #: ``train_games`` becomes a tuned hyperparameter sampled once per trial and
     #: held fixed across that trial's folds; ``train_games`` below is then only
-    #: the fallback used when tuning is skipped. Only supported under
-    #: ``rolling_origin``, where the validation windows do not depend on the
-    #: window size -- under ``test_anchored`` a larger window can push folds
-    #: below ``min_train_games`` and silently change the fold layout, which
-    #: would make trials incomparable.
+    #: the fallback used when tuning is skipped. Under ``test_anchored``, folds
+    #: are constructed with their full histories first, then every candidate
+    #: trims those SAME folds to its requested history size.
     train_games_choices: tuple[int, ...] | None = None
 
     @property
@@ -749,14 +747,11 @@ class WalkForwardConfig(BaseModel):
                 raise ValueError(
                     "walk_forward.train_games_choices values must all be > 0."
                 )
-            if self.strategy != CVStrategy.ROLLING_ORIGIN:
+            if self.strategy not in (CVStrategy.ROLLING_ORIGIN, CVStrategy.TEST_ANCHORED):
                 raise ValueError(
                     "walk_forward.train_games_choices requires "
-                    "walk_forward.strategy='rolling_origin'. Under "
-                    f"{self.strategy.value!r} the fold layout itself depends on "
-                    "the window size (a fold is dropped once tail(train_games) "
-                    "falls under min_train_games), so different trials would be "
-                    "scored on different folds."
+                    "walk_forward.strategy='rolling_origin' or 'test_anchored'. "
+                    f"Got {self.strategy.value!r}."
                 )
         return self
 

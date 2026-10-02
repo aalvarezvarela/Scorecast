@@ -6,9 +6,13 @@ separate output file, no shared state. Building one dataset cannot affect the
 other.
 
     poetry run python scripts/create_train_data/create_intermediate_line_train_data.py
+    poetry run python scripts/create_train_data/create_intermediate_line_train_data.py --format parquet
 
 The printed sha256 goes straight into a campaign config's
-``data.expected_checksum`` so a regenerated CSV cannot pass silently.
+``data.expected_checksum`` so a regenerated dataset cannot pass silently.
+``--format parquet`` writes the CSV, converts it with row-group verification
+(``training_pipeline.parquet_dataset``) and deletes it; single-horizon runs
+then load in seconds and ~1-2GB instead of minutes and ~14GB.
 
 **Read the row-count warning it prints.** Every window in
 ``experiments/_base.yaml`` named ``*_games`` is counted in ROWS, not games
@@ -20,6 +24,7 @@ for -- with no error raised. The script prints the rescaled values to use.
 from __future__ import annotations
 
 import argparse
+import gc
 from pathlib import Path
 
 import pandas as pd
@@ -30,6 +35,10 @@ from nba_ou.create_training_data.create_intermediate_line_df import (
 )
 from nba_ou.data_processing.line_history.movement_features import DEFAULT_WINDOWS
 from nba_ou.data_processing.line_history.snapshots import DEFAULT_SNAPSHOT_GRID
+from nba_ou.data_processing.referees.referee_tendencies import (
+    DEFAULT_REFEREE_HISTORY_SEASONS,
+)
+from nba_ou.utils.parallel_csv import write_csv
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_OUTPUT_DIR = PROJECT_ROOT / "data" / "train_data"
@@ -66,7 +75,21 @@ def print_config_guidance(n_snapshots: int) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--output", type=Path, default=None)
+    parser.add_argument(
+        "--output",
+        type=Path,
+        default=None,
+        help="CSV path to write. With --format parquet the .parquet file lands beside it.",
+    )
+    parser.add_argument(
+        "--format",
+        choices=("csv", "parquet", "both"),
+        default="csv",
+        help=(
+            "parquet: write the CSV, convert it with row-group verification, then "
+            "delete the CSV. both: keep the CSV too. The scoring sidecar stays CSV."
+        ),
+    )
     parser.add_argument(
         "--seasons",
         type=str,
@@ -92,6 +115,17 @@ def main() -> None:
         type=str,
         default=",".join(str(m) for m in DEFAULT_SNAPSHOT_GRID),
         help="Minutes before tip to sample.",
+    )
+    parser.add_argument(
+        "--referee-history-seasons",
+        type=int,
+        default=DEFAULT_REFEREE_HISTORY_SEASONS,
+        help="Seasons of officiating history behind REF_CREW_* features.",
+    )
+    parser.add_argument(
+        "--referee-same-season-variants",
+        action="store_true",
+        help="Also emit REF_CREW_SS_* same-season-only tendencies.",
     )
     parser.add_argument(
         "--windows",
@@ -142,6 +176,23 @@ def main() -> None:
         action="store_true",
         help="Keep extreme spread price cells instead of setting them to NaN.",
     )
+    parser.add_argument(
+        "--no-ridge-movement",
+        action="store_true",
+        help=(
+            "Omit the walk-forward expected total-line move to close feature "
+            "and skip its historical Ridge fit."
+        ),
+    )
+    parser.add_argument(
+        "--no-market-dynamics",
+        action="store_true",
+        help=(
+            "Omit the injury-news, news-reaction and cross-market snapshot "
+            "features and the spread/moneyline move-to-close Ridge fits "
+            "(docs/intermediate_market_dynamics_plan.md)."
+        ),
+    )
     args = parser.parse_args()
 
     grid = _parse_int_tuple(args.snapshot_grid)
@@ -154,12 +205,16 @@ def main() -> None:
         snapshot_grid=grid,
         windows=windows,
         base_lookback_seasons=args.base_lookback_seasons,
+        referee_history_seasons=args.referee_history_seasons,
+        include_same_season_referee_variants=args.referee_same_season_variants,
         anchor_book=args.anchor_book,
         exclude_fanatics=args.exclude_fanatics,
         exclude_caesars=args.exclude_caesars,
         normalize_total_lines=not args.no_normalize_total_lines,
         normalize_spread_lines=not args.no_normalize_spread_lines,
         null_extreme_spread_prices=not args.keep_extreme_spread_prices,
+        include_ridge_movement=not args.no_ridge_movement,
+        include_market_dynamics=not args.no_market_dynamics,
         return_scoring=True,
     )
 
@@ -175,8 +230,12 @@ def main() -> None:
             / f"intermediate_line_data_{TRAINING_DATA_SCHEMA_VERSION}_{stamp}.csv"
         )
 
-    df.to_csv(output_path, index=False)
-    print(f"\nSaved training data to {output_path}")
+    print(
+        f"\nWriting {len(df):,} rows x {df.shape[1]:,} columns to {output_path} ...",
+        flush=True,
+    )
+    write_csv(df, output_path)
+    print(f"Saved training data to {output_path}")
 
     # Closing lines and snapshot weights live in a separate file on purpose:
     # the training pipeline builds X by dropping only configured exclusions, so
@@ -187,12 +246,18 @@ def main() -> None:
         f"Saved scoring sidecar to {scoring_path} (join on GAME_ID + TIME_TO_MATCH_MIN)"
     )
 
-    from training_pipeline.data import compute_file_checksum
-
-    print(f'expected_checksum: "{compute_file_checksum(output_path)}"')
-
     print_row_retention(df)
     print_config_guidance(df["TIME_TO_MATCH_MIN"].nunique())
+
+    # Free the build before converting: the conversion reloads the CSV (~14GB
+    # for the full intermediate file), and holding both would not fit.
+    del df, scoring
+    gc.collect()
+
+    from training_pipeline.parquet_dataset import finish_dataset_output
+
+    print("\nFinishing output ...", flush=True)
+    finish_dataset_output(output_path, output_format=args.format)
 
 
 def print_row_retention(df: pd.DataFrame) -> None:

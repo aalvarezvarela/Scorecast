@@ -102,6 +102,11 @@ def _print_stats(stats: ingest_mod.IngestStats, *, dry_run: bool) -> None:
         )
         for item in stats.tipoff_disagreements[:10]:
             print(f"  - {item}")
+    if stats.retimed_games:
+        print(
+            f"\nStored games moved to the page tipoff ({len(stats.retimed_games)}): "
+            + ", ".join(stats.retimed_games[:10])
+        )
 
 
 def main() -> int:
@@ -222,6 +227,7 @@ def main() -> int:
                 setattr(totals, name, getattr(totals, name) + getattr(stats, name))
             totals.unmatched_games.extend(stats.unmatched_games)
             totals.tipoff_disagreements.extend(stats.tipoff_disagreements)
+            totals.retimed_games.extend(stats.retimed_games)
             for reason, count in stats.dropped.items():
                 totals.drop(reason, count)
             for reason, count in stats.repaired.items():

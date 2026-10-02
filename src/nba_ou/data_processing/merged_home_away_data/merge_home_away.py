@@ -112,13 +112,15 @@ def merge_home_away_data(df, todays_prediction=False):
         inplace=True,
     )
 
-    den = df["OFF_RATING_SEASON_BEFORE_AVG"].replace(0, np.nan)
-    df["STAR_OFFENSIVE_RATIO_IMPROVEMENT_BEFORE"] = (
-        df["TOP1_PLAYER_OFF_RATING_BEFORE"] / den
-    )
-    df["STAR_OFFENSIVE_RATIO_IMPROVEMENT_BEFORE"] = df[
-        "STAR_OFFENSIVE_RATIO_IMPROVEMENT_BEFORE"
-    ].fillna(0)
+    # The per-slot OFF_RATING value only exists under the legacy player profile;
+    # the reduced profile replaces rate slots with minutes-weighted aggregates
+    # (see players/feature_profile.py), so the ratio is derived only when its
+    # input was emitted.
+    if "TOP1_PLAYER_OFF_RATING_BEFORE" in df.columns:
+        den = df["OFF_RATING_SEASON_BEFORE_AVG"].replace(0, np.nan)
+        df["STAR_OFFENSIVE_RATIO_IMPROVEMENT_BEFORE"] = (
+            df["TOP1_PLAYER_OFF_RATING_BEFORE"] / den
+        ).fillna(0)
 
     df["STAR_PTS_PERCENTAGE_BEFORE"] = (
         df["TOP1_PLAYER_PTS_BEFORE"] / df["PTS_SEASON_BEFORE_AVG"]

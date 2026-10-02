@@ -135,19 +135,37 @@ def _create_predictions_table_base(
                     training_code_tag TEXT NOT NULL DEFAULT '0.0',
                     train_date_min DATE,
                     train_date_max DATE,
+                    pred_spread_error NUMERIC,
+                    pred_home_margin NUMERIC,
+                    spread_line_at_prediction NUMERIC,
+                    model_target TEXT,
+                    -- Minutes before tip the MODEL WAS TRAINED FOR. Distinct
+                    -- from time_to_match_minutes, which is when the prediction
+                    -- ran. Both are needed to ask whether the T-360 model
+                    -- actually beat the T-0 model at T-360.
+                    model_horizon_minutes INTEGER,
+                    model_schema_version TEXT,
+                    model_variant TEXT,
+                    spec_id TEXT,
+                    fit_id TEXT,
                     CONSTRAINT chk_prediction_value_type
                         CHECK (
-                            prediction_value_type IN ('TOTAL_POINTS', 'DIFF_FROM_LINE')
+                            prediction_value_type IN (
+                                'TOTAL_POINTS', 'DIFF_FROM_LINE', 'SPREAD_ERROR'
+                            )
                         ),
                     CONSTRAINT chk_prediction_target_present
                         CHECK (
                             pred_line_error IS NOT NULL
                             OR pred_total_points IS NOT NULL
+                            OR pred_spread_error IS NOT NULL
                         ),
                     CONSTRAINT chk_pred_pick
                         CHECK (
                             pred_pick IS NULL
-                            OR pred_pick IN ('OVER', 'UNDER', 'PUSH')
+                            OR pred_pick IN (
+                                'OVER', 'UNDER', 'PUSH', 'HOME', 'AWAY'
+                            )
                         ),
                     CONSTRAINT unique_game_prediction
                         UNIQUE (
@@ -305,6 +323,15 @@ def upload_predictions_to_postgre(df: "pd.DataFrame"):
                 "TRAINING_CODE_TAG": "training_code_tag",
                 "TRAIN_DATE_MIN": "train_date_min",
                 "TRAIN_DATE_MAX": "train_date_max",
+                "PRED_SPREAD_ERROR": "pred_spread_error",
+                "PRED_HOME_MARGIN": "pred_home_margin",
+                "SPREAD_LINE_AT_PREDICTION": "spread_line_at_prediction",
+                "MODEL_TARGET": "model_target",
+                "MODEL_HORIZON_MINUTES": "model_horizon_minutes",
+                "MODEL_SCHEMA_VERSION": "model_schema_version",
+                "MODEL_VARIANT": "model_variant",
+                "SPEC_ID": "spec_id",
+                "FIT_ID": "fit_id",
             }
         )
 
@@ -340,6 +367,15 @@ def upload_predictions_to_postgre(df: "pd.DataFrame"):
             "training_code_tag",
             "train_date_min",
             "train_date_max",
+            "pred_spread_error",
+            "pred_home_margin",
+            "spread_line_at_prediction",
+            "model_target",
+            "model_horizon_minutes",
+            "model_schema_version",
+            "model_variant",
+            "spec_id",
+            "fit_id",
         ):
             if col not in df.columns:
                 df[col] = None
@@ -402,6 +438,15 @@ def upload_predictions_to_postgre(df: "pd.DataFrame"):
             "training_code_tag",
             "train_date_min",
             "train_date_max",
+            "pred_spread_error",
+            "pred_home_margin",
+            "spread_line_at_prediction",
+            "model_target",
+            "model_horizon_minutes",
+            "model_schema_version",
+            "model_variant",
+            "spec_id",
+            "fit_id",
         ]
 
         missing_columns = [col for col in columns if col not in df.columns]
@@ -473,11 +518,18 @@ def upload_predictions_to_postgre(df: "pd.DataFrame"):
 
 def add_training_metadata_columns() -> None:
     """
-    Idempotently add training_code_tag, train_date_min, and train_date_max to an
-    existing predictions table without losing data.
+    Idempotently bring an existing predictions table up to the current schema.
 
-    Run this once to upgrade a table created before these columns existed.
-    Existing rows will receive '0.0' for training_code_tag and NULL for the date columns.
+    Adds the training-metadata columns, the spread target's columns, and the
+    slot-identity columns (model_target, model_horizon_minutes,
+    model_schema_version, model_variant, spec_id, fit_id), then widens the
+    CHECK constraints that would otherwise reject every spread row.
+
+    model_horizon_minutes is the one worth understanding: it is what the model
+    was TRAINED for, while time_to_match_minutes is when the prediction RAN.
+    Without both, a T-720 model serving every game at T-60 leaves no trace.
+
+    Safe to run repeatedly. Existing rows get NULL in the new columns.
     """
     schema, table = get_predictions_schema_and_table()
     conn = connect_nba_db()
@@ -488,13 +540,60 @@ def add_training_metadata_columns() -> None:
                     "ALTER TABLE {}.{} "
                     "ADD COLUMN IF NOT EXISTS training_code_tag TEXT NOT NULL DEFAULT '0.0', "
                     "ADD COLUMN IF NOT EXISTS train_date_min DATE, "
-                    "ADD COLUMN IF NOT EXISTS train_date_max DATE"
+                    "ADD COLUMN IF NOT EXISTS train_date_max DATE, "
+                    "ADD COLUMN IF NOT EXISTS pred_spread_error NUMERIC, "
+                    "ADD COLUMN IF NOT EXISTS pred_home_margin NUMERIC, "
+                    "ADD COLUMN IF NOT EXISTS spread_line_at_prediction NUMERIC, "
+                    "ADD COLUMN IF NOT EXISTS model_target TEXT, "
+                    "ADD COLUMN IF NOT EXISTS model_horizon_minutes INTEGER, "
+                    "ADD COLUMN IF NOT EXISTS model_schema_version TEXT, "
+                    "ADD COLUMN IF NOT EXISTS model_variant TEXT, "
+                    "ADD COLUMN IF NOT EXISTS spec_id TEXT, "
+                    "ADD COLUMN IF NOT EXISTS fit_id TEXT"
                 ).format(sql.Identifier(schema), sql.Identifier(table))
             )
+            # The value-type and target-present CHECKs predate the spread
+            # target, so an existing table rejects every spread row until they
+            # are widened. Dropped and recreated because Postgres has no
+            # "alter constraint" for CHECKs.
+            for constraint, definition in (
+                (
+                    "chk_prediction_value_type",
+                    "CHECK (prediction_value_type IN "
+                    "('TOTAL_POINTS', 'DIFF_FROM_LINE', 'SPREAD_ERROR'))",
+                ),
+                (
+                    "chk_prediction_target_present",
+                    "CHECK (pred_line_error IS NOT NULL "
+                    "OR pred_total_points IS NOT NULL "
+                    "OR pred_spread_error IS NOT NULL)",
+                ),
+                (
+                    "chk_pred_pick",
+                    "CHECK (pred_pick IS NULL OR pred_pick IN "
+                    "('OVER', 'UNDER', 'PUSH', 'HOME', 'AWAY'))",
+                ),
+            ):
+                cur.execute(
+                    sql.SQL("ALTER TABLE {}.{} DROP CONSTRAINT IF EXISTS {}").format(
+                        sql.Identifier(schema),
+                        sql.Identifier(table),
+                        sql.Identifier(constraint),
+                    )
+                )
+                cur.execute(
+                    sql.SQL("ALTER TABLE {}.{} ADD CONSTRAINT {} " + definition).format(
+                        sql.Identifier(schema),
+                        sql.Identifier(table),
+                        sql.Identifier(constraint),
+                    )
+                )
         conn.commit()
         print(
-            f"Columns training_code_tag, train_date_min, train_date_max "
-            f"added (or already present) on '{schema}.{table}'."
+            f"Training-metadata, spread and slot-identity columns added "
+            f"(or already present) on '{schema}.{table}', and the "
+            f"prediction_value_type / target-present / pred_pick constraints "
+            f"widened for the spread target."
         )
     except Exception as e:
         print(f"Error adding training metadata columns: {e}")
@@ -611,7 +710,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--add-columns",
         action="store_true",
-        help="Idempotently add training_code_tag, train_date_min, train_date_max to an existing table",
+        help="Idempotently add the training-metadata, spread and slot-identity columns to an existing table",
     )
     args = parser.parse_args()
 

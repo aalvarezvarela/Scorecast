@@ -57,6 +57,7 @@ _KNOWN_BOOKS: tuple[str, ...] = (
     "fanduel",
     "draftkings",
     "fanatics_sportsbook",
+    "betrivers",
     "consensus_opener",
 )
 

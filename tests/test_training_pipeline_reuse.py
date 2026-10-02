@@ -48,6 +48,34 @@ def test_recovers_params_and_boosting_rounds_from_a_saved_run(tmp_path):
     assert recovered.cv_mae == pytest.approx(13.42)
 
 
+def test_early_stopping_cap_does_not_override_the_median_best_iteration(tmp_path):
+    """Regression: an early-stopping trial records user_attrs n_estimators=1000,
+    which is the cap, not the rounds. The holdout backtest fitted the median
+    (51); promotion read the cap and would have shipped a 1000-round model.
+    """
+    run_dir = _write_trials(
+        tmp_path,
+        params={"max_depth": 3},
+        user_attrs={
+            "n_estimators": 1000,
+            "median_best_iteration": 51,
+            "mean_best_iteration": 61,
+        },
+    )
+
+    assert load_run_hyperparameters(run_dir).n_estimators == 51
+
+
+def test_tuned_rounds_still_win_over_recorded_attrs(tmp_path):
+    run_dir = _write_trials(
+        tmp_path,
+        params={"max_depth": 3, "n_estimators": 240},
+        user_attrs={"n_estimators": 240},
+    )
+
+    assert load_run_hyperparameters(run_dir).n_estimators == 240
+
+
 def test_sample_weight_lambda_is_split_out_of_the_xgb_params(tmp_path):
     """sample_weight_lambda is a training-protocol parameter; feeding it to
     XGBRegressor would be silently ignored.

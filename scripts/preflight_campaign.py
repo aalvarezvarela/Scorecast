@@ -47,8 +47,10 @@ if str(REPO_ROOT) not in sys.path:
 from training_pipeline.cli import load_config  # noqa: E402
 from training_pipeline.config import CVStrategy, ExperimentConfig  # noqa: E402
 from training_pipeline.data import (  # noqa: E402
-    compute_file_checksum,
+    DatasetSource,
     prepare_dataset,
+    read_dataset_columns,
+    resolve_dataset_source,
     training_eligible_mask,
 )
 from training_pipeline.splits import (  # noqa: E402
@@ -76,9 +78,9 @@ def _check_dataset_key_integrity(
         columns.append(data.snapshot_col)
 
     try:
-        frame = pd.read_csv(
+        frame = read_dataset_columns(
             csv,
-            usecols=columns,
+            columns=columns,
             dtype={data.game_id_col: "string", data.date_col: "string"},
         )
     except Exception as exc:  # noqa: BLE001 - turn parser failures into preflight output
@@ -175,24 +177,35 @@ def check_configs(
 
     # --- 2. datasets exist, and their bytes are the pinned ones -------------
     print("Datasets")
-    seen: dict[Path, str] = {}
+    # Resolved exactly as prepare_dataset resolves it, so a verified Parquet
+    # copy passes here (and is what the key check below reads) even when the
+    # CSV it stands for has been archived away.
+    seen: dict[tuple[Path, str | None], DatasetSource | str] = {}
+    read_paths: dict[str, Path] = {}
     for name, config in configs.items():
         csv = Path(config.data.csv_path)
         csv = csv if csv.is_absolute() else REPO_ROOT / csv
-        if not csv.exists():
-            problems.append(f"{name}: dataset missing -- {csv}")
-            print(f"  {FAIL}  {name}: missing {csv}")
+        pinned = config.data.expected_checksum
+        key = (csv, pinned)
+        if key not in seen:
+            try:
+                seen[key] = resolve_dataset_source(csv, expected_checksum=pinned)
+            except FileNotFoundError:
+                seen[key] = f"dataset missing -- {csv}"
+            except ValueError as exc:
+                seen[key] = str(exc)
+        source = seen[key]
+        if isinstance(source, str):
+            problems.append(f"{name}: {source}")
+            print(f"  {FAIL}  {name}: {source}")
             continue
-        if csv not in seen:
-            seen[csv] = compute_file_checksum(csv)
-        actual, pinned = seen[csv], config.data.expected_checksum
+        read_paths[name] = source.read_path
+        via = f" via {source.read_path.name}" if source.read_path != csv else ""
         if pinned is None:
-            print(f"  {WARN}  {name}: no expected_checksum pinned (actual {actual})")
-        elif pinned != actual:
-            problems.append(f"{name}: checksum mismatch, pinned {pinned} got {actual}")
-            print(f"  {FAIL}  {name}: checksum {pinned} != {actual}")
+            print(f"  {WARN}  {name}: no expected_checksum pinned "
+                  f"(actual {source.checksum}){via}")
         else:
-            print(f"  {OK}    {name}: {csv.name} matches {actual}")
+            print(f"  {OK}    {name}: {csv.name} matches {source.checksum}{via}")
     print()
 
     # A checksum can pin corrupt bytes just as faithfully as healthy ones. This
@@ -201,15 +214,16 @@ def check_configs(
     print("Dataset key integrity")
     checked_integrity: set[tuple[Path, str, str, str]] = set()
     for name, config in configs.items():
-        csv = Path(config.data.csv_path)
-        csv = csv if csv.is_absolute() else REPO_ROOT / csv
+        csv = read_paths.get(name)
+        if csv is None:
+            continue
         identity = (
             csv,
             config.data.game_id_col,
             config.data.date_col,
             config.data.snapshot_col,
         )
-        if identity in checked_integrity or not csv.exists():
+        if identity in checked_integrity:
             continue
         checked_integrity.add(identity)
         summary, integrity_problems = _check_dataset_key_integrity(csv, config)
@@ -232,6 +246,14 @@ def check_configs(
             "snapshot_minutes": c.data.snapshot_minutes,
             "no_overtime": c.data.exclude_overtime_from_training,
             "drop_playoffs": c.data.exclude_playoffs,
+            # Paired with max_na_per_row below, and the pairing is the point: on
+            # the intermediate dataset the older seasons are reachable ONLY by
+            # raising the row budget, so a campaign moving the floor without the
+            # budget admits nothing. Omitting this printed a design matrix that
+            # hid the headline variable of
+            # history_depth_line_error_2_5_2026_09, whose four arms differ in
+            # exactly this field.
+            "season_year_floor": c.data.season_year_floor,
             "max_na_per_row": c.cleaning.max_na_per_row,
             "nan_threshold": c.cleaning.nan_threshold,
             "exclude_cols": str(c.cleaning.exclude_cols_containing),
@@ -248,6 +270,9 @@ def check_configs(
             "min_validation_games": c.walk_forward.min_validation_games,
             "eval_span_games": c.walk_forward.eval_span_games,
             "train_games_choices": str(c.walk_forward.train_games_choices),
+            "time_decay": c.sample_weight.enabled,
+            "tune_decay": c.sample_weight.tune_lambda,
+            "allow_unweighted": c.sample_weight.allow_unweighted,
             "tune_n_estimators": c.optuna.tune_n_estimators,
             "objective_agg": c.optuna.objective_aggregation.value,
             "planted_variance": (
@@ -313,7 +338,8 @@ def check_configs(
                     _check_rolling_origin(name, member, df_dev)
                 )
                 continue
-            requested = member.walk_forward.train_games
+            choices = member.walk_forward.train_games_choices
+            requested = max(choices) if choices else member.walk_forward.train_games
             # Feasibility must be measured with training-row filters OFF.
             # build_walk_forward_splits applies them (overtime, etc.) AFTER
             # tail(train_games), so a filtered fold is legitimately smaller than

@@ -25,11 +25,13 @@ def _normalize_game_ids(game_ids) -> list[str]:
 
 
 def load_players_from_db(seasons=None, extra_game_ids=None) -> pd.DataFrame | None:
-    """
-    Load NBA players data from Postgres (single DB, schema.table).
+    """Load NBA players data from Postgres (single DB, schema.table).
 
     Args:
         seasons: list like ['2023-24', '2024-25'] or None for all seasons.
+        extra_game_ids (list, optional): Game IDs included in addition to the
+            selected seasons. With None or empty seasons, these IDs restrict the
+            query; without either filter, all rows are loaded.
 
     Returns:
         DataFrame or None if failure.

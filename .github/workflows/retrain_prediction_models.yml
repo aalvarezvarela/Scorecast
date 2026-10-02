@@ -85,12 +85,16 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Retrain configured prediction models
+      - name: Refit enabled slots from their specs
         run: python scripts/retrain_prediction_models.py
 
-      - name: Wait before promoting prediction models
-        run: sleep 30
-
-      - name: Promote configured prediction models
+      # Loads each staged booster and checks it agrees with its spec before
+      # anything is pointed at it. Promotion is a single pointer write, so
+      # there is no partially-moved state to wait out.
+      - name: Smoke test the staged builds
         if: ${{ success() }}
-        run: python scripts/promote_prediction_models.py --execute
+        run: python scripts/smoke_test_s3_model_load.py --channel staging
+
+      - name: Promote staged builds to production
+        if: ${{ success() }}
+        run: python scripts/promote_build.py --execute

@@ -2,6 +2,7 @@ from pathlib import Path
 
 import pandas as pd
 import psycopg
+from nba_ou.config.odds_columns import is_book_column
 from nba_ou.fetch_data.odds_sportsbook.process_money_line_data import ML_BOOKS
 from nba_ou.fetch_data.odds_sportsbook.process_spread_data import SPREAD_BOOKS
 from nba_ou.fetch_data.odds_sportsbook.process_total_lines_data import TOTAL_BOOKS
@@ -85,7 +86,56 @@ def _sportsbook_columns() -> list[tuple[str, str]]:
         columns.append((f"ml_{book}_price_away", "NUMERIC(10, 4)"))
         columns.append((f"ml_{book}_price_home", "NUMERIC(10, 4)"))
 
+    columns += [
+        ("scraped_at", "TIMESTAMPTZ"),
+        ("sbr_start_time_utc", "TIMESTAMPTZ"),
+        ("sbr_status_at_scrape", "TEXT"),
+        ("closes_repaired_at", "TIMESTAMPTZ"),
+    ]
     return columns
+
+
+def book_columns(books: list[str] | tuple[str, ...]) -> list[str]:
+    """Every stored column belonging to ``books`` (totals, spread and moneyline)."""
+    return [
+        name
+        for name, _ in _sportsbook_columns()
+        if any(is_book_column(name, book) for book in books)
+    ]
+
+
+def _add_missing_columns(cur: psycopg.Cursor, schema: str, table: str) -> None:
+    """Bring an existing table up to ``_sportsbook_columns``.
+
+    ``CREATE TABLE IF NOT EXISTS`` never touches a table that is already there,
+    so a book added to the scraper would otherwise have nowhere to be written.
+
+    Only columns that are actually missing are altered: every ``ALTER TABLE``
+    takes an ACCESS EXCLUSIVE lock even when ``IF NOT EXISTS`` makes it a no-op,
+    so issuing one per column on every run would queue behind any open reader.
+    A lock timeout makes a blocked migration fail loudly instead of hanging.
+    """
+    cur.execute(
+        "SELECT column_name FROM information_schema.columns "
+        "WHERE table_schema = %s AND table_name = %s",
+        (schema, table),
+    )
+    existing = {row[0] for row in cur.fetchall()}
+    missing = [(n, t) for n, t in _sportsbook_columns() if n not in existing]
+    if not missing:
+        return
+
+    print(f"Adding {len(missing)} column(s) to {schema}.{table}")
+    cur.execute("SET LOCAL lock_timeout = '30s'")
+    for name, dtype in missing:
+        cur.execute(
+            sql.SQL("ALTER TABLE {}.{} ADD COLUMN IF NOT EXISTS {} {}").format(
+                sql.Identifier(schema),
+                sql.Identifier(table),
+                sql.Identifier(name),
+                sql.SQL(dtype),
+            )
+        )
 
 
 def create_odds_sportsbook_table(drop_existing: bool = False) -> bool:
@@ -121,6 +171,7 @@ def create_odds_sportsbook_table(drop_existing: bool = False) -> bool:
             ).format(sql.Identifier(schema), sql.Identifier(table))
 
             cur.execute(create_table_query)
+            _add_missing_columns(cur, schema, table)
 
             cur.execute(
                 sql.SQL(
@@ -181,8 +232,115 @@ def _ensure_columns(df: pd.DataFrame, columns: list[str]) -> pd.DataFrame:
     return df
 
 
+#: Never changed once a game is stored.
+IDENTITY_COLUMNS: tuple[str, ...] = (
+    "game_id",
+    "game_date",
+    "season_year",
+    "team_home",
+    "team_away",
+)
+#: Final scores: a later scrape can only add them, never erase them.
+RESULT_COLUMNS: tuple[str, ...] = ("home_points", "away_points", "total_points")
+#: Written only by the line-history repair
+#: (``nba_ou.postgre_db.odds_sportsbook.repair_closes``).
+REPAIR_COLUMNS: tuple[str, ...] = ("closes_repaired_at",)
+
+
+def build_upsert_query(
+    schema: str, table: str, cols: list[str], fill_columns: list[str] | None = None
+) -> sql.Composed:
+    """INSERT for new games; for stored games, update only what is safe.
+
+    Default (no ``fill_columns``) -- a *pre-tip refresh*. SBR shows each book's
+    last number, which after tip is a live line, so a stored game's odds are
+    replaced only when the new scrape is known to be pre-tip
+    (``scraped_at < sbr_start_time_utc``), the stored one is not known to be a
+    later pre-tip scrape, and the row has not been repaired from line history.
+    A post-tip scrape therefore never overwrites anything. Scores are filled
+    whenever the new scrape has them.
+
+    With ``fill_columns`` -- backfilling a new book: an existing row gets *only*
+    those columns, and only where they are still NULL, so no stored value is
+    ever overwritten. The row's repair stamp is cleared, because the filled
+    values are raw SBR closes that the line-history repair has not seen.
+    """
+    tbl = sql.Identifier(table)
+    if fill_columns:
+        unknown = sorted(set(fill_columns) - set(cols))
+        if unknown:
+            raise ValueError(f"fill_columns not in the table: {unknown}")
+        assignments = [
+            sql.SQL("{col} = COALESCE({tbl}.{col}, EXCLUDED.{col})").format(
+                col=sql.Identifier(col), tbl=tbl
+            )
+            for col in fill_columns
+        ]
+        if "closes_repaired_at" in cols:
+            assignments.append(
+                sql.SQL("{col} = NULL").format(col=sql.Identifier("closes_repaired_at"))
+            )
+        conflict = sql.SQL("DO UPDATE SET {}").format(sql.SQL(", ").join(assignments))
+    else:
+        refresh = sql.SQL(
+            "({tbl}.closes_repaired_at IS NULL"
+            " AND EXCLUDED.scraped_at IS NOT NULL"
+            " AND EXCLUDED.sbr_start_time_utc IS NOT NULL"
+            " AND EXCLUDED.scraped_at < EXCLUDED.sbr_start_time_utc"
+            " AND ({tbl}.scraped_at IS NULL"
+            " OR {tbl}.sbr_start_time_utc IS NULL"
+            " OR {tbl}.scraped_at >= {tbl}.sbr_start_time_utc"
+            " OR EXCLUDED.scraped_at > {tbl}.scraped_at))"
+        ).format(tbl=tbl)
+        assignments = []
+        for col in cols:
+            ident = sql.Identifier(col)
+            if col in IDENTITY_COLUMNS or col in REPAIR_COLUMNS:
+                continue
+            if col in RESULT_COLUMNS:
+                assignments.append(
+                    sql.SQL("{col} = COALESCE(EXCLUDED.{col}, {tbl}.{col})").format(
+                        col=ident, tbl=tbl
+                    )
+                )
+            else:
+                assignments.append(
+                    sql.SQL(
+                        "{col} = CASE WHEN {refresh} THEN EXCLUDED.{col} "
+                        "ELSE {tbl}.{col} END"
+                    ).format(col=ident, refresh=refresh, tbl=tbl)
+                )
+        conflict = (
+            sql.SQL("DO UPDATE SET {}").format(sql.SQL(", ").join(assignments))
+            if assignments
+            else sql.SQL("DO NOTHING")
+        )
+
+    return sql.SQL(
+        """
+        INSERT INTO {}.{} (
+            {cols}
+        )
+        VALUES (
+            {placeholders}
+        )
+        ON CONFLICT (game_id)
+        {conflict}
+        """
+    ).format(
+        sql.Identifier(schema),
+        tbl,
+        cols=sql.SQL(", ").join(map(sql.Identifier, cols)),
+        placeholders=sql.SQL(", ").join(sql.Placeholder() for _ in cols),
+        conflict=conflict,
+    )
+
+
 def upsert_odds_sportsbook_df(
-    odds_df: pd.DataFrame, conn: psycopg.Connection | None = None
+    odds_df: pd.DataFrame,
+    conn: psycopg.Connection | None = None,
+    *,
+    fill_columns: list[str] | None = None,
 ) -> int:
     if odds_df.empty:
         return 0
@@ -212,28 +370,17 @@ def upsert_odds_sportsbook_df(
     cols = [c for c, _ in col_defs]
     odds_df = _ensure_columns(odds_df, cols)
 
+    # psycopg cannot adapt NaT; timestamps go over as datetimes or None.
+    for col in ("scraped_at", "sbr_start_time_utc"):
+        stamps = pd.to_datetime(odds_df[col], utc=True, errors="coerce")
+        odds_df[col] = [None if pd.isna(v) else v.to_pydatetime() for v in stamps]
+
     # Convert pd.NA to None for database compatibility
     odds_df = odds_df.where(pd.notna(odds_df), None)
 
     rows = [tuple(row) for row in odds_df[cols].itertuples(index=False, name=None)]
 
-    insert_query = sql.SQL(
-        """
-        INSERT INTO {}.{} (
-            {cols}
-        )
-        VALUES (
-            {placeholders}
-        )
-        ON CONFLICT (game_id)
-        DO NOTHING
-        """
-    ).format(
-        sql.Identifier(schema),
-        sql.Identifier(table),
-        cols=sql.SQL(", ").join(map(sql.Identifier, cols)),
-        placeholders=sql.SQL(", ").join(sql.Placeholder() for _ in cols),
-    )
+    insert_query = build_upsert_query(schema, table, cols, fill_columns)
 
     try:
         with conn.cursor() as cur:

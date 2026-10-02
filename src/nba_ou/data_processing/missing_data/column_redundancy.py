@@ -76,6 +76,13 @@ _CANONICAL_MARKET_PREFIXES: tuple[str, ...] = (
 )
 
 
+#: Variance at or below this fraction of a column's mean square counts as no
+#: spread at all. A column of 60.0 has mean square 3600, so the cutoff there is
+#: 3.6e-9 -- a standard deviation of 6e-5 against a mean of 60, which is a
+#: constant to every digit float64 carries.
+_CONSTANT_VARIANCE_RTOL = 1e-12
+
+
 def pairwise_complete_corr(df: pd.DataFrame, *, min_periods: int = 2) -> np.ndarray:
     """Absolute Pearson correlation over pairwise-complete observations.
 
@@ -111,6 +118,14 @@ def pairwise_complete_corr(df: pd.DataFrame, *, min_periods: int = 2) -> np.ndar
         mean_y = mean_x.T
         cov = sum_xy / safe_n - mean_x * mean_y
         var_x = sum_xx / safe_n - mean_x * mean_x
+        # A side with no spread on the shared rows carries no correlation
+        # information, and pandas reports NaN for it. Computed this way its
+        # variance lands on either side of zero as roundoff, so dividing by it
+        # gives inf rather than NaN -- which every caller here reads as
+        # "perfectly redundant" and acts on by dropping the other column.
+        # Compare against the column's own mean square so the test does not
+        # depend on the units the column happens to be measured in.
+        var_x = np.where(var_x > _CONSTANT_VARIANCE_RTOL * (sum_xx / safe_n), var_x, np.nan)
         var_y = var_x.T
         denominator = np.sqrt(var_x * var_y)
         corr = np.abs(cov / denominator)

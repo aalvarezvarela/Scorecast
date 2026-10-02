@@ -26,6 +26,18 @@ def _normalize_game_ids(game_ids) -> list[str]:
 
 
 def load_games_from_db(seasons=None, extra_game_ids=None) -> pd.DataFrame | None:
+    """Load NBA game rows from Postgres.
+
+    Args:
+        seasons (list[str], optional): Seasons such as ["2023-24", "2024-25"].
+            None or an empty list leaves the season filter unset.
+        extra_game_ids (list, optional): Game IDs included in addition to the
+            selected seasons. With no seasons, these IDs restrict the query.
+
+    Returns:
+        pd.DataFrame | None: Matching rows in descending game-date order, or
+            None if loading fails.
+    """
     schema = get_schema_name_games()
     table = schema  # convention: schema == table
 

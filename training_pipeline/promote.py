@@ -17,8 +17,10 @@ numbers justified deploying it.
 from __future__ import annotations
 
 import argparse
+import getpass
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -29,11 +31,36 @@ from nba_ou.modeling.modeling import (
     TrainingMetrics,
     save_model_bundle,
 )
+from nba_ou.modeling.refit import model_bytes_of
+from nba_ou.modeling.registry_models import (
+    FitRecord,
+    ModelSpec,
+    build_model_name,
+)
+from nba_ou.modeling.registry_paths import Channel, ModelSlot, build_fit_id
+from nba_ou.modeling.registry_store import (
+    read_channel,
+    set_build_channel,
+    set_config_channel,
+    write_build,
+    write_spec,
+)
+from nba_ou.utils.s3_models import make_s3_client
 from xgboost import XGBRegressor
 
 from training_pipeline import naming
 from training_pipeline.config import ExperimentConfig, RefitStrategy
 from training_pipeline.data import prepare_dataset
+from training_pipeline.registry import (
+    PromotionError,
+    build_spec_from_run,
+    check_horizon_is_buildable,
+    check_schema_version_against_checkout,
+    dataset_build_id,
+    enabled_models_row,
+    parse_slot_argument,
+    slot_from_config,
+)
 from training_pipeline.reuse import (
     RunHyperparameters,
     find_best_run_hyperparameters,
@@ -55,6 +82,12 @@ class ProductionModelResult:
     train_date_min: pd.Timestamp
     train_date_max: pd.Timestamp
     n_features: int
+    #: The matrix the model was actually handed, in order. Correlation pruning
+    #: is data-dependent, so this -- not the config -- is the feature contract.
+    feature_names: list[str] = field(default_factory=list)
+    #: The run's config after any --csv / --training-version overrides, so a
+    #: registry spec can be built without re-preparing the dataset.
+    config: ExperimentConfig | None = None
 
 
 def load_run_config(run_dir: str | Path) -> ExperimentConfig:
@@ -246,7 +279,132 @@ def train_production_model_from_run(
         train_date_min=pd.Timestamp(dates.min()),
         train_date_max=pd.Timestamp(dates.max()),
         n_features=len(X.columns),
+        feature_names=list(X.columns),
+        config=config,
     )
+
+
+def publish_config_to_registry(
+    result: ProductionModelResult,
+    *,
+    slot: ModelSlot,
+    bucket: str | None = None,
+    s3_client=None,
+    replace_config: bool = False,
+    promoted_by: str | None = None,
+) -> RegistryPromotion:
+    """Adopt a configuration: write its spec, stage its first build.
+
+    Deliberately does NOT touch ``channels/production.json``. A new
+    configuration takes effect when ``promote_build`` says so, and until then
+    production keeps serving its existing build under the spec that build
+    names. Changing the configuration can therefore never cause an outage.
+
+    Write order is spec, build, config channel, staging channel -- nothing
+    points at an object that is not there yet.
+    """
+    if result.config is None or not result.feature_names:
+        raise PromotionError(
+            "This result was produced with save=False; there is no feature "
+            "matrix to promote."
+        )
+
+    from nba_ou.config.settings import SETTINGS
+
+    if s3_client is None:
+        s3_client = make_s3_client(
+            profile=SETTINGS.s3_aws_profile, region=SETTINGS.s3_aws_region
+        )
+    bucket = bucket or SETTINGS.s3_bucket
+
+    existing_config = read_channel(
+        s3_client=s3_client, bucket=bucket, slot=slot, channel=Channel.CONFIG
+    )
+    if existing_config is not None and not replace_config:
+        raise PromotionError(
+            f"{slot.describe()} already has a configuration "
+            f"(spec {existing_config.spec_id}). Re-promoting a slot is a real "
+            "operation, so it has to be typed out: pass --replace-config."
+        )
+
+    source_metrics = _source_run_metrics(result.source_run)
+    cv = source_metrics.get("cv") or {}
+    holdout = source_metrics.get("holdout") or {}
+
+    spec = build_spec_from_run(
+        result.config,
+        hyperparameters=result.hyperparameters,
+        feature_names=result.feature_names,
+        slot=slot,
+        source_run=result.source_run,
+        dataset_checksum=result.dataset_checksum,
+        vouching_metrics={
+            "cv_mae": cv.get("mae"),
+            "cv_ou_acc": cv.get("ou_acc"),
+            "holdout_mae": holdout.get("mae"),
+            "holdout_ou_acc": holdout.get("ou_acc"),
+        },
+        promoted_by=promoted_by,
+    )
+
+    fitted_at = datetime.now(tz=UTC)
+    fit = FitRecord(
+        fit_id=build_fit_id(spec.spec_id, fitted_at=fitted_at),
+        spec_id=spec.spec_id,
+        model_name=build_model_name(
+            target=slot.target,
+            horizon_minutes=slot.horizon_minutes,
+            variant=slot.variant,
+            schema_version=slot.schema_version,
+            train_date_max=result.train_date_max.to_pydatetime(),
+        ),
+        train_date_min=result.train_date_min.to_pydatetime(),
+        train_date_max=result.train_date_max.to_pydatetime(),
+        n_train_games=result.n_train_games,
+        n_features=result.n_features,
+        dataset_build_id=dataset_build_id(result.csv_path),
+        dataset_checksum=result.dataset_checksum,
+        fitted_at=fitted_at,
+        fitted_by=promoted_by,
+    )
+
+    write_spec(s3_client=s3_client, bucket=bucket, slot=slot, spec=spec)
+    write_build(
+        s3_client=s3_client,
+        bucket=bucket,
+        slot=slot,
+        fit=fit,
+        model_bytes=model_bytes_of(result.model),
+        spec=spec,
+    )
+    set_config_channel(
+        s3_client=s3_client,
+        bucket=bucket,
+        slot=slot,
+        spec_id=spec.spec_id,
+        set_by=promoted_by,
+    )
+    set_build_channel(
+        s3_client=s3_client,
+        bucket=bucket,
+        slot=slot,
+        channel=Channel.STAGING,
+        fit_id=fit.fit_id,
+        set_by=promoted_by,
+        reason=f"promote-config from {Path(result.source_run).name}",
+    )
+    return RegistryPromotion(
+        slot=slot, spec=spec, fit=fit, bucket=bucket, replaced=existing_config is not None
+    )
+
+
+@dataclass
+class RegistryPromotion:
+    slot: ModelSlot
+    spec: ModelSpec
+    fit: FitRecord
+    bucket: str
+    replaced: bool
 
 
 def _build_metadata(
@@ -306,6 +464,13 @@ def _build_metadata(
     )
 
 
+def _current_user() -> str | None:
+    try:
+        return getpass.getuser()
+    except Exception:  # noqa: BLE001 - identity is a nicety, never a blocker
+        return None
+
+
 def _build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
@@ -343,7 +508,68 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Report what would be trained without fitting or saving.",
     )
+
+    registry = parser.add_argument_group(
+        "registry",
+        "Adopt this configuration as a slot's source of truth in S3. The daily "
+        "refit then reads it; production is untouched until promote_build runs.",
+    )
+    registry.add_argument(
+        "--to-s3",
+        action="store_true",
+        help="Write the spec and stage the first build in the S3 registry.",
+    )
+    registry.add_argument(
+        "--slot",
+        help=(
+            "Target slot as schema_version/target/horizon/variant, e.g. "
+            "'2_5/line_error/t0060/main'. Default: inferred from the run's own "
+            "config, which is the usual case."
+        ),
+    )
+    registry.add_argument(
+        "--variant",
+        default="main",
+        help="Variant name when the slot is inferred (default: main).",
+    )
+    registry.add_argument(
+        "--schema-version",
+        help="Override the schema version parsed from the dataset filename.",
+    )
+    registry.add_argument(
+        "--replace-config",
+        action="store_true",
+        help="Allow replacing a slot's existing configuration.",
+    )
     return parser
+
+
+def resolve_target_slot(
+    config: ExperimentConfig,
+    *,
+    slot_argument: str | None,
+    variant: str,
+    schema_version: str | None,
+    root: str | None = None,
+) -> ModelSlot:
+    """The slot to promote into: inferred from the run, checked against --slot.
+
+    A disagreement is an error rather than a silent override. The run's config
+    is what the experiment actually measured; if the two differ, one of them is
+    wrong and guessing which would defeat the point of recording either.
+    """
+    inferred = slot_from_config(
+        config, variant=variant, schema_version=schema_version, root=root
+    )
+    if slot_argument is None:
+        return inferred
+    given = parse_slot_argument(slot_argument, root=root)
+    if given != inferred:
+        raise PromotionError(
+            f"--slot says {given.describe()} but the run's config implies "
+            f"{inferred.describe()}. Fix the config or the flag; they must agree."
+        )
+    return given
 
 
 def main() -> None:
@@ -406,6 +632,38 @@ def main() -> None:
         "\nNote: this model is unevaluated by construction. The metrics in its "
         f"metadata were measured by {run_dir.name} on that run's own data."
     )
+
+    if not args.to_s3:
+        return
+
+    assert result.config is not None
+    slot = resolve_target_slot(
+        result.config,
+        slot_argument=args.slot,
+        variant=args.variant,
+        schema_version=args.schema_version,
+    )
+    check_schema_version_against_checkout(slot.schema_version)
+    check_horizon_is_buildable(slot.horizon_minutes)
+
+    promotion = publish_config_to_registry(
+        result,
+        slot=slot,
+        replace_config=args.replace_config,
+        promoted_by=_current_user(),
+    )
+
+    print()
+    print(f"Registry slot  : {promotion.slot.describe()}")
+    print(f"  bucket       : {promotion.bucket}")
+    print(f"  spec_id      : {promotion.spec.spec_id}"
+          f"{' (replaced previous configuration)' if promotion.replaced else ''}")
+    print(f"  staged build : {promotion.fit.fit_id}")
+    print(f"  model_name   : {promotion.fit.model_name}")
+    print("\nProduction is unchanged. Promote the staged build with:")
+    print(f"    python -m scripts.promote_build --slot {promotion.slot.describe()} --execute")
+    print("\nEnable the slot by adding this row to [PredictionModels] ENABLED_MODELS:")
+    print(enabled_models_row(promotion.slot))
 
 
 if __name__ == "__main__":

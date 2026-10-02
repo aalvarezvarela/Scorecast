@@ -15,7 +15,7 @@ from nba_ou.prediction.baseline_predictions import (
     load_baseline_predictions_for_nba_games,
 )
 from nba_ou.prediction.prediction import (
-    load_s3_model_and_predict,
+    load_registry_model_and_predict,
 )
 from nba_ou.prediction.prediction_tabpfn_client import (
     load_and_predict_tabpfn_client_for_nba_games,
@@ -100,15 +100,16 @@ def predict_nba_games(
 
     # Print welcome banner
     print_banner(date_to_predict)
-    configured_prefixes = SETTINGS.prediction_model_prefixes
-    if not configured_prefixes:
-        raise ValueError(
-            "No prediction model prefixes configured in [PredictionModels] "
-            "S3_MODEL_PREFIXES."
-        )
-    print("  Configured S3 model folders:")
-    for prefix in configured_prefixes:
-        print(f"    - {prefix}")
+    configured_slots = SETTINGS.prediction_model_slots
+    if not configured_slots:
+        # A valid state, not an error: nothing has been promoted yet. The rest
+        # of the pipeline (database update, feature build, baselines) is still
+        # worth running.
+        print("  No model slots enabled in [PredictionModels] ENABLED_MODELS.")
+    else:
+        print("  Enabled model slots:")
+        for slot in configured_slots:
+            print(f"    - {slot.describe()}")
 
     # Step 1: Update the database
     print_step_header(1, "Updating All Databases")
@@ -195,18 +196,26 @@ def predict_nba_games(
         # Non-fatal: continue with predictions even if snapshot upload fails
 
     step_number = 5
-    for prefix in configured_prefixes:
-        print_step_header(step_number, f"Generating Predictions ({prefix})")
+    for slot in configured_slots:
+        label = slot.describe()
+        print_step_header(step_number, f"Generating Predictions ({label})")
         step_number += 1
         try:
-            predictions_df = load_s3_model_and_predict(
+            predictions_df = load_registry_model_and_predict(
                 s3_client=s3,
                 bucket=SETTINGS.s3_bucket,
-                prefix=prefix,
+                slot=slot,
                 df=df_to_predict,
                 prediction_datetime=prediction_time,
             )
-            print_status(f"Predictions generated for {prefix}")
+            if predictions_df is None or predictions_df.empty:
+                # The horizon guard found no eligible rows: this model is not
+                # for the time of day the pipeline is running at. Not a
+                # failure, and the other slots still have work to do.
+                print_status(f"No eligible rows for {label}; skipped")
+                continue
+
+            print_status(f"Predictions generated for {label}")
 
             # Upload model predictions snapshot
             try:
@@ -215,7 +224,7 @@ def predict_nba_games(
                     bucket=SETTINGS.s3_bucket,
                     pipeline_start_time=pipeline_start_time,
                     date_to_predict=date_to_predict,
-                    model_prefix=prefix,
+                    model_prefix=slot.prefix,
                     predictions_df=predictions_df,
                 )
                 print_status(
@@ -223,12 +232,12 @@ def predict_nba_games(
                 )
             except Exception as snap_exc:
                 print_status(
-                    f"Failed to upload predictions snapshot for {prefix}: {snap_exc}",
+                    f"Failed to upload predictions snapshot for {label}: {snap_exc}",
                     ok=False,
                 )
 
         except Exception as e:
-            print_status(f"Failed to generate predictions for {prefix}: {e}", ok=False)
+            print_status(f"Failed to generate predictions for {label}: {e}", ok=False)
             raise
 
     print_step_header(step_number, "Generating Predictions (Baselines)")

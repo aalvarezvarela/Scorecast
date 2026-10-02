@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import numpy as np
 import pandas as pd
+from tqdm import tqdm
 
 from nba_ou.postgre_db.line_history_aiven.fetch import MARKET_MONEYLINE
 
@@ -132,6 +133,43 @@ def _first_nonzero_sign(signs: pd.Series) -> float:
     return float(nonzero.iloc[0]) if len(nonzero) else 0.0
 
 
+def _first_nonzero_signs(eligible: pd.DataFrame) -> pd.Series:
+    """``_first_nonzero_sign`` for every series at once."""
+    signs = eligible["move_sign"]
+    nonzero = signs.where(signs.ne(0.0) & signs.notna())
+    # ``first`` skips NaN, so this is each series' first non-zero sign.
+    first = nonzero.groupby([eligible[key] for key in GROUP_KEYS], sort=False).first()
+    return first.fillna(0.0)
+
+
+def _abs_sums(eligible: pd.DataFrame, grouped, column: str) -> pd.Series | None:
+    """``lambda s: s.abs().sum()`` for every series, summed exactly as it was.
+
+    That lambda reaches ``np.sum`` over the series' values with NaN set to 0,
+    in row order. ``ndarray.sum`` over the same contiguous slice runs the
+    identical reduction, so every total matches to the bit, without a pandas
+    call per series. Returns None when the series are not contiguous runs of
+    rows in group order; the caller then falls back to the lambda.
+    """
+    codes = grouped.ngroup().to_numpy()
+    if len(codes) == 0:
+        return None
+    starts = np.flatnonzero(np.r_[True, codes[1:] != codes[:-1]])
+    if len(starts) != grouped.ngroups or not np.array_equal(
+        codes[starts], np.arange(len(starts))
+    ):
+        return None
+    values = np.abs(eligible[column].to_numpy(dtype="float64", copy=True))
+    values[np.isnan(values)] = 0.0
+    stops = np.r_[starts[1:], len(values)]
+    totals = np.fromiter(
+        (values[start:stop].sum() for start, stop in zip(starts, stops, strict=True)),
+        dtype="float64",
+        count=len(starts),
+    )
+    return pd.Series(totals, index=grouped.size().index)
+
+
 def _reversal_counts(eligible: pd.DataFrame) -> pd.Series:
     """Number of times the direction of travel flipped."""
     moves = eligible[eligible["is_move"]]
@@ -161,9 +199,16 @@ def _history_aggregates(
         line_min_so_far=("line", "min"),
         line_std_so_far=("line", "std"),
         first_minutes_before_tip=("minutes_before_tip", "max"),
-        first_move_direction=("move_sign", _first_nonzero_sign),
-        abs_move_total=("line_delta", lambda s: s.abs().sum()),
     )
+    # Both used to be per-series Python callables inside ``agg`` -- most of
+    # this stage's run time. Same values, same column order.
+    aggregates["first_move_direction"] = _first_nonzero_signs(eligible).reindex(
+        aggregates.index
+    )
+    abs_move_total = _abs_sums(eligible, grouped, "line_delta")
+    if abs_move_total is None:
+        abs_move_total = grouped["line_delta"].agg(lambda s: s.abs().sum())
+    aggregates["abs_move_total"] = abs_move_total.reindex(aggregates.index)
 
     # The opener proper when the scrape labelled one, else the earliest tick we
     # hold. In practice openers sit ~25h before tip, well outside every horizon
@@ -195,8 +240,12 @@ def add_movement_features(
     grid: tuple[int, ...] = DEFAULT_SNAPSHOT_GRID,
     windows: tuple[int, ...] = DEFAULT_WINDOWS,
     null_extreme_spread_prices: bool = True,
+    progress: str | None = None,
 ) -> pd.DataFrame:
     """Attach movement features to a snapshot ``panel``.
+
+    ``progress`` labels tqdm bars over the snapshot horizons; ``None`` runs
+    silently.
 
     ``panel`` is the base grid; the windowed look-backs are answered from a
     second panel built on the extended grid, so both come from the same as-of
@@ -218,7 +267,12 @@ def add_movement_features(
 
     aggregate_frames = [
         _history_aggregates(working, snapshot_minutes)
-        for snapshot_minutes in sorted(set(grid))
+        for snapshot_minutes in tqdm(
+            sorted(set(grid)),
+            desc=progress and f"{progress}: history",
+            unit="snapshot",
+            disable=progress is None,
+        )
     ]
     aggregate_frames = [frame for frame in aggregate_frames if not frame.empty]
     out = panel.copy()
@@ -236,6 +290,7 @@ def add_movement_features(
         grid=grid,
         windows=windows,
         null_extreme_spread_prices=null_extreme_spread_prices,
+        progress=progress and f"{progress}: windows",
     )
     out = _add_shape_features(out)
     return out
@@ -270,12 +325,14 @@ def _add_windowed_features(
     grid: tuple[int, ...],
     windows: tuple[int, ...],
     null_extreme_spread_prices: bool = True,
+    progress: str | None = None,
 ) -> pd.DataFrame:
     """Moves over trailing windows, via a second as-of read."""
     lookup = build_snapshot_panel(
         ticks,
         grid=extended_grid(grid, windows),
         null_extreme_spread_prices=null_extreme_spread_prices,
+        progress=progress,
     )
     if lookup.empty:
         return out

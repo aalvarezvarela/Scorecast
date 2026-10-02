@@ -4,10 +4,10 @@ Aggregates the per-book panel down to one row per (game, market, snapshot).
 Everything is computed from books' states at T, so nothing here can see a price
 that had not been posted.
 
-The consensus is a **median**, not a mean: a single stale book sitting three
-points off the market is common in this data, and a mean would drag the
-consensus toward it. Dispersion is reported separately precisely so that
-disagreement stays visible instead of being averaged away.
+The headline consensus is a median. A book's deviation uses the median of
+*other* books, so the evaluated quote cannot pull its own reference toward
+itself. Grossly discrepant peer quotes are removed before that median, and
+the final deviation is capped at the same limit.
 
 "Steam" here is the count and fraction of books that moved the same way inside
 the last hour. Cross-book agreement over a short window is the classic
@@ -16,10 +16,32 @@ sharp-money signature, and unlike most such signals it is fully observable at T.
 
 from __future__ import annotations
 
+import warnings
+
 import numpy as np
 import pandas as pd
 
+from nba_ou.postgre_db.line_history_aiven.fetch import (
+    MARKET_MONEYLINE,
+    MARKET_SPREAD,
+    MARKET_TOTALS,
+)
+
 CONSENSUS_KEYS = ["game_id", "market", "snapshot_minutes"]
+
+# The 99.9th percentile of absolute peer gaps in the current historical CSV
+# is 8 points for totals/spreads and <0.08 for moneyline probability. These
+# limits affect only the discrepancy feature, never the underlying quotes.
+PEER_GAP_LIMITS = {
+    MARKET_TOTALS: 10.0,
+    MARKET_SPREAD: 10.0,
+    MARKET_MONEYLINE: 0.15,
+}
+PEER_STD_FLOORS = {
+    MARKET_TOTALS: 0.5,
+    MARKET_SPREAD: 0.5,
+    MARKET_MONEYLINE: 0.01,
+}
 
 
 #: Window steam is measured over, when it is configured at all.
@@ -92,6 +114,40 @@ def _weighted_agreement(frame: pd.DataFrame, move_column: str) -> pd.Series:
     )
 
 
+def _steam_by_group(panel: pd.DataFrame, move_column: str) -> pd.DataFrame:
+    """``_weighted_agreement`` for every (game, market, snapshot) at once.
+
+    The same counts and the same float divisions, computed column-wise instead
+    of one Python call per group; the values match exactly.
+    """
+    directions = np.sign(panel[move_column].fillna(0.0))
+    flags = pd.DataFrame(
+        {"up": directions.gt(0).to_numpy(), "down": directions.lt(0).to_numpy()},
+        index=panel.index,
+    )
+    grouped = flags.groupby([panel[key] for key in CONSENSUS_KEYS], sort=False)
+    counts = grouped.sum()
+    n_books = grouped.size().astype("float64").to_numpy()
+    n_up = counts["up"].astype("float64").to_numpy()
+    n_down = counts["down"].astype("float64").to_numpy()
+    dominant = np.maximum(n_up, n_down)
+    movers = n_up + n_down
+    with np.errstate(divide="ignore", invalid="ignore"):
+        fraction = np.where(n_books != 0, dominant / n_books, np.nan)
+        agreement = np.where(movers != 0, dominant / movers, 0.0)
+    return pd.DataFrame(
+        {
+            "steam_books_up": n_up,
+            "steam_books_down": n_down,
+            "steam_net": n_up - n_down,
+            "steam_movers": movers,
+            "steam_fraction": fraction,
+            "steam_agreement": agreement,
+        },
+        index=counts.index,
+    )
+
+
 def aggregate_across_books(panel: pd.DataFrame) -> pd.DataFrame:
     """One row per (game, market, snapshot) summarising all books at T."""
     if panel.empty:
@@ -107,7 +163,8 @@ def aggregate_across_books(panel: pd.DataFrame) -> pd.DataFrame:
         consensus_line=("level", "median"),
         consensus_line_mean=("level", "mean"),
         crossbook_std=("level", lambda s: s.std(ddof=0)),
-        crossbook_range=("level", lambda s: s.max() - s.min()),
+        crossbook_range_max=("level", "max"),
+        crossbook_range_min=("level", "min"),
         consensus_norm_line=("norm_line", "median"),
         consensus_raw_line=("raw_line", "median"),
         consensus_fair_left=("fair_left", "median"),
@@ -122,9 +179,14 @@ def aggregate_across_books(panel: pd.DataFrame) -> pd.DataFrame:
         consensus_has_quote=("has_quote", "sum"),
     )
 
-    steam = grouped.apply(
-        _weighted_agreement, move_column=move_column, include_groups=False
+    # ``s.max() - s.min()`` per group, kept in its original column position.
+    consensus.insert(
+        consensus.columns.get_loc("crossbook_range_max"),
+        "crossbook_range",
+        consensus.pop("crossbook_range_max") - consensus.pop("crossbook_range_min"),
     )
+
+    steam = _steam_by_group(panel, move_column)
     consensus = consensus.join(steam)
 
     consensus["crossbook_std"] = consensus["crossbook_std"].fillna(0.0)
@@ -132,29 +194,50 @@ def aggregate_across_books(panel: pd.DataFrame) -> pd.DataFrame:
     return consensus.reset_index()
 
 
-def add_book_deviation(panel: pd.DataFrame, consensus: pd.DataFrame) -> pd.DataFrame:
-    """Each book's distance from the consensus at the same instant.
+def add_book_deviation(panel: pd.DataFrame) -> pd.DataFrame:
+    """Each book's capped distance from the other books at the same instant.
 
-    An outlying book is either the stale one or the sharp one, and the model is
-    better placed than we are to decide which -- but it can only do that if the
-    deviation is given to it explicitly.
+    Existing column names are retained, but their reference is now the
+    leave-one-book-out median. This removes self-inclusion bias without adding
+    a nearly duplicate set of deviation columns. The market-wide consensus
+    remains available separately in ``consensus_line``.
     """
     if panel.empty:
         return panel
 
-    merged = panel.merge(
-        consensus[[*CONSENSUS_KEYS, "consensus_line", "crossbook_std"]],
-        on=CONSENSUS_KEYS,
-        how="left",
+    levels = panel.pivot(index=CONSENSUS_KEYS, columns="book", values="level")
+    limits = levels.index.get_level_values("market").map(PEER_GAP_LIMITS)
+    floors = levels.index.get_level_values("market").map(PEER_STD_FLOORS)
+    if limits.isna().any():
+        raise ValueError("A market has no peer-gap limit")
+    median_all = levels.median(axis=1)
+    clean = levels.where(levels.sub(median_all, axis=0).abs().le(limits, axis=0))
+
+    parts = []
+    for book in levels.columns:
+        peers = clean.drop(columns=book)
+        # Some games have only one quoted book. There is then no peer signal;
+        # use neutral zero, with n_books_quoting already describing coverage.
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", RuntimeWarning)
+            peer_median = peers.median(axis=1)
+            peer_std = peers.std(axis=1, ddof=0)
+        gap = (levels[book] - peer_median).clip(lower=-limits, upper=limits)
+        gap = gap.where(peer_median.notna(), 0.0)
+        z = gap.div(peer_std.clip(lower=floors)).fillna(0.0)
+        parts.append(
+            pd.DataFrame(
+                {
+                    "book": book,
+                    "deviation_from_consensus": gap,
+                    "abs_deviation_from_consensus": gap.abs(),
+                    "deviation_z": z,
+                    "is_outlier_book": z.abs().gt(1.5).astype(int),
+                },
+                index=levels.index,
+            )
+        )
+    deviations = pd.concat(parts).reset_index()
+    return panel.merge(
+        deviations, on=[*CONSENSUS_KEYS, "book"], how="left", validate="one_to_one"
     )
-    merged["deviation_from_consensus"] = merged["level"] - merged["consensus_line"]
-    merged["abs_deviation_from_consensus"] = merged[
-        "deviation_from_consensus"
-    ].abs()
-    # Scale-free version: "0.5 off" means something different on a tight market
-    # than on a scattered one, and the raw gap is not comparable across markets
-    # at all now that the moneyline is measured in probability.
-    spread = merged["crossbook_std"].replace(0.0, np.nan)
-    merged["deviation_z"] = (merged["deviation_from_consensus"] / spread).fillna(0.0)
-    merged["is_outlier_book"] = (merged["deviation_z"].abs() > 1.5).astype(int)
-    return merged.drop(columns=["crossbook_std"])

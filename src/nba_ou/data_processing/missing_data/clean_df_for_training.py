@@ -613,6 +613,30 @@ def advanced_column_cleaning(
             if verbose >= 2:
                 print(f"  {view_note.strip()}")
 
+        # Columns with one distinct value on this view are excluded from the
+        # comparison rather than judged by it. A constant correlates with
+        # nothing, so it can neither be dropped as redundant nor justify
+        # dropping anything -- but it is also the one input that makes the
+        # correlation undefined, and a protected constant survives step 5 to
+        # rank FIRST here, which makes it the yardstick every later column is
+        # measured against. That is how TIME_TO_MATCH_MIN -- constant once a
+        # single snapshot is selected, and protected because the scoring join
+        # needs the (game, snapshot) key -- came to drop ~1,300 features as
+        # "redundant" with a constant across 64 runs. Excluded from the view
+        # only: they stay in the frame, because protecting them was deliberate.
+        constant_in_view = [
+            col for col in numeric.columns if numeric[col].nunique(dropna=False) <= 1
+        ]
+        if constant_in_view:
+            numeric = numeric.drop(columns=constant_in_view)
+            if verbose >= 2:
+                print(
+                    f"   Excluding {len(constant_in_view)} constant columns from "
+                    f"the correlation view: {constant_in_view}"
+                )
+            if report is not None:
+                report.record_correlation_exclusions(constant_in_view)
+
         if numeric.shape[1] > 1:
             cols_to_remove, decisions = select_correlated_columns_to_drop(
                 numeric,

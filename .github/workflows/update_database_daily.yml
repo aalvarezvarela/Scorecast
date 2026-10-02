@@ -68,3 +68,10 @@ jobs:
       - name: Update SBR line history
         run: |
           python scripts/update_databases/update_line_history_database.py
+
+      # Must run after the line-history update: SBR day pages store each
+      # book's last (often live) number, and last night's pre-tip ticks are
+      # what replace it.
+      - name: Repair SBR closing lines from line history
+        run: |
+          python scripts/update_databases/repair_sportsbook_closes.py

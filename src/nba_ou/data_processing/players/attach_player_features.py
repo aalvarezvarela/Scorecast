@@ -22,10 +22,12 @@ from nba_ou.data_processing.players.fresh_absence import (
     add_fresh_absence_features,
 )
 from nba_ou.data_processing.players.players_statistics import (
-    get_top_n_averages_with_names,
+    latest_player_states,
     precompute_cumulative_avg_stat,
+    rank_player_states,
 )
 from nba_ou.utils.general_utils import _with_before_suffix
+from nba_ou.utils.row_cache import RowCache
 
 #: The top-N player columns come in three flavours per statistic: the value
 #: (``TOP1_PLAYER_PTS_BEFORE``), the player's id (``TOP1_PLAYER_ID_PTS_BEFORE``)
@@ -108,20 +110,19 @@ def _parse_minutes_series(min_series: pd.Series) -> pd.Series:
 
 
 def clear_player_statistics(df_players, df_team):
-    """
-    Process player statistics and prepare for training.
+    """Attach game metadata and clean player box-score rows.
 
-    This function handles:
-    - Merging player data with game dates from team data
-    - Converting player minutes from MM:SS format to decimal
-    - Cleaning and deduplicating player data
+    Merge missing game-date and season columns from df_team, discard rows without
+    a game date, parse minutes into decimal values rounded to three places, and
+    remove duplicate rows. Missing or unparseable minutes become zero.
 
     Args:
-        df_players (pd.DataFrame): Player statistics DataFrame
-        df (pd.DataFrame): Processed team DataFrame with GAME_ID, GAME_DATE, SEASON_ID
+        df_players (pd.DataFrame): Player rows with GAME_ID and MIN.
+        df_team (pd.DataFrame): Game metadata with GAME_ID and GAME_DATE, and
+            optionally SEASON_ID and SEASON_YEAR.
 
     Returns:
-        pd.DataFrame: Processed player DataFrame
+        pd.DataFrame: Cleaned player rows with datetime GAME_DATE values.
     """
     desired_cols = ["GAME_ID", "GAME_DATE", "SEASON_ID", "SEASON_YEAR"]
     merge_cols = ["GAME_ID"] + [
@@ -236,6 +237,58 @@ def _build_prior_roster_lookup(df_players):
     return prior_roster_lookup
 
 
+def _restrict_snapshot_membership(
+    membership_dict: dict,
+    snapshot_game_ids: set[str],
+    report_out_overrides: dict | None,
+    questionable_dict: dict,
+    report_listed_players: dict | None,
+) -> dict:
+    """Keep only as-of report evidence for current-game roster additions."""
+    reported = union_membership_dicts(
+        nested_status_dict(report_out_overrides),
+        questionable_dict,
+        report_listed_players or {},
+    )
+    ids = {str(game) for game in snapshot_game_ids}
+    out = {
+        str(game): teams
+        for game, teams in membership_dict.items()
+        if str(game) not in ids
+    }
+    out.update({str(game): teams for game, teams in reported.items() if str(game) in ids})
+    return out
+
+
+def _game_membership_signatures(membership_dict: dict) -> dict[str, frozenset]:
+    """``game -> {(team, player)}``, keyed the way ``create_player_lookup`` reads it."""
+    signatures = {}
+    for game_id, team_map in (membership_dict or {}).items():
+        # A later duplicate string key replaces the earlier one, exactly as in
+        # the lookup's ``injured_team_by_game_player``.
+        signatures[str(game_id)] = frozenset(
+            (str(team_id), str(player_id))
+            for team_id, player_ids in team_map.items()
+            for player_id in player_ids
+            if not pd.isna(player_id)
+        )
+    return signatures
+
+
+def precompute_stat_players(df_players, stat_cols) -> pd.DataFrame:
+    """Players with ``<stat>_CUM_AVG`` for every statistic, in ``stat_cols`` order.
+
+    The per-statistic preparation step of ``add_player_history_features``,
+    exposed so a caller building several horizons from the same players can
+    run it once.
+    """
+    if isinstance(stat_cols, str):
+        stat_cols = [stat_cols]
+    for stat_col in stat_cols:
+        df_players = precompute_cumulative_avg_stat(df_players, stat_col=stat_col)
+    return df_players
+
+
 def add_player_history_features(
     df_team,
     df_players,
@@ -246,6 +299,10 @@ def add_player_history_features(
     report_out_overrides: dict[tuple[str, str], list[str]] | None = None,
     report_questionable_sets: dict[tuple[str, str], list[str]] | None = None,
     include_available_roster_count: bool = False,
+    snapshot_game_ids: set[str] | None = None,
+    snapshot_report_listed_players: dict | None = None,
+    row_cache: RowCache | None = None,
+    stat_players: pd.DataFrame | None = None,
 ):
     """
     Main function to attach top player statistics and injured player stats to team data.
@@ -277,6 +334,23 @@ def add_player_history_features(
         include_available_roster_count (bool): Emit
             ``N_AVAILABLE_ROSTER_PLAYERS_BEFORE``. Off by default for builds
             without injury-report features.
+        snapshot_game_ids (set, optional): Current games whose roster
+            supplementation may use only the as-of report. Settled injuries
+            remain available as history for later games.
+        snapshot_report_listed_players (dict, optional): All players named by
+            the as-of report, including Probable and Available designations.
+        row_cache (RowCache, optional): Shared across repeated calls on the
+            same inputs that differ only in the report arguments. A row reads
+            the report through its own game alone -- roster membership for that
+            game, and the out and questionable sets for that team-game -- while
+            everything else it touches (earlier games' realized absences,
+            player history) is the same in every call. Rows whose game sees the
+            same report sets as before are reused; the result is identical to
+            building every row.
+        stat_players (pd.DataFrame, optional): ``precompute_stat_players(
+            df_players, stat_cols)``, for callers that run this builder
+            repeatedly on the same players. It is exactly what the builder
+            would compute itself, so passing it changes no value.
 
     Returns:
         pd.DataFrame: Updated df_team with extra columns for top players and injured players
@@ -308,6 +382,18 @@ def add_player_history_features(
     else:
         pregame_dict = injured_dict
         membership_dict = injured_dict
+    if snapshot_game_ids:
+        # The normal union includes the settled inactive list and comments.
+        # Those are valid history later, but future information for an earlier
+        # snapshot of this game. Current-game roster supplementation can only
+        # read players explicitly named by the as-of report.
+        membership_dict = _restrict_snapshot_membership(
+            membership_dict,
+            snapshot_game_ids,
+            report_out_overrides,
+            questionable_dict,
+            snapshot_report_listed_players,
+        )
     pregame_index = _index_injured_dict(pregame_dict)
     realized_index = _index_injured_dict(injured_dict)
     questionable_index = {
@@ -321,9 +407,11 @@ def add_player_history_features(
 
     # Collect all column names first to avoid fragmentation
     all_new_cols = []
+    if stat_players is None:
+        stat_players = precompute_stat_players(df_players, stat_cols)
+    df_players = stat_players
     for stat_col in stat_cols:
-        # 1) Precompute cumulative averages for the chosen stat
-        df_players = precompute_cumulative_avg_stat(df_players, stat_col=stat_col)
+        # 1) Cumulative averages for the chosen stat: precomputed above
 
         # 2) Dynamically name new columns based on `stat_col`
         profile = ACTIVE_PROFILE
@@ -503,6 +591,18 @@ def add_player_history_features(
     updates_list = []
     availability_dict = {}
 
+    if row_cache is not None:
+        row_cache.bind(
+            (
+                tuple(stat_cols),
+                include_available_roster_count,
+                build_questionable_group,
+                len(df_team),
+                len(df_players),
+            )
+        )
+        membership_signatures = _game_membership_signatures(membership_dict)
+
     for _, (game_id, team_id, season_id, game_date) in enumerate(
         tqdm(
             df_team[cols_needed].itertuples(index=False, name=None),
@@ -510,6 +610,36 @@ def add_player_history_features(
             desc="Adding players data",
         )
     ):
+        if row_cache is not None:
+            # Everything the row reads that can differ between calls: its own
+            # game's roster membership, out, questionable and realized sets.
+            game_key, team_key = str(game_id), str(team_id)
+            game_questionable = questionable_index.get(game_key, {})
+            cache_key = (
+                game_key,
+                team_key,
+                season_id,
+                game_date,
+                membership_signatures.get(game_key),
+                frozenset(pregame_index.get(game_key, {}).get(team_key, ())),
+                team_key in game_questionable,
+                frozenset(game_questionable.get(team_key, ())),
+                frozenset(realized_index.get(game_key, {}).get(team_key, ())),
+            )
+            cached = row_cache.rows.get(cache_key)
+            if cached is not None:
+                row_cache.hits += 1
+                cached_update, cached_availability = cached
+                updates_list.append(cached_update)
+                if cached_availability is not None:
+                    available, injured = cached_availability
+                    availability_dict.setdefault(game_key, {})[team_key] = {
+                        "available": list(available),
+                        "injured": list(injured),
+                    }
+                continue
+            row_cache.misses += 1
+
         # Resolve the roster without consulting who logged minutes in this game.
         # Availability is defined below solely as roster minus injured/inactive.
         df_roster = player_lookup(season_id, team_id, game_date, game_id=game_id)
@@ -522,6 +652,8 @@ def add_player_history_features(
 
         if df_roster.empty:
             updates_list.append({})
+            if row_cache is not None:
+                row_cache.rows[cache_key] = ({}, None)
             continue
 
         # Who is injured for this game/team? The injury sources already encode
@@ -603,41 +735,41 @@ def add_player_history_features(
         # own minutes after the per-statistic loop below.
         per_player_values: dict[str, dict] = {}
 
+        # Each group's latest per-player states do not depend on the statistic
+        # being ranked, so they are resolved once per row rather than once per
+        # statistic; ``get_top_n_averages_with_names`` is exactly these two steps.
+        non_inj_states = latest_player_states(df_non_inj, game_date, injured=False)
+        n_non_inj = df_non_inj["PLAYER_ID"].nunique()
+        inj_states = latest_player_states(df_inj, game_date, injured=True)
+        n_inj = df_inj["PLAYER_ID"].nunique()
+        # The questionable group, resolved exactly like the injured one:
+        # ``injured=True`` reads each player's last game strictly BEFORE this
+        # one, so membership and values are both independent of tonight's box
+        # score. Using the available branch instead would pick up a same-day row
+        # that exists only if the player ended up playing.
+        rank_questionable = build_questionable_group and questionable_covered
+        if rank_questionable:
+            questionable_states = latest_player_states(
+                df_questionable, game_date, injured=True
+            )
+            n_questionable = df_questionable["PLAYER_ID"].nunique()
+
         for stat_col in stat_cols:
             n_players_noninj = N_TOP_PLAYERS_NON_INJURED
             n_players_inj = N_TOP_PLAYERS_INJURED
 
             # Get ALL non-injured players for aggregation
-            all_non_inj = get_top_n_averages_with_names(
-                df_non_inj,
-                date=game_date,
-                stat_col=stat_col,
-                injured=False,
-                n_players=df_non_inj["PLAYER_ID"].nunique(),
+            all_non_inj = rank_player_states(
+                non_inj_states, stat_col, n_players=n_non_inj
             )
             # Get ALL injured players for aggregation
-            all_inj = get_top_n_averages_with_names(
-                df_inj,
-                date=game_date,
-                stat_col=stat_col,
-                n_players=df_inj["PLAYER_ID"].nunique(),
-                injured=True,
-            )
+            all_inj = rank_player_states(inj_states, stat_col, n_players=n_inj)
 
-            # The questionable group, resolved exactly like the injured one:
-            # ``injured=True`` reads each player's last game strictly BEFORE
-            # this one, so membership and values are both independent of
-            # tonight's box score. Using the available branch instead would pick
-            # up a same-day row that exists only if the player ended up playing.
             all_questionable = (
-                get_top_n_averages_with_names(
-                    df_questionable,
-                    date=game_date,
-                    stat_col=stat_col,
-                    n_players=df_questionable["PLAYER_ID"].nunique(),
-                    injured=True,
+                rank_player_states(
+                    questionable_states, stat_col, n_players=n_questionable
                 )
-                if build_questionable_group and questionable_covered
+                if rank_questionable
                 else []
             )
 
@@ -831,6 +963,12 @@ def add_player_history_features(
                 )
 
         updates_list.append(row_update)
+        if row_cache is not None:
+            entry = availability_dict[str(game_id)][str(team_id)]
+            row_cache.rows[cache_key] = (
+                row_update,
+                (tuple(entry["available"]), tuple(entry["injured"])),
+            )
 
     # Apply all updates at once using a DataFrame
     updates_df = pd.DataFrame(updates_list, index=df_team.index)

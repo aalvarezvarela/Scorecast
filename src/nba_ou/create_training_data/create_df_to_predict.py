@@ -1,9 +1,10 @@
-"""
-NBA Over/Under Predictor - Training Data Creation Module
+"""NBA Over/Under Predictor - Training Data Creation Module
 
-This module creates training datasets for NBA over/under prediction models.
-It processes historical data from the last two seasons, computing all features
-and statistics needed for model training, including injury data processing.
+Build historical training datasets and datasets containing scheduled games.
+Training defaults to all seasons from 2017-18; scheduled-game prediction defaults
+to the current and previous seasons. Additional player and referee history is
+loaded as context. Features include team and player statistics, injury-report
+status groups, historical availability effects, odds, referees, and travel.
 """
 
 import warnings

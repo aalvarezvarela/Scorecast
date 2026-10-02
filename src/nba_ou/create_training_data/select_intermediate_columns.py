@@ -94,7 +94,18 @@ SCHEDULE_COLUMN_PREFIXES: tuple[str, ...] = (
 
 #: Snapshot-derived features. Everything under these prefixes is built only from
 #: ticks at or before the snapshot horizon.
-SNAPSHOT_COLUMN_PREFIXES: tuple[str, ...] = ("ODDS_SNAP_", "ODDS_LINE_HIST_")
+#: ``INJ_SNAP_`` is injury news up to the snapshot (reports strictly before T);
+#: its columns also carry ``_BEFORE``, but the family is recognised explicitly.
+SNAPSHOT_COLUMN_PREFIXES: tuple[str, ...] = ("ODDS_SNAP_", "ODDS_LINE_HIST_", "INJ_SNAP_")
+
+# The closing pipeline's availability-effect estimator names these columns
+# without a _BEFORE suffix. In the intermediate dataset they are built from
+# reports selected strictly before each snapshot and from earlier games only.
+SNAPSHOT_INJURY_EFFECT_PREFIXES: tuple[str, ...] = (
+    "TOP3_AVAILABILITY_EFFECT_",
+    "TOP3_INJURED_AVAILABILITY_EFFECT_",
+    "TOP2_QUESTIONABLE_AVAILABILITY_EFFECT_",
+)
 
 #: Outcome columns and derived targets that survive the intermediate gate.
 #:
@@ -161,7 +172,11 @@ def is_kept_column(column: str) -> bool:
         return True
     if column in SAFE_ODDS_COLUMNS:
         return True
-    if _is_snapshot_column(column) or _is_schedule_column(column):
+    if (
+        _is_snapshot_column(column)
+        or _is_schedule_column(column)
+        or column.startswith(SNAPSHOT_INJURY_EFFECT_PREFIXES)
+    ):
         return True
     return "_BEFORE" in column
 
@@ -191,7 +206,8 @@ def select_intermediate_training_columns(
     excellent and is worthless, which is far more expensive than a failed build.
     """
     kept = [column for column in df.columns if is_kept_column(column)]
-    dropped = [column for column in df.columns if column not in set(kept)]
+    kept_set = set(kept)
+    dropped = [column for column in df.columns if column not in kept_set]
 
     if debug:
         print(f"Intermediate gate: keeping {len(kept)}, dropping {len(dropped)}")

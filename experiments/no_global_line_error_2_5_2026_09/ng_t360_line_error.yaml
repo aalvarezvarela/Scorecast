@@ -1,0 +1,76 @@
+experiment_name: noglobal25_t360_line_error_window
+prediction_strategy: line_error_regressor
+training_version: "2.13-schema25-early-window-20260919"
+comparison_group: early_line_error_window_2_5_2026_09
+hypothesis: >
+  Does the league-wide market-regime family (GLOBAL_*) earn its place at
+  T-360?  Identical to early25_t360_line_error_window in every other respect,
+  so the pair is a clean one-difference ablation.  Pre-registered
+  expectation: NO detectable change.  A predict-time permutation and a
+  whole-family walk-forward drop (2026-09-20) both moved the T-30 holdout
+  by ~2pp, which is inside the +/-4pp noise band at ~600 decided bets, so
+  5 cells cannot resolve it.  This run is a falsification attempt: it can
+  show the family is NOT load-bearing; it cannot establish the sign.
+tags: [intermediate_line, single_snapshot, t360, line_error, schema_2_5, tuned_train_games, cv_8x80, max_na_500, no_time_decay, no_global_market_regime, ablation]
+device: cuda
+random_state: 16
+data:
+  csv_path: data/train_data/intermediate_line_data_2_5_20260613.csv
+  data_version: "20260918-intermediate-line-2.5-t360"
+  expected_checksum: "sha256:5bda016d4c872e0d"
+  dataset_type: intermediate_line
+  snapshot_minutes: 360
+  scoring_csv_path: data/train_data/intermediate_line_data_2_5_20260613_scoring.csv
+  season_year_floor: 2021
+  extend_history_dropping_season_gated_columns: false
+  exclude_overtime_from_training: false
+  exclude_playoffs: true
+  allowed_season_types: ["Regular Season", "Play-In Tournament"]
+# THE ONE DELIBERATE DIFFERENCE from l_t360_line_error.yaml. Substring
+# match, case-insensitive: every one of the 109 columns in the CSV
+# containing "GLOBAL" starts with GLOBAL_, and no target, line or
+# metadata column matches, so this drops the league-wide market-regime
+# family and nothing else (82 of them survive cleaning at T-30).
+cleaning:
+  max_na_per_row: 500
+  corr_threshold: 0.95
+  corr_threshold_overrides: {"ODDS_": 0.99}
+  exclude_cols_containing: ["GLOBAL_"]
+holdout: {test_size: null, test_games: null, test_days: 90}
+walk_forward:
+  strategy: test_anchored
+  test_games: 80
+  # Skip one complete game day between validation blocks; folds do not overlap.
+  step_games_between_tests: 1
+  train_games: 3500
+  # Largest choice is the cleaned history before this horizon's earliest CV fold.
+  train_games_choices: [2500, 3000, 3500, 4778]
+  min_train_games: 1250
+  max_folds: 8
+  fold_selection: latest
+  exclude_test_months: [5, 6]
+  require_same_season_test: true
+  eval_span_games: null
+  min_validation_games: null
+sample_weight: {enabled: false, lambda_: null, tune_lambda: false, allow_unweighted: false}
+refit: {use_lexicographic_selection: true}
+optuna:
+  n_trials: 150
+  timeout: null
+  persistent_storage: false
+  tune_n_estimators: false
+  objective_aggregation: pooled
+  pruner_warmup_steps: 7
+  tie_tolerance: quantile
+  tie_max_fraction: 0.15
+  tie_tolerance_floor: 0.001
+  tie_tolerance_cap: 0.04
+  tie_warn_fraction: 0.25
+  search_space: {n_estimators: 1000, early_stopping_rounds: 70, n_estimators_range: null}
+betting:
+  edge_thresholds: [0.0, 0.1, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0]
+  primary_edge_threshold: 0.1
+  flat_decimal_odds: 1.9090909090909092
+  comparison_line_cols: [ODDS_CLOSING_TOTAL_LINE_bet365]
+holdout_evaluation: daily_walk_forward
+evaluation_seeds: [101, 202]

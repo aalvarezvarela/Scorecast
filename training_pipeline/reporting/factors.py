@@ -119,6 +119,13 @@ DERIVED_FACTORS: tuple[str, ...] = (
     #: only ``exclude_cols_containing``, which ``drop_consensus`` cannot see, so
     #: without this its cells would all match as one experiment.
     "referee_features",
+    #: Whether the league-wide market-regime family (``GLOBAL_*``) was dropped.
+    #: Read for the same reason as ``referee_features``: the no-global ablation
+    #: varies only ``exclude_cols_containing``, and neither ``drop_consensus``
+    #: nor ``referee_features`` matches "GLOBAL_", so without this its cells
+    #: would match their with-global twins as identical runs and the contrast
+    #: would silently vanish.
+    "drop_global_market",
     "sample_weighting",
     "train_games_tuned",
     "n_estimators_range",
@@ -224,6 +231,11 @@ def _derived_factors(config: dict[str, Any], row: Any) -> dict[str, Any]:
         "referee_features": _referee_feature_exclusions(
             config.get("cleaning.exclude_cols_containing")
         ),
+        # Substring, matching how cleaning.exclude_cols_containing is applied
+        # (case-insensitive ``pattern in column``). Every GLOBAL column in the
+        # 2.5 build starts with the prefix, so the pattern and the family are
+        # the same set.
+        "drop_global_market": "GLOBAL_" in excluded.upper(),
         "sample_weighting": bool(config.get("sample_weight.enabled", False)),
         # A run that TUNED the window is not comparable with one that fixed it,
         # even when train_games happens to read the same: the fixed run's value
