@@ -7,7 +7,7 @@ accept a pre-tip refresh, and none of that bookkeeping may reach a model frame.
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import UTC, date
 
 import pandas as pd
 import pytest
@@ -19,15 +19,15 @@ from nba_ou.fetch_data.nba_schedule.tipoff_corrections import (
     render_corrections_module,
 )
 from nba_ou.fetch_data.odds_sportsbook.scrape_sportsbook import attach_scrape_metadata
+from nba_ou.postgre_db.line_history_aiven import ingest
+from nba_ou.postgre_db.line_history_aiven.tipoff_corrections import (
+    find_tipoff_mismatches,
+)
 from nba_ou.postgre_db.odds_sportsbook.create_db import (
     create_odds_sportsbook_db as db,
 )
 from nba_ou.postgre_db.odds_sportsbook.fetch_data_from_db import (
     fetch_data_from_odds_sportsbook_db as loader,
-)
-from nba_ou.postgre_db.line_history_aiven import ingest
-from nba_ou.postgre_db.line_history_aiven.tipoff_corrections import (
-    find_tipoff_mismatches,
 )
 from nba_ou.postgre_db.odds_sportsbook.repair_closes import current_season_year
 
@@ -358,9 +358,11 @@ class TestScoreboardCache:
 
 class TestSbrTipoffs:
     def test_pages_are_cached_resolved_and_reported(self, tmp_path, monkeypatch):
-        from datetime import datetime, timezone
+        from datetime import datetime
 
-        from nba_ou.fetch_data.odds_sportsbook import scrape_sportsbook_line_history as sbr
+        from nba_ou.fetch_data.odds_sportsbook import (
+            scrape_sportsbook_line_history as sbr,
+        )
         from nba_ou.postgre_db.line_history_aiven import tipoff_corrections as tc
 
         calls = []
@@ -373,7 +375,7 @@ class TestSbrTipoffs:
                 sbr.GameSummary(
                     event_id=1,
                     game_date=day,
-                    tipoff_utc=datetime(2026, 3, 13, 0, 0, tzinfo=timezone.utc),
+                    tipoff_utc=datetime(2026, 3, 13, 0, 0, tzinfo=UTC),
                     team_away="Dallas Mavericks",
                     team_home="Memphis Grizzlies",
                     status_text="Final",

@@ -1,5 +1,4 @@
 import pandas as pd
-
 from nba_ou.data_processing.players.players_statistics import (
     precompute_cumulative_avg_stat,
 )

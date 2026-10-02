@@ -127,9 +127,9 @@ def sbr_tipoffs(
     One page per date, a few in flight at once; each date is cached as soon as
     it arrives, so a rerun only fetches what is still missing.
     """
-    from concurrent.futures import ThreadPoolExecutor
     import json
     import threading
+    from concurrent.futures import ThreadPoolExecutor
 
     from tqdm import tqdm
 

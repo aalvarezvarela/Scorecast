@@ -187,4 +187,4 @@ if __name__ == "__main__":
     spread_game_df = load_one_day_spread_csv(
         "/home/adrian_alvarez/Projects/NBA_over_under_predictor/data/sbr_totals_full_game/2024/csv_spread/2024-10-23.csv"
     )
-    spread_game_df
+    print(spread_game_df.head())

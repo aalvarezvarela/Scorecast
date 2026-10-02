@@ -56,7 +56,6 @@ from nba_ou.postgre_db.odds_sportsbook_line_history.process_sportsbook_line_hist
     load_games_for_line_history_creation,
 )
 
-
 DEFAULT_CACHE_DIRS = {"sbr": "data/cache/sbr_daily", "nba": "data/cache/nba_scoreboard"}
 DEFAULT_MAX_REQUESTS = 290
 

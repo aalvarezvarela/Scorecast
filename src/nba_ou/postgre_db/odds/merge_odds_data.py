@@ -20,16 +20,16 @@ from nba_ou.data_processing.odds.closing_line_repair import (
     print_repair_summary,
     repair_closing_lines,
 )
-from nba_ou.data_processing.odds.normalize_total_lines import (
-    normalize_total_lines_inplace,
-)
 from nba_ou.data_processing.odds.normalize_spread_lines import (
     normalize_spread_lines_inplace,
 )
+from nba_ou.data_processing.odds.normalize_total_lines import (
+    normalize_total_lines_inplace,
+)
+from nba_ou.postgre_db.line_history_aiven.fetch import fetch_closing_ticks
 from nba_ou.postgre_db.odds_sportsbook.fetch_data_from_db.fetch_data_from_odds_sportsbook_db import (
     load_odds_sportsbook_from_db,
 )
-from nba_ou.postgre_db.line_history_aiven.fetch import fetch_closing_ticks
 from nba_ou.postgre_db.odds_yahoo.fetch_data_from_db.fetch_data_from_odds_yahoo_db import (
     load_odds_yahoo_from_db,
 )

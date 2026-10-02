@@ -26,8 +26,6 @@ from datetime import date
 import numpy as np
 import pandas as pd
 import psycopg
-from psycopg import sql
-
 from nba_ou.data_processing.odds.closing_line_repair import (
     ACTION_UNVERIFIED,
     audit_repaired_closes,
@@ -44,6 +42,7 @@ from nba_ou.postgre_db.line_history_aiven.fetch import fetch_closing_ticks
 from nba_ou.postgre_db.odds_sportsbook.create_db.create_odds_sportsbook_db import (
     create_odds_sportsbook_table,
 )
+from psycopg import sql
 
 RAW_TABLE = "odds_sportsbook_sbr_raw"
 AUDIT_TABLE = "odds_sportsbook_close_repair"

@@ -52,7 +52,6 @@ from collections.abc import Callable
 
 import numpy as np
 import pandas as pd
-
 from nba_ou.config.market_columns import TARGET_ANCHOR_BOOK
 from nba_ou.data_processing.line_history.normalization import (
     MARGIN_SIGMA,
@@ -211,7 +210,7 @@ def valid_quote_mask(quotes: pd.DataFrame) -> pd.Series:
 def closing_books(df: pd.DataFrame) -> list[str]:
     """Books with a full column family for at least one market in ``df``."""
     books: set[str] = set()
-    for market, templates in _WIDE_COLUMNS.items():
+    for templates in _WIDE_COLUMNS.values():
         head = templates["left_price"]
         prefix, suffix = head.split("{book}")
         for column in df.columns:

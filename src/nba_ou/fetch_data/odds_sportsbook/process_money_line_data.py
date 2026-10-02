@@ -137,4 +137,4 @@ if __name__ == "__main__":
     ml_df = load_one_day_moneyline_csv(
         "/home/adrian_alvarez/Projects/NBA_over_under_predictor/data/sbr_totals_full_game/2024/csv_moneyline/2024-10-23.csv"
     )
-    ml_df
+    print(ml_df.head())
