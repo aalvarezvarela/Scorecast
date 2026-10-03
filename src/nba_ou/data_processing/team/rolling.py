@@ -3,6 +3,7 @@ import pandas as pd
 from tqdm import tqdm
 
 from nba_ou.config.odds_columns import moneyline_col, spread_col, total_line_col
+from nba_ou.config.yahoo_features import YAHOO_HISTORY_SOURCES
 from nba_ou.data_processing.statistics.statistics import (
     compute_rolling_stats,
     compute_rolling_weighted_stats,
@@ -570,14 +571,14 @@ def _compute_all_rolling_statistics_on(df, exclude_yahoo=False):
     # 2) Dynamically discover all ODDS_TOTAL_LINE_* columns
     new_total_line_cols = [c for c in df.columns if c.startswith("ODDS_TOTAL_LINE_")]
 
-    # 3) Dynamically discover Yahoo betting columns (percentage of bets/money)
-    # Note: spread/ml yahoo columns are now team-specific (without _home/_away suffix after merge)
+    # 3) Six Yahoo sources get only a last-five mean and a last-five trend.
+    # Ensure the schema also exists during a Yahoo outage, with missing sources.
     yahoo_cols = []
     if not exclude_yahoo:
-        yahoo_patterns = ["_pct_bets", "_pct_money"]
-        yahoo_cols = [
-            c for c in df.columns if any(pattern in c for pattern in yahoo_patterns)
-        ]
+        yahoo_cols = list(YAHOO_HISTORY_SOURCES)
+        missing_yahoo = {c: np.nan for c in yahoo_cols if c not in df.columns}
+        if missing_yahoo:
+            df = df.assign(**missing_yahoo)
 
     # 4) Dynamically discover consensus percentage columns
     consensus_pct_cols = [
@@ -622,12 +623,11 @@ def _compute_all_rolling_statistics_on(df, exclude_yahoo=False):
         COLS_FOR_WEIGHTED_STATS + new_total_line_cols + consensus_pct_cols
     )
 
-    # Season std: include diffs, total lines, yahoo, consensus, and is_over columns
+    # Season std: include diffs, total lines and consensus, but no Yahoo history.
     cols_for_season_std = (
         COLS_FOR_SEASON_STD
         + new_diff_cols
         + new_total_line_cols
-        + yahoo_cols
         + consensus_pct_cols
     )
     cols_for_season_std = list(dict.fromkeys(cols_for_season_std))
@@ -639,6 +639,15 @@ def _compute_all_rolling_statistics_on(df, exclude_yahoo=False):
         )
     )
     for col in tqdm(rolling_columns, desc="Computing rolling stats"):
+        if col in yahoo_cols:
+            df = compute_rolling_stats(
+                df,
+                col,
+                window=5,
+                group_by_season=False,
+                add_relative_column=False,
+            )
+            continue
         is_style_source = col in STYLE_SOURCE_COLUMNS
         df = compute_rolling_stats(
             df,
@@ -764,7 +773,11 @@ def _compute_all_rolling_statistics_on(df, exclude_yahoo=False):
         for col in tqdm(yahoo_cols, desc="Computing Yahoo % trends"):
             if col in df.columns:
                 df = compute_trend_slope(
-                    df, parameter=col, window=5, shift_current_game=True
+                    df,
+                    parameter=col,
+                    window=5,
+                    shift_current_game=True,
+                    add_relative_column=False,
                 )
 
     # 15) Enforce naming convention: all newly computed rolling/stat columns must contain _BEFORE

@@ -38,7 +38,8 @@ from nba_ou.modeling.registry_paths import (
 from training_pipeline.config import DatasetType, ExperimentConfig, TargetFamily
 from training_pipeline.reuse import RunHyperparameters
 
-#: ``training_data_2_5_20260704.csv`` / ``intermediate_line_data_2_5_20260613.csv``
+#: ``closing_line_data_2_5_20261003.parquet`` (nba_ou.config.dataset_versions.
+#: training_dataset_filename) and older ``training_data_2_5_20260704.csv`` builds
 _SCHEMA_IN_FILENAME = re.compile(r"_(\d+_\d+)_\d{8}")
 
 #: TargetFamily members that can be served. OVER_UNDER is absent because the
@@ -68,7 +69,7 @@ def parse_schema_version(csv_path: str | Path) -> str:
     if match is None:
         raise PromotionError(
             f"Cannot read a schema version from {Path(csv_path).name!r}. "
-            "Expected a name like 'training_data_2_5_20260704.csv'. Pass "
+            "Expected a name like 'closing_line_data_2_5_20261003.parquet'. Pass "
             "--schema-version to state it explicitly."
         )
     return match.group(1)

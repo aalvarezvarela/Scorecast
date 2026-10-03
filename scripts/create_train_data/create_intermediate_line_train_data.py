@@ -6,13 +6,11 @@ separate output file, no shared state. Building one dataset cannot affect the
 other.
 
     poetry run python scripts/create_train_data/create_intermediate_line_train_data.py
-    poetry run python scripts/create_train_data/create_intermediate_line_train_data.py --format parquet
 
-The printed sha256 goes straight into a campaign config's
+Writes Parquet, verified row group by row group
+(``training_pipeline.parquet_dataset``), so single-horizon runs load in seconds
+and ~1-2GB. The printed sha256 goes straight into a campaign config's
 ``data.expected_checksum`` so a regenerated dataset cannot pass silently.
-``--format parquet`` writes the CSV, converts it with row-group verification
-(``training_pipeline.parquet_dataset``) and deletes it; single-horizon runs
-then load in seconds and ~1-2GB instead of minutes and ~14GB.
 
 **Read the row-count warning it prints.** Every window in
 ``experiments/_base.yaml`` named ``*_games`` is counted in ROWS, not games
@@ -24,11 +22,10 @@ for -- with no error raised. The script prints the rescaled values to use.
 from __future__ import annotations
 
 import argparse
-import gc
 from pathlib import Path
 
 import pandas as pd
-from nba_ou.config.dataset_versions import TRAINING_DATA_SCHEMA_VERSION
+from nba_ou.config.dataset_versions import training_dataset_filename
 from nba_ou.create_training_data.create_intermediate_line_df import (
     DEFAULT_BASE_LOOKBACK_SEASONS,
     create_intermediate_line_df,
@@ -38,7 +35,6 @@ from nba_ou.data_processing.line_history.snapshots import DEFAULT_SNAPSHOT_GRID
 from nba_ou.data_processing.referees.referee_tendencies import (
     DEFAULT_REFEREE_HISTORY_SEASONS,
 )
-from nba_ou.utils.parallel_csv import write_csv
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_OUTPUT_DIR = PROJECT_ROOT / "data" / "train_data"
@@ -79,16 +75,7 @@ def main() -> None:
         "--output",
         type=Path,
         default=None,
-        help="CSV path to write. With --format parquet the .parquet file lands beside it.",
-    )
-    parser.add_argument(
-        "--format",
-        choices=("csv", "parquet", "both"),
-        default="csv",
-        help=(
-            "parquet: write the CSV, convert it with row-group verification, then "
-            "delete the CSV. both: keep the CSV too. The scoring sidecar stays CSV."
-        ),
+        help="Parquet path to write. The scoring sidecar lands beside it.",
     )
     parser.add_argument(
         "--seasons",
@@ -96,7 +83,15 @@ def main() -> None:
         default=None,
         help="Comma-separated season years. Default: everything in the store.",
     )
-    parser.add_argument("--recent-limit", type=str, default=None)
+    parser.add_argument(
+        "--recent-limit",
+        type=str,
+        default=pd.Timestamp.today().strftime("%Y-%m-%d"),
+        help=(
+            "Last game date to include (YYYY-MM-DD), also stamped in the output "
+            "name. Defaults to today."
+        ),
+    )
     parser.add_argument(
         "--base-lookback-seasons",
         type=int,
@@ -221,43 +216,23 @@ def main() -> None:
     output_path = args.output
     if output_path is None:
         DEFAULT_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-        stamp = pd.to_datetime(df["GAME_DATE"]).max().strftime("%Y%m%d")
-        # Schema version in the name for the same reason as the closing dataset:
-        # schema and market-normalization changes must land beside older files
-        # that pinned expected_checksum values still point at.
-        output_path = (
-            DEFAULT_OUTPUT_DIR
-            / f"intermediate_line_data_{TRAINING_DATA_SCHEMA_VERSION}_{stamp}.csv"
+        output_path = DEFAULT_OUTPUT_DIR / training_dataset_filename(
+            "intermediate", args.recent_limit
         )
 
-    print(
-        f"\nWriting {len(df):,} rows x {df.shape[1]:,} columns to {output_path} ...",
-        flush=True,
-    )
-    write_csv(df, output_path)
-    print(f"Saved training data to {output_path}")
+    from training_pipeline.parquet_dataset import write_training_dataset
+
+    write_training_dataset(df, output_path)
 
     # Closing lines and snapshot weights live in a separate file on purpose:
     # the training pipeline builds X by dropping only configured exclusions, so
-    # anything left in the training CSV becomes a feature.
-    scoring_path = output_path.with_name(f"{output_path.stem}_scoring.csv")
-    scoring.to_csv(scoring_path, index=False)
-    print(
-        f"Saved scoring sidecar to {scoring_path} (join on GAME_ID + TIME_TO_MATCH_MIN)"
-    )
+    # anything left in the training dataset becomes a feature.
+    scoring_path = output_path.with_name(f"{output_path.stem}_scoring.parquet")
+    write_training_dataset(scoring, scoring_path)
+    print("Scoring sidecar: join on GAME_ID + TIME_TO_MATCH_MIN via data.scoring_csv_path")
 
     print_row_retention(df)
     print_config_guidance(df["TIME_TO_MATCH_MIN"].nunique())
-
-    # Free the build before converting: the conversion reloads the CSV (~14GB
-    # for the full intermediate file), and holding both would not fit.
-    del df, scoring
-    gc.collect()
-
-    from training_pipeline.parquet_dataset import finish_dataset_output
-
-    print("\nFinishing output ...", flush=True)
-    finish_dataset_output(output_path, output_format=args.format)
 
 
 def print_row_retention(df: pd.DataFrame) -> None:

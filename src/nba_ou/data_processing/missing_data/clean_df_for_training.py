@@ -3,16 +3,26 @@ Module for cleaning dataframes before training.
 
 This module provides functions to:
 - Perform basic data filtering and validation
-- Remove low-quality columns (high NaN %, ID columns, string columns)
+- Remove non-feature columns (identifiers and descriptive text, by exact name)
+- Remove low-quality columns (high NaN %, season-gated availability)
 - Detect and remove duplicate or highly similar columns
 - Remove constant columns
-- Apply missing data policy
+
+Missing values are left as NaN for the model to read. There is no imputation
+step: the one that existed (``apply_missing_policy``) chose what to fill by
+substrings of the column name, filled only genuine data gaps -- the builders
+already write 0 where 0 is the true value -- and resolved its fill sources after
+column pruning, so the same feature was NaN in training and filled at serve.
 """
+
+from typing import Literal
 
 import numpy as np
 import pandas as pd
+from nba_ou.config.identity_columns import NON_FEATURE_COLUMNS
 from nba_ou.config.leakage import rotation_leak_columns
 from nba_ou.config.odds_columns import resolve_main_total_line_col
+from nba_ou.config.yahoo_features import compact_yahoo_columns
 from nba_ou.data_processing.missing_data.cleaning_report import CleaningReport
 from nba_ou.data_processing.missing_data.column_redundancy import (
     KeepPreference,
@@ -22,12 +32,8 @@ from nba_ou.data_processing.missing_data.column_redundancy import (
     representative_row_index,
     select_correlated_columns_to_drop,
 )
-from nba_ou.data_processing.missing_data.handle_missing_data import (
-    TARGET_COL as TARGET_COLUMN,
-)
-from nba_ou.data_processing.missing_data.handle_missing_data import (
-    apply_missing_policy,
-)
+
+TARGET_COLUMN = "TOTAL_POINTS"
 
 #: Correlation thresholds applied to columns whose name CONTAINS the key,
 #: overriding ``corr_threshold`` for those columns only.
@@ -184,18 +190,9 @@ def basic_cleaning(
     Returns:
         pd.DataFrame: Cleaned dataframe
     """
-    # Copy before the dtype casts below: without this they land on the CALLER's
-    # frame, so cleaning the same dataframe twice does not do the same thing
-    # twice.
+    # Copy first: nothing below may land on the CALLER's frame, or cleaning the
+    # same dataframe twice would not do the same thing twice.
     df = df.copy()
-
-    for holiday_col in ("IS_US_HOLIDAY_BEFORE", "IS_US_HOLIDAY"):
-        if holiday_col in df.columns:
-            df[holiday_col] = (
-                df[holiday_col]
-                .astype("Int64")  # ensures proper numeric handling
-                .astype("boolean")  # pandas nullable boolean
-            )
 
     initial_rows = len(df)
     if verbose >= 1:
@@ -276,6 +273,7 @@ def advanced_column_cleaning(
     season_col: str = "SEASON_YEAR",
     repeated_measures: RepeatedMeasuresRedundancy | None = None,
     representative_index: pd.Index | None = None,
+    unexpected_text: Literal["raise", "drop"] = "raise",
     verbose: int = 1,
     report: CleaningReport | None = None,
 ) -> pd.DataFrame:
@@ -283,8 +281,8 @@ def advanced_column_cleaning(
     Perform advanced column cleaning on the training dataframe.
 
     This function:
-    - Removes columns containing strings in every value
-    - Removes columns with 'ID' in the name
+    - Removes the non-feature columns (nba_ou.config.identity_columns), by exact name
+    - Raises on (or drops) any other column holding text -- see ``unexpected_text``
     - Removes columns with high NaN percentage (configurable)
     - Removes duplicate columns and absolute-value matches
     - Removes columns highly correlated with another column (unless keep_all_cols=True)
@@ -294,8 +292,8 @@ def advanced_column_cleaning(
     nba_ou.data_processing.missing_data.column_redundancy, by explicit
     preference (protected > fewer NaNs > main book > canonical name) rather than
     by column order. ``keep_columns`` is honoured by every step, including these
-    -- it previously protected columns only from the string/ID/NAME/high-NaN/
-    constant steps, so a protected column could still be lost to correlation
+    -- it previously protected columns only from the text/high-NaN/constant
+    steps, so a protected column could still be lost to correlation
     pruning.
 
     Args:
@@ -308,8 +306,8 @@ def advanced_column_cleaning(
             Useful for preserving date columns or other important non-numeric columns. Default: None
         exclude_cols_containing (list[str] | None): Substrings used to drop matching columns before
             the rest of the cleaning logic runs. Matching is case-insensitive. Default: None
-        keep_all_cols (bool): If True, only drops ID, NAME, and string columns; keeps all others
-            (high-NaN, constant, duplicate, correlated, absolute matches). Default: False
+        keep_all_cols (bool): If True, only drops non-feature and text columns; keeps all
+            others (high-NaN, constant, duplicate, correlated, absolute matches). Default: False
         corr_threshold_overrides (dict[str, float] | None): Per-substring correlation
             thresholds overriding ``corr_threshold`` for matching columns; a pair is
             judged against the more tolerant of its two columns. Pass ``{}`` for a
@@ -326,8 +324,14 @@ def advanced_column_cleaning(
         representative_index (pd.Index | None): The one-row-per-group labels the
             policy is applied over. Passed in rather than derived here because
             the columns identifying a group -- GAME_ID above all -- are dropped
-            by step 2 of this very function, long before the correlation step
+            by step 1 of this very function, long before the correlation step
             needs them.
+        unexpected_text ("raise" | "drop"): What to do with a text column that
+            is neither protected nor a declared non-feature column. A training
+            frame holds none, so "raise" (the default) turns a feature read
+            with the wrong dtype into an error instead of a silent drop. The
+            same-day prediction frame carries extra display columns and passes
+            "drop"; the model's own feature list decides its inputs there.
         season_col (str): Column holding the season, for the check above.
         verbose (int): Verbosity level (0=silent, 1=basic, 2=detailed). Default: 1
 
@@ -364,86 +368,74 @@ def advanced_column_cleaning(
             f"{sorted(cols_matching_patterns)}"
         )
 
-    # 1. Remove columns that are purely string (object/string dtype and all non-null values are str)
+    # 1. Non-feature columns: identifiers and descriptive text, by exact name.
     if verbose >= 2:
-        print("\n1. Checking for pure string columns...")
+        print("\n1. Checking for non-feature columns...")
+    non_feature_cols = [
+        col
+        for col in NON_FEATURE_COLUMNS
+        if col in df.columns and col not in keep_columns_set
+    ]
+    if non_feature_cols:
+        if verbose >= 2:
+            print(
+                f"   Removing {len(non_feature_cols)} non-feature columns: {non_feature_cols}"
+            )
+        columns_to_drop.update(non_feature_cols)
+        if report is not None:
+            report.drop_columns(
+                non_feature_cols,
+                step="non_feature_columns",
+                reason="identifier or descriptive text (nba_ou.config.identity_columns)",
+            )
+    elif verbose >= 2:
+        print("   No non-feature columns to remove")
 
-    string_cols = []
-
+    # 2. Any other column holding text. A column with no values at all is not
+    # text, merely empty -- it becomes float NaN and the NaN step judges it like
+    # any other empty column.
+    if verbose >= 2:
+        print("\n2. Checking for unexpected text columns...")
+    unexpected_text_cols = []
     for col in df.columns:
-        # Skip protected columns
-        if col in keep_columns_set:
+        if col in columns_to_drop or col in keep_columns_set:
             continue
-        dtype = df[col].dtype
-
-        # Only object / string columns are candidates
-        if dtype not in ("object", "string"):
+        if df[col].dtype not in ("object", "string"):
             continue
-
         non_null = df[col].dropna()
         if non_null.empty:
-            # column is all NaN → treat as useless string-like column
-            string_cols.append(col)
-            continue
+            df[col] = df[col].astype("float64")
+        elif non_null.map(type).eq(str).any():
+            unexpected_text_cols.append(col)
 
-        # Drop if ALL non-null values are strings
-        if non_null.map(type).eq(str).all():
-            string_cols.append(col)
-
-    if string_cols:
+    if unexpected_text_cols:
+        if unexpected_text == "raise":
+            raise ValueError(
+                f"{len(unexpected_text_cols)} column(s) hold text but are not "
+                f"declared non-feature columns: {unexpected_text_cols}. Either "
+                "add an identifier or label to nba_ou.config.identity_columns, or "
+                "find why a numeric feature arrived as text -- dropping it "
+                "quietly is how features used to go missing. A Parquet copy "
+                "converted before October 2026 stored every column whose name "
+                "contains 'ID' (..._mid_..., ..._RESIDUAL) as text: regenerate it."
+            )
         if verbose >= 2:
-            print(f"   Removing {len(string_cols)} pure string columns:")
-            for c in string_cols:
-                print(f"      - {c}")
-        columns_to_drop.update(string_cols)
+            print(
+                f"   Removing {len(unexpected_text_cols)} text columns: {unexpected_text_cols}"
+            )
+        columns_to_drop.update(unexpected_text_cols)
         if report is not None:
             report.drop_columns(
-                string_cols, step="string_columns", reason="all non-null values are str"
+                unexpected_text_cols,
+                step="unexpected_text_columns",
+                reason="holds text; not a declared non-feature column",
             )
     elif verbose >= 2:
-        print("   No pure string columns to remove")
+        print("   No unexpected text columns")
 
-    # 2. Remove columns containing 'ID' in the name
+    # 3. Remove columns with high NaN values (configurable)
     if verbose >= 2:
-        print("\n2. Checking for ID columns...")
-    id_cols = [
-        col
-        for col in df.columns
-        if "_ID" in col.upper() and col not in keep_columns_set
-    ]
-    if id_cols:
-        if verbose >= 2:
-            print(f"   Removing {len(id_cols)} _ID columns: {id_cols}")
-        columns_to_drop.update(id_cols)
-        if report is not None:
-            report.drop_columns(
-                id_cols, step="id_columns", reason="name contains '_ID'"
-            )
-    elif verbose >= 2:
-        print("   No ID columns to remove")
-
-    # 3. Remove columns containing '_NAME' in the name
-    if verbose >= 2:
-        print("\n3. Checking for _NAME columns...")
-    name_cols = [
-        col
-        for col in df.columns
-        if "_NAME" in col.upper() and col not in keep_columns_set
-    ]
-    if name_cols:
-        if verbose >= 2:
-            print(f"   Removing {len(name_cols)} _NAME columns: {name_cols}")
-        columns_to_drop.update(name_cols)
-        if report is not None:
-            report.drop_columns(
-                name_cols, step="name_columns", reason="name contains '_NAME'"
-            )
-    elif verbose >= 2:
-        print("   No _NAME columns to remove")
-
-    # 4. Remove columns with high NaN values (configurable)
-    if verbose >= 2:
-        print(f"\n4. Checking for high-NaN columns (>{nan_threshold}%)...")
+        print(f"\n3. Checking for high-NaN columns (>{nan_threshold}%)...")
     high_nan_cols = []
     # An empty frame has no NaN *proportion* -- 0/0 is not 100%. Guarding here
     # rather than dividing keeps the step from emitting a RuntimeWarning and
@@ -479,11 +471,11 @@ def advanced_column_cleaning(
         else:
             print("   No high-NaN columns to remove")
 
-    # 4b. Remove columns whose availability identifies the season
+    # 3b. Remove columns whose availability identifies the season
     if max_seasonal_nan_spread is not None and not keep_all_cols:
         if verbose >= 2:
             print(
-                f"\n4b. Checking for season-gated columns "
+                f"\n3b. Checking for season-gated columns "
                 f"(NaN rate varying >{max_seasonal_nan_spread}pp across seasons)..."
             )
         gated = find_season_gated_columns(
@@ -507,9 +499,9 @@ def advanced_column_cleaning(
         elif verbose >= 2:
             print("   No season-gated columns to remove")
 
-    # 5. Remove columns with constant values (same value in every row)
+    # 4. Remove columns with constant values (same value in every row)
     if verbose >= 2:
-        print("\n5. Checking for constant columns...")
+        print("\n4. Checking for constant columns...")
 
     if keep_all_cols:
         if verbose >= 2:
@@ -540,14 +532,14 @@ def advanced_column_cleaning(
     # Drop the columns identified so far before checking for duplicates
     df = df.drop(columns=list(columns_to_drop))
 
-    # Steps 6-7 both answer "several columns carry the same information, which
+    # Steps 5-6 both answer "several columns carry the same information, which
     # one survives?" and both answer it the same way: rank by preference, keep
     # the best. See column_redundancy.rank_columns.
     preference = KeepPreference.build(protected=sorted(keep_columns_set))
 
-    # 6. Exact duplicates and absolute-value matches
+    # 5. Exact duplicates and absolute-value matches
     if verbose >= 2:
-        print("\n6. Checking for duplicate and absolute-value-match columns...")
+        print("\n5. Checking for duplicate and absolute-value-match columns...")
 
     if keep_all_cols:
         if verbose >= 2:
@@ -560,7 +552,8 @@ def advanced_column_cleaning(
             reasons: dict[str, str] = {}
             for group in groups:
                 ranked = rank_columns(numeric, group, preference)
-                keeper, losers = ranked[0], ranked[1:]
+                keeper = ranked[0]
+                losers = [c for c in ranked[1:] if c not in keep_columns_set]
                 cols_to_remove.extend(losers)
                 marker = "abs" if absolute else ""
                 for loser in losers:
@@ -581,9 +574,9 @@ def advanced_column_cleaning(
             elif verbose >= 2:
                 print(f"   No {label} columns found")
 
-    # 7. Highly correlated columns
+    # 6. Highly correlated columns
     if verbose >= 2:
-        print("\n7. Checking for highly correlated columns...")
+        print("\n6. Checking for highly correlated columns...")
 
     if keep_all_cols:
         if verbose >= 2:
@@ -617,7 +610,7 @@ def advanced_column_cleaning(
         # comparison rather than judged by it. A constant correlates with
         # nothing, so it can neither be dropped as redundant nor justify
         # dropping anything -- but it is also the one input that makes the
-        # correlation undefined, and a protected constant survives step 5 to
+        # correlation undefined, and a protected constant survives step 4 to
         # rank FIRST here, which makes it the yardstick every later column is
         # measured against. That is how TIME_TO_MATCH_MIN -- constant once a
         # single snapshot is selected, and protected because the scoring join
@@ -696,14 +689,14 @@ def _normalize_nullable_dtypes(df: pd.DataFrame) -> pd.DataFrame:
     ``fillna(np.nan)`` on every numeric column. That was a verified no-op --
     float64 NaN is already NaN and int64 cannot hold one -- and it could not
     have worked anyway, because ``select_dtypes(include=[np.number])`` does not
-    match the nullable ``boolean`` dtype, which is the only nullable dtype the
-    pipeline actually creates: ``basic_cleaning`` casts IS_US_HOLIDAY* to it.
+    match the nullable ``boolean`` dtype, which ``basic_cleaning`` used to cast
+    IS_US_HOLIDAY* to.
 
-    That combination is a live trap rather than a tidiness issue. A nullable
+    That combination was a live trap rather than a tidiness issue. A nullable
     boolean holding pd.NA converts via ``to_numpy()`` to dtype ``object``, which
-    XGBoost rejects outright. It has not fired only because the holiday flag
-    currently has no missing values; the first season it does, training breaks
-    at fit time with an error pointing nowhere near here.
+    XGBoost rejects outright. ``basic_cleaning`` no longer makes that cast -- the
+    flag is read as the integer it is written as -- but any frame arriving with
+    a nullable dtype still needs the conversion.
 
     pandas Categorical is deliberately left alone -- XGBoost consumes it
     natively under ``enable_categorical``, which is what
@@ -725,7 +718,6 @@ def clean_dataframe_for_training(
     nan_threshold: float = 5.0,
     corr_threshold: float = 0.995,
     max_na_per_row: int = -1,
-    create_missing_flags: bool = False,
     keep_columns: list[str] | None = None,
     exclude_cols_containing: list[str] | None = None,
     keep_all_cols: bool = False,
@@ -734,6 +726,7 @@ def clean_dataframe_for_training(
     season_col: str = "SEASON_YEAR",
     repeated_measures: RepeatedMeasuresRedundancy | None = None,
     row_balance_group_col: str | None = None,
+    unexpected_text: Literal["raise", "drop"] = "raise",
     verbose: int = 1,
     strict_mode: int = -1,
     strict_mode_exclude_cols: list[str] | None = None,
@@ -745,14 +738,16 @@ def clean_dataframe_for_training(
     Applies:
     1. Basic row filtering
     2. Advanced column cleaning
-    3. Missing data policy (drop critical rows, zero-fill, infer, fallback to medians)
-    4. Optional row filtering based on remaining NaN counts
+    3. Optional row filtering based on NaN counts
+
+    NaN is never imputed; see the module docstring.
 
     Note on the two row-NaN mechanisms, which overlap and are easy to confuse:
-    ``max_na_per_row`` counts NaNs across ALL columns and is the one in normal
-    use; ``strict_mode`` counts them across all columns except
-    ``strict_mode_exclude_cols`` and is off by default. Setting both applies
-    both, in that order.
+    ``max_na_per_row`` counts NaNs across all columns and is the one in normal
+    use; ``strict_mode`` additionally excludes ``strict_mode_exclude_cols``.
+    Both ignore the optional compact Yahoo block (2_5 rebuild), so a Yahoo
+    outage does not discard otherwise usable games. Setting both applies both,
+    in that order.
 
     Args:
         df (pd.DataFrame): Raw training dataframe
@@ -762,8 +757,8 @@ def clean_dataframe_for_training(
             threshold will be dropped. Use -1 to disable, 0 to drop rows with any NaN. Default: -1
         exclude_cols_containing (list[str] | None): Substrings used to drop matching columns before
             the rest of the cleaning pipeline runs. Matching is case-insensitive. Default: None
-        keep_all_cols (bool): If True, only drops ID, NAME, and string columns; keeps all others.
-            Default: False
+        keep_all_cols (bool): If True, only drops non-feature and text columns; keeps all
+            others. Default: False
         corr_threshold_overrides (dict[str, float] | None): Per-substring correlation
             thresholds overriding ``corr_threshold`` for matching columns. Defaults to
             DEFAULT_CORR_THRESHOLD_OVERRIDES, which holds odds features to a more
@@ -787,6 +782,8 @@ def clean_dataframe_for_training(
             intermediate-line dataset. Purely a record -- see
             ``CleaningReport.record_group_survival``. Ignored when the column is
             absent, so one call site serves both datasets. Default: None
+        unexpected_text ("raise" | "drop"): See advanced_column_cleaning.
+            Default: "raise"
         return_report (bool): If True, return ``(df, CleaningReport)`` instead of
             just the frame. The report records which step dropped each column and
             why, so "where did this feature go?" is answerable without re-running.
@@ -801,6 +798,18 @@ def clean_dataframe_for_training(
 
     report = CleaningReport(columns_in=len(df.columns), rows_in=len(df))
 
+    # The reduced Yahoo block is an explicit model-input contract. Archived
+    # datasets with the full Yahoo family retain their existing cleaning policy.
+    # An explicit exclusion still wins: protection is implicit, and a "without
+    # Yahoo" ablation (exclude_cols_containing: [pct_bets, pct_money]) must
+    # remove the whole block rather than be silently ignored.
+    excluded = _get_cols_matching_patterns(df, exclude_cols_containing)
+    yahoo_columns = tuple(
+        c for c in compact_yahoo_columns(df.columns) if c not in excluded
+    )
+    if yahoo_columns:
+        keep_columns = sorted(set(keep_columns or ()) | set(yahoo_columns))
+
     # Taken by INDEX, not by re-reading the column at the end: the grouping
     # column is an ordinary feature and can itself be dropped by column
     # cleaning, and a report that quietly stopped being produced whenever that
@@ -809,9 +818,9 @@ def clean_dataframe_for_training(
     if row_balance_group_col and row_balance_group_col in df.columns:
         group_before = df[row_balance_group_col]
 
-    # Same reason, and more pressing: GAME_ID is dropped by the _ID step, which
-    # runs well before the correlation step that needs it. Captured here while
-    # it still exists, and resolved to row labels once basic_cleaning has
+    # Same reason, and more pressing: GAME_ID is dropped as a non-feature
+    # column well before the correlation step that needs it. Captured here
+    # while it still exists, and resolved to row labels once basic_cleaning has
     # finished removing rows.
     redundancy_group: pd.Series | None = None
     redundancy_snapshot: pd.Series | None = None
@@ -936,29 +945,11 @@ def clean_dataframe_for_training(
         season_col=season_col,
         repeated_measures=repeated_measures,
         representative_index=representative_index,
+        unexpected_text=unexpected_text,
         verbose=verbose,
         report=report,
     )
 
-    # Apply missing data policy
-    if verbose >= 1:
-        print("\nApplying missing data policy...")
-
-    main_total_line = resolve_main_total_line_col(df_cleaned)
-
-    rows_before_policy = len(df_cleaned)
-    df_cleaned = apply_missing_policy(
-        df_cleaned,
-        current_total_line_col=main_total_line,
-        create_missing_flags=create_missing_flags,
-        keep_all_cols=keep_all_cols,
-    )
-    report.record_rows(
-        step="missing_policy.required_columns",
-        before=rows_before_policy,
-        after=len(df_cleaned),
-        reason="NaN in a column the missing-data policy requires",
-    )
     if max_na_per_row >= 0:
         if verbose >= 1:
             if max_na_per_row == 0:
@@ -969,13 +960,18 @@ def clean_dataframe_for_training(
         initial_rows = len(df_cleaned)
         # Count NaN values per row
         na_per_row = df_cleaned.isna().sum(axis=1)
+        if yahoo_columns:
+            na_per_row -= df_cleaned[list(yahoo_columns)].isna().sum(axis=1)
         # Keep rows with NaN count <= threshold
         df_cleaned = df_cleaned[na_per_row <= max_na_per_row]
         report.record_rows(
             step="max_na_per_row",
             before=initial_rows,
             after=len(df_cleaned),
-            reason=f"more than {max_na_per_row} NaN values in the row",
+            reason=(
+                f"more than {max_na_per_row} NaN values in the row"
+                + (" (optional compact Yahoo inputs excluded)" if yahoo_columns else "")
+            ),
         )
 
         if verbose >= 1:
@@ -991,7 +987,9 @@ def clean_dataframe_for_training(
 
         # Get all columns except excluded ones
         cols_to_check = [
-            col for col in df_cleaned.columns if col not in strict_mode_exclude_cols
+            col
+            for col in df_cleaned.columns
+            if col not in strict_mode_exclude_cols and col not in yahoo_columns
         ]
 
         # Count NaNs per row (only in non-excluded columns)

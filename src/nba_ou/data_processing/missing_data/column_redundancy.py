@@ -376,6 +376,11 @@ def select_correlated_columns_to_drop(
 
     for column in rank_columns(df, columns, preference):
         index = position[column]
+        # Protection means retain every requested input, even when two
+        # protected columns are themselves perfectly correlated.
+        if column in preference.protected:
+            kept_positions.append(index)
+            continue
         if kept_positions:
             against = np.asarray(kept_positions)
             correlations = corr[index, against]

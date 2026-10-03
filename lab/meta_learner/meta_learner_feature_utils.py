@@ -6,6 +6,7 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+from nba_ou.config.identity_columns import identifier_dtypes
 from nba_ou.config.odds_columns import total_line_col
 from nba_ou.modeling.scorers import over_under_betting_accuracy_error_line
 
@@ -61,8 +62,7 @@ def load_meta_learner_dataframe(
 ) -> pd.DataFrame:
     csv_path = Path(csv_path)
     header_cols = pd.read_csv(csv_path, nrows=0).columns
-    dtype_dict = {col: str for col in header_cols if "ID" in col.upper()}
-    df = pd.read_csv(csv_path, dtype=dtype_dict)
+    df = pd.read_csv(csv_path, dtype=identifier_dtypes(header_cols))
     if date_col in df.columns:
         df[date_col] = pd.to_datetime(df[date_col], errors="coerce").dt.normalize()
     sort_cols = [column for column in [date_col, game_id_col] if column in df.columns]

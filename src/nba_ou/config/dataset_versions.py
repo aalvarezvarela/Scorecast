@@ -178,9 +178,51 @@ History
         total moves without side-market moves.
       - ``ODDS_LINE_HIST_RIDGE_EXPECTED_{SPREAD,ML}_MOVE_TO_CLOSE`` -- the total
         Ridge generalised to spread (with cross-market inputs) and moneyline.
+
+    Both datasets, added later still under the 2_5 label (no 2_5 model was in
+    production, so the rebuilt files overwrite the earlier 2_5 Parquet ones):
+
+    * Yahoo public-betting percentages reduced from 156 to 36 closing features:
+      all twelve current-game raw percentages, plus a five-game mean and a
+      five-game trend for totals-over, team spread and team moneyline
+      ticket/money shares, for each team. These inputs survive column cleaning
+      unchanged; missing Yahoo observations stay NaN and do not count toward
+      row-NA limits. Intermediate datasets keep the 24 historical features
+      only: current-game percentages remain excluded until timestamped Yahoo
+      history is available. The Yahoo fill of missing BetMGM quotes and other
+      market features are unchanged.
+    * Written as Parquet only (training_pipeline.parquet_dataset). The 2_5 CSVs
+      built earlier carry the full Yahoo family and are left in place for the
+      configs pinned to them.
 """
 
 from __future__ import annotations
 
+from typing import Literal
+
+import pandas as pd
+
 #: Current schema version for both generated training datasets.
 TRAINING_DATA_SCHEMA_VERSION = "2_5"
+
+
+def training_dataset_filename(
+    kind: Literal["closing", "intermediate"],
+    limit_date: str | pd.Timestamp,
+    *,
+    variant: str = "",
+    schema_version: str = TRAINING_DATA_SCHEMA_VERSION,
+) -> str:
+    """The standard name of a built dataset: kind, schema version, limit date.
+
+    ``<kind>_line_data_<schema>_<YYYYMMDD>[_<variant>].parquet``, where the date
+    is the limit the build was run with -- the last game date it may include --
+    not whatever the latest game in the data happens to be. Two builds with the
+    same name were asked for the same thing. ``training_pipeline.registry``
+    reads the schema version back out of the ``_<schema>_<YYYYMMDD>`` part.
+    """
+    if kind not in ("closing", "intermediate"):
+        raise ValueError(f"kind must be 'closing' or 'intermediate', got {kind!r}")
+    stamp = pd.Timestamp(limit_date).strftime("%Y%m%d")
+    suffix = f"_{variant}" if variant else ""
+    return f"{kind}_line_data_{schema_version}_{stamp}{suffix}.parquet"
