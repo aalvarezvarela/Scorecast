@@ -2,6 +2,8 @@
 
 The three closing-line configurations promoted to production on 2026-09-24,
 rerun **unchanged** on the rebuilt closing dataset, then re-promoted.
+The sixteen intermediate `line_error` slots are in
+`intermediate_prod_rerun_2_5_2026_10`.
 
 | config | target | source config | source run (promoted 2026-09-24) |
 |---|---|---|---|
