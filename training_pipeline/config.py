@@ -582,6 +582,10 @@ class CleaningConfig(BaseModel):
     #: data.extend_history_dropping_season_gated_columns sets it.
     max_seasonal_nan_spread: float | None = None
     max_na_per_row: int = -1
+    #: Retired with the missing-data policy that produced the flags. Kept as a
+    #: field, pinned to False, because it is part of every config fingerprint:
+    #: removing it would fork every persistent Optuna study for no change in
+    #: behaviour.
     create_missing_flags: bool = False
     keep_columns: list[str] | None = None
     exclude_cols_containing: list[str] | None = None
@@ -589,6 +593,16 @@ class CleaningConfig(BaseModel):
     verbose: int = 1
     strict_mode: int = -1
     strict_mode_exclude_cols: list[str] | None = None
+
+    @model_validator(mode="after")
+    def _missing_flags_are_retired(self) -> CleaningConfig:
+        if self.create_missing_flags:
+            raise ValueError(
+                "cleaning.create_missing_flags is no longer supported: the "
+                "missing-data policy that added __is_missing columns was removed. "
+                "XGBoost reads NaN directly."
+            )
+        return self
 
 
 class HoldoutConfig(BaseModel):

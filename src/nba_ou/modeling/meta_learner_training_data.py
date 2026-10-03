@@ -7,6 +7,7 @@ from typing import Any
 
 import numpy as np
 import pandas as pd
+from nba_ou.config.identity_columns import identifier_dtypes
 from nba_ou.config.odds_columns import total_line_col
 from nba_ou.config.settings import SETTINGS
 from nba_ou.modeling.modeling import evaluate_day_by_day_walk_forward
@@ -80,8 +81,7 @@ def _stable_unique_strings(values: list[str]) -> list[str]:
 def load_training_dataframe(csv_path: str | Path) -> pd.DataFrame:
     csv_path = Path(csv_path)
     header_cols = pd.read_csv(csv_path, nrows=0).columns
-    dtype_dict = {col: str for col in header_cols if "ID" in col.upper()}
-    df = pd.read_csv(csv_path, dtype=dtype_dict)
+    df = pd.read_csv(csv_path, dtype=identifier_dtypes(header_cols))
     if DATE_COLUMN in df.columns:
         df[DATE_COLUMN] = pd.to_datetime(
             df[DATE_COLUMN], errors="coerce"

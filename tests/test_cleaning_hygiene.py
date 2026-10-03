@@ -21,9 +21,6 @@ from nba_ou.data_processing.missing_data.cleaning_report import CleaningReport
 from nba_ou.data_processing.missing_data.column_redundancy import (
     RepeatedMeasuresRedundancy,
 )
-from nba_ou.data_processing.missing_data.handle_missing_data import (
-    apply_missing_policy,
-)
 
 
 @pytest.fixture
@@ -131,18 +128,19 @@ def test_nullable_boolean_with_na_becomes_float_not_object():
     assert np.isnan(out["flag"].to_numpy()[2])
 
 
-def test_holiday_flag_leaves_cleaning_as_a_numpy_dtype(frame):
-    """basic_cleaning deliberately casts this column to nullable boolean, so the
-    end of the pipeline has to undo it."""
-    frame["IS_US_HOLIDAY_BEFORE"] = frame["IS_US_HOLIDAY_BEFORE"].astype(object)
-    frame.loc[0, "IS_US_HOLIDAY_BEFORE"] = None
+def test_holiday_flag_passes_through_cleaning_as_written(frame):
+    """The builder writes the flag as a 0/1 integer. basic_cleaning used to cast
+    it to nullable boolean -- needed only because the loader read any column
+    whose name contained "ID" (holIDay) as text. Read as the integer it is, it
+    needs no cast."""
+    frame["IS_US_HOLIDAY_BEFORE"] = frame["IS_US_HOLIDAY_BEFORE"].astype(int)
 
     cleaned = clean_dataframe_for_training(frame, verbose=0, keep_all_cols=True)
 
-    assert not isinstance(
-        cleaned["IS_US_HOLIDAY_BEFORE"].dtype, pd.api.extensions.ExtensionDtype
-    )
-    assert cleaned["IS_US_HOLIDAY_BEFORE"].to_numpy().dtype != object
+    assert cleaned["IS_US_HOLIDAY_BEFORE"].dtype == np.int64
+    assert cleaned["IS_US_HOLIDAY_BEFORE"].tolist() == frame[
+        "IS_US_HOLIDAY_BEFORE"
+    ].loc[cleaned.index].tolist()
 
 
 def test_nullable_integer_is_normalised():
@@ -205,14 +203,15 @@ def test_report_is_only_returned_when_asked(frame):
 
 def test_report_names_the_step_that_dropped_a_column(frame):
     frame["ALWAYS_SAME"] = 1.0
-    frame["A_STRING_COL"] = "text"
+    frame["TEAM_NAME_TEAM_HOME"] = "text"
 
     _, report = clean_dataframe_for_training(
         frame, nan_threshold=50.0, verbose=0, return_report=True
     )
 
     assert report.why_dropped("ALWAYS_SAME")["step"] == "constant_columns"
-    assert report.why_dropped("A_STRING_COL")["step"] == "string_columns"
+    assert report.why_dropped("TEAM_NAME_TEAM_HOME")["step"] == "non_feature_columns"
+    assert report.why_dropped("GAME_ID")["step"] == "non_feature_columns"
     assert report.why_dropped("PACE_BEFORE_TEAM_HOME") is None
 
 
@@ -249,7 +248,7 @@ def test_report_records_row_drops_with_reasons(frame):
 
 
 def test_report_totals_match_the_returned_frame(frame):
-    frame["A_STRING_COL"] = "text"
+    frame["TEAM_CITY_TEAM_HOME"] = "text"
     cleaned, report = clean_dataframe_for_training(
         frame, nan_threshold=50.0, verbose=0, return_report=True
     )
@@ -259,8 +258,7 @@ def test_report_totals_match_the_returned_frame(frame):
     assert report.rows_in == len(frame)
     assert report.rows_out == len(cleaned)
     # Every dropped column is accounted for exactly once, so the per-step counts
-    # sum to the columns that actually went. GAME_ID satisfies both the
-    # pure-string and the _ID rule and must still be reported once.
+    # sum to the columns that actually went, each reported once.
     assert len(report.column_drops) == report.columns_in - report.columns_out
     recorded = [entry["column"] for entry in report.column_drops]
     assert len(recorded) == len(set(recorded))
@@ -268,7 +266,7 @@ def test_report_totals_match_the_returned_frame(frame):
 
 
 def test_report_serialises_to_json(frame, tmp_path):
-    frame["A_STRING_COL"] = "text"
+    frame["TEAM_CITY_TEAM_HOME"] = "text"
     _, report = clean_dataframe_for_training(frame, verbose=0, return_report=True)
 
     path = report.save(tmp_path / "cleaning_report.json")
@@ -719,24 +717,29 @@ def test_cleaning_keeps_the_lagged_injured_columns(frame):
     assert "N_INJURED_PLAYERS_BEFORE_TEAM_HOME" in cleaned.columns
 
 
-def test_injured_availability_standard_error_keeps_unknown_precision_as_nan():
-    """An unknown standard error is not a neutral zero-sized injury effect."""
+def test_cleaning_does_not_impute_missing_values():
+    """Missing values reach the model as NaN. The old missing-data policy filled
+    injury columns with 0 and rolling windows with the season average, picked by
+    substrings of the column name -- which only ever touched genuine data gaps,
+    and was resolved after pruning, so training and serving filled differently."""
     effect_col = "TOP3_INJURED_AVAILABILITY_EFFECT_HOME_MEAN_TOTAL_POINTS"
-    uncertainty_col = "TOP3_INJURED_AVAILABILITY_EFFECT_HOME_MEAN_SE_TOTAL_POINTS"
+    rolling_col = "PACE_LAST_ALL_5_MATCHES_BEFORE_TEAM_HOME"
+    season_col = "PACE_SEASON_BEFORE_AVG_TEAM_HOME"
     raw = pd.DataFrame(
         {
-            "TOTAL_POINTS": [220.0, 221.0],
-            "ODDS_TOTAL_LINE_bet365": [219.5, 220.5],
-            effect_col: [np.nan, 2.0],
-            uncertainty_col: [np.nan, 3.0],
+            "TOTAL_POINTS": [220.0, 221.0, 230.0],
+            "ODDS_TOTAL_LINE_bet365": [219.5, 220.5, 228.0],
+            effect_col: [np.nan, 2.0, 1.0],
+            rolling_col: [np.nan, 99.0, 101.0],
+            season_col: [100.0, 98.0, 97.0],
         }
     )
 
-    cleaned = apply_missing_policy(raw)
+    cleaned = clean_dataframe_for_training(raw, verbose=0, keep_all_cols=True)
 
-    assert cleaned[effect_col].tolist() == [0.0, 2.0]
-    assert pd.isna(cleaned.loc[0, uncertainty_col])
-    assert cleaned.loc[1, uncertainty_col] == 3.0
+    assert len(cleaned) == 3
+    assert pd.isna(cleaned.loc[0, effect_col])
+    assert pd.isna(cleaned.loc[0, rolling_col])
 
 
 def test_keep_columns_cannot_rescue_a_rotation_leak(frame):

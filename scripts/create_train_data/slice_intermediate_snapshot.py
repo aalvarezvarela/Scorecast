@@ -33,6 +33,8 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+from nba_ou.config.identity_columns import identifier_dtypes  # noqa: E402
+
 DEFAULT_INPUT = (
     PROJECT_ROOT / "data" / "train_data" / "intermediate_line_data_20260412.csv"
 )
@@ -54,12 +56,13 @@ def main() -> None:
     if not args.input.exists():
         raise SystemExit(f"Input not found: {args.input}")
 
-    # ID columns as str so GAME_ID keeps its leading zeros -- the pipeline
-    # resolves season type from its 3-character prefix, and 22100001 does not
-    # map where 0022100001 does.
+    # Identifier columns as str so GAME_ID keeps its leading zeros -- the
+    # pipeline resolves season type from its 3-character prefix, and 22100001
+    # does not map where 0022100001 does.
     header = pd.read_csv(args.input, nrows=0)
-    dtype = {column: str for column in header.columns if "ID" in column.upper()}
-    df = pd.read_csv(args.input, dtype=dtype, low_memory=False)
+    df = pd.read_csv(
+        args.input, dtype=identifier_dtypes(header.columns), low_memory=False
+    )
 
     if SNAPSHOT_COLUMN not in df.columns:
         raise SystemExit(f"{args.input} has no {SNAPSHOT_COLUMN} column.")

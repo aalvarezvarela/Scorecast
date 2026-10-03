@@ -208,6 +208,8 @@ def _prepare_tabpfn_client_datasets(
         keep_columns=keep_columns,
         exclude_cols_containing=exclude_cols_containing,
         keep_all_cols=True,
+        # In-memory frames carry display columns beyond the declared ones.
+        unexpected_text="drop",
         verbose=1,
     )
     cleaned_df = clean_dataframe_for_training(
@@ -217,6 +219,7 @@ def _prepare_tabpfn_client_datasets(
         max_na_per_row=80,
         keep_columns=keep_columns,
         exclude_cols_containing=exclude_cols_containing,
+        unexpected_text="drop",
         verbose=1,
     )
 

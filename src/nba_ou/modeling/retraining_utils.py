@@ -6,9 +6,6 @@ from typing import Any
 import pandas as pd
 from nba_ou.config.odds_columns import total_line_col
 from nba_ou.config.settings import SETTINGS
-from nba_ou.data_processing.missing_data.handle_missing_data import (
-    apply_missing_policy,
-)
 from nba_ou.modeling.modeling import (
     ModelBundleMetadata,
     build_recency_sample_weights,
@@ -570,14 +567,6 @@ def prepare_retraining_dataframe_from_raw(
     prepared = prepared.dropna(
         subset=[settings.date_column, settings.target_column]
     ).copy()
-
-    prepared = apply_missing_policy(
-        prepared,
-        current_total_line_col=settings.required_line_col,
-        mode="train",
-        create_missing_flags=False,
-        keep_all_cols=False,
-    )
 
     if (
         settings.required_line_col is not None

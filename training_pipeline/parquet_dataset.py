@@ -2,8 +2,8 @@
 
 The CSV stays the reference. ``convert_csv_to_parquet`` reads it through
 ``data.load_raw_training_csv`` -- the reader every experiment uses -- so the
-Parquet file stores exactly the frame the pipeline sees (ID columns as text,
-GAME_DATE as a date), then reads every row group back through the Parquet
+Parquet file stores exactly the frame the pipeline sees (identifier columns as
+text, GAME_DATE as a date), then reads every row group back through the Parquet
 loader's own post-read step and compares it to the CSV rows with
 ``assert_frame_equal`` (exact floats, dtypes and index). A file that fails is
 deleted, never left half-trusted.

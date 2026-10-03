@@ -15,6 +15,10 @@ from typing import Any
 import numpy as np
 import pandas as pd
 from nba_ou.config.constants import SEASON_TYPE_MAP
+from nba_ou.config.identity_columns import (
+    apply_identifier_dtypes,
+    identifier_dtypes,
+)
 from nba_ou.config.leakage import rotation_leak_columns
 from nba_ou.config.market_columns import (
     HOME_MARGIN_COL,
@@ -199,10 +203,15 @@ def read_dataset_columns(
     For the cheap lookups -- key integrity, joining predictions back to games,
     settlement lines -- that only need identity columns and one or two values.
     ``dtype`` is applied after the read for Parquet, which already stores types.
+    Identifier columns are text either way, as in load_raw_training_csv.
     """
     if not is_parquet(path):
-        return pd.read_csv(path, usecols=columns, dtype=dtype)
-    frame = _normalize_missing_text(pd.read_parquet(path, columns=columns))
+        return pd.read_csv(
+            path, usecols=columns, dtype={**identifier_dtypes(columns), **(dtype or {})}
+        )
+    frame = apply_identifier_dtypes(
+        _normalize_missing_text(pd.read_parquet(path, columns=columns))
+    )
     for col, kind in (dtype or {}).items():
         if kind is str:
             # astype(str) would turn a missing value into the text "nan";
@@ -234,7 +243,7 @@ def finish_parquet_frame(df: pd.DataFrame, *, date_col: str) -> pd.DataFrame:
     a check that normalized differently from the loader would pass while the
     loader diverged.
     """
-    df = _normalize_missing_text(df)
+    df = apply_identifier_dtypes(_normalize_missing_text(df))
     # Written from load_raw_training_csv's CSV output, so dates are already
     # date-only; only the unit can differ after the round trip.
     if date_col in df.columns:
@@ -295,9 +304,10 @@ def load_raw_training_csv(
     snapshot_col: str | None = None,
     snapshot_minutes: int | None = None,
 ) -> pd.DataFrame:
-    """Load a training dataset (CSV or Parquet) the way the example notebooks do:
-    ID-like columns as str (avoids mixed-type surprises from pandas' dtype
-    inference on large sparse columns), GAME_DATE as a date-only datetime.
+    """Load a training dataset (CSV or Parquet): the identifier columns as text
+    (nba_ou.config.identity_columns -- exact names, so GAME_ID keeps its leading
+    zeros and no feature is mistaken for an identifier), every other column as
+    pandas infers it, GAME_DATE as a date-only datetime.
 
     ``snapshot_col``/``snapshot_minutes`` keep one horizon of an intermediate
     dataset. Parquet applies it while reading; CSV cannot, so it reads
@@ -316,9 +326,7 @@ def load_raw_training_csv(
         )
 
     header = pd.read_csv(csv_path, nrows=0)
-    dtype_dict = {col: str for col in header.columns if "ID" in col.upper()}
-
-    df = pd.read_csv(csv_path, dtype=dtype_dict)
+    df = pd.read_csv(csv_path, dtype=identifier_dtypes(header.columns))
     if date_col in df.columns:
         df[date_col] = pd.to_datetime(df[date_col]).dt.strftime("%Y-%m-%d")
         df[date_col] = pd.to_datetime(df[date_col])
@@ -578,7 +586,7 @@ def _required_keep_columns(
     # GAME_ID is what makes a row-count and a game-count different numbers, so
     # every *_games knob needs it to mean games rather than rows, and
     # snapshot_scoring needs it to report n_games. advanced_column_cleaning
-    # drops it by default (its name contains "_ID") and on the closing-line
+    # drops it by default (it is in NON_FEATURE_COLUMNS) and on the closing-line
     # path that is right: rows are games there, nothing needs it, and keeping it
     # would change a cleaned frame that a dozen archived runs were produced
     # from. It is excluded from the feature matrix explicitly in
@@ -716,7 +724,6 @@ def clean_for_training(
         repeated_measures=repeated_measures,
         row_balance_group_col=row_balance_group_col,
         max_na_per_row=cleaning.max_na_per_row,
-        create_missing_flags=cleaning.create_missing_flags,
         keep_columns=keep_columns,
         exclude_cols_containing=cleaning.exclude_cols_containing,
         keep_all_cols=cleaning.keep_all_cols,
@@ -1099,9 +1106,9 @@ def prepare_dataset(config: ExperimentConfig) -> PreparedDataset:
         df, season_col=config.data.season_col, floor=config.data.season_year_floor
     )
 
-    # Must run before cleaning: advanced_column_cleaning drops both GAME_ID
-    # (name contains "_ID") and SEASON_TYPE (a pure-string column), so the
-    # information needed to identify competition type is gone afterwards.
+    # Must run before cleaning: advanced_column_cleaning drops both GAME_ID and
+    # SEASON_TYPE (NON_FEATURE_COLUMNS), so the information needed to identify
+    # competition type is gone afterwards.
     if config.data.exclude_playoffs:
         df = filter_allowed_season_types(
             df,
