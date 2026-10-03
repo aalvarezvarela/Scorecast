@@ -7,6 +7,12 @@ other.
 
     poetry run python scripts/create_train_data/create_intermediate_line_train_data.py
 
+The builder produces the base schema (2_5). With a newer ``--schema-version``
+(default: the newest) that file is then upgraded by adding only the newer
+columns (``training_pipeline.layered_dataset``), streaming row group by row
+group. The base scoring sidecar serves every version: the rows are the same.
+Each file gets a ``.manifest.json`` saying what it is.
+
 Writes Parquet, verified row group by row group
 (``training_pipeline.parquet_dataset``), so single-horizon runs load in seconds
 and ~1-2GB. The printed sha256 goes straight into a campaign config's
@@ -25,7 +31,11 @@ import argparse
 from pathlib import Path
 
 import pandas as pd
-from nba_ou.config.dataset_versions import training_dataset_filename
+from nba_ou.config.dataset_versions import (
+    BASE_SCHEMA_VERSION,
+    TRAINING_DATA_SCHEMA_VERSION,
+    training_dataset_filename,
+)
 from nba_ou.create_training_data.create_intermediate_line_df import (
     DEFAULT_BASE_LOOKBACK_SEASONS,
     create_intermediate_line_df,
@@ -188,8 +198,28 @@ def main() -> None:
             "(docs/intermediate_market_dynamics_plan.md)."
         ),
     )
+    parser.add_argument(
+        "--schema-version",
+        default=TRAINING_DATA_SCHEMA_VERSION,
+        help=(
+            f"Newest schema version to write (default {TRAINING_DATA_SCHEMA_VERSION}). "
+            f"The base {BASE_SCHEMA_VERSION} file is always written; newer versions "
+            "are layered on from it."
+        ),
+    )
     args = parser.parse_args()
 
+    from nba_ou.create_training_data.schema_layers import (
+        INTERMEDIATE_LINE,
+        check_version,
+    )
+
+    check_version(args.schema_version)
+    if args.output is not None and args.schema_version != BASE_SCHEMA_VERSION:
+        from training_pipeline.layered_dataset import check_layerable_output
+
+        check_layerable_output(args.output, base_version=BASE_SCHEMA_VERSION)
+    build_args = {key: value for key, value in vars(args).items() if key != "output"}
     grid = _parse_int_tuple(args.snapshot_grid)
     windows = _parse_int_tuple(args.windows)
     seasons = [int(s) for s in args.seasons.split(",")] if args.seasons else None
@@ -217,7 +247,7 @@ def main() -> None:
     if output_path is None:
         DEFAULT_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
         output_path = DEFAULT_OUTPUT_DIR / training_dataset_filename(
-            "intermediate", args.recent_limit
+            "intermediate", args.recent_limit, schema_version=BASE_SCHEMA_VERSION
         )
 
     from training_pipeline.parquet_dataset import write_training_dataset
@@ -229,10 +259,33 @@ def main() -> None:
     # anything left in the training dataset becomes a feature.
     scoring_path = output_path.with_name(f"{output_path.stem}_scoring.parquet")
     write_training_dataset(scoring, scoring_path)
-    print("Scoring sidecar: join on GAME_ID + TIME_TO_MATCH_MIN via data.scoring_csv_path")
+    print(
+        "Scoring sidecar: join on GAME_ID + TIME_TO_MATCH_MIN via data.scoring_csv_path"
+    )
 
     print_row_retention(df)
     print_config_guidance(df["TIME_TO_MATCH_MIN"].nunique())
+
+    from training_pipeline.layered_dataset import (
+        build_schema_version_file,
+        write_base_manifest,
+    )
+
+    n_rows, n_columns = df.shape
+    # The layers stream the file back; free the build first.
+    del df, scoring
+    write_base_manifest(
+        output_path,
+        schema_version=BASE_SCHEMA_VERSION,
+        dataset_type=INTERMEDIATE_LINE,
+        n_rows=n_rows,
+        n_columns=n_columns,
+        build_args=build_args,
+    )
+    if args.schema_version != BASE_SCHEMA_VERSION:
+        build_schema_version_file(
+            output_path, to_version=args.schema_version, build_args=build_args
+        )
 
 
 def print_row_retention(df: pd.DataFrame) -> None:

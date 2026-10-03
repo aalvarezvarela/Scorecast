@@ -20,8 +20,8 @@ CONFIGS=(
 )
 
 DATASETS=(
-  "data/train_data/training_data_2_6_20260704_lineup_control.csv"
-  "data/train_data/training_data_2_6_20260704_with_lineup_features.csv"
+  "data/train_data/closing_line_data_2_6_20260704_lineup_control.parquet"
+  "data/train_data/closing_line_data_2_6_20260704.parquet"
 )
 
 PY=(poetry run python -u)

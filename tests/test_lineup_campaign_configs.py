@@ -51,8 +51,10 @@ def test_a_pair_differs_only_in_its_dataset(strategy):
         "data.data_version",
         "data.expected_checksum",
     } or (differing == {"data.csv_path", "data.data_version"})
-    assert "with_lineup_features" in lineup["data.csv_path"]
-    assert "with_lineup_features" not in control["data.csv_path"]
+    # Treatment: the plain 2_6 file. Control: the same file minus LU_*
+    # (make_control_csv.py), so starter history is in both arms.
+    assert lineup["data.csv_path"].endswith("closing_line_data_2_6_20260704.parquet")
+    assert control["data.csv_path"].endswith("_lineup_control.parquet")
 
 
 @pytest.mark.parametrize("name", [n for pair in PAIRS.values() for n in pair])

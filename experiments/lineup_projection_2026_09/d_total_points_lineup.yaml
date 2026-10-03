@@ -13,8 +13,8 @@ tags:
 device: cuda
 random_state: 16
 data:
-  csv_path: data/train_data/training_data_2_6_20260704_with_lineup_features.csv
-  data_version: 20260704-2_6-with-lineup-features
+  csv_path: data/train_data/closing_line_data_2_6_20260704.parquet
+  data_version: 20260704-2_6
   expected_checksum: null
   dataset_type: closing_line
   season_year_floor: 2021

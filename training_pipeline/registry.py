@@ -160,13 +160,20 @@ def slot_from_config(
 
 
 def check_schema_version_against_checkout(schema_version: str) -> None:
-    """Warn, do not fail, when promoting a build older than the checkout."""
-    from nba_ou.config.dataset_versions import TRAINING_DATA_SCHEMA_VERSION
+    """Warn, do not fail, when this checkout cannot build the slot's dataset.
 
-    if schema_version != TRAINING_DATA_SCHEMA_VERSION:
+    Any version from the base up to the newest layer is buildable, so promoting
+    a 2_5 model from a checkout whose newest version is 2_6 is ordinary: the
+    daily refit builds 2_5 and layers on what each slot needs. A version outside
+    that range (older than the base, or newer than this checkout) cannot be
+    refitted from here.
+    """
+    from nba_ou.create_training_data.schema_layers import available_versions
+
+    if schema_version not in available_versions():
         warnings.warn(
-            f"Promoting a {schema_version} model while this checkout builds "
-            f"{TRAINING_DATA_SCHEMA_VERSION} datasets. That is allowed -- the "
+            f"Promoting a {schema_version} model, but this checkout builds only "
+            f"{', '.join(available_versions())} datasets. That is allowed -- the "
             "slot records its own schema version -- but the daily refit needs "
             f"a {schema_version} dataset to keep feeding it.",
             stacklevel=2,

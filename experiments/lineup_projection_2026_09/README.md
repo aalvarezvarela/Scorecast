@@ -1,7 +1,7 @@
 # Lineup projection family: with and without (schema 2_6)
 
 The go/no-go G campaign of `docs/lineup_projection_plan.md` (§8.4, §8.5). Four
-cells, two per totals strategy, and each pair differs **only** in its CSV:
+cells, two per totals strategy, and each pair differs **only** in its dataset file:
 
 | Cell | Strategy | Dataset |
 |---|---|---|
@@ -15,27 +15,30 @@ cells, two per totals strategy, and each pair differs **only** in its CSV:
 ## The datasets
 
 ```bash
-# Treatment: the ordinary builder with the family switched on.
-python scripts/create_train_data/create_train_data.py --lineup-features --limit 2026-07-04
-# -> data/train_data/training_data_2_6_20260704_with_lineup_features.csv
+# Treatment: the ordinary 2_6 build (writes the 2_5 base and layers 2_6 on it).
+python scripts/create_train_data/create_train_data.py --limit 2026-07-04
+# -> data/train_data/closing_line_data_2_6_20260704.parquet
+#    (or, from an existing 2_5 file:
+#     python scripts/create_train_data/build_schema_version.py \
+#         data/train_data/closing_line_data_2_5_20260704.parquet --to 2_6)
 
-# Control: the same file with the LU_* columns removed, at the text level
-# so every other cell stays byte-identical (a pandas round-trip would strip the
-# leading zeros from GAME_ID).
+# Control: the same file with the LU_* columns removed, verified to load as
+# exactly the treatment minus those columns.
 python experiments/lineup_projection_2026_09/make_control_csv.py
-# -> data/train_data/training_data_2_6_20260704_lineup_control.csv
+# -> data/train_data/closing_line_data_2_6_20260704_lineup_control.parquet
 ```
 
-Deriving the control this way is exact, not an approximation:
-`attach_lineup_features` returns the frame untouched when the flag is off and
-adds only the `LU_*` columns when it is on (`tests/test_lineup_features.py`),
-and none of the later stages reads those columns. Both checksums are pinned in
-the configs.
+Deriving the control this way is exact, not an approximation: the 2_6 layer
+(`nba_ou.create_training_data.schema_layers.v2_6`) only appends columns to the
+2_5 file, and nothing else reads the `LU_*` columns. The control keeps the 2_6
+starter-history columns, so the pair differs in the lineup family alone; the
+2_5 file would not do as a control, because it also lacks starter history. Both
+checksums are pinned in the configs.
 
-**Running on another machine.** `data/` is not in git. Copy both CSVs to the
+**Running on another machine.** `data/` is not in git. Copy both files to the
 same paths; the pinned checksums make a wrong or partial copy fail at
 pre-flight rather than run. Nothing else is needed at run time: the rating
-cache and stints are only inputs to building the CSVs.
+cache and stints are only inputs to building the files.
 
 ```bash
 poetry run python scripts/preflight_campaign.py experiments/lineup_projection_2026_09
@@ -67,7 +70,7 @@ rebuilt with solver version 2 (2026-09-27), and the pre-registered 2019-20 /
 2020-21 check has run (plan §8.7): the defense + pace slope replicated
 (+0.41 pooled [+0.09, +0.74]), directional accuracy ~55% did not clearly clear
 break-even, and the bench claim split by season. Still to do before running:
-regenerate the control/treatment CSVs and their checksums from the new cache,
+regenerate the control/treatment files and their checksums from the new cache,
 and decide `season_year_floor` now that coverage reaches back to 2016-17
 (decide before any run, not after).
 

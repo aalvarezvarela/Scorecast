@@ -13,7 +13,7 @@ tags:
 device: cuda
 random_state: 16
 data:
-  csv_path: data/train_data/training_data_2_6_20260704_lineup_control.csv
+  csv_path: data/train_data/closing_line_data_2_6_20260704_lineup_control.parquet
   data_version: 20260704-2_6-lineup-control
   expected_checksum: null
   dataset_type: closing_line

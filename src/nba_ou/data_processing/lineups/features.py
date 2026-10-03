@@ -451,11 +451,12 @@ def attach_lineup_features(
     rating_cache: Path | str | None = None,
     stints: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
-    """The ``lineup_features`` switch, as the dataset builder calls it.
+    """The lineup family as the 2_6 schema layer calls it.
 
-    Off, the frame is returned **unchanged** -- the same object -- so the
-    control arm of the phase-G campaign is byte-for-byte today's dataset. On,
-    exactly ``LINEUP_FEATURE_COLUMNS`` are added and nothing else changes.
+    The caller is ``nba_ou.create_training_data.schema_layers.v2_6``, which
+    passes one row per game. Off, the frame is returned **unchanged** -- the
+    same object. On, exactly ``LINEUP_FEATURE_COLUMNS`` are added and nothing
+    else changes.
 
     ``injury_statuses`` is ``InjuryReportState.statuses``, the last report
     before each tip. ``report_covered`` is ``InjuryReportState.covered``; it
