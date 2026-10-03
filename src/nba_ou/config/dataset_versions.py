@@ -178,6 +178,22 @@ History
         total moves without side-market moves.
       - ``ODDS_LINE_HIST_RIDGE_EXPECTED_{SPREAD,ML}_MOVE_TO_CLOSE`` -- the total
         Ridge generalised to spread (with cross-market inputs) and moneyline.
+
+    Both datasets, added later still under the 2_5 label (no 2_5 model was in
+    production, so the rebuilt files overwrite the earlier 2_5 Parquet ones):
+
+    * Yahoo public-betting percentages reduced from 156 to 36 closing features:
+      all twelve current-game raw percentages, plus a five-game mean and a
+      five-game trend for totals-over, team spread and team moneyline
+      ticket/money shares, for each team. These inputs survive column cleaning
+      unchanged; missing Yahoo observations stay NaN and do not count toward
+      row-NA limits. Intermediate datasets keep the 24 historical features
+      only: current-game percentages remain excluded until timestamped Yahoo
+      history is available. The Yahoo fill of missing BetMGM quotes and other
+      market features are unchanged.
+    * Written as Parquet only (training_pipeline.parquet_dataset). The 2_5 CSVs
+      built earlier carry the full Yahoo family and are left in place for the
+      configs pinned to them.
 """
 
 from __future__ import annotations

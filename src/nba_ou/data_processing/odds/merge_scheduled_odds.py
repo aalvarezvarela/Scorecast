@@ -1,4 +1,8 @@
 import pandas as pd
+from nba_ou.config.yahoo_features import (
+    YAHOO_RAW_SOURCES,
+    is_yahoo_percentage_column,
+)
 from nba_ou.postgre_db.odds.merge_odds_data import (
     merge_yahoo_sportsbook_odds,
 )
@@ -69,6 +73,16 @@ def merge_and_validate_scheduled_odds(
         null_extreme_spread_prices=null_extreme_spread_prices,
     )
 
+    # An unavailable Yahoo feed is optional. Keep historical schema columns
+    # present with NaN instead of failing column validation for today's games.
+    missing_yahoo = {
+        c: float("nan")
+        for c in YAHOO_RAW_SOURCES
+        if c in df_odds.columns and c not in df_odds_predict.columns
+    }
+    if missing_yahoo:
+        df_odds_predict = df_odds_predict.assign(**missing_yahoo)
+
     # Validate columns
     df_odds_cols = set(df_odds.columns)
     df_odds_predict_cols = set(df_odds_predict.columns)
@@ -89,7 +103,10 @@ def merge_and_validate_scheduled_odds(
     # Strict mode: check for NaN or None values
     if strict_mode >= 0:
         # Count NaNs per row
-        nan_counts_per_row = df_odds_predict.isnull().sum(axis=1)
+        required_columns = [
+            c for c in df_odds_predict.columns if not is_yahoo_percentage_column(c)
+        ]
+        nan_counts_per_row = df_odds_predict[required_columns].isnull().sum(axis=1)
 
         # Rows exceeding strict mode threshold
         rows_exceeding = nan_counts_per_row > strict_mode

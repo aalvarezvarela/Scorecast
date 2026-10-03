@@ -5,11 +5,9 @@ import datetime
 
 import pandas as pd
 import pytest
-
 from nba_ou.data_processing.odds.merge_scheduled_odds import (
     merge_and_validate_scheduled_odds,
 )
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -200,11 +198,10 @@ def test_regular_season_game_passes_strict_mode_2(monkeypatch):
     assert len(today_rows) == 1
 
 
-def test_play_in_game_no_public_pcts_warns_but_does_not_raise(monkeypatch, capsys):
+def test_play_in_game_no_public_pcts_is_optional(monkeypatch, capsys):
     """Play-in games with missing public-betting % columns must NOT raise.
 
-    The function should log a warning and keep the rows so predictions can still
-    be generated.
+    Optional Yahoo inputs do not count against strict-mode row limits.
     """
     df_odds = _make_historical_odds()
 
@@ -258,16 +255,17 @@ def test_play_in_game_no_public_pcts_warns_but_does_not_raise(monkeypatch, capsy
         "Play-in game row was removed; pipeline would produce no predictions"
     )
 
-    # A warning should have been printed
+    # No strict-mode exception is needed for optional Yahoo inputs.
     captured = capsys.readouterr()
-    assert "WARNING" in captured.out or "warning" in captured.out.lower()
+    assert "exceed" not in captured.out.lower()
 
 
 def test_strict_mode_drops_partial_nan_rows_keeps_clean_rows(monkeypatch):
     """When only SOME rows fail strict_mode, the bad rows are dropped but good ones kept."""
     df_odds = _make_historical_odds()
 
-    # Two prediction rows: first has 12 NaN cols, second has 0 NaN cols
+    # Two prediction rows: first has optional Yahoo gaps and required quote
+    # gaps; the latter must still trigger the strict-mode row filter.
     row_bad = {
         "game_id": "0052500001",
         "game_date": datetime.date(2026, 4, 14),
@@ -331,6 +329,10 @@ def test_strict_mode_drops_partial_nan_rows_keeps_clean_rows(monkeypatch):
             ]
         },
     }
+    for column in (
+        "total_betmgm_price_over", "total_betmgm_price_under", "ml_betmgm_price_home"
+    ):
+        row_bad[column] = None
     merged = pd.DataFrame([row_bad, row_good])
 
     import nba_ou.data_processing.odds.merge_scheduled_odds as mod
@@ -364,8 +366,9 @@ def test_missing_columns_in_prediction_raises():
         # Many historical cols deliberately absent
     }
 
-    import nba_ou.data_processing.odds.merge_scheduled_odds as mod
     from unittest.mock import patch
+
+    import nba_ou.data_processing.odds.merge_scheduled_odds as mod
 
     with patch.object(mod, "merge_yahoo_sportsbook_odds", return_value=pd.DataFrame([partial_row])):
         with pytest.raises(ValueError, match="missing columns"):

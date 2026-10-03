@@ -22,6 +22,7 @@ import pandas as pd
 from nba_ou.config.identity_columns import NON_FEATURE_COLUMNS
 from nba_ou.config.leakage import rotation_leak_columns
 from nba_ou.config.odds_columns import resolve_main_total_line_col
+from nba_ou.config.yahoo_features import compact_yahoo_columns
 from nba_ou.data_processing.missing_data.cleaning_report import CleaningReport
 from nba_ou.data_processing.missing_data.column_redundancy import (
     KeepPreference,
@@ -551,7 +552,8 @@ def advanced_column_cleaning(
             reasons: dict[str, str] = {}
             for group in groups:
                 ranked = rank_columns(numeric, group, preference)
-                keeper, losers = ranked[0], ranked[1:]
+                keeper = ranked[0]
+                losers = [c for c in ranked[1:] if c not in keep_columns_set]
                 cols_to_remove.extend(losers)
                 marker = "abs" if absolute else ""
                 for loser in losers:
@@ -741,10 +743,11 @@ def clean_dataframe_for_training(
     NaN is never imputed; see the module docstring.
 
     Note on the two row-NaN mechanisms, which overlap and are easy to confuse:
-    ``max_na_per_row`` counts NaNs across ALL columns and is the one in normal
-    use; ``strict_mode`` counts them across all columns except
-    ``strict_mode_exclude_cols`` and is off by default. Setting both applies
-    both, in that order.
+    ``max_na_per_row`` counts NaNs across all columns and is the one in normal
+    use; ``strict_mode`` additionally excludes ``strict_mode_exclude_cols``.
+    Both ignore the optional compact Yahoo block (2_5 rebuild), so a Yahoo
+    outage does not discard otherwise usable games. Setting both applies both,
+    in that order.
 
     Args:
         df (pd.DataFrame): Raw training dataframe
@@ -794,6 +797,18 @@ def clean_dataframe_for_training(
         print("=" * 80)
 
     report = CleaningReport(columns_in=len(df.columns), rows_in=len(df))
+
+    # The reduced Yahoo block is an explicit model-input contract. Archived
+    # datasets with the full Yahoo family retain their existing cleaning policy.
+    # An explicit exclusion still wins: protection is implicit, and a "without
+    # Yahoo" ablation (exclude_cols_containing: [pct_bets, pct_money]) must
+    # remove the whole block rather than be silently ignored.
+    excluded = _get_cols_matching_patterns(df, exclude_cols_containing)
+    yahoo_columns = tuple(
+        c for c in compact_yahoo_columns(df.columns) if c not in excluded
+    )
+    if yahoo_columns:
+        keep_columns = sorted(set(keep_columns or ()) | set(yahoo_columns))
 
     # Taken by INDEX, not by re-reading the column at the end: the grouping
     # column is an ordinary feature and can itself be dropped by column
@@ -945,13 +960,18 @@ def clean_dataframe_for_training(
         initial_rows = len(df_cleaned)
         # Count NaN values per row
         na_per_row = df_cleaned.isna().sum(axis=1)
+        if yahoo_columns:
+            na_per_row -= df_cleaned[list(yahoo_columns)].isna().sum(axis=1)
         # Keep rows with NaN count <= threshold
         df_cleaned = df_cleaned[na_per_row <= max_na_per_row]
         report.record_rows(
             step="max_na_per_row",
             before=initial_rows,
             after=len(df_cleaned),
-            reason=f"more than {max_na_per_row} NaN values in the row",
+            reason=(
+                f"more than {max_na_per_row} NaN values in the row"
+                + (" (optional compact Yahoo inputs excluded)" if yahoo_columns else "")
+            ),
         )
 
         if verbose >= 1:
@@ -967,7 +987,9 @@ def clean_dataframe_for_training(
 
         # Get all columns except excluded ones
         cols_to_check = [
-            col for col in df_cleaned.columns if col not in strict_mode_exclude_cols
+            col
+            for col in df_cleaned.columns
+            if col not in strict_mode_exclude_cols and col not in yahoo_columns
         ]
 
         # Count NaNs per row (only in non-excluded columns)

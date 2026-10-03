@@ -33,6 +33,7 @@ from nba_ou.config.odds_columns import (
     spread_line_home_col,
     total_line_col,
 )
+from nba_ou.config.yahoo_features import YAHOO_RAW_COLUMNS, compact_yahoo_columns
 from nba_ou.data_processing.missing_data.clean_df_for_training import (
     clean_dataframe_for_training,
 )
@@ -1028,6 +1029,15 @@ def prepare_dataset(config: ExperimentConfig) -> PreparedDataset:
         snapshot_col=config.data.snapshot_col,
         snapshot_minutes=config.data.snapshot_minutes,
     )
+    yahoo_contract = compact_yahoo_columns(df.columns)
+    if yahoo_contract and config.data.dataset_type is DatasetType.CLOSING_LINE:
+        missing_raw_yahoo = set(YAHOO_RAW_COLUMNS) - set(df.columns)
+        if missing_raw_yahoo:
+            raise ValueError(
+                "Closing data with compact Yahoo history must include all twelve "
+                "raw percentages. Regenerate the closing dataset; missing columns: "
+                f"{sorted(missing_raw_yahoo)}"
+            )
 
     # Before anything else measures the frame. Filtering to one horizon changes
     # the row count, the cleaning statistics and the meaning of every *_games
@@ -1180,6 +1190,25 @@ def prepare_dataset(config: ExperimentConfig) -> PreparedDataset:
         target_col=target_col,
         exclude_cols=[*config.exclude_cols, *carrier_columns],
     )
+    # Every compact Yahoo column reaches X unless the config excluded it on
+    # purpose -- by name (exclude_cols) or by pattern (a "without Yahoo"
+    # ablation's cleaning.exclude_cols_containing). Anything else missing means
+    # cleaning lost it, which is the failure this guards against.
+    deliberately_excluded = set(config.exclude_cols) | {
+        c
+        for c in yahoo_contract
+        if any(
+            p.upper() in c.upper()
+            for p in (config.cleaning.exclude_cols_containing or [])
+            if p
+        )
+    }
+    missing_yahoo = set(yahoo_contract) - set(X.columns) - deliberately_excluded
+    if missing_yahoo:
+        raise ValueError(
+            "Compact Yahoo column(s) were lost in cleaning without being "
+            f"excluded by the config: {sorted(missing_yahoo)}"
+        )
     assert_no_leaking_features(X)
     if config.data.game_id_col in X.columns:
         raise ValueError(

@@ -6,6 +6,7 @@ from nba_ou.config.constants import (
     TEAM_NAME_STANDARDIZATION,
 )
 from nba_ou.config.odds_columns import moneyline_col, spread_col, total_line_col
+from nba_ou.config.yahoo_features import is_yahoo_percentage_column
 from nba_ou.utils.general_utils import _with_before_suffix
 from pandas.tseries.holiday import USFederalHolidayCalendar
 
@@ -104,6 +105,10 @@ def add_betting_stats_differences(df: pd.DataFrame) -> pd.DataFrame:
     updated_features = {}
 
     for home_col in home_cols:
+        # The compact Yahoo contract keeps each team's mean/trend directly.
+        # Do not expand those inputs back into home-minus-away derivatives.
+        if is_yahoo_percentage_column(home_col):
+            continue
         # Check if this is a betting stat with rolling window/derived stat
         is_betting_stat = any(pattern in home_col for pattern in betting_patterns)
         is_rolling_stat = any(pattern in home_col for pattern in rolling_patterns)
