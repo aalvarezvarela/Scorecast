@@ -1,17 +1,17 @@
 #!/usr/bin/env python3
 """
-Create training dataset up to 2026-01-10 (no date-to-predict / scheduled games).
+Create the closing-line training dataset up to a limit date (no scheduled games).
 
 This script calls `create_df_to_predict` without providing a prediction date
 or scheduled-game data. It saves the resulting DataFrame to
-`data/train_data/training_data_<schema_version>_YYYYMMDD.csv`
-(see nba_ou.config.dataset_versions for the current schema).
+`data/train_data/closing_line_data_<schema_version>_<limit YYYYMMDD>.parquet`
+(nba_ou.config.dataset_versions.training_dataset_filename).
 """
 
 from pathlib import Path
 
 import pandas as pd
-from nba_ou.config.dataset_versions import TRAINING_DATA_SCHEMA_VERSION
+from nba_ou.config.dataset_versions import training_dataset_filename
 from nba_ou.create_training_data.create_df_to_predict import create_df_to_predict
 from nba_ou.data_processing.referees.referee_tendencies import (
     DEFAULT_REFEREE_HISTORY_SEASONS,
@@ -56,15 +56,11 @@ def main(
     if output is None:
         output_path = PROJECT_ROOT / "data" / "train_data"
         output_path.mkdir(parents=True, exist_ok=True)
-        # Schema version in the name, never overwritten in place: spread and
-        # moneyline additions, then spread-normalization semantics, must land beside
-        # older files that pinned checksums still refer to.
         # Both variants use the current schema; the suffix distinguishes a
         # build without report-derived availability from the default build.
-        variant = "" if injury_report_features else "_without_injury_reports"
-        output = (
-            output_path / f"training_data_{TRAINING_DATA_SCHEMA_VERSION}_"
-            f"{pd.to_datetime(limit_date_to_train).strftime('%Y%m%d')}{variant}.parquet"
+        variant = "" if injury_report_features else "without_injury_reports"
+        output = output_path / training_dataset_filename(
+            "closing", limit_date_to_train, variant=variant
         )
     else:
         output.parent.mkdir(parents=True, exist_ok=True)
@@ -84,8 +80,11 @@ if __name__ == "__main__":
         "--limit",
         "-l",
         dest="limit",
-        default="2026-07-04",
-        help="Limit date to train (YYYY-MM-DD). Defaults to 2026-07-04",
+        default=pd.Timestamp.today().strftime("%Y-%m-%d"),
+        help=(
+            "Last game date to include (YYYY-MM-DD), also stamped in the output "
+            "name. Defaults to today."
+        ),
     )
     parser.add_argument(
         "--n-seasons",

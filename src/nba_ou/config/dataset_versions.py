@@ -198,5 +198,31 @@ History
 
 from __future__ import annotations
 
+from typing import Literal
+
+import pandas as pd
+
 #: Current schema version for both generated training datasets.
 TRAINING_DATA_SCHEMA_VERSION = "2_5"
+
+
+def training_dataset_filename(
+    kind: Literal["closing", "intermediate"],
+    limit_date: str | pd.Timestamp,
+    *,
+    variant: str = "",
+    schema_version: str = TRAINING_DATA_SCHEMA_VERSION,
+) -> str:
+    """The standard name of a built dataset: kind, schema version, limit date.
+
+    ``<kind>_line_data_<schema>_<YYYYMMDD>[_<variant>].parquet``, where the date
+    is the limit the build was run with -- the last game date it may include --
+    not whatever the latest game in the data happens to be. Two builds with the
+    same name were asked for the same thing. ``training_pipeline.registry``
+    reads the schema version back out of the ``_<schema>_<YYYYMMDD>`` part.
+    """
+    if kind not in ("closing", "intermediate"):
+        raise ValueError(f"kind must be 'closing' or 'intermediate', got {kind!r}")
+    stamp = pd.Timestamp(limit_date).strftime("%Y%m%d")
+    suffix = f"_{variant}" if variant else ""
+    return f"{kind}_line_data_{schema_version}_{stamp}{suffix}.parquet"

@@ -25,7 +25,7 @@ import argparse
 from pathlib import Path
 
 import pandas as pd
-from nba_ou.config.dataset_versions import TRAINING_DATA_SCHEMA_VERSION
+from nba_ou.config.dataset_versions import training_dataset_filename
 from nba_ou.create_training_data.create_intermediate_line_df import (
     DEFAULT_BASE_LOOKBACK_SEASONS,
     create_intermediate_line_df,
@@ -83,7 +83,15 @@ def main() -> None:
         default=None,
         help="Comma-separated season years. Default: everything in the store.",
     )
-    parser.add_argument("--recent-limit", type=str, default=None)
+    parser.add_argument(
+        "--recent-limit",
+        type=str,
+        default=pd.Timestamp.today().strftime("%Y-%m-%d"),
+        help=(
+            "Last game date to include (YYYY-MM-DD), also stamped in the output "
+            "name. Defaults to today."
+        ),
+    )
     parser.add_argument(
         "--base-lookback-seasons",
         type=int,
@@ -208,13 +216,8 @@ def main() -> None:
     output_path = args.output
     if output_path is None:
         DEFAULT_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-        stamp = pd.to_datetime(df["GAME_DATE"]).max().strftime("%Y%m%d")
-        # Schema version in the name for the same reason as the closing dataset:
-        # schema and market-normalization changes must land beside older files
-        # that pinned expected_checksum values still point at.
-        output_path = (
-            DEFAULT_OUTPUT_DIR
-            / f"intermediate_line_data_{TRAINING_DATA_SCHEMA_VERSION}_{stamp}.parquet"
+        output_path = DEFAULT_OUTPUT_DIR / training_dataset_filename(
+            "intermediate", args.recent_limit
         )
 
     from training_pipeline.parquet_dataset import write_training_dataset

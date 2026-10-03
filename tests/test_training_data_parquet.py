@@ -256,3 +256,37 @@ def test_a_parquet_scoring_sidecar_joins_like_a_csv_one(tmp_path):
     assert joined[0][1] == joined[1][1] == ["CLOSE"]
     assert joined[1][0]["CLOSE"].tolist() == [8.0, 9.0]
     pd.testing.assert_frame_equal(joined[0][0], joined[1][0], check_exact=True)
+
+
+# --- standard dataset names ---------------------------------------------------
+
+
+def test_dataset_names_carry_kind_schema_and_limit_date():
+    from nba_ou.config.dataset_versions import training_dataset_filename
+
+    assert (
+        training_dataset_filename("closing", "2026-10-03", schema_version="2_5")
+        == "closing_line_data_2_5_20261003.parquet"
+    )
+    assert (
+        training_dataset_filename("intermediate", "2026-10-03", schema_version="2_5")
+        == "intermediate_line_data_2_5_20261003.parquet"
+    )
+    assert training_dataset_filename(
+        "closing", "2026-10-03", variant="without_injury_reports", schema_version="2_5"
+    ) == ("closing_line_data_2_5_20261003_without_injury_reports.parquet")
+    with pytest.raises(ValueError, match="kind"):
+        training_dataset_filename("pooled", "2026-10-03")
+
+
+def test_the_registry_reads_the_schema_back_from_a_standard_name():
+    from nba_ou.config.dataset_versions import training_dataset_filename
+
+    from training_pipeline.registry import parse_schema_version
+
+    for kind in ("closing", "intermediate"):
+        name = training_dataset_filename(kind, "2026-10-03", schema_version="2_5")
+        assert parse_schema_version(name) == "2_5"
+        assert (
+            parse_schema_version(name.replace(".parquet", "_scoring.parquet")) == "2_5"
+        )
