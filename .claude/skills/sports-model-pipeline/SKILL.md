@@ -89,10 +89,22 @@ actually removes data, by season and feature family. A more permissive row NaN
 limit is a useful prior when it preserves valid historical games, but inspect
 whether missingness itself reveals season, provider, or competition phase.
 
-Apply deterministic semantic cleanup before row thresholds: required-column
-checks, known neutral fills, safe inference pairs, and explicit forbidden
-columns. Report counts after every step. A threshold such as “300 NaNs” refers
-to the post-policy frame, not the raw CSV.
+Decide neutral fills and fallbacks **in the feature builder**, which knows
+whether a NaN means "none" or "unknown", and write the result into the dataset.
+Do not re-derive them in the training pipeline from column-name substrings.
+This repo tried that: by the time a frame reached training, the builders had
+already written 0 wherever 0 was true, so the name-matched zero-fill only ever
+touched genuine data gaps (turning "no injury data" into "no injuries"). Its
+season-average fallback was looked up after correlation pruning, so a feature
+whose fallback was pruned stayed NaN in training but was filled at serve time.
+Whatever cleanup remains in the pipeline must see the same columns in training,
+refit and serving.
+
+Declare identifier and label columns by exact name, and fail on any other text
+column rather than dropping it. Reading every column whose name contains "ID"
+as text silently removed `..._mid_...`, `..._RESIDUAL` and `..._RIDGE_...`
+features from every model. Report counts after every step. A threshold such as
+“300 NaNs” refers to the cleaned frame, not the raw CSV.
 
 ### 4. Remove leakage and target proxies explicitly
 

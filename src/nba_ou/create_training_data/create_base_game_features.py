@@ -73,6 +73,7 @@ from nba_ou.data_processing.merged_home_away_data.select_train_columns import (
 from nba_ou.data_processing.merged_home_away_data.team_one_hot_features import (
     add_team_one_hot_features,
 )
+from nba_ou.data_processing.odds.yahoo_features import select_yahoo_features
 from nba_ou.data_processing.past_injuries.past_injuries import get_injured_players_dict
 from nba_ou.data_processing.players.attach_player_features import (
     clear_player_statistics,
@@ -503,6 +504,8 @@ def create_base_game_features(
     # adders above still resolve market columns by their raw names, so the ODDS_
     # marker goes on only once nothing reads them unprefixed.
     df_training = apply_odds_prefix(df_training)
+    # Current-game Yahoo percentages have no historical snapshot timestamps.
+    df_training = select_yahoo_features(df_training, include_raw=False)
     assert_odds_columns_prefixed(
         df_training.columns, context="create_base_game_features"
     )

@@ -1,22 +1,21 @@
 #!/usr/bin/env python3
 """
-Create training dataset up to 2026-01-10 (no date-to-predict / scheduled games).
+Create the closing-line training dataset up to a limit date (no scheduled games).
 
 This script calls `create_df_to_predict` without providing a prediction date
 or scheduled-game data. It saves the resulting DataFrame to
-`data/train_data/training_data_<schema_version>_YYYYMMDD.csv`
-(see nba_ou.config.dataset_versions for the current schema).
+`data/train_data/closing_line_data_<schema_version>_<limit YYYYMMDD>.parquet`
+(nba_ou.config.dataset_versions.training_dataset_filename).
 """
 
 from pathlib import Path
 
 import pandas as pd
-from nba_ou.config.dataset_versions import TRAINING_DATA_SCHEMA_VERSION
+from nba_ou.config.dataset_versions import training_dataset_filename
 from nba_ou.create_training_data.create_df_to_predict import create_df_to_predict
 from nba_ou.data_processing.referees.referee_tendencies import (
     DEFAULT_REFEREE_HISTORY_SEASONS,
 )
-from nba_ou.utils.parallel_csv import write_csv
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
@@ -32,15 +31,12 @@ def main(
     status_top_n: dict[str, int] | None = None,
     referee_history_seasons: int = DEFAULT_REFEREE_HISTORY_SEASONS,
     include_same_season_referee_variants: bool = False,
-    output_format: str = "csv",
 ) -> None:
     """Create training data up to `limit_date_to_train`.
 
     Args:
         limit_date_to_train: Date string YYYY-MM-DD (default: 2026-01-10)
         n_seasons_to_include: Number of seasons to include (default: None, uses all from 2017-18)
-        output_format: "csv", "parquet" (convert with verification, delete the
-            CSV) or "both". See training_pipeline.parquet_dataset.
     """
 
     # Call create_df_to_predict without a scheduled date (no todays prediction)
@@ -60,28 +56,18 @@ def main(
     if output is None:
         output_path = PROJECT_ROOT / "data" / "train_data"
         output_path.mkdir(parents=True, exist_ok=True)
-        # Schema version in the name, never overwritten in place: spread and
-        # moneyline additions, then spread-normalization semantics, must land beside
-        # older files that pinned checksums still refer to.
         # Both variants use the current schema; the suffix distinguishes a
         # build without report-derived availability from the default build.
-        variant = "" if injury_report_features else "_without_injury_reports"
-        output = (
-            output_path / f"training_data_{TRAINING_DATA_SCHEMA_VERSION}_"
-            f"{pd.to_datetime(limit_date_to_train).strftime('%Y%m%d')}{variant}.csv"
+        variant = "" if injury_report_features else "without_injury_reports"
+        output = output_path / training_dataset_filename(
+            "closing", limit_date_to_train, variant=variant
         )
     else:
         output.parent.mkdir(parents=True, exist_ok=True)
 
-    # Save to CSV
-    write_csv(df_train, output)
-    print(f"Training data saved to {output}")
-    # The conversion reloads the CSV; free the build first.
-    del df_train
+    from training_pipeline.parquet_dataset import write_training_dataset
 
-    from training_pipeline.parquet_dataset import finish_dataset_output
-
-    finish_dataset_output(output, output_format=output_format)
+    write_training_dataset(df_train, output)
 
 
 if __name__ == "__main__":
@@ -94,8 +80,11 @@ if __name__ == "__main__":
         "--limit",
         "-l",
         dest="limit",
-        default="2026-07-04",
-        help="Limit date to train (YYYY-MM-DD). Defaults to 2026-07-04",
+        default=pd.Timestamp.today().strftime("%Y-%m-%d"),
+        help=(
+            "Last game date to include (YYYY-MM-DD), also stamped in the output "
+            "name. Defaults to today."
+        ),
     )
     parser.add_argument(
         "--n-seasons",
@@ -109,16 +98,7 @@ if __name__ == "__main__":
         "--output",
         type=Path,
         default=None,
-        help="CSV path to write. With --format parquet the .parquet file lands beside it.",
-    )
-    parser.add_argument(
-        "--format",
-        choices=("csv", "parquet", "both"),
-        default="csv",
-        help=(
-            "parquet: write the CSV, convert it with row-group verification, then "
-            "delete the CSV. both: keep the CSV too."
-        ),
+        help="Parquet path to write.",
     )
     parser.add_argument(
         "--no-normalize-total-lines",
@@ -179,5 +159,4 @@ if __name__ == "__main__":
         },
         referee_history_seasons=args.referee_history_seasons,
         include_same_season_referee_variants=args.referee_same_season_variants,
-        output_format=args.format,
     )

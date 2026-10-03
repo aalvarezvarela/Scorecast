@@ -1,8 +1,10 @@
-"""A Parquet copy of a training dataset must load as the identical frame.
+"""Training datasets are Parquet files that load exactly as the CSV builds did.
 
-The contract is exact equality with the CSV path -- dtypes, index, missing
-values and all -- because every campaign's cleaning and splits run on whatever
-load_raw_training_csv returns. "Close" would mean a silently different run.
+Datasets are written straight to Parquet by the builders, and older CSV builds
+are converted. Either way the loaded frame must equal what reading the CSV gave
+-- dtypes, index, missing values and all -- because every campaign's cleaning
+and splits run on whatever load_raw_training_csv returns. "Close" would mean a
+silently different run.
 """
 
 from pathlib import Path
@@ -11,7 +13,6 @@ import numpy as np
 import pandas as pd
 import pytest
 
-import training_pipeline.parquet_dataset as parquet_dataset
 from training_pipeline.data import (
     filter_to_snapshot,
     load_raw_training_csv,
@@ -20,7 +21,7 @@ from training_pipeline.data import (
 from training_pipeline.parquet_dataset import (
     ParquetConversionError,
     convert_csv_to_parquet,
-    finish_dataset_output,
+    write_training_dataset,
 )
 
 SNAPSHOT = "TIME_TO_MATCH_MIN"
@@ -104,127 +105,115 @@ def test_column_reads_agree_including_missing_ids(datasets):
         columns = ["GAME_ID", "REF_ID", "GAME_DATE"]
         from_csv = read_dataset_columns(csv, columns=columns, dtype=dtype)
         from_parquet = read_dataset_columns(parquet, columns=columns, dtype=dtype)
-        assert from_parquet["REF_ID"].isna().sum() == from_csv["REF_ID"].isna().sum() == 3
+        assert (
+            from_parquet["REF_ID"].isna().sum() == from_csv["REF_ID"].isna().sum() == 3
+        )
         assert "nan" not in set(from_parquet["REF_ID"].dropna())
 
 
-def test_a_mixed_type_column_is_named_and_no_file_is_left(tmp_path, monkeypatch):
-    csv = tmp_path / "mixed.csv"
-    csv.write_text("GAME_DATE,ODD\n2025-11-01,1.5\n")
-    # read_csv would infer a clean type from this file, so hand the converter
-    # the frame low_memory inference can leave behind: numbers and text mixed.
+def test_a_mixed_type_column_is_named_and_no_file_is_left(tmp_path):
+    # Numbers and text in one column, as a builder (or low_memory CSV
+    # inference) can leave behind.
     mixed = pd.DataFrame(
         {"GAME_DATE": pd.to_datetime(["2025-11-01"] * 2), "ODD": [1.5, "x"]}
     )
-    monkeypatch.setattr(parquet_dataset, "load_raw_training_csv", lambda *a, **k: mixed)
     with pytest.raises(ParquetConversionError, match="ODD"):
-        convert_csv_to_parquet(csv, tmp_path / "mixed.parquet", row_group_size=4)
+        write_training_dataset(mixed, tmp_path / "mixed.parquet", row_group_size=4)
     assert not list(tmp_path.glob("mixed.parquet*"))
 
 
-@pytest.mark.parametrize(
-    ("output_format", "csv_kept", "parquet_written"),
-    [("csv", True, False), ("parquet", False, True), ("both", True, True)],
-)
-def test_builder_output_formats(tmp_path, output_format, csv_kept, parquet_written):
-    csv = tmp_path / "training_data_2_5_20260101.csv"
-    _write_intermediate_csv(csv)
-    reference = load_raw_training_csv(csv)
-
-    pinned = finish_dataset_output(csv, output_format=output_format)
-
-    assert csv.exists() is csv_kept
-    assert csv.with_suffix(".parquet").exists() is parquet_written
-    assert pinned == (csv.with_suffix(".parquet") if parquet_written else csv)
-    # Whatever the build leaves behind loads as the frame the CSV described.
-    pd.testing.assert_frame_equal(load_raw_training_csv(pinned), reference, check_exact=True)
-
-
-def test_unknown_output_format_is_refused(tmp_path):
-    with pytest.raises(ValueError, match="output_format"):
-        finish_dataset_output(tmp_path / "x.csv", output_format="feather")
-
-
-# --- a config naming the CSV reads its verified Parquet copy ---------------
+# --- builders write Parquet directly ------------------------------------------
 
 import training_pipeline.data as data_module  # noqa: E402
-from training_pipeline.data import (  # noqa: E402
-    compute_file_checksum,
-    resolve_dataset_source,
-)
+from training_pipeline.data import compute_file_checksum  # noqa: E402
 
 
-def test_pinned_csv_resolves_to_its_verified_copy(datasets):
-    csv, parquet = datasets
-    pinned = compute_file_checksum(csv)
-
-    source = resolve_dataset_source(csv, expected_checksum=pinned)
-
-    assert source.read_path == parquet
-    # The identity stays the CSV's: registry specs and run metadata remain
-    # comparable with every config that pinned it.
-    assert source.checksum == pinned
-
-
-def test_the_csv_can_be_deleted_once_a_verified_copy_exists(datasets):
-    csv, parquet = datasets
-    pinned = compute_file_checksum(csv)
-    reference = load_raw_training_csv(csv)
-    csv.unlink()
-
-    source = resolve_dataset_source(csv, expected_checksum=pinned)
-
-    assert source.read_path == parquet
-    pd.testing.assert_frame_equal(
-        load_raw_training_csv(source.read_path), reference, check_exact=True
+def _builder_frame() -> pd.DataFrame:
+    """Typed the way a builder's in-memory frame is, not the way a CSV read is."""
+    return pd.DataFrame(
+        {
+            "GAME_ID": ["0022100001", "0022100002", "0022100003"],
+            "TEAM_ID_TEAM_HOME": [1610612737, 1610612738, 1610612739],
+            "GAME_DATE": [
+                "2025-11-01 19:30:00",
+                "2025-11-02 20:00:00",
+                "2025-11-03 21:00:00",
+            ],
+            "SEASON_YEAR": [2025, 2025, 2025],
+            "TEAM_NAME_TEAM_HOME": ["Team 1", None, "Team 3"],
+            "IS_US_HOLIDAY_BEFORE": [0, 1, 0],
+            "ODDS_book_total_line_mid_bet365": [220.5, np.nan, 231.0],
+        },
+        index=[10, 11, 12],
     )
 
 
-def test_a_copy_of_different_bytes_is_never_substituted(datasets):
-    """A CSV regenerated in place after conversion: the copy is stale."""
-    csv, _ = datasets
-    csv.write_text(csv.read_text().replace("Team 1", "Team 9"))
-    regenerated = compute_file_checksum(csv)
+def test_a_builder_frame_loads_as_its_csv_would_have(tmp_path):
+    frame = _builder_frame()
+    csv = tmp_path / "train.csv"
+    frame.to_csv(csv, index=False)
 
-    assert resolve_dataset_source(csv, expected_checksum=regenerated).read_path == csv
-    assert resolve_dataset_source(csv, expected_checksum=None).read_path == csv
+    parquet = tmp_path / "train.parquet"
+    write_training_dataset(frame, parquet, row_group_size=2)
+
+    pd.testing.assert_frame_equal(
+        load_raw_training_csv(parquet), load_raw_training_csv(csv), check_exact=True
+    )
 
 
-def test_an_unpinned_config_uses_the_copy_only_while_the_csv_matches(datasets):
+def test_writing_leaves_the_builder_frame_alone(tmp_path):
+    frame = _builder_frame()
+    before = frame.copy(deep=True)
+
+    write_training_dataset(frame, tmp_path / "train.parquet")
+
+    pd.testing.assert_frame_equal(frame, before)
+
+
+def test_the_returned_checksum_is_the_file_s(tmp_path):
+    parquet = tmp_path / "train.parquet"
+    assert write_training_dataset(_builder_frame(), parquet) == compute_file_checksum(
+        parquet
+    )
+
+
+def test_only_parquet_is_written(tmp_path):
+    with pytest.raises(ValueError, match="Parquet"):
+        write_training_dataset(_builder_frame(), tmp_path / "train.csv")
+
+
+def test_converting_a_csv_build_writes_a_new_file_with_its_own_checksum(datasets):
     csv, parquet = datasets
-    assert resolve_dataset_source(csv, expected_checksum=None).read_path == parquet
+    assert compute_file_checksum(parquet) != compute_file_checksum(csv)
+    pd.testing.assert_frame_equal(
+        load_raw_training_csv(parquet), load_raw_training_csv(csv), check_exact=True
+    )
 
 
-def test_a_copy_without_provenance_is_ignored(tmp_path):
-    csv = tmp_path / "training_data_2_5_20260101.csv"
-    _write_intermediate_csv(csv)
-    load_raw_training_csv(csv).to_parquet(csv.with_suffix(".parquet"), index=False)
-
-    source = resolve_dataset_source(csv, expected_checksum=compute_file_checksum(csv))
-
-    assert source.read_path == csv
+# --- a config reads exactly the file it names ---------------------------------
 
 
-def test_a_wrong_pin_still_fails_on_the_csv(datasets):
-    csv, _ = datasets
-    with pytest.raises(ValueError, match="checksum mismatch"):
-        resolve_dataset_source(csv, expected_checksum="sha256:0000000000000000")
-
-
-def test_prepare_dataset_reads_the_copy(datasets, monkeypatch):
+def _config(path, checksum):
     from training_pipeline.config import DataConfig, ExperimentConfig, TargetFamily
 
-    csv, parquet = datasets
-    config = ExperimentConfig(
-        experiment_name="reads_the_copy",
+    return ExperimentConfig(
+        experiment_name="reads_the_named_file",
         target_family=TargetFamily.LINE_ERROR,
         data=DataConfig(
-            csv_path=csv,
-            expected_checksum=compute_file_checksum(csv),
+            csv_path=path,
+            expected_checksum=checksum,
             dataset_type="intermediate_line",
             snapshot_minutes=60,
         ),
     )
+
+
+@pytest.mark.parametrize("named", ["csv", "parquet"])
+def test_prepare_dataset_reads_the_file_the_config_names(datasets, monkeypatch, named):
+    """No substitution: a config naming the CSV reads the CSV even with a
+    Parquet copy beside it."""
+    csv, parquet = datasets
+    path = csv if named == "csv" else parquet
     read = []
 
     def spy(path, **kwargs):
@@ -233,5 +222,71 @@ def test_prepare_dataset_reads_the_copy(datasets, monkeypatch):
 
     monkeypatch.setattr(data_module, "load_raw_training_csv", spy)
     with pytest.raises(RuntimeError, match="stop after the read"):
-        data_module.prepare_dataset(config)
-    assert read == [parquet]
+        data_module.prepare_dataset(_config(path, compute_file_checksum(path)))
+    assert read == [path]
+
+
+def test_a_wrong_pin_fails(datasets):
+    _, parquet = datasets
+    with pytest.raises(ValueError, match="checksum mismatch"):
+        data_module.prepare_dataset(_config(parquet, "sha256:0000000000000000"))
+
+
+def test_a_parquet_scoring_sidecar_joins_like_a_csv_one(tmp_path):
+    frame = pd.DataFrame(
+        {"GAME_ID": ["0022100001", "0022100002"], SNAPSHOT: [60, 60], "X": [1.0, 2.0]}
+    )
+    sidecar = pd.DataFrame(
+        {
+            "GAME_ID": ["0022100002", "0022100001"],
+            SNAPSHOT: [60, 60],
+            "CLOSE": [9.0, 8.0],
+        }
+    )
+    sidecar.to_csv(tmp_path / "scoring.csv", index=False)
+    write_training_dataset(sidecar, tmp_path / "scoring.parquet")
+
+    joined = [
+        data_module.load_scoring_sidecar(
+            frame, csv_path=path, game_id_col="GAME_ID", snapshot_col=SNAPSHOT
+        )
+        for path in (tmp_path / "scoring.csv", tmp_path / "scoring.parquet")
+    ]
+
+    assert joined[0][1] == joined[1][1] == ["CLOSE"]
+    assert joined[1][0]["CLOSE"].tolist() == [8.0, 9.0]
+    pd.testing.assert_frame_equal(joined[0][0], joined[1][0], check_exact=True)
+
+
+# --- standard dataset names ---------------------------------------------------
+
+
+def test_dataset_names_carry_kind_schema_and_limit_date():
+    from nba_ou.config.dataset_versions import training_dataset_filename
+
+    assert (
+        training_dataset_filename("closing", "2026-10-03", schema_version="2_5")
+        == "closing_line_data_2_5_20261003.parquet"
+    )
+    assert (
+        training_dataset_filename("intermediate", "2026-10-03", schema_version="2_5")
+        == "intermediate_line_data_2_5_20261003.parquet"
+    )
+    assert training_dataset_filename(
+        "closing", "2026-10-03", variant="without_injury_reports", schema_version="2_5"
+    ) == ("closing_line_data_2_5_20261003_without_injury_reports.parquet")
+    with pytest.raises(ValueError, match="kind"):
+        training_dataset_filename("pooled", "2026-10-03")
+
+
+def test_the_registry_reads_the_schema_back_from_a_standard_name():
+    from nba_ou.config.dataset_versions import training_dataset_filename
+
+    from training_pipeline.registry import parse_schema_version
+
+    for kind in ("closing", "intermediate"):
+        name = training_dataset_filename(kind, "2026-10-03", schema_version="2_5")
+        assert parse_schema_version(name) == "2_5"
+        assert (
+            parse_schema_version(name.replace(".parquet", "_scoring.parquet")) == "2_5"
+        )

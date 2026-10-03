@@ -152,7 +152,7 @@ Designing a campaign:
    inferred from the CSV or from arithmetic.
 2. **One deliberate difference per cell.** If a cell changes two things, say so
    in its `hypothesis` and only read it against the single-change cells.
-3. **Pin `expected_checksum`.** A regenerated CSV must not pass silently.
+3. **Pin `expected_checksum`.** A regenerated dataset must not pass silently; the builders print the checksum of the Parquet file they write.
 4. **Set `evaluation_seeds`** — without them nothing has an error bar.
 5. **Fix `n_trials`, disable `timeout`.** A timeout makes trial count a function
    of the machine, silently un-matching runs meant to be comparable.

@@ -6,6 +6,7 @@
 * BetRivers itself is admitted, so it reaches every feature book list.
 """
 
+import numpy as np
 import pandas as pd
 import pytest
 from nba_ou.config import odds_columns as oc
@@ -278,6 +279,18 @@ class TestBetRiversReachesFeatures:
         assert out[cm.SPREAD_CONSENSUS_MEDIAN_COL].iloc[0] == 4.0
 
     def test_missing_values_are_kept_not_imputed(self):
-        from nba_ou.data_processing.missing_data import handle_missing_data as h
+        from nba_ou.data_processing.missing_data.clean_df_for_training import (
+            clean_dataframe_for_training,
+        )
 
-        assert h._is_market_keep_na("total_betrivers_price_over")
+        col = "ODDS_TOTAL_LINE_betrivers_LAST_ALL_5_MATCHES_BEFORE_TEAM_HOME"
+        raw = pd.DataFrame(
+            {
+                "TOTAL_POINTS": [220.0, 221.0],
+                "ODDS_TOTAL_LINE_bet365": [219.5, 220.5],
+                col: [np.nan, 221.0],
+                "ODDS_TOTAL_LINE_betrivers_SEASON_BEFORE_AVG_TEAM_HOME": [220.0, 220.0],
+            }
+        )
+        cleaned = clean_dataframe_for_training(raw, verbose=0, keep_all_cols=True)
+        assert pd.isna(cleaned.loc[0, col])

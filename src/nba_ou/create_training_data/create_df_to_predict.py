@@ -70,6 +70,7 @@ from nba_ou.data_processing.odds.book_combination import (
 from nba_ou.data_processing.odds.merge_scheduled_odds import (
     merge_and_validate_scheduled_odds,
 )
+from nba_ou.data_processing.odds.yahoo_features import select_yahoo_features
 from nba_ou.data_processing.past_injuries.injury_effects import (
     add_top3_availability_effect_features_for_columns,
 )
@@ -935,6 +936,7 @@ def create_df_to_predict(
     # nothing reads them unprefixed any more. The assert is what makes ODDS_ an
     # invariant instead of a convention.
     df_training = apply_odds_prefix(df_training)
+    df_training = select_yahoo_features(df_training)
     assert_odds_columns_prefixed(df_training.columns, context="create_df_to_predict")
 
     print()
@@ -974,6 +976,6 @@ if __name__ == "__main__":
         older_season_limit=n_seasons,
     )
 
-    output_name_before_referee = f"{output_path}/test_predict_data_{pd.to_datetime(date_to_train).strftime('%Y%m%d')}.csv"
-    df_train.to_csv(output_name_before_referee, index=False)
+    output_name_before_referee = f"{output_path}/test_predict_data_{pd.to_datetime(date_to_train).strftime('%Y%m%d')}.parquet"
+    df_train.to_parquet(output_name_before_referee, index=False)
     print(f"Training data features saved to {output_name_before_referee}")

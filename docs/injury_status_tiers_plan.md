@@ -249,8 +249,10 @@ Three details that are not mechanical:
   - Its name must not start with `N_ACTIVE_PLAYERS`, the rotation-leak guard in
     `config/leakage.py`.
 - **Report-derived names avoid `injury_`/`injured_`.** The missing-data policy
-  zero-fills those, which would turn "no report" into "fresh report, nobody
-  listed". `INJURY_REPORT_COVERED` is never NaN, so its name is safe.
+  zero-filled those, which would turn "no report" into "fresh report, nobody
+  listed". `INJURY_REPORT_COVERED` is never NaN, so its name is safe. (That
+  policy was removed in October 2026; training no longer imputes by name, so
+  the naming rule is now only a convention.)
 
 ### 3.3 Listed-status features (Questionable, Probable, Doubtful)
 

@@ -165,8 +165,11 @@ tested by replaying past dates.
       game days (crons are currently commented out in
       `.github/workflows/nba_predictor_daily.yml`).
 - [ ] **Enable the 16 slots** in `ENABLED_MODELS` once live serving works.
-- [ ] **Archive the old CSVs** in `data/train_data/` to S3, then delete them
-      (verified Parquet copies exist for the two 2.5 datasets).
+- [ ] **Archive the old CSVs** in `data/train_data/` to S3, then delete them.
+      Builders now write Parquet only, and a config reads exactly the file it
+      names, so the CSVs serve only configs still pinned to them. The two 2.5
+      Parquet copies predate the identifier-dtype fix and fail cleaning; rebuild
+      instead of reusing them.
 - [ ] **Commit** the parquet, naming, daily-job and live line-history changes.
 - [ ] Pre-existing lint in `line_history_aiven/tipoff_corrections.py` (import
       order) -- unrelated, left alone.

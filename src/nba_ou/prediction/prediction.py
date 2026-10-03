@@ -379,6 +379,10 @@ def load_and_predict_model_for_nba_games(
             "MATCHUP_TEAM_HOME",
         ],
         keep_all_cols=True,
+        # The same-day frame carries display columns (GAME_TIME and the like)
+        # beyond the declared non-feature ones; the model's own feature list
+        # decides its inputs, so dropping them here is safe.
+        unexpected_text="drop",
         verbose=1,
         strict_mode=30,
     )
