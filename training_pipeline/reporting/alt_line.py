@@ -58,7 +58,7 @@ from nba_ou.config.odds_columns import spread_line_home_col, total_line_col
 
 from training_pipeline.betting import evaluate_betting, outcome_from_predictions
 from training_pipeline.config import SNAPSHOT_COLUMN, PredictionStrategy
-from training_pipeline.data import read_dataset_columns, resolve_dataset_source
+from training_pipeline.data import read_dataset_columns
 from training_pipeline.reporting import coverage
 from training_pipeline.reporting.loaders import settle_bets
 from training_pipeline.reporting.theme import (
@@ -110,15 +110,11 @@ def target_line_column(
 
 
 def _readable_dataset(path: str | Path, *, missing: str) -> Path:
-    """The file to read for ``path``: its verified Parquet copy when one matches.
-
-    Nothing is pinned here, so data.resolve_dataset_source only substitutes a
-    copy of the CSV as it currently is (or of a CSV since archived away).
-    """
-    try:
-        return resolve_dataset_source(path, expected_checksum=None).read_path
-    except FileNotFoundError:
-        raise AlternativeLineError(f"Dataset {path} not found, {missing}.") from None
+    """``path``, or an AlternativeLineError saying what its absence costs."""
+    path = Path(path)
+    if not path.exists():
+        raise AlternativeLineError(f"Dataset {path} not found, {missing}.")
+    return path
 
 
 def attach_game_ids(

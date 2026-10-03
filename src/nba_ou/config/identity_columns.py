@@ -78,7 +78,9 @@ def apply_identifier_dtypes(df: pd.DataFrame) -> pd.DataFrame:
         if pd.api.types.is_object_dtype(values) or pd.api.types.is_string_dtype(values):
             continue
         if out is df:
-            out = df.copy()
+            # Shallow: assigning a column replaces it in the copy only, so a
+            # multi-GB frame is not duplicated to retype four columns.
+            out = df.copy(deep=False)
         # Through Int64 so a float column holding NaN reads 1610612737, not
         # 1610612737.0.
         as_int = (

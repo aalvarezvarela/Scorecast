@@ -115,84 +115,23 @@ def verify_dataset_checksum(path: str | Path, *, expected_checksum: str | None) 
     return actual
 
 
-#: Extensions read as Parquet. Everything else is read as CSV, which is what
-#: every dataset was before scripts/convert_training_data_to_parquet.py.
+#: Extensions read as Parquet. Everything else is read as CSV. Datasets are
+#: written as Parquet (training_pipeline.parquet_dataset); CSV is read only so
+#: configs pinned to builds from before that keep working.
 PARQUET_SUFFIXES = frozenset({".parquet", ".pq"})
-
-#: Parquet key-value metadata written by training_pipeline.parquet_dataset: the
-#: checksum of the CSV the file was converted from and verified against. It is
-#: what lets a config pinning that CSV read the Parquet copy instead.
-SOURCE_CSV_CHECKSUM_KEY = b"nba_ou.source_csv_checksum"
 
 
 def is_parquet(path: str | Path) -> bool:
     return Path(path).suffix.lower() in PARQUET_SUFFIXES
 
 
-@dataclass(frozen=True)
-class DatasetSource:
-    """Which file to read for a configured dataset, and the checksum it stands for.
-
-    ``checksum`` is the dataset's identity as configs pin it. When a verified
-    Parquet copy stands in for a CSV, that is still the CSV's checksum -- the
-    copy was verified equal to exactly those bytes -- so run metadata and
-    registry specs stay comparable with every config that pinned it.
-    """
-
-    read_path: Path
-    checksum: str
-
-    @property
-    def substituted(self) -> bool:
-        return is_parquet(self.read_path)
-
-
-def parquet_source_checksum(path: str | Path) -> str | None:
-    """The CSV checksum a converted Parquet file records, or None."""
-    import pyarrow.parquet as pq
-
-    raw = (pq.read_schema(path).metadata or {}).get(SOURCE_CSV_CHECKSUM_KEY)
-    return raw.decode() if raw else None
-
-
-def resolve_dataset_source(
-    path: str | Path, *, expected_checksum: str | None
-) -> DatasetSource:
-    """Read a configured CSV from its verified Parquet copy when one exists.
-
-    Every config names a CSV, and the Parquet copy loads identically but in a
-    fraction of the time and memory, so it is used by default -- for
-    experiments, the pre-flight and promotion alike -- when it provably holds
-    the same data. "Provably" means the copy's recorded source checksum equals:
-
-    - the pinned ``expected_checksum``, which also makes the CSV itself
-      optional: it can be archived and deleted and the config still resolves;
-    - or, with nothing pinned, the checksum of the CSV as it is now. A CSV
-      regenerated in place after conversion therefore falls back to itself
-      rather than reading a stale copy.
-
-    Anything else -- no copy, a copy without provenance, a copy of different
-    bytes -- reads the CSV exactly as before, checksum check included.
-    """
-    path = Path(path)
+def dataset_columns(path: str | Path) -> list[str]:
+    """Column names of a dataset file without reading its rows."""
     if is_parquet(path):
-        return DatasetSource(
-            path, verify_dataset_checksum(path, expected_checksum=expected_checksum)
-        )
+        import pyarrow.parquet as pq
 
-    copy = path.with_suffix(".parquet")
-    if copy.exists():
-        source = parquet_source_checksum(copy)
-        if source is not None:
-            if expected_checksum is not None:
-                if source == expected_checksum:
-                    return DatasetSource(copy, source)
-            elif not path.exists() or compute_file_checksum(path) == source:
-                return DatasetSource(copy, source)
-
-    return DatasetSource(
-        path, verify_dataset_checksum(path, expected_checksum=expected_checksum)
-    )
+        return list(pq.read_schema(path).names)
+    return list(pd.read_csv(path, nrows=0).columns)
 
 
 def read_dataset_columns(
@@ -236,18 +175,31 @@ def _normalize_missing_text(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-def finish_parquet_frame(df: pd.DataFrame, *, date_col: str) -> pd.DataFrame:
-    """The post-read step that makes a Parquet frame equal the CSV one.
+def _date_only(values: pd.Series) -> pd.Series:
+    """A game date as a date-only, timezone-free ``datetime64[ns]``.
 
-    Public because the converter verifies its output through exactly this step:
-    a check that normalized differently from the loader would pass while the
-    loader diverged.
+    The calendar date as written: a timestamp carrying an offset keeps its own
+    local date rather than being shifted to UTC.
     """
-    df = apply_identifier_dtypes(_normalize_missing_text(df))
-    # Written from load_raw_training_csv's CSV output, so dates are already
-    # date-only; only the unit can differ after the round trip.
+    dates = pd.to_datetime(values)
+    if dates.dt.tz is not None:
+        dates = dates.dt.tz_localize(None)
+    return dates.dt.normalize().astype("datetime64[ns]")
+
+
+def finish_parquet_frame(df: pd.DataFrame, *, date_col: str) -> pd.DataFrame:
+    """The post-read step that types a Parquet frame the way the loader does.
+
+    Public because the writer normalizes each row group through exactly this
+    step before storing it and verifies the read-back through it again: a check
+    that normalized differently from the loader would pass while the loader
+    diverged.
+    """
+    # Shallow copy: the steps below replace columns, and must not do it on the
+    # caller's frame. Cheap -- no column data is copied until it is replaced.
+    df = apply_identifier_dtypes(_normalize_missing_text(df.copy(deep=False)))
     if date_col in df.columns:
-        df[date_col] = df[date_col].astype("datetime64[ns]")
+        df[date_col] = _date_only(df[date_col])
     return df
 
 
@@ -304,7 +256,7 @@ def load_raw_training_csv(
     snapshot_col: str | None = None,
     snapshot_minutes: int | None = None,
 ) -> pd.DataFrame:
-    """Load a training dataset (CSV or Parquet): the identifier columns as text
+    """Load a training dataset (Parquet, or CSV for older builds): the identifier columns as text
     (nba_ou.config.identity_columns -- exact names, so GAME_ID keeps its leading
     zeros and no feature is mistaken for an identifier), every other column as
     pandas infers it, GAME_DATE as a date-only datetime.
@@ -328,8 +280,7 @@ def load_raw_training_csv(
     header = pd.read_csv(csv_path, nrows=0)
     df = pd.read_csv(csv_path, dtype=identifier_dtypes(header.columns))
     if date_col in df.columns:
-        df[date_col] = pd.to_datetime(df[date_col]).dt.strftime("%Y-%m-%d")
-        df[date_col] = pd.to_datetime(df[date_col])
+        df[date_col] = _date_only(df[date_col])
     return df
 
 
@@ -466,12 +417,12 @@ def load_scoring_sidecar(
             "the intermediate-line path."
         )
 
-    header = pd.read_csv(csv_path, nrows=0).columns
+    header = dataset_columns(csv_path)
     missing_keys = [key for key in keys if key not in header]
     if missing_keys:
         raise KeyError(f"{csv_path} has no {missing_keys} column(s) to join on.")
 
-    sidecar = pd.read_csv(csv_path, dtype={game_id_col: str})
+    sidecar = read_dataset_columns(csv_path, columns=header, dtype={game_id_col: str})
     sidecar[snapshot_col] = pd.to_numeric(sidecar[snapshot_col], errors="coerce")
 
     attached = [c for c in sidecar.columns if c not in keys]
@@ -1068,17 +1019,11 @@ class PreparedDataset:
 
 
 def prepare_dataset(config: ExperimentConfig) -> PreparedDataset:
-    source = resolve_dataset_source(
+    dataset_checksum = verify_dataset_checksum(
         config.data.csv_path, expected_checksum=config.data.expected_checksum
     )
-    dataset_checksum = source.checksum
-    if source.substituted and not is_parquet(config.data.csv_path):
-        print(
-            f"Reading {source.read_path.name}, the verified Parquet copy of "
-            f"{Path(config.data.csv_path).name} ({source.checksum})."
-        )
     df = load_raw_training_csv(
-        source.read_path,
+        config.data.csv_path,
         date_col=config.data.date_col,
         snapshot_col=config.data.snapshot_col,
         snapshot_minutes=config.data.snapshot_minutes,

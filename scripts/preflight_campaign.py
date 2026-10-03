@@ -47,11 +47,10 @@ if str(REPO_ROOT) not in sys.path:
 from training_pipeline.cli import load_config  # noqa: E402
 from training_pipeline.config import CVStrategy, ExperimentConfig  # noqa: E402
 from training_pipeline.data import (  # noqa: E402
-    DatasetSource,
     prepare_dataset,
     read_dataset_columns,
-    resolve_dataset_source,
     training_eligible_mask,
+    verify_dataset_checksum,
 )
 from training_pipeline.splits import (  # noqa: E402
     build_holdout_split,
@@ -177,10 +176,9 @@ def check_configs(
 
     # --- 2. datasets exist, and their bytes are the pinned ones -------------
     print("Datasets")
-    # Resolved exactly as prepare_dataset resolves it, so a verified Parquet
-    # copy passes here (and is what the key check below reads) even when the
-    # CSV it stands for has been archived away.
-    seen: dict[tuple[Path, str | None], DatasetSource | str] = {}
+    # Checked exactly as prepare_dataset checks it. The value is the actual
+    # checksum, or the reason the dataset cannot be used.
+    seen: dict[tuple[Path, str | None], tuple[bool, str]] = {}
     read_paths: dict[str, Path] = {}
     for name, config in configs.items():
         csv = Path(config.data.csv_path)
@@ -189,23 +187,21 @@ def check_configs(
         key = (csv, pinned)
         if key not in seen:
             try:
-                seen[key] = resolve_dataset_source(csv, expected_checksum=pinned)
+                seen[key] = (True, verify_dataset_checksum(csv, expected_checksum=pinned))
             except FileNotFoundError:
-                seen[key] = f"dataset missing -- {csv}"
+                seen[key] = (False, f"dataset missing -- {csv}")
             except ValueError as exc:
-                seen[key] = str(exc)
-        source = seen[key]
-        if isinstance(source, str):
-            problems.append(f"{name}: {source}")
-            print(f"  {FAIL}  {name}: {source}")
+                seen[key] = (False, str(exc))
+        usable, detail = seen[key]
+        if not usable:
+            problems.append(f"{name}: {detail}")
+            print(f"  {FAIL}  {name}: {detail}")
             continue
-        read_paths[name] = source.read_path
-        via = f" via {source.read_path.name}" if source.read_path != csv else ""
+        read_paths[name] = csv
         if pinned is None:
-            print(f"  {WARN}  {name}: no expected_checksum pinned "
-                  f"(actual {source.checksum}){via}")
+            print(f"  {WARN}  {name}: no expected_checksum pinned (actual {detail})")
         else:
-            print(f"  {OK}    {name}: {csv.name} matches {source.checksum}{via}")
+            print(f"  {OK}    {name}: {csv.name} matches {detail}")
     print()
 
     # A checksum can pin corrupt bytes just as faithfully as healthy ones. This

@@ -974,6 +974,6 @@ if __name__ == "__main__":
         older_season_limit=n_seasons,
     )
 
-    output_name_before_referee = f"{output_path}/test_predict_data_{pd.to_datetime(date_to_train).strftime('%Y%m%d')}.csv"
-    df_train.to_csv(output_name_before_referee, index=False)
+    output_name_before_referee = f"{output_path}/test_predict_data_{pd.to_datetime(date_to_train).strftime('%Y%m%d')}.parquet"
+    df_train.to_parquet(output_name_before_referee, index=False)
     print(f"Training data features saved to {output_name_before_referee}")

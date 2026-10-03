@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""Write a single-snapshot slice of the intermediate-line training CSV.
+"""Write a single-snapshot slice of the intermediate-line training dataset.
 
     poetry run python scripts/create_train_data/slice_intermediate_snapshot.py \
         --snapshot 720
 
 The intermediate-line dataset has one row per (game, pre-game snapshot). Keeping
 one ``TIME_TO_MATCH_MIN`` gives a file with **one row per game**, structurally
-identical to the closing-line training CSV -- so every row-counted window in
+identical to the closing-line training dataset -- so every row-counted window in
 ``experiments/_base.yaml`` (``train_games`` and friends) means games again, with
 no rescaling, and ``evaluate_betting`` needs no grouping.
 
@@ -27,18 +27,20 @@ import argparse
 import sys
 from pathlib import Path
 
-import pandas as pd
-
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from nba_ou.config.identity_columns import identifier_dtypes  # noqa: E402
+from training_pipeline.config import SNAPSHOT_COLUMN  # noqa: E402
+from training_pipeline.data import (  # noqa: E402
+    filter_to_snapshot,
+    load_raw_training_csv,
+)
+from training_pipeline.parquet_dataset import write_training_dataset  # noqa: E402
 
 DEFAULT_INPUT = (
     PROJECT_ROOT / "data" / "train_data" / "intermediate_line_data_20260412.csv"
 )
-SNAPSHOT_COLUMN = "TIME_TO_MATCH_MIN"
 
 
 def main() -> None:
@@ -56,24 +58,21 @@ def main() -> None:
     if not args.input.exists():
         raise SystemExit(f"Input not found: {args.input}")
 
-    # Identifier columns as str so GAME_ID keeps its leading zeros -- the
-    # pipeline resolves season type from its 3-character prefix, and 22100001
-    # does not map where 0022100001 does.
-    header = pd.read_csv(args.input, nrows=0)
-    df = pd.read_csv(
-        args.input, dtype=identifier_dtypes(header.columns), low_memory=False
-    )
-
-    if SNAPSHOT_COLUMN not in df.columns:
-        raise SystemExit(f"{args.input} has no {SNAPSHOT_COLUMN} column.")
-
-    available = sorted(df[SNAPSHOT_COLUMN].dropna().unique())
-    if args.snapshot not in available:
-        raise SystemExit(
-            f"Snapshot {args.snapshot} not present. Available: {available}"
+    # Read as the pipeline reads it, so the slice holds exactly the rows and
+    # types a single-horizon run would see. A Parquet input reads only this
+    # horizon's rows.
+    try:
+        sliced = filter_to_snapshot(
+            load_raw_training_csv(
+                args.input,
+                snapshot_col=SNAPSHOT_COLUMN,
+                snapshot_minutes=args.snapshot,
+            ),
+            snapshot_col=SNAPSHOT_COLUMN,
+            minutes=args.snapshot,
         )
-
-    sliced = df[df[SNAPSHOT_COLUMN] == args.snapshot].copy()
+    except (KeyError, ValueError) as exc:
+        raise SystemExit(str(exc)) from None
 
     games = sliced["GAME_ID"].nunique() if "GAME_ID" in sliced.columns else None
     if games is not None and games != len(sliced):
@@ -84,16 +83,10 @@ def main() -> None:
         )
 
     output = args.output or args.input.with_name(
-        f"{args.input.stem}_t{args.snapshot}.csv"
+        f"{args.input.stem}_t{args.snapshot}.parquet"
     )
-    sliced.to_csv(output, index=False)
-
     print(f"Snapshot {args.snapshot}: {len(sliced):,} rows, {games:,} games")
-    print(f"Wrote {output}")
-
-    from training_pipeline.data import compute_file_checksum
-
-    print(f'expected_checksum: "{compute_file_checksum(output)}"')
+    write_training_dataset(sliced, output)
     print(
         "\nRow-counted windows in experiments/_base.yaml need NO rescaling for "
         "this file:\nit is one row per game, exactly what those defaults assume."
