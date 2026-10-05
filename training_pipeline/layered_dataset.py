@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import json
 import re
+import shutil
 import time
 from pathlib import Path
 from typing import Any
@@ -29,6 +30,7 @@ import pandas as pd
 import pyarrow as pa
 import pyarrow.parquet as pq
 from nba_ou.create_training_data.schema_layers import (
+    INTERMEDIATE_LINE,
     LayerContext,
     check_version,
     compute_new_columns,
@@ -234,10 +236,21 @@ def build_schema_version_file(
     out_dir: str | Path | None = None,
     ctx: LayerContext | None = None,
     build_args: dict[str, Any] | None = None,
+    scoring_path: str | Path | None = None,
+    allow_schedule_tipoffs: bool = False,
 ) -> Path:
     """Write ``parent`` upgraded to ``to_version`` beside it (or in ``out_dir``).
 
     Returns the Parquet path a config's ``data.csv_path`` should point at.
+
+    An intermediate parent's snapshot times come from ``scoring_path`` or the
+    ``<stem>_scoring`` sidecar beside it, which is copied beside the output so
+    the next upgrade finds it too. Preloaded context timestamps must agree with
+    that sidecar; they do not bypass its copy or provenance. Without either,
+    a layer that needs those
+    times fails unless ``allow_schedule_tipoffs`` lets it read the live
+    line-history schedule. Where the times came from, and digests of the
+    injury-report states read, are recorded in the manifest's ``build_args``.
     """
     started = time.time()
     parent = Path(parent)
@@ -267,6 +280,42 @@ def build_schema_version_file(
     inputs = read_parent_inputs(
         parent, required_input_columns(from_version, to_version, dataset_type)
     )
+    ctx = ctx if ctx is not None else LayerContext()
+    ctx.allow_schedule_tipoffs = allow_schedule_tipoffs
+    build_args = dict(build_args or {})
+    sidecar = None
+    if dataset_type == INTERMEDIATE_LINE:
+        # The frozen base keeps timestamps in its scoring file, not in X.
+        # Discover the file even when a caller has already seeded its times:
+        # the output still needs the scoring rows and their provenance.
+        if scoring_path is not None:
+            sidecar = Path(scoring_path)
+            if not sidecar.is_file():
+                raise FileNotFoundError(
+                    f"Snapshot scoring sidecar not found: {sidecar}"
+                )
+        else:
+            sidecar = scoring_sidecar_path(parent)
+        if sidecar is not None:
+            sidecar_times = read_parent_inputs(
+                sidecar,
+                ["GAME_ID", "TIME_TO_MATCH_MIN", "TIPOFF_UTC", "SNAPSHOT_TS_UTC"],
+            )
+            if ctx.snapshot_times is None:
+                ctx.snapshot_times = sidecar_times
+            else:
+                from nba_ou.create_training_data.schema_layers.inputs import (
+                    resolve_snapshot_cutoffs,
+                )
+
+                seeded_cutoffs = resolve_snapshot_cutoffs(inputs, ctx.snapshot_times)
+                sidecar_cutoffs = resolve_snapshot_cutoffs(inputs, sidecar_times)
+                if not seeded_cutoffs["as_of"].eq(sidecar_cutoffs["as_of"]).all():
+                    raise ValueError(
+                        f"Seeded snapshot cutoffs disagree with scoring sidecar: {sidecar}"
+                    )
+            build_args["snapshot_scoring_path"] = str(sidecar.resolve())
+            build_args["snapshot_scoring_checksum"] = compute_file_checksum(sidecar)
     new_columns = compute_new_columns(
         inputs,
         from_version=from_version,
@@ -276,6 +325,7 @@ def build_schema_version_file(
         ctx=ctx,
     )
     print(f"  +{new_columns.shape[1]} columns over {len(inputs):,} rows")
+    build_args.update(ctx.provenance)
 
     parent_checksum = compute_file_checksum(parent)
     out.parent.mkdir(parents=True, exist_ok=True)
@@ -307,8 +357,25 @@ def build_schema_version_file(
     )
     write_manifest(out, manifest)
     record_file(out, compute_file_checksum(out))
+    if sidecar is not None:
+        # Layers never add or drop rows: the parent's scoring rows are the
+        # output's, and an upgrade of the output must find them beside it.
+        copied = out.with_name(f"{out.stem}_scoring{sidecar.suffix}")
+        if copied.resolve() != sidecar.resolve():
+            shutil.copyfile(sidecar, copied)
+            print(f"Scoring sidecar: {copied}")
     print(f"Wrote {out} in {time.time() - started:.0f}s")
     return out
+
+
+def scoring_sidecar_path(dataset: str | Path) -> Path | None:
+    """The ``<stem>_scoring`` file beside ``dataset`` (Parquet or CSV), if any."""
+    dataset = Path(dataset)
+    for suffix in (".parquet", ".csv"):
+        candidate = dataset.with_name(f"{dataset.stem}_scoring{suffix}")
+        if candidate.is_file():
+            return candidate
+    return None
 
 
 def write_base_manifest(

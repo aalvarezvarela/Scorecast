@@ -22,7 +22,9 @@ opponent has not.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
+from hashlib import sha256
 
 import numpy as np
 import pandas as pd
@@ -101,9 +103,7 @@ class InjuryReportState:
         """(game_id, team_id) pairs whose team had submitted by tipoff."""
         if self._covered is None:
             filed = self.filings.loc[self.filings["submitted"].astype(bool)]
-            self._covered = set(
-                zip(filed["game_id"], filed["team_id"], strict=True)
-            )
+            self._covered = set(zip(filed["game_id"], filed["team_id"], strict=True))
         return self._covered
 
     @classmethod
@@ -157,6 +157,82 @@ def load_injury_report_state(
             status_events=fetch.listed_status_events(conn, season_years),
             listed_pairs=fetch.listed_pairs(conn, season_years),
         )
+
+
+def snapshot_report_states(
+    statuses: pd.DataFrame,
+    filings: pd.DataFrame,
+    ages: pd.DataFrame,
+    horizons,
+    *,
+    events: pd.DataFrame | None = None,
+    listed: pd.DataFrame | None = None,
+) -> dict[int, InjuryReportState]:
+    """Split the bulk snapshot query into report states, preserving coverage."""
+    empty = InjuryReportState.empty()
+    states = {}
+    for horizon in sorted(set(int(value) for value in horizons)):
+
+        def at_horizon(
+            frame: pd.DataFrame, selected_horizon: int = horizon
+        ) -> pd.DataFrame:
+            return (
+                frame.loc[frame["snapshot_minutes"].eq(selected_horizon)]
+                .drop(columns="snapshot_minutes")
+                .reset_index(drop=True)
+            )
+
+        states[horizon] = InjuryReportState(
+            statuses=at_horizon(statuses),
+            filings=at_horizon(filings),
+            report_age=at_horizon(ages),
+            status_events=events if events is not None else empty.status_events,
+            listed_pairs=listed if listed is not None else empty.listed_pairs,
+        )
+    return states
+
+
+def load_snapshot_report_states(
+    cutoffs: pd.DataFrame,
+) -> dict[int, InjuryReportState]:
+    """Read availability strictly before each explicit snapshot UTC cutoff.
+
+    The projection needs current statuses and filing coverage, not the full
+    listing history used by the base dataset's injury-effect estimators.
+    """
+    from nba_ou.postgre_db.config.db_config import connect_nba_db
+    from nba_ou.postgre_db.injury_report_aiven import fetch
+
+    with connect_nba_db("aiven") as conn:
+        statuses, filings, ages = fetch.report_state_at_snapshots(conn, cutoffs)
+    return snapshot_report_states(statuses, filings, ages, cutoffs["snapshot_minutes"])
+
+
+def report_state_digest(
+    states: InjuryReportState | Mapping[int, InjuryReportState],
+) -> str:
+    """SHA-256 of the statuses and filings a build read, independent of row order.
+
+    The report store is live and can be backfilled, so a rebuild may not see
+    what an earlier build saw; the manifest keeps this digest to tell.
+    """
+    items = (
+        sorted(states.items())
+        if isinstance(states, Mapping)
+        else [("closing", states)]
+    )
+    digest = sha256()
+    for key, state in items:
+        digest.update(str(key).encode())
+        for frame in (state.statuses, state.filings):
+            text = frame.reindex(columns=sorted(frame.columns)).astype(str)
+            if len(text.columns):
+                text = text.sort_values(list(text.columns), kind="mergesort")
+            digest.update(",".join(text.columns).encode())
+            digest.update(
+                pd.util.hash_pandas_object(text, index=False).to_numpy().tobytes()
+            )
+    return digest.hexdigest()
 
 
 def report_status_sets(
@@ -282,7 +358,10 @@ def report_counter_features(
         index=team_games.index,
     )
     covered = np.array(
-        [(g, t) in state.covered for g, t in zip(keys["game_id"], keys["team_id"], strict=True)],
+        [
+            (g, t) in state.covered
+            for g, t in zip(keys["game_id"], keys["team_id"], strict=True)
+        ],
         dtype=bool,
     )
     out = pd.DataFrame(index=team_games.index)

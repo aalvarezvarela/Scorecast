@@ -19,6 +19,7 @@ from __future__ import annotations
 import re
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
+from hashlib import sha256
 from typing import Any
 
 import pandas as pd
@@ -81,12 +82,24 @@ class LayerContext:
 
     Seed a field to reuse an object already in memory; leave it ``None`` and the
     first layer that asks loads it. ``cache`` holds anything else a layer wants
-    to share with a later one under a name of its choosing.
+    to share with a later one under a name of its choosing. ``provenance``
+    collects what a build read from live sources (where snapshot times came
+    from, digests of the report states); file builds store it in the manifest.
     """
 
     df_players: pd.DataFrame | None = None
     injury_report_state: Any | None = None
     cache: dict[str, Any] = field(default_factory=dict)
+    #: Optional scoring-sidecar rows: keys plus TIPOFF_UTC/SNAPSHOT_TS_UTC.
+    snapshot_times: pd.DataFrame | None = None
+    #: Explicitly seeded report states for these snapshots, keyed by horizon.
+    snapshot_injury_states: dict[int, Any] | None = None
+    #: Whether snapshot tipoffs may be read from the live line-history schedule
+    #: when neither the inputs nor ``snapshot_times`` carry them. File builds
+    #: turn this off so a missing scoring sidecar fails instead of silently
+    #: depending on the database's current state.
+    allow_schedule_tipoffs: bool = True
+    provenance: dict[str, Any] = field(default_factory=dict)
 
     def get_or_load(self, name: str, loader: Callable[[], Any]) -> Any:
         if name not in self.cache:
@@ -109,7 +122,68 @@ class LayerContext:
             )
 
             self.injury_report_state = load_injury_report_state()
+        if "injury_report_state_sha256" not in self.provenance:
+            from nba_ou.data_processing.injury_status.report_state import (
+                report_state_digest,
+            )
+
+            self.provenance["injury_report_state_sha256"] = report_state_digest(
+                self.injury_report_state
+            )
         return self.injury_report_state
+
+    def snapshot_cutoffs(self, inputs: pd.DataFrame) -> pd.DataFrame:
+        """Validated UTC cutoffs from input timestamps, sidecar or schedule."""
+        from .inputs import resolve_snapshot_cutoffs
+
+        if self.snapshot_times is not None:
+            source = "scoring_sidecar"
+        elif {"TIPOFF_UTC", "SNAPSHOT_TS_UTC"} & set(inputs.columns):
+            source = "embedded"
+        elif self.allow_schedule_tipoffs:
+            source = "line_history_schedule"
+        else:
+            raise ValueError(
+                "Snapshot cutoffs need the base's scoring sidecar (TIPOFF_UTC / "
+                "SNAPSHOT_TS_UTC). Pass --scoring-path, or --allow-schedule-tipoffs "
+                "to read the live line-history schedule instead."
+            )
+        cutoffs = resolve_snapshot_cutoffs(inputs, self.snapshot_times)
+        self.provenance["snapshot_time_source"] = source
+        return cutoffs
+
+    def snapshot_reports(self, cutoffs: pd.DataFrame) -> dict[int, Any]:
+        """States at the requested cutoffs, never the closing report state."""
+        if self.snapshot_injury_states is not None:
+            missing = set(cutoffs["snapshot_minutes"]) - set(
+                self.snapshot_injury_states
+            )
+            if missing:
+                raise ValueError(
+                    f"Missing snapshot report states for {sorted(missing)}"
+                )
+            states = self.snapshot_injury_states
+        else:
+            from nba_ou.data_processing.injury_status.report_state import (
+                load_snapshot_report_states,
+            )
+
+            ordered = cutoffs.sort_values(["game_id", "snapshot_minutes"])
+            digest = sha256(
+                pd.util.hash_pandas_object(ordered, index=False).to_numpy().tobytes()
+            ).hexdigest()
+            states = self.get_or_load(
+                f"snapshot_reports:{digest}",
+                lambda: load_snapshot_report_states(cutoffs),
+            )
+        from nba_ou.data_processing.injury_status.report_state import (
+            report_state_digest,
+        )
+
+        self.provenance["snapshot_report_states_sha256"] = report_state_digest(
+            {horizon: states[horizon] for horizon in set(cutoffs["snapshot_minutes"])}
+        )
+        return states
 
 
 #: ``build(inputs, ctx, dataset_type) -> new columns``. ``inputs`` holds the row

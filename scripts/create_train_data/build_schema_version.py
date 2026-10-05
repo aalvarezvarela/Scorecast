@@ -16,7 +16,10 @@ swapped -- ``closing_line_data_2_6_20261003.parquet`` -- plus a
 ``.manifest.json`` recording the parent file's checksum. A Parquet input is
 streamed one row group at a time; an older CSV input is loaded and written once.
 The output is always Parquet. An intermediate file keeps using its parent's
-``_scoring`` sidecar: the rows are the same.
+``_scoring`` sidecar -- the rows are the same -- and a copy is written beside
+the output so its own upgrade finds it. Without a sidecar, a layer that needs
+snapshot times fails unless ``--allow-schedule-tipoffs`` lets it read them from
+the live line-history schedule; the manifest records which source was used.
 
 The printed ``expected_checksum`` goes into a campaign config as usual.
 """
@@ -43,6 +46,23 @@ def main() -> None:
         help=f"Target schema version (default {TRAINING_DATA_SCHEMA_VERSION}).",
     )
     parser.add_argument(
+        "--scoring-path",
+        type=Path,
+        default=None,
+        help=(
+            "Intermediate scoring sidecar with snapshot UTC timestamps. "
+            "Default: the parent's _scoring sidecar."
+        ),
+    )
+    parser.add_argument(
+        "--allow-schedule-tipoffs",
+        action="store_true",
+        help=(
+            "Without a scoring sidecar, read snapshot tipoffs from the live "
+            "line-history schedule instead of failing."
+        ),
+    )
+    parser.add_argument(
         "--out-dir",
         type=Path,
         default=None,
@@ -55,6 +75,8 @@ def main() -> None:
         to_version=args.to,
         out_dir=args.out_dir,
         build_args={"parent": str(args.parent), "to": args.to},
+        scoring_path=args.scoring_path,
+        allow_schedule_tipoffs=args.allow_schedule_tipoffs,
     )
     print(f"data.csv_path: {out}")
     print(f'expected_checksum: "{compute_file_checksum(out)}"')

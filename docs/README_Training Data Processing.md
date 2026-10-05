@@ -1295,12 +1295,15 @@ minutes, enter history; games on the same date are held back together.
 | `STARTER_REPEAT_RATE_LAST_5_GAMES_BEFORE` | share of consecutive games among the last five that kept the same five |
 | `STARTER_LATEST_FIVE_MINUTES_SHARE_LAST_5_GAMES_BEFORE` | share of the team's minutes over the last five games played by its most recent starting five |
 
-### Lineup projection (closing dataset only)
+### Lineup projection (closing and intermediate)
 
 Seventeen game-level columns from the bottom-up lineup projection in
-`data_processing/lineups/features.py`. The intermediate dataset does not get
-them in 2_6: a snapshot needs availability as of the snapshot, not the closing
-report.
+`data_processing/lineups/features.py`, with snapshot adaptation in
+`lineups/intermediate_features.py`. Both datasets receive the same family in
+the experimental 2_6 layer. Closing uses the report before tip; intermediate
+uses the report before each snapshot. The following table describes both;
+the closing cutoff details below are adapted as described in the intermediate
+section.
 
 | Column | Meaning |
 |---|---|
@@ -1363,21 +1366,65 @@ nearly redundant as model inputs. All outputs remain for diagnosis, while
 `cleaning.exclude_cols_containing` and `keep_columns` can define a compact
 training subset after validation.
 
-**Coverage.** Ratings start in 2021-22, so earlier games are NaN. For any
-training window starting earlier, `find_season_gated_columns` will drop the
-family, so evaluate it on a 2021-22+ window. Games with no roster history (a
-team's first game in the data) are NaN too. This is a closing-horizon
-family: historical availability uses the last report before tip, and live
-inference uses the report state available when the builder runs. For an earlier
-betting snapshot, both statuses and team-filing coverage must be cut off at
-that snapshot. The current closing builder does not recreate earlier horizons.
+**Coverage.** The corrected local rating cache starts in 2017-18. Missing
+ratings, roster history or either team's filing leave unavailable projections
+as NaN. Choose the training window from measured coverage, including style and
+report history, and check whether cleaning drops season-gated columns.
 
-**Serving.** `predict_nba_games.py` does not pass the flag, because no
-production model has been trained with these columns. Serving them needs the
-rating cache refreshed through the day before, which no daily job does yet.
+**Serving.** Closing prediction already applies schema layers according to
+enabled slots. Those slots still use 2_5; serving `LU_*` requires a fresh rating
+cache and stint data in that environment. Daily rating refresh and intermediate
+live/refit integration remain separate work.
 
 Leakage tests: `tests/test_lineup_leakage.py`. Evidence and evaluation:
 `docs/lineup_projection_plan.md` §8.5-8.6, `scripts/lineups/evaluate_game_projection.py`.
+
+### Intermediate snapshot calculation (2_6)
+
+`snapshot_lineup_features()` produces the 17 columns per
+`(GAME_ID, TIME_TO_MATCH_MIN)`. The 2_6 layer resolves UTC cutoffs from embedded
+timestamps, `LayerContext.snapshot_times` (the original scoring sidecar), or
+the authoritative line-history schedule. It validates unique keys, complete
+timestamps and `SNAPSHOT_TS_UTC = TIPOFF_UTC - TIME_TO_MATCH_MIN`.
+
+Report states come from the existing `report_state_at_snapshots` bulk query:
+statuses and submitted filings must exist strictly before the cutoff. Missing
+coverage on either team leaves all `LU_*` NaN and excludes that projection from
+calibration. G-League exclusions apply to both the actual and full-availability
+rosters. The points projection combines availability scenarios; the four style
+columns retain their existing most-likely-state rotation rule.
+
+History uses dates strictly before the earlier of the game date and the
+snapshot's Eastern calendar date, where a cutoff before 05:00 ET belongs to the
+previous date (`DAY_SETTLED_HOUR_ET`). A snapshot on the previous evening, or
+in the small hours of game day, therefore uses older rosters, ratings, starter
+history, calibration and style evidence too. Without box-score publication
+timestamps, the whole cutoff day is conservatively held back, and the previous
+day too until its late (up to 23:00 ET) tip-offs have surely finished. Rosters are shared between horizons with the same history date; all
+snapshots share the style traits, monthly linear fit and neighbour index.
+
+The level offset is computed separately for each horizon and phase from up to
+200 distinct games on dates before that row's history cutoff, and needs at
+least 50 of them (`OFFSET_MIN_GAMES`, closing too): with fewer,
+`LU_PROJ_TOTAL_BEFORE` is NaN rather than a level averaged from a handful of
+games, so the value no longer depends on where the parent file starts. Historical
+residuals retain their actual game dates; extra snapshots do not increase the
+calibration sample. Parent rows and columns are unchanged; both datasets add
+eight starter-history columns and 17 `LU_*` columns over 2_5.
+
+For file upgrades, `build_schema_version.py --to 2_6` automatically reads the
+parent's `_scoring` sidecar (Parquet or CSV) when available. Supply
+`--scoring-path <path>` to use a sidecar with another name/location; its path
+and checksum are recorded in the build manifest, and the sidecar is copied
+beside the output as `<output stem>_scoring` so a later upgrade finds it. If no
+sidecar exists the build fails rather than silently reading the live
+line-history schedule; `--allow-schedule-tipoffs` opts into that fallback. The
+manifest's `build_args` records `snapshot_time_source` (`scoring_sidecar`,
+`embedded` or `line_history_schedule`) and SHA-256 digests of the injury-report
+states read (`snapshot_report_states_sha256`, `injury_report_state_sha256` for
+closing), since the report store is live and can be backfilled. Timestamps are
+context only and are never appended as model features. Behavioural tests are
+in `tests/test_intermediate_lineup_features.py`.
 
 ## Travel And Schedule Features
 

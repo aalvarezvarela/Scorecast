@@ -1,11 +1,43 @@
 # Lineup stints, projected minutes and a bottom-up game projection
 
-Status (2026-09-24): **A-F implemented; phase G features are built behind a
-default-off `lineup_features` flag. The exploratory feature audit (§8.6)
-selected defense and pace channels after inspecting 2021-22 through 2025-26.
-The weighted-ridge intercept and report-coverage safeguards have since been
-corrected. Existing rating caches and historical results are stale; the
-with/without campaign has not run and awaits the 2019-2020 backfill.**
+Status (2026-10-05): **schema 2_6 now adds starter history and the 17 `LU_*`
+columns to both closing and intermediate, over the frozen 2_5 base. Intermediate
+uses each snapshot's report, coverage and history cutoff, with calibration per
+horizon and phase. Implementation is complete; behavioural tests, dataset
+builds and campaigns remain pending at the owner's request.**
+
+This checkpoint and §§8.1-8.4, 9 and 10 describe the current work. Dated
+implementation reports and exploratory results below remain historical evidence;
+their old flags, coverage limits and proposed columns are not the current
+schema contract.
+
+### Current checkpoint and agreed scope (2026-10-05)
+
+| Item | Verified state |
+|---|---|
+| Branch baseline | `feat/pregame-rotation-features` at `a04ffde`, 30 commits above `dev/fix-training-pipeline` at `ea7ed68` |
+| Base and layers | Builders produce 2_5; `schema_layers/v2_6.py` appends columns without changing base values or rows |
+| Closing 2_6 | Eight `STARTER_*` columns plus the 17 `LU_*` columns in §8.1 |
+| Intermediate 2_6 | Eight `STARTER_*` columns plus 17 `LU_*`; snapshot integration implemented, behavioural verification pending |
+| Projection minutes | Last ten valid player appearances, redistributed proportionally over available players to 240 minutes per team; the experimental minutes model is not connected |
+| Pair/exact-five synergy | Implemented and studied in `lineups/synergy.py`; not emitted in the current `LU_*` family or added to its point projection |
+| Style features | Four three-point-rate columns are included; style uses the most likely availability state, while the points projection combines availability scenarios |
+| Player-versus-defender tracking | Imported per-season Parquet for 2017-18 through 2025-26; no downstream feature builder consumes it |
+| Local historical inputs | Stint stores span 2016-17 through 2025-26; solver-2 ratings span 2017-10-17 through 2026-06-30 (1,845 rating dates) |
+| Retrospective check | Run on 2019-20 / 2020-21 (§8.7); defense + pace slope replicated, betting improvement remains unestablished |
+| Dataset/model artifacts | No completed 2_5 or 2_6 dataset in this workspace's `data/train_data/`, and no local lineup campaign runs; locate the intended 2_5 artifact before building |
+| Daily operation | Stint updates are wired; automatic daily rating refresh remains pending; enabled model slots still use 2_5 |
+
+**Agreed next sequence:** intermediate projection is implemented; next verify
+its temporal contract, produce reproducible datasets, compare base / starter
+history / lineup features, and prepare daily operation if results justify promotion.
+The owner explicitly keeps this unfinished version at 2_6 and requested no
+commits or behavioural test execution during implementation (2026-10-05).
+Intermediate implementation no longer waits for the closing campaign. Keep the
+current minutes allocation and projection formulas for this comparison. Connecting
+the experimental minutes model, adding explicit pair/five synergy, rotation
+templates, or player-versus-defender features is separate follow-up work.
+
 The paragraph below is the original 2026-09-18 status, kept for history. Written 2026-09-18 on
 `feat/pregame-rotation-features` for the agent that will implement it. Every
 API fact below was checked against the live `stats.nba.com` API that day (§2).
@@ -72,7 +104,12 @@ Read these first:
 
 ## 0. Goal and non-goals
 
-**Goal.** Build a per-game projection from players and lineups:
+**Current goal.** Complete and evaluate the existing projection for closing
+and intermediate snapshots, using the same frozen 2_5 base. Preserve the current
+minutes and rating formulas, adapt availability to each prediction cutoff, and
+measure starter history and `LU_*` separately. See §§8-10 for acceptance criteria.
+
+**Original research goal (2026-09-18).** Build a per-game projection from players and lineups:
 
 1. Decide who is likely to play, using the pre-game injury report.
 2. Predict each player's minutes.
@@ -100,8 +137,10 @@ On a quiet night the projection will mostly reproduce the line.
 - No new starter-stability features. Codex's `starter_history.py` covers that,
   and a "step 1" built only from box-score aggregates was explicitly rejected as
   adding no new information.
-- Intermediate (per-snapshot) dataset support is **phase 2** (§9). Build for the
-  closing-line dataset first.
+- Intermediate support is now in scope for the next implementation (§9).
+  The original closing-first sequencing has been superseded.
+- Connecting the experimental minutes model or adding explicit pair/five and
+  player-versus-defender features is outside this comparison's scope.
 - No change to model training code (`training_pipeline/`, `src/nba_ou/modeling/`)
   beyond what a new schema version needs.
 
@@ -119,7 +158,7 @@ On a quiet night the projection will mostly reproduce the line.
 | Play-by-play acquisition | **Imported from the `shufinskiy/nba_data` season archive; only `GameRotation` is fetched from the API** | Decided 2026-09-21. The archive republishes the same `PlayByPlayV3` payloads: for the 440 games already fetched, the rebuilt payloads give byte-identical stints in all 437 that pass rotation validation. Halves the backfill (~20.4k calls → ~10.2k, ~29 h → ~14 h) and halves rate-limit exposure. The archive has no rotation data, so the API is still required for that half. |
 | Stint storage | **Local Parquet (`data/lineup_stints/`) is the default; Postgres is opt-in (`--load-db`)** | Decided 2026-09-20. Until go/no-go C and G pass, the data may never be used; Parquet keeps it reproducible from the raw archive with no database cost. Revisit when the features enter the pipeline. |
 | Eventual database | **Aiven, if the gates pass.** Parquet stays the default until then | Decided 2026-09-22 with both databases measured (§4.3). Supabase is the default `DB_ENV` but has the least room; Aiven has ~550 MB under its hard cap for a load sized at ~75-110 MB. Ongoing maintenance (daily load, partition retention) is an open question to settle **after** go/no-go G, not before. |
-| Feature-family switch | **A `lineup_features` flag on the dataset builders, default `False`** | Decided 2026-09-22. The family is unproven, so the campaign needs the same builder to emit a dataset with and without it (§8.2). Follows the existing `injury_report_features` precedent: same schema version, distinct filename suffix. |
+| Feature-family wiring | **Additive schema layers over 2_5; comparison datasets derived by selecting columns** | Supersedes the 2026-09-22 builder flag. Closing 2_6 always declares `LU_*`; a comparison control removes those columns without recomputing other values (§8.2). |
 
 ---
 
@@ -1124,8 +1163,44 @@ rotation template gated behind §7.1b showing something, not behind v1.
 
 ### 8.1 Columns
 
-All end in `_BEFORE`; team-level columns get `_TEAM_HOME` / `_TEAM_AWAY` from
-the merge. **Keep the set small and add more only on evidence.**
+**Current emitted family (2026-10-05).** `LINEUP_FEATURE_COLUMNS` in
+`lineups/features.py` is the source of truth. These 17 columns are added to
+both datasets by the 2_6 layer. Intermediate evaluates the same family with
+snapshot-specific availability and history (§9).
+
+| Column | Meaning |
+|---|---|
+| `LU_PROJ_TOTAL_BEFORE` | Scenario-weighted total, calibrated on 50-200 earlier games of the same phase (NaN with fewer) |
+| `LU_PROJ_POSS_BEFORE` | Scenario-weighted possessions |
+| `LU_PROJ_AVAILABILITY_TOTAL_SD_BEFORE` | Total's standard deviation across availability scenarios; not full predictive uncertainty |
+| `LU_PROJ_MARGIN_BEFORE` | Expected home points minus away points |
+| `LU_ABSENCE_IMPACT_PTS_BEFORE` | Total with current availability minus the same roster at full availability |
+| `LU_ABSENCE_IMPACT_POSS_BEFORE` | The corresponding change in possessions |
+| `LU_ABSENCE_IMPACT_OFF_PTS_BEFORE` | Offensive contribution to the total impact, valued at full-availability possessions |
+| `LU_ABSENCE_IMPACT_DEF_PTS_BEFORE` | Defensive contribution to the total impact, with points-prevented sign inverted |
+| `LU_ABSENCE_IMPACT_PACE_PTS_BEFORE` | Total impact minus offense and defense; includes their coupling with possessions |
+| `LU_ABSENCE_IMPACT_BENCH_DP_PTS_BEFORE` | Defense and pace contribution of additional minutes absorbed by available bench players |
+| `LU_ABSENCE_IMPACT_MARGIN_BEFORE` | Change in projected margin from current availability |
+| `LU_ABSENCE_IMPACT_PTS_BEFORE_TEAM_HOME` | Total impact when only the home team's availability changes |
+| `LU_ABSENCE_IMPACT_PTS_BEFORE_TEAM_AWAY` | Total impact when only the away team's availability changes |
+| `LU_PROJ_FG3A_RATE_BEFORE_TEAM_HOME` | Home offensive 3PA/FGA prediction plus nearest-neighbour residual |
+| `LU_PROJ_FG3A_RATE_BEFORE_TEAM_AWAY` | Away offensive 3PA/FGA prediction plus nearest-neighbour residual |
+| `LU_FG3A_NEIGHBOR_RESIDUAL_BEFORE` | Mean of the two directional neighbour residuals |
+| `LU_ABSENCE_SHIFT_FG3A_RATE_BEFORE` | Sum of the two directional additive 3PA/FGA changes from absences |
+
+The eight `STARTER_*_BEFORE_TEAM_{HOME,AWAY}` columns are a separate family:
+last-two starter overlap, unique starters and repeat rate over the last five
+games, and the recent minutes share of the latest starting five, per side.
+Both closing and intermediate 2_6 add 25 columns to 2_5.
+Missing history or an unfiled report on either side produces NaN for `LU_*`.
+
+#### Original candidate columns (historical specification)
+
+The tables below record the earlier research proposal. They do not declare
+additional emitted columns or requirements for the current comparison. In
+particular, explicit pair/five synergy and minus-line features are not in the
+current family, and the possessions-impact column is named
+`LU_ABSENCE_IMPACT_POSS_BEFORE`.
 
 **Team level (in `lineups/features.py`, attached where `add_starter_history_features` is):**
 
@@ -1230,103 +1305,121 @@ replacement columns move nothing there, E is unlikely to rescue them.
 
 ### 8.2 Wiring and schema
 
-**The family is switchable, and off by default.** Decided 2026-09-22. The point
-of the campaign in §8.4 is to find out whether these columns are worth
-anything, so one builder has to be able to emit the dataset with and without
-them. Two existing flags are the precedent to copy; do not invent a new
-mechanism:
+**Current architecture (2026-10-05).** The builders produce the frozen 2_5
+base. `schema_layers/v2_6.py` adds starter history and `LU_*` to both datasets. There is no `--lineup-features` flag on the dataset builders.
+`attach_lineup_features(enabled=...)` remains an internal composition helper.
 
-- `injury_report_features` (`create_train_data.py` → `create_df_to_predict`) —
-  a boolean that **keeps the schema version** and distinguishes the build by a
-  **filename suffix** (`_without_injury_reports`).
-- `include_same_season_referee_variants` — a default-`False` additive flag
-  threaded from an `argparse` `store_true` down into the builder.
+A layer must preserve every parent value, row and row order and add only its
+declared columns. Generated files record parent checksums, layers and building
+commit in a sidecar manifest. Reuse `schema_layers`, `LayerContext` and
+`training_pipeline.layered_dataset` rather than inserting new features into
+`create_df_to_predict` or `create_intermediate_line_df`'s 2_5 base output.
 
-> **Superseded 2026-10-02.** The flag below was replaced by schema layers: the
-> `LU_*` family is part of schema `2_6`, added to a finished 2_5 frame or file
-> by `nba_ou.create_training_data.schema_layers.v2_6`, and the builders no
-> longer take `lineup_features`. See `nba_ou.config.dataset_versions`. The
-> original design is kept below as a record.
+**Versioning (owner, 2026-10-05).** Keep this implementation in **2_6**:
+that version is still being developed and may be modified freely. Its layer
+now declares 25 additions for each dataset. This supersedes the proposed 2_7
+intermediate layer; no new version or registry entry is needed. The 2_5 base
+remains frozen. Rebuild experimental 2_6 artifacts from their exact 2_5 parents
+before comparisons; earlier prototype 2_6 files may lack intermediate `LU_*`.
+Promotion itself requires no schema bump or builder-flag change.
 
-Thread `lineup_features: bool = False` the same way:
+**Comparison variants.** Keep the full treatment file and derive controls by
+removing declared feature families. Verify exact equality of retained columns,
+rows and keys. The current `make_control_csv.py` removes only `LU_*`; extend the
+artifact preparation to supply the original 2_5 base arm as well. Record explicit
+variant names, parent provenance and checksums; reduced controls are experiment
+variants, not a redefinition of the full layer's declared schema.
 
-| Layer | Change |
-|---|---|
-| `create_df_to_predict.py` | `lineup_features: bool = False` parameter; guard the `add_lineup_features(...)` call with it, attached where `add_starter_history_features` is (line ~696) |
-| `create_base_game_features.py` | same parameter and guard (line ~424) |
-| `create_train_data.py` (`main`) | `lineup_features: bool = False`, passed straight through |
-| `create_train_data.py` (CLI) | `--lineup-features`, `action="store_true"` — opt-in, because the default is off |
-| filename | `variant` suffix `_with_lineup_features` when on, alongside the existing `_without_injury_reports` logic |
+**Model consumers.** Closing prediction already applies the newest layer needed
+by enabled slots, and closing refit builds each slot's schema with a shared base
+and context. Active slots still select 2_5. Intermediate refit/live serving has
+separate outstanding work; historical snapshot feature generation does not
+complete those paths. Daily rating refresh and cache delivery remain required
+for operational use (§10).
 
-**Schema version: stay on `2_6` while the family is experimental.** The owner's
-call, 2026-09-22. With the flag off the builder must emit a file **identical**
-to today's 2_6, which means the campaign's control arm is the existing 2_6 file
-and needs no rebuild — only the treatment arm is generated. This follows
-`injury_report_features`, whose CLI help says as much: *"The current schema
-version is retained with a distinct filename suffix."*
+### 8.3 Temporal and contract tests, mandatory
 
-Bump `dataset_versions.py` to **`2_7`** and add a History entry **only if
-go/no-go G passes and the flag's default flips to `True`** — at that point the
-columns are part of the standard dataset and the version contract in the
-`dataset_versions` docstring ("bumped whenever a regenerated CSV gains or loses
-columns") applies. Until then a 2_6 file with the suffix is the honest label:
-same pipeline, one extra opt-in family.
+1. **Target/same-day perturbation.** Changing the target game's or another
+   same-day game's box scores, stints and rotations must not change its features.
+2. **Historical fits.** Rating fits, box scores and style evidence must precede
+   the earlier of the target game date and the snapshot's Eastern date. Include
+   previous-evening snapshots. Monthly style fits use earlier months only.
+3. **Snapshot cutoff.** Use the last report strictly before the snapshot UTC
+   timestamp, including its filing coverage. Reports exactly at or after the
+   cutoff cannot contribute. Changing a later report must leave earlier
+   snapshots unchanged. A player moving Questionable to Out must affect only
+   snapshots after that news.
+4. **Missing coverage.** If either team has not filed, all 17 `LU_*` remain NaN;
+   that row cannot enter level calibration. A filed report with no listings is
+   distinct from no filing.
+5. **Calibration.** Use earlier dates only and at most 200 distinct games per
+   phase and horizon, at least 50 (else NaN). Adding/reordering another horizon's rows must not change
+   a horizon's calibration. Do not treat repeated snapshots as extra games.
+6. **Alignment and layering.** Preserve every 2_5/2_6 parent value and row order;
+   declare exactly the additional columns. Intermediate keys are
+   `(GAME_ID, TIME_TO_MATCH_MIN)`, not `GAME_ID` alone. Identical availability
+   yields identical uncalibrated projections across horizons.
+7. **Closing parity.** On matching inputs and cutoffs, the zero-minute snapshot
+   must reproduce closing's uncalibrated projection and impacts. Calibration
+   parity requires identical prior-game coverage and phase as well.
 
-- Attach in **both** `create_training_data/create_base_game_features.py` and
-  `create_df_to_predict.py`, the same way commit `73eef65` wired starter history.
-- **Test the flag, not just the features.** Add to `tests/test_lineup_features.py`:
-  with `lineup_features=False` no `LU_*` column exists and the frame's columns
-  equal the current 2_6 set; with it `True` every column in §8.1 is present and
-  no other column changes value. That second half is what stops the flag from
-  silently perturbing the control arm.
-- **Serving path uses the same flag.** `predict_nba_games.py` must pass whatever
-  the production model was trained with; a model trained without `LU_*` columns
-  and served with them (or the reverse) is a schema mismatch the bundle's
-  feature list should catch, but the flag should not be left to chance.
-- Update `docs/feature_engineering_overview.md` (the feature table and §6 "Open
-  work") and `docs/README_Training Data Processing.md`.
-- **Serving path.** For scheduled games, `create_df_to_predict` needs:
-  - today's latest injury report, which already exists;
-  - ratings and synergy fitted through yesterday;
-  - a minutes model fitted on everything before today.
+Reuse the existing lineup leakage, schema-layer and snapshot-injury tests;
+add behavioural cases for the new integration. Run the relevant checks after
+implementation and required repository checks before committing code changes.
 
-  Make sure none of these read the scheduled game itself.
+### 8.4 Evaluation
 
-### 8.3 Leakage tests (`tests/test_lineup_leakage.py`), mandatory
+**Status: not run.** The retrospective check in §8.7 supports proceeding with
+the model campaign; neither it nor a univariate slope establishes betting edge.
+The original rule to stop before intermediate on a null closing slope is
+superseded by the agreed comparison below.
 
-1. **Perturbation.** Build features for game G. Change G's own stints,
-   rotation and box score, and any same-day game's. Rebuild and assert every
-   `LU_*` column is identical.
-2. **Fit windows.** Every rating, synergy and minutes-model fit used for game G
-   has a max training game date < G's date.
-3. **Injury cut-off.** Injury inputs for G come from the last report before G's
-   tip-off. Reuse the existing `report_state` helpers; don't re-derive them.
-
-### 8.4 Evaluation (load the `experiments` skill first)
-
-1. **Go/no-go G (cheap).** On 2021–2025, walk-forward, regress `LINE_ERROR`
-   on `LU_PROJ_TOTAL_MINUS_LINE_BEFORE`.
-   - Slope ≈ 0 means the market already prices it. Report that and stop; don't
-     tune your way past it. The owner has had null results like this before;
-     see the memory note on team line-error history.
-2. If the slope is clearly positive: run a campaign under
-   `experiments/lineup_projection_2026_09/`:
-   - control vs treatment, both targets, multiple seeds. The two arms are the
-     same builder run with `lineup_features` off and on (§8.2), so the control
-     is the existing `2_6` file and only the treatment arm is generated.
-   - Report overall results and the subsets:
-     - games with ≥1 projected starter replaced;
-     - a key player's first game out (`INJ_KEY_PLAYER_FIRST_GAME_OUT_PTS_BEFORE == 1`);
-     - games with a Questionable starter.
-3. Report confidence intervals. The known trap: 2021 alone carries the base
-   model's win rate (58% vs 50.8% excluding it). Show results with and without
-   2021.
-4. **Meta-learner.** If the lineup family changes production base models,
-   `scripts/build_meta_learner_training_data.py` must be re-run.
-5. **Only then** flip the `lineup_features` default to `True` and bump the
-   schema version to `2_7` (§8.2).
+1. Prepare three arms for each dataset: **A = 2_5**, **B = 2_5 + eight starter
+   history columns**, **C = B + the 17 `LU_*` columns**. Compare B minus A for
+   starter history, C minus B for lineup projection, and C minus A for the full
+   family. Keep games, snapshots and retained column values identical.
+2. Choose the season floor and evaluation design before any model run. The
+   corrected cache reaches back to 2017-18, so the existing floor of 2021 is a
+   previous campaign setting, not a current cache limitation. Audit actual
+   injury-report, roster and style coverage, and verify that cleaning retains
+   the intended family rather than dropping season-gated columns. Apply the
+   same floor, temporal splits and row eligibility to all three arms.
+3. Extend `experiments/lineup_projection_2026_09` or add a companion campaign
+   using the existing training pipeline. Its current four YAMLs/runner compare
+   B versus C for closing only, for `LINE_ERROR` and `TOTAL_POINTS`; A and the
+   intermediate cells are still to be configured. Pin paths and checksums after
+   generation; current `expected_checksum` entries are null.
+4. Use the same training windows, cleaning, HPO budget, folds, market reference
+   and seeds across arms. The prepared closing campaign uses seed 16 plus
+   evaluation seeds 101, 202 and 303. Specify the intermediate training mode
+   (per-horizon or pooled) and evaluation horizons before running it, identically
+   across arms. No retuning of projection formulas between comparison cells.
+5. Report MAE/RMSE, directional accuracy, betting ROI and bet counts for CV and
+   the temporal evaluation partition, with seed dispersion and uncertainty.
+   Intermediate results must be broken down by horizon and use the line known
+   at that snapshot. Use existing snapshot scoring; repeated snapshots do not
+   constitute independent games, including when estimating uncertainty.
+6. Inspect feature retention/importance and absence versus no-absence subsets,
+   fresh absences and Questionable-player cases. Show results by season and
+   with/without 2021. Fix subgroup definitions from pre-game inputs before the
+   campaign, without target-game starters or minutes.
+7. Interpret the last 90 days of 2025-26 as an inspected temporal evaluation
+   partition: feature design has already seen that season. The 2019-20 /
+   2020-21 check is an independent retrospective check of the pre-registered
+   quantities, not a fresh holdout for repeated model selection. Prospective
+   evidence requires future games.
+8. Consider promotion only for a reproducible improvement beyond seed variation
+   whose CV and temporal-partition results agree. A null result is valid. If
+   promoted base models change, regenerate dependent meta-learner data as needed.
 
 ### 8.5 Phase G as built, and the 2025-26 diagnostic season (2026-09-23)
+
+**Historical checkpoint.** The five-column list, cache start, builder wiring
+and open-issue status below describe 2026-09-23. Current emitted columns and
+wiring are in §§8.1-8.2. The zero-minute injury-row handling has since been
+corrected in `availability._is_appearance`; the cache now uses solver version 2
+and starts in 2017-18. Historical numerical results remain labelled by the
+pipeline that produced them.
 
 **New data.** The 2025-26 rotation backfill finished: stints for 1,303 of
 1,315 games (99.1%; 7 `bad_rotation_interval`, 2 `overlapping_player_intervals`,
@@ -1673,77 +1766,101 @@ nominally and should not be cited. The bench-over-rest claim is split by
 season and stays a hypothesis. The campaign (§8.4) is the next test; this
 check only says it is worth running.
 
-## 9. Phase 2 (after G passes)
+## 9. Intermediate projection: implemented, verification pending
 
-- **Intermediate dataset:** recompute the scenarios per snapshot, with injury
-  status as of each snapshot. Ratings and the minutes model don't change within
-  a day, so only the §7 aggregation reruns.
-- Rotation template (§7.2).
-- Replacement-level prior for players with little history.
-- Player-level projections as their own features, e.g. the top-3 players'
-  projected points change versus their form.
+The 2_6 layer now calls `lineups/intermediate_features.snapshot_lineup_features`
+for the same 17-column family at each snapshot. The source implementation is
+complete; the owner deferred behavioural tests and full builds. The following
+contract must be verified before the closing/intermediate campaigns.
 
----
+- **Inputs and keys.** Retain `(GAME_ID, TIME_TO_MATCH_MIN)` throughout. Resolve
+  each cutoff as `TIPOFF_UTC - TIME_TO_MATCH_MIN`. The base training file drops
+  raw timestamps into its scoring sidecar, so a file-based layer must read the
+  paired timestamps or resolve authoritative tipoffs from the existing schedule
+  source. Validate missing/mismatched keys and timestamps; never substitute the
+  closing report for a missing snapshot cutoff.
+- **Availability.** `LayerContext.snapshot_reports` reuses the existing
+  `fetch.report_state_at_snapshots` query through `load_snapshot_report_states`.
+  The base injury pipeline shares `snapshot_report_states` for splitting bulk
+  results by horizon. Statuses and submitted filings are strictly before cutoff. Preserve
+  report coverage and G-League roster exclusions at each horizon.
+- **Shared work.** Load cleaned player history, solver-2 ratings and stints once
+  per build. Rosters, reference minutes and ratings are shared for the same
+  history date. A previous-evening snapshot uses earlier history and ratings;
+  the entire cutoff day is held back because publication times are unavailable,
+  and a cutoff before 05:00 ET also holds back the previous day, whose late
+  games may still be in progress.
+  Intermediate starter history obeys that earlier cutoff too. Reuse historical style traits, monthly
+  regression and neighbour indices; changing a cutoff changes the current
+  availability/rotation query, not its historical fit.
+- **Projection.** Re-run availability scenarios, proportional minute allocation,
+  expected points/possessions/margin and the same-roster full-availability
+  counterfactual at each horizon. Preserve the current scenario limits and
+  probability rules. Apply snapshot availability to all four style columns too;
+  retain their existing most-likely-state calculation for comparability.
+- **Calibration.** Estimate the level offset separately by phase and horizon
+  from 50-200 earlier distinct games with usable projections/results. Hold
+  same-day games back together. One game's other snapshots must not alter the
+  history of a given horizon. Store/cache offsets by phase and horizon.
+- **Output and integration.** Add only the declared columns through the existing
+  2_6 layer, align them to original rows, and preserve the 2_5 base. File upgrades
+  discover the parent's scoring sidecar or accept `--scoring-path`; the manifest
+  records that sidecar's path and checksum, the snapshot-time source and digests
+  of the report states read. The sidecar is copied beside the output; without
+  one the build fails unless `--allow-schedule-tipoffs` is given. UTC
+  timestamps remain context only.
 
-## 10. Order of work and hand-back points
+Acceptance: all §8.3 checks pass; covered snapshots react to news at the proper
+cutoff; uncovered snapshots remain NaN; the base and retained parent features
+are unchanged; the build does not refit the full historical style pool for each
+snapshot or reload the same input for each horizon.
 
-| Step | Deliverable | Stop and report to the owner if |
-|---|---|---|
-| A | client + archive + manifest; the session fix committed | — |
-| A′ | backfill running (overnight, resumable) | manifest ok < 99.5% |
-| B′ | build stints for every archived game, not just the 112 pilot | stint pass rate < 99% |
+### Deferred research
 
-**The backfill is not on the critical path to the decision (2026-09-22).** It
-was being treated as one, which is wrong. Three questions need very different
-amounts of data:
+Connecting the experimental minutes model, explicit pair/exact-five synergy,
+rotation templates (§7.2), replacement-level priors, player-level output features
+and attacker-versus-defender tracking are separate research changes. None is
+required to evaluate the current projection formulation. Record their evidence
+and test each addition separately if pursued.
 
-| Question | What it needs | Status |
-|---|---|---|
-| Write the feature code | Almost no data — a rating cache is enough | Unblocked now |
-| **Decide whether the family is worth anything** (gates C and G) | The 2021-2025 window this plan already specifies | **5,257 of 6,572 games (80%) built; only 2025-26 missing** |
-| Train production models with the family | Stints back to the training start | ~54% of training rows would be NaN |
+## 10. Remaining work and completion criteria (2026-10-05)
 
-Four complete consecutive seasons (2021-22 through 2024-25) are ample for an
-MAE comparison and for a single-regressor slope. Run the gates on what is
-built; do not wait for the backfill.
+- [x] Implement raw acquisition, validated stints, walk-forward ratings and the
+  closing projection modules.
+- [x] Correct the weighted-ridge intercept and require both teams' injury filings.
+- [x] Rebuild solver-2 ratings and run the pre-registered 2019-20 / 2020-21 check.
+- [x] Implement the frozen 2_5 base and additive 2_6 schema layer; support closing
+  prediction/refit by each slot's schema version.
+- [x] **Intermediate implementation:** integrate §9 into the existing 2_6 layer,
+  including snapshot reports, earlier-day history, shared style fits and
+  per-horizon/per-phase calibration. No commits made.
+- [ ] **Intermediate verification:** adapt existing schema expectations to the
+  expanded experimental 2_6 and run the behavioural, temporal, calibration and
+  parent-preservation checks in §8.3. Deferred at the owner's request.
+- [ ] **Datasets:** locate the intended existing 2_5 files (local, transferred or
+  existing storage), validate their schema/provenance/checksums, and build from
+  those exact parents. If no suitable base exists, produce and freeze it first.
+  Generate full treatment files and the two controls in §8.4 for closing and
+  intermediate. Retain intermediate scoring sidecars and version manifests;
+  pin campaign checksums. Verify actual coverage, NaN rates and feature retention.
+- [ ] **Campaign:** fix the season floor, horizons, training mode, seeds and
+  thresholds before running; configure the missing base/intermediate cells;
+  execute A/B/C for `LINE_ERROR` and `TOTAL_POINTS`; report per-horizon results
+  and uncertainty without treating repeated snapshots as independent games.
+- [ ] **Decision:** determine separately whether starter history and `LU_*`
+  improve either target/horizon sufficiently to warrant further testing or
+  promotion. Record null results without silently adding new research features.
+- [ ] **Daily operation, if warranted:** add automatic walk-forward rating
+  refresh and delivery of the required cache/stints to the serving environment;
+  verify fit dates and freshness (current rating lookup limit: 14 days).
+  Validate feature parity with training at the same cutoff. Complete the
+  separate intermediate live/refit paths before promoting intermediate slots.
+- [ ] **Promotion, if warranted:** publish model bundles through the existing
+  registry, update enabled slots to their actual schema and horizon, and refresh
+  dependent meta-learner artifacts as needed. The current enabled slots remain
+  2_5 until models have been evaluated and promoted.
 
-The third row matters less than it looks. Of the six production prefixes,
-`last_3_seasons` (two models) is **fully** covered by what is already built and
-`last_5_seasons` (two models) misses only 2020-21; only `full_dataset` carries
-the 2017-2020 hole, and XGBoost takes NaN natively, so the feature simply does
-not inform those older rows.
-
-Revised order, cheapest decision first:
-
-1. Gate C on 2021-2024. **Tune and gate on disjoint windows** — tune the lambdas
-   on 2022-23/2023-24 and gate on 2024-25 out of sample. The README's example
-   does both on 2021-2025, which flatters the result.
-2. If C passes: build D, E, F and `features.py`; run gate G on 2021-2024.
-3. **Only if G shows a clearly positive slope**, spend the 3,175 calls on
-   2019-20, 2020-21 and the rest of 2018-19 to fill in `full_dataset`.
-
-2025-26 (1,027 calls) is worth finishing regardless of the gates, because it is
-needed to serve predictions next season either way.
-
-**Warm-up caveat.** The plan assumed 2018-19 and 2019-20 as rating history
-before the evaluation window. Neither is available: 2019 and 2020 have no
-rotation at all, and 2018-19 has only 112 games from October, which a 180-day
-half-life decays to ~1.5% weight three years later. **2021-22 is therefore the
-warm-up season and the ratings start cold there.** Read any gate result that
-includes late 2021 with that in mind.
-| B | stint builder + validation + DB load | stint pass rate < 99% |
-| C | walk-forward player ratings | **go/no-go C** fails |
-| D0 | projected starting five + replacement identification (no minutes model) | — |
-| D1 | counterfactual absence impact + replacement synergy (§8.1 additions), tested on the fresh-absence subset | report the result, but **do not stop** — see below |
-| D, E | synergy; minutes model | **go/no-go E** fails (continue with the fallback, but report it) |
-| F | projection v1 **and §7.1b shared-minutes weighting** | — |
-
-**D0/D1 are an ordering, not a reduction (owner, 2026-09-22).** They are the
-cheapest falsifiable slice of the hypothesis and worth running first, but D, E
-and F are all in scope and a weak D1 does not cancel them. The agent proposed
-narrowing twice; the owner declined twice. Implement the plan.
-| G | features behind the `lineup_features` flag (§8.2), leakage tests, docs, regression test, campaign | **go/no-go G** slope ≈ 0 |
-| G′ | flip the flag's default and bump to schema 2_7 | only after G passes |
-
-Work in small commits per step, with tests. Run `pytest` (the whole suite, ~2.5
-min) and `ruff check` before each commit.
+The implementation update includes code and documentation, with syntax/import
+and static lint checks only. No behavioural tests, full dataset builds, training
+runs or production promotion have been performed for the intermediate integration.
+Those remain separate tasks and must be verified before operational use.

@@ -1,5 +1,10 @@
 # Lineup projection family: with and without (schema 2_6)
 
+**Status (2026-10-05): not run.** The four configurations below are the
+prepared closing comparison of starter history versus starter history plus
+`LU_*`. The updated plan (`docs/lineup_projection_plan.md`, §§8-10) adds a
+2_5 base arm and an intermediate campaign with the now-implemented snapshot projection. Those additional configurations and datasets are still pending.
+
 The go/no-go G campaign of `docs/lineup_projection_plan.md` (§8.4, §8.5). Four
 cells, two per totals strategy, and each pair differs **only** in its dataset file:
 
@@ -32,8 +37,10 @@ Deriving the control this way is exact, not an approximation: the 2_6 layer
 (`nba_ou.create_training_data.schema_layers.v2_6`) only appends columns to the
 2_5 file, and nothing else reads the `LU_*` columns. The control keeps the 2_6
 starter-history columns, so the pair differs in the lineup family alone; the
-2_5 file would not do as a control, because it also lacks starter history. Both
-checksums are pinned in the configs.
+2_5 file would not do as the control for the isolated `LU_*` effect, because it
+also lacks starter history. It is the additional reference arm for measuring
+starter history and the full family. The current YAMLs have
+`expected_checksum: null`; pin checksums after generating the final files.
 
 **Running on another machine.** `data/` is not in git. Copy both files to the
 same paths; the pinned checksums make a wrong or partial copy fail at
@@ -47,17 +54,17 @@ nohup bash experiments/runners/run_lineup_projection_2026_09.sh > /dev/null 2>&1
 
 ## Design choices
 
-- **`season_year_floor: 2021`.** The lineup ratings start in 2021-22. On an
-  earlier floor every `LU_*` column is 100% NaN in the early seasons and ~0%
-  after, `find_season_gated_columns` drops the whole family, and the treatment
-  becomes a silent copy of the control. The control uses the same floor, so
-  the pair still differs in the columns alone.
+- **`season_year_floor: 2021` in the prepared YAMLs.** This was chosen when
+  ratings started in 2021-22. The corrected cache now starts in 2017-18, so
+  audit actual injury-report, roster and style coverage and choose the floor
+  before any run. Check that `find_season_gated_columns` and other cleaning
+  retain the intended features; apply the same floor to every comparison arm.
 - **Temporal evaluation partition: the last 90 days.** The training framework
   calls this a `holdout`, and none of the lineup lambdas or windows was tuned
   there. Feature selection did inspect 2025-26, including candidate absence
   channels, so this partition is not an untouched test of the selected family.
-  The independent retrospective 2019-20/2020-21 check and future prospective
-  evaluation have not run.
+  The independent retrospective 2019-20/2020-21 check ran on 2026-09-27 (plan
+  §8.7). Prospective evaluation still requires future games.
 - **Seeds 16 + [101, 202, 303].** Past campaigns measured a 4.9-12.0 point ROI
   range from seed alone. Nothing smaller is a result.
 - Windows (4,500 / 4,000 training games), trials (150), thresholds and
@@ -92,5 +99,31 @@ hit rate is 55-58% on the largest values, against a 52.38% break-even. So:
   never splits on cannot be the cause of a difference), and win rate on the
   temporal partition's absence and no-absence games separately.
 
-Only if it passes: flip the `lineup_features` default, bump to schema 2_7,
-wire serving (plan §8.2, G′).
+## Remaining campaign preparation (2026-10-05)
+
+Compare three arms on identical rows and temporal splits:
+
+| Arm | Features | Difference measured |
+|---|---|---|
+| A | Original 2_5 base | Reference |
+| B | A + eight starter-history columns | B minus A: starter history |
+| C | B + the 17 `LU_*` columns | C minus B: lineup projection; C minus A: full family |
+
+The current four YAMLs and runner implement B/C for closing, with two targets
+(`LINE_ERROR`, `TOTAL_POINTS`). Add A and configure the intermediate comparison
+using the implemented snapshot-specific `LU_*`. The owner keeps this
+experimental version in 2_6 while it is being developed: both datasets now add
+eight starter-history and 17 lineup columns. Behavioural verification remains
+pending; the additional campaign cells have not been configured or run.
+
+Locate the exact 2_5 parent artifacts, generate all arms with manifests and
+checksums, and verify equality of retained columns and row keys. Decide the
+intermediate training mode and evaluation horizons before running; report
+results by horizon using that snapshot's market line and the existing snapshot
+scoring. Repeated snapshots of a game are not independent observations.
+
+The family is already wired through schema layers; promotion does not require
+flipping a builder flag or automatically bumping a schema. If the comparison
+supports operational use, complete daily rating refresh, verify serving parity,
+and promote the selected model slots through the existing registry. Intermediate
+live prediction/refit remains separate work. See plan §§8.2, 9 and 10.

@@ -37,6 +37,7 @@ from nba_ou.data_processing.lineups.availability import (
 )
 from nba_ou.data_processing.lineups.features import (
     DATA_ROOT,
+    OFFSET_MIN_GAMES,
     OFFSET_WINDOW_GAMES,
     game_nights,
     game_phase,
@@ -253,6 +254,7 @@ def main() -> None:
         "recent_games": args.recent_games,
         "roster_games": args.roster_games,
         "offset_window_games": OFFSET_WINDOW_GAMES,
+        "offset_min_games": OFFSET_MIN_GAMES,
         "mae_projection": float(
             (scored["TOTAL_POINTS"] - scored["proj_total"]).abs().mean()
         ),

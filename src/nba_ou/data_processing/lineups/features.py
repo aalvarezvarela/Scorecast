@@ -26,10 +26,12 @@ and is not emitted here.
   and every cache row was fitted on games strictly before its own date;
 - the level calibration uses outcomes of games on strictly earlier dates.
 
-**Coverage.** Ratings start in 2021-22, so earlier games get NaN in every
-column. That step makes the family season-gated for any training window that
-starts earlier, and ``find_season_gated_columns`` will drop it there; evaluate
-it on a 2021-22+ window.
+**Coverage.** In the 2026-10-03 closing build the family is populated for 66%
+of 2018-19 and 99-100% of every season from 2019-20 (both teams' reports and
+ratings are needed); earlier games get NaN in every column. That step makes the
+family season-gated for any training window that starts earlier, and
+``find_season_gated_columns`` will drop it there; evaluate it on a 2019-20+
+window.
 """
 
 from __future__ import annotations
@@ -95,6 +97,14 @@ LINEUP_FEATURE_COLUMNS = (
 #: reached back into them at every season start: October to mid-November came
 #: out under-projected by ~2.8 points (measured 2021-2025).
 OFFSET_WINDOW_GAMES = 200
+
+#: Fewest prior games of a phase the calibration may average; with fewer, the
+#: calibrated total is NaN rather than a noisy level. Game residuals have an SD
+#: of ~18 points, so 50 games bound the offset's standard error near 2.5
+#: points. Without it the value depended on where the parent file starts: an
+#: intermediate build from 2019-10 put the first 2020 playoff games up to 16.6
+#: points away from the closing build, which had earlier playoffs to read.
+OFFSET_MIN_GAMES = 50
 
 
 def game_phase(game_ids: pd.Series) -> pd.Series:
@@ -298,17 +308,28 @@ def walk_forward_offset(
     actual_totals: pd.Series,
     window: int = OFFSET_WINDOW_GAMES,
     phases: pd.Series | None = None,
+    cutoff_dates: pd.Series | None = None,
+    min_games: int | None = None,
 ) -> pd.Series:
     """The level calibration for each row, from strictly earlier dates only.
 
     Mean of ``actual - raw`` over the last ``window`` games with a known result
     on dates before the row's own; games sharing a date are held back together.
-    With ``phases`` (see :func:`game_phase`) each row reads only games of its
-    own phase. See ``game_projection.project_totals`` for why the offset exists.
+    Fewer than ``min_games`` (default :data:`OFFSET_MIN_GAMES`) such games give
+    NaN.
+    With ``phases`` each row reads only games of its own phase. Intermediate
+    ``cutoff_dates`` can precede the target game's date: calibration outcomes
+    must precede that cutoff date as well. Historical residuals remain dated
+    by their actual game date, not by the earlier prediction cutoff.
     """
     frame = pd.DataFrame(
         {
             "date": pd.to_datetime(game_dates).dt.normalize().to_numpy(),
+            "cutoff": pd.to_datetime(
+                game_dates if cutoff_dates is None else cutoff_dates
+            )
+            .dt.normalize()
+            .to_numpy(),
             "residual": (
                 pd.to_numeric(actual_totals, errors="coerce")
                 - pd.to_numeric(raw_totals, errors="coerce")
@@ -321,19 +342,25 @@ def walk_forward_offset(
         },
         index=game_dates.index,
     )
+    # Resolved at call time so a small synthetic world can lower it in a test.
+    min_games = OFFSET_MIN_GAMES if min_games is None else min_games
+    if not 1 <= min_games <= window:
+        raise ValueError("min_games must be between 1 and the window")
     result = pd.Series(np.nan, index=frame.index, dtype=float)
     for _, part in frame.groupby("phase", sort=False):
         known = part.dropna(subset=["residual"]).sort_values("date", kind="mergesort")
         known_dates = known["date"].to_numpy()
         known_residuals = known["residual"].to_numpy()
         offsets = {}
-        for date in part["date"].dropna().unique():
+        for date in part["cutoff"].dropna().unique():
             end = np.searchsorted(known_dates, np.datetime64(date), side="left")
             start = max(0, end - window)
             offsets[pd.Timestamp(date)] = (
-                known_residuals[start:end].mean() if end > start else np.nan
+                known_residuals[start:end].mean()
+                if end - start >= min_games
+                else np.nan
             )
-        result.loc[part.index] = part["date"].map(offsets).astype(float)
+        result.loc[part.index] = part["cutoff"].map(offsets).astype(float)
     return result
 
 

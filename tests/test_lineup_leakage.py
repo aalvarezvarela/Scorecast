@@ -16,6 +16,7 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 import pytest
+from nba_ou.data_processing.lineups import features
 from nba_ou.data_processing.lineups.features import (
     LINEUP_FEATURE_COLUMNS,
     RatingBook,
@@ -23,6 +24,13 @@ from nba_ou.data_processing.lineups.features import (
     attach_lineup_features,
 )
 from nba_ou.data_processing.lineups.style_matchup import STYLE_FEATURE_COLUMNS
+
+
+@pytest.fixture(autouse=True)
+def calibrate_from_few_games(monkeypatch):
+    """This world has a handful of games; production needs OFFSET_MIN_GAMES."""
+    monkeypatch.setattr(features, "OFFSET_MIN_GAMES", 1)
+
 
 #: The projection's columns. The three-point matchup columns come from stints,
 #: which this world does not have; their temporal contract is tested in

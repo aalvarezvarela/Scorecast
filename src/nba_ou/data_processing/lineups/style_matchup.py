@@ -273,25 +273,65 @@ def _rotation(players: list[PlayerNight], healthy: bool) -> dict[str, float]:
     return allocate_minutes(players, sitting)
 
 
+def _rotation_key(players: list[PlayerNight]) -> tuple:
+    """Everything :func:`_rotation` reads from a roster, in roster order."""
+    return tuple((p.player_id, p.base_minutes, p.p_out >= 0.5) for p in players)
+
+
+def _style_values(
+    model: _MonthlyModel,
+    traits: StyleTraits,
+    home: list[PlayerNight],
+    away: list[PlayerNight],
+) -> dict[str, float]:
+    """``STYLE_FEATURE_COLUMNS`` for one pair of rosters on the current date."""
+    vec = {
+        (team, healthy, side): traits.vector(_rotation(roster, healthy), side)
+        for team, roster in (("H", home), ("A", away))
+        for healthy in (False, True)
+        for side in ("o", "d")
+    }
+    rate, residuals, shift = {}, [], 0.0
+    for off, dfn in (("H", "A"), ("A", "H")):
+        joint = np.concatenate([vec[(off, False, "o")], vec[(dfn, False, "d")]])
+        healthy = np.concatenate([vec[(off, True, "o")], vec[(dfn, True, "d")]])
+        residual = model.neighbor_residual(joint)
+        rate[off] = model.additive(joint) + residual
+        residuals.append(residual)
+        shift += model.additive(joint) - model.additive(healthy)
+    return {
+        "LU_PROJ_FG3A_RATE_BEFORE_TEAM_HOME": rate["H"],
+        "LU_PROJ_FG3A_RATE_BEFORE_TEAM_AWAY": rate["A"],
+        "LU_FG3A_NEIGHBOR_RESIDUAL_BEFORE": float(np.mean(residuals)),
+        "LU_ABSENCE_SHIFT_FG3A_RATE_BEFORE": shift,
+    }
+
+
 def build_style_matchup_features(
     stints: pd.DataFrame,
     games: pd.DataFrame,
-    nights: dict[tuple[str, str], list[PlayerNight]],
+    nights: dict[tuple, list[PlayerNight]],
     *,
     neighbours: int = NEIGHBOURS,
     half_life_days: float = TRAIT_HALF_LIFE_DAYS,
     min_pool: int = MIN_POOL,
     max_gap_days: int = MAX_EVIDENCE_GAP_DAYS,
+    snapshot_column: str | None = None,
 ) -> pd.DataFrame:
-    """One row per game: ``GAME_ID`` and ``STYLE_FEATURE_COLUMNS``.
+    """One row per game (or snapshot) and ``STYLE_FEATURE_COLUMNS``.
 
     ``games`` has ``GAME_ID``, ``GAME_DATE``, ``HOME_TEAM_ID``,
     ``AWAY_TEAM_ID``; ``nights`` is ``availability.build_player_nights``
     output for them. Games before the pool reaches ``min_pool`` directions,
     or without a roster, or more than ``max_gap_days`` after the newest stint,
     are absent from the result.
+
+    With ``snapshot_column``, nights are keyed by (game, horizon, team) and
+    output includes the horizon. All horizons share the historical traits,
+    monthly model and neighbour index: only the rotation queries differ.
     """
-    empty = pd.DataFrame(columns=["GAME_ID", *STYLE_FEATURE_COLUMNS])
+    keys = ["GAME_ID"] + ([snapshot_column] if snapshot_column else [])
+    empty = pd.DataFrame(columns=[*keys, *STYLE_FEATURE_COLUMNS])
     if stints.empty or games.empty:
         return empty
     directions = stint_directions(stints)
@@ -327,38 +367,27 @@ def build_style_matchup_features(
             last_evidence is not None and (date - last_evidence).days <= max_gap_days
         )
         if model is not None and todays is not None and fresh:
+            # Within a date the values depend only on each roster and who is
+            # likely out, so snapshots whose news flipped nobody share them.
+            memo: dict[tuple, dict[str, float]] = {}
             for game in todays.itertuples(index=False):
-                home = nights.get((game.GAME_ID, game.HOME_TEAM_ID))
-                away = nights.get((game.GAME_ID, game.AWAY_TEAM_ID))
+                prefix = (
+                    (game.GAME_ID, int(getattr(game, snapshot_column)))
+                    if snapshot_column
+                    else (game.GAME_ID,)
+                )
+                home = nights.get((*prefix, game.HOME_TEAM_ID))
+                away = nights.get((*prefix, game.AWAY_TEAM_ID))
                 if not home or not away:
                     continue
-                vec = {
-                    (team, healthy, side): traits.vector(
-                        _rotation(roster, healthy), side
-                    )
-                    for team, roster in (("H", home), ("A", away))
-                    for healthy in (False, True)
-                    for side in ("o", "d")
-                }
-                rate, residuals, shift = {}, [], 0.0
-                for off, dfn in (("H", "A"), ("A", "H")):
-                    joint = np.concatenate(
-                        [vec[(off, False, "o")], vec[(dfn, False, "d")]]
-                    )
-                    healthy = np.concatenate(
-                        [vec[(off, True, "o")], vec[(dfn, True, "d")]]
-                    )
-                    residual = model.neighbor_residual(joint)
-                    rate[off] = model.additive(joint) + residual
-                    residuals.append(residual)
-                    shift += model.additive(joint) - model.additive(healthy)
+                key = (_rotation_key(home), _rotation_key(away))
+                if key not in memo:
+                    memo[key] = _style_values(model, traits, home, away)
                 rows.append(
                     {
                         "GAME_ID": game.GAME_ID,
-                        "LU_PROJ_FG3A_RATE_BEFORE_TEAM_HOME": rate["H"],
-                        "LU_PROJ_FG3A_RATE_BEFORE_TEAM_AWAY": rate["A"],
-                        "LU_FG3A_NEIGHBOR_RESIDUAL_BEFORE": float(np.mean(residuals)),
-                        "LU_ABSENCE_SHIFT_FG3A_RATE_BEFORE": shift,
+                        **({snapshot_column: prefix[1]} if snapshot_column else {}),
+                        **memo[key],
                     }
                 )
         # Only now does today's evidence enter the traits and the pool.

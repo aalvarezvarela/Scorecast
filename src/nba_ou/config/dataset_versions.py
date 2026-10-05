@@ -230,12 +230,22 @@ History
       starting fives, unique starters and repeat rate in the last five games,
       and the recent team-minutes share of the latest five. No target-game
       starters or minutes are used.
-    * Closing dataset only: the 17 ``LU_*_BEFORE`` lineup-projection columns
-      (``data_processing.lineups.features``), built from rotation stints, the
-      walk-forward player rating cache and the last injury report before tip.
+    * Both datasets: the 17 ``LU_*_BEFORE`` lineup-projection columns,
+      built from rotation stints, the walk-forward player rating cache and
+      availability strictly before the prediction cutoff. Closing reads the
+      last report before tip; intermediate reads each snapshot's report and
+      filing coverage (``data_processing.lineups.intermediate_features``).
       Games the projection cannot cover, or where either team had not filed a
-      report, are NaN. The intermediate dataset gets them in a later version,
-      once availability can be read as of each snapshot.
+      report, are NaN. Calibration uses 50-200 earlier games per phase (and,
+      intermediate, per horizon); with fewer the calibrated total is NaN. All
+      horizons share historical style traits and monthly neighbour fits.
+      Intermediate history excludes the cutoff's Eastern date, and the
+      previous date for a cutoff before 05:00 ET. UTC cutoffs come from the
+      base's scoring sidecar (copied beside each upgraded file); the live
+      line-history schedule is used only when explicitly allowed. Manifests
+      record the time source and digests of the injury-report states read.
+      The intermediate family was completed under the same experimental 2_6
+      label while that version was still being developed.
 """
 
 from __future__ import annotations

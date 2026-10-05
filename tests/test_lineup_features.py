@@ -5,6 +5,7 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 import pytest
+from nba_ou.data_processing.lineups import features
 from nba_ou.data_processing.lineups.features import (
     LINEUP_FEATURE_COLUMNS,
     RatingBook,
@@ -148,12 +149,39 @@ class TestRatingBook:
             RatingBook(bad)
 
 
+@pytest.fixture(autouse=True)
+def calibrate_from_few_games(monkeypatch):
+    """This world has a handful of games; production needs OFFSET_MIN_GAMES."""
+    monkeypatch.setattr(features, "OFFSET_MIN_GAMES", 1)
+
+
 class TestWalkForwardOffset:
+    def test_too_few_prior_games_give_no_calibration(self):
+        dates = pd.Series(pd.date_range("2025-01-01", periods=4))
+        raw = pd.Series([200.0] * 4)
+        actual = pd.Series([210.0, 220.0, 230.0, np.nan])
+        offset = walk_forward_offset(dates, raw, actual, min_games=2)
+        assert offset.iloc[:2].isna().all()
+        assert offset.iloc[2:].tolist() == pytest.approx([15.0, 20.0])
+
+    def test_the_default_minimum_is_read_at_call_time(self, monkeypatch):
+        dates = pd.Series(pd.date_range("2025-01-01", periods=3))
+        raw = pd.Series([200.0] * 3)
+        actual = pd.Series([210.0, 220.0, np.nan])
+        monkeypatch.setattr(features, "OFFSET_MIN_GAMES", 3)
+        assert walk_forward_offset(dates, raw, actual).isna().all()
+
+    def test_a_minimum_above_the_window_is_refused(self):
+        dates = pd.Series(pd.date_range("2025-01-01", periods=2))
+        totals = pd.Series([200.0, 200.0])
+        with pytest.raises(ValueError, match="min_games"):
+            walk_forward_offset(dates, totals, totals, window=1, min_games=2)
+
     def test_same_day_results_are_held_back(self):
         dates = pd.Series(pd.to_datetime(["2025-01-01", "2025-01-02", "2025-01-02"]))
         raw = pd.Series([200.0, 210.0, 210.0])
         actual = pd.Series([204.0, 230.0, 250.0])
-        offset = walk_forward_offset(dates, raw, actual)
+        offset = walk_forward_offset(dates, raw, actual, min_games=1)
         assert np.isnan(offset.iloc[0])
         # Both games of the 2nd read only the 1st: +4, not their own +20/+40.
         assert offset.iloc[1] == offset.iloc[2] == pytest.approx(4.0)
@@ -162,7 +190,7 @@ class TestWalkForwardOffset:
         dates = pd.Series(pd.date_range("2025-01-01", periods=4))
         raw = pd.Series([200.0, 200.0, 200.0, 200.0])
         actual = pd.Series([210.0, 220.0, np.nan, np.nan])
-        offset = walk_forward_offset(dates, raw, actual, window=1)
+        offset = walk_forward_offset(dates, raw, actual, window=1, min_games=1)
         # A scheduled game's missing result is skipped, not counted as zero.
         assert offset.iloc[3] == pytest.approx(20.0)
 
@@ -181,7 +209,9 @@ class TestPhaseAwareOffset:
         )
         raw = pd.Series([200.0, 200.0, 200.0, 200.0])
         actual = pd.Series([203.0, 190.0, np.nan, np.nan])
-        offset = walk_forward_offset(dates, raw, actual, phases=game_phase(ids))
+        offset = walk_forward_offset(
+            dates, raw, actual, phases=game_phase(ids), min_games=1
+        )
         # The October opener reads the regular season (+3), not the playoffs (-10).
         assert offset.iloc[2] == pytest.approx(3.0)
         assert offset.iloc[3] == pytest.approx(-10.0)

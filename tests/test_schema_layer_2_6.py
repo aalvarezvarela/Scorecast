@@ -10,7 +10,8 @@ from nba_ou.create_training_data.schema_layers.base import (
     LayerContext,
 )
 from nba_ou.create_training_data.schema_layers.registry import apply_layers
-from nba_ou.data_processing.lineups.features import LINEUP_FEATURE_COLUMNS
+from nba_ou.data_processing.injury_status.report_state import InjuryReportState
+from nba_ou.data_processing.lineups.features import LINEUP_FEATURE_COLUMNS, RatingBook
 from nba_ou.data_processing.players.starter_history import add_starter_history_features
 
 HOME, AWAY = 1610612737, 1610612738
@@ -111,7 +112,60 @@ def test_starter_columns_match_the_feature_function_per_side(
     assert out.loc[0, "STARTER_REPEAT_RATE_LAST_5_GAMES_BEFORE_TEAM_HOME"] == 0.5
 
 
-def test_intermediate_rows_share_their_games_values_and_get_no_lineup_columns(players):
+#: 19:30 EDT tip-offs of the fixture's last two games.
+TIPOFFS = {
+    "0022500003": pd.Timestamp("2025-10-25 23:30", tz="UTC"),
+    "0022500004": pd.Timestamp("2025-10-27 23:30", tz="UTC"),
+}
+
+
+@pytest.fixture
+def snapshot_ctx(players, monkeypatch):
+    """Sidecar times and report states seeded, so nothing reaches a database."""
+
+    def no_database(*args, **kwargs):
+        raise AssertionError("the layer must not query a database here")
+
+    from nba_ou.create_training_data.schema_layers import inputs as layer_inputs
+    from nba_ou.data_processing.injury_status import report_state
+
+    monkeypatch.setattr(layer_inputs, "_load_tipoffs", no_database)
+    monkeypatch.setattr(report_state, "load_snapshot_report_states", no_database)
+
+    def build(snapshots):
+        ctx = LayerContext(df_players=players)
+        ctx.snapshot_times = snapshots[["GAME_ID", "TIME_TO_MATCH_MIN"]].assign(
+            TIPOFF_UTC=snapshots["GAME_ID"].map(TIPOFFS)
+        )
+        # No team has filed: every LU_* value must be NaN, not league average.
+        ctx.snapshot_injury_states = {
+            int(h): InjuryReportState.empty()
+            for h in snapshots["TIME_TO_MATCH_MIN"].unique()
+        }
+        ctx.cache["lineup_rating_book"] = RatingBook(
+            pd.DataFrame(columns=RATING_COLUMNS)
+        )
+        ctx.cache["lineup_stints"] = pd.DataFrame()
+        return ctx
+
+    return build
+
+
+RATING_COLUMNS = [
+    "as_of_date",
+    "player_id",
+    "o_rating",
+    "d_rating",
+    "pace_rating",
+    "league_ortg",
+    "league_pace",
+    "fit_max_game_date",
+]
+
+
+def test_intermediate_rows_share_their_games_starters_and_add_the_lineup_family(
+    snapshot_ctx,
+):
     snapshots = pd.DataFrame(
         {
             "GAME_ID": ["0022500004"] * 3 + ["0022500003"] * 2,
@@ -125,12 +179,40 @@ def test_intermediate_rows_share_their_games_values_and_get_no_lineup_columns(pl
         snapshots,
         to_version="2_6",
         dataset_type=INTERMEDIATE_LINE,
-        ctx=LayerContext(df_players=players),
+        ctx=snapshot_ctx(snapshots),
     )
     added = [c for c in out.columns if c not in snapshots.columns]
-    assert added == list(v2_6.STARTER_COLUMNS)
-    per_game = out.groupby("GAME_ID")[added].nunique(dropna=False)
+    assert added == [*v2_6.STARTER_COLUMNS, *LINEUP_FEATURE_COLUMNS]
+    # Every cutoff here is after 05:00 ET on game day: one history date a game.
+    per_game = out.groupby("GAME_ID")[list(v2_6.STARTER_COLUMNS)].nunique(dropna=False)
     assert (per_game == 1).all().all()
+    assert out[list(LINEUP_FEATURE_COLUMNS)].isna().all().all()
+    assert out[list(LINEUP_FEATURE_COLUMNS)].dtypes.eq(np.float64).all()
+
+
+def test_a_snapshot_before_the_previous_day_settled_uses_older_starters(snapshot_ctx):
+    # 2550 min before game 4's tip is 01:00 EDT on the 26th: the 25th (game 3)
+    # may still be in progress, so starters are as of game 3, not game 4.
+    snapshots = pd.DataFrame(
+        {
+            "GAME_ID": ["0022500004", "0022500004", "0022500003"],
+            "TIME_TO_MATCH_MIN": [2550, 0, 0],
+            "GAME_DATE": ["2025-10-27", "2025-10-27", "2025-10-25"],
+            "TEAM_ID_TEAM_HOME": [HOME] * 3,
+            "TEAM_ID_TEAM_AWAY": [AWAY] * 3,
+        }
+    )
+    out = apply_layers(
+        snapshots,
+        to_version="2_6",
+        dataset_type=INTERMEDIATE_LINE,
+        ctx=snapshot_ctx(snapshots),
+    )
+    starters = out[list(v2_6.STARTER_COLUMNS)]
+    pd.testing.assert_series_equal(
+        starters.iloc[0], starters.iloc[2], check_names=False
+    )
+    assert not starters.iloc[0].equals(starters.iloc[1])
 
 
 def test_row_order_of_the_parent_does_not_change_values(players, closing, no_lineups):

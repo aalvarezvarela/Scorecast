@@ -66,9 +66,9 @@ def test_column_origin_names_the_introducing_version():
         ["GAME_ID", starter, "LU_PROJ_TOTAL_BEFORE"], sl.CLOSING_LINE
     )
     assert origin == {"GAME_ID": "2_5", starter: "2_6", "LU_PROJ_TOTAL_BEFORE": "2_6"}
-    # The lineup family is closing-only in 2_6.
+    # 2_6 adds the lineup family at every intermediate snapshot too.
     assert sl.column_origin(["LU_PROJ_TOTAL_BEFORE"], sl.INTERMEDIATE_LINE) == {
-        "LU_PROJ_TOTAL_BEFORE": "2_5"
+        "LU_PROJ_TOTAL_BEFORE": "2_6"
     }
 
 
