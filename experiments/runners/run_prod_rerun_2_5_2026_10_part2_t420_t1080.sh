@@ -1,39 +1,41 @@
 #!/usr/bin/env bash
-# Rerun of the intermediate line_error configurations promoted on 2026-09-27,
-# unchanged, on the rebuilt intermediate dataset; part2 t480 t1080.
-# See experiments/intermediate_prod_rerun_2_5_2026_10/README.md. The other part
-# is run_intermediate_prod_rerun_2_5_2026_10_part1_t30_t420.sh.
+# Rerun of every 2_5 configuration in the production registry, unchanged, on
+# the rebuilt datasets; part 2 of 2: intermediate line_error T-420..T-1080
+# (~27h). Part 1 is run_prod_rerun_2_5_2026_10_part1_closing_t30_t360.sh; run
+# both at once. See experiments/prod_rerun_2_5_2026_10/README.md.
 
 set -uo pipefail
 
 cd "$(dirname "$0")/../.." || exit 1
 
-CAMPAIGN="intermediate_prod_rerun_2_5_2026_10"
-PART="part2_t480_t1080"
+CAMPAIGN="prod_rerun_2_5_2026_10"
+PART="part2_t420_t1080"
 CONFIG_DIR="experiments/${CAMPAIGN}"
 LOG_DIR="artifacts/logs/${CAMPAIGN}_${PART}_$(date +%Y%m%d_%H%M%S)"
 mkdir -p "$LOG_DIR"
 LOG="$LOG_DIR/campaign.log"
 CONFIGS=(
-  "$CONFIG_DIR/line_error_t480.yaml"
-  "$CONFIG_DIR/line_error_t540.yaml"
-  "$CONFIG_DIR/line_error_t600.yaml"
-  "$CONFIG_DIR/line_error_t660.yaml"
-  "$CONFIG_DIR/line_error_t720.yaml"
-  "$CONFIG_DIR/line_error_t840.yaml"
-  "$CONFIG_DIR/line_error_t960.yaml"
-  "$CONFIG_DIR/line_error_t1080.yaml"
+  "$CONFIG_DIR/intermediate_line_error_t420.yaml"
+  "$CONFIG_DIR/intermediate_line_error_t480.yaml"
+  "$CONFIG_DIR/intermediate_line_error_t540.yaml"
+  "$CONFIG_DIR/intermediate_line_error_t600.yaml"
+  "$CONFIG_DIR/intermediate_line_error_t660.yaml"
+  "$CONFIG_DIR/intermediate_line_error_t720.yaml"
+  "$CONFIG_DIR/intermediate_line_error_t840.yaml"
+  "$CONFIG_DIR/intermediate_line_error_t960.yaml"
+  "$CONFIG_DIR/intermediate_line_error_t1080.yaml"
 )
 PY=(poetry run python -u)
 CLI=("${PY[@]}" -m training_pipeline.cli)
 log() { echo "$@" | tee -a "$LOG"; }
 
 log "$CAMPAIGN $PART started $(date)"
-log "Sequential CUDA runs; 150 trials each; train_games as promoted per horizon."
+log "Sequential CUDA runs; 150 trials each; train_games as promoted per slot."
 log "Logs: $LOG_DIR"
 
-# Unlocked: both parts read the Parquet dataset one horizon at a time (~2-3GB
-# each), so they can run concurrently. SKIP_EXISTING=1 resumes a part.
+# Unlocked: each run reads one Parquet dataset (one horizon of it for the
+# intermediate runs, ~2-3GB), so the two parts can run concurrently.
+# SKIP_EXISTING=1 resumes a part without rerunning finished slots.
 
 CUDA_CHECK="$("${PY[@]}" -c "
 import warnings

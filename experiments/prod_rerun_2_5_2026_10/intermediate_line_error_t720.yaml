@@ -1,7 +1,7 @@
 experiment_name: prodrerun25_t720_line_error
 prediction_strategy: line_error_regressor
-training_version: "2.17-schema25-intermediate-prod-rerun-20261003"
-comparison_group: intermediate_prod_rerun_2_5_2026_10
+training_version: "2.17-schema25-prod-rerun-20261003"
+comparison_group: prod_rerun_2_5_2026_10
 hypothesis: >
   The configuration promoted to 2_5/line_error/t0720/main, rerun unchanged
   on the rebuilt intermediate dataset (Parquet, identifier dtypes fixed -- the
@@ -15,8 +15,7 @@ random_state: 16
 data:
   csv_path: data/train_data/intermediate_line_data_2_5_20261003.parquet
   data_version: "20261003-intermediate-line-2.5-parquet-yahoo-compact-t720"
-  # Paste the checksum the builder prints (see README.md).
-  expected_checksum: null
+  expected_checksum: "sha256:7e41757f62bc49f4"
   dataset_type: intermediate_line
   snapshot_minutes: 720
   scoring_csv_path: data/train_data/intermediate_line_data_2_5_20261003_scoring.parquet

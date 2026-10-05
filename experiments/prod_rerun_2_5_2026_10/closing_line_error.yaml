@@ -1,21 +1,19 @@
-experiment_name: prodrerun25_total_points
-prediction_strategy: total_points_regressor
-line_col: ODDS_TOTAL_LINE_bet365
-training_version: "2.17-schema25-closing-prod-rerun-20261003"
-comparison_group: closing_prod_rerun_2_5_2026_10
+experiment_name: prodrerun25_closing_line_error
+prediction_strategy: line_error_regressor
+training_version: "2.17-schema25-prod-rerun-20261003"
+comparison_group: prod_rerun_2_5_2026_10
 hypothesis: >
   The configuration promoted to production, rerun unchanged on the rebuilt
   closing dataset (Parquet, identifier dtypes fixed, no imputation, compact
-  Yahoo block). Source: t_tg6200 (close6x100_25_total_points_tg6200_20260924_034258).
-tags: [prod_rerun, closing_line, total_points, schema_2_5, cv_6x100, early_stopping,
-       max_na_300, train_games_6200, corr_fix_20260923]
+  Yahoo block). Source: c_ref_rep (close6x100_25_ref_rep_20260923_190421).
+tags: [prod_rerun, closing_line, line_error, schema_2_5, cv_6x100, early_stopping,
+       max_na_300, train_games_6200, corr_odds_099, corr_fix_20260923]
 device: cuda
-random_state: 16
+random_state: 17
 data:
   csv_path: data/train_data/closing_line_data_2_5_20261003.parquet
   data_version: "20261003-closing-2.5-parquet-yahoo-compact"
-  # Paste the checksum the builder prints (see README.md).
-  expected_checksum: null
+  expected_checksum: "sha256:7fa3465bcde6d8ec"
   dataset_type: closing_line
   season_year_floor: 2019
   extend_history_dropping_season_gated_columns: false

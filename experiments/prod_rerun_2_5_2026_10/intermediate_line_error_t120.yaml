@@ -1,28 +1,27 @@
-experiment_name: prodrerun25_t30_line_error
+experiment_name: prodrerun25_t120_line_error
 prediction_strategy: line_error_regressor
-training_version: "2.17-schema25-intermediate-prod-rerun-20261003"
-comparison_group: intermediate_prod_rerun_2_5_2026_10
+training_version: "2.17-schema25-prod-rerun-20261003"
+comparison_group: prod_rerun_2_5_2026_10
 hypothesis: >
-  The configuration promoted to 2_5/line_error/t0030/main, rerun unchanged
+  The configuration promoted to 2_5/line_error/t0120/main, rerun unchanged
   on the rebuilt intermediate dataset (Parquet, identifier dtypes fixed -- the
   seven market-dynamics features the old loader dropped now reach the model --
-  no imputation, compact Yahoo block). Source: p_t30_line_error.yaml (promo25_t30_line_error_20260924_172136).
-tags: [prod_rerun, intermediate_line, single_snapshot, t30, line_error, schema_2_5, promotion_sweep,
+  no imputation, compact Yahoo block). Source: p_t120_line_error.yaml (promo25_t120_line_error_20260924_232730).
+tags: [prod_rerun, intermediate_line, single_snapshot, t120, line_error, schema_2_5, promotion_sweep,
        floor_2019, max_na_800, fixed_train_games, max_window, cv_6x100, corr_odds_098,
        no_time_decay]
 device: cuda
 random_state: 16
 data:
   csv_path: data/train_data/intermediate_line_data_2_5_20261003.parquet
-  data_version: "20261003-intermediate-line-2.5-parquet-yahoo-compact-t30"
-  # Paste the checksum the builder prints (see README.md).
-  expected_checksum: null
+  data_version: "20261003-intermediate-line-2.5-parquet-yahoo-compact-t120"
+  expected_checksum: "sha256:7e41757f62bc49f4"
   dataset_type: intermediate_line
-  snapshot_minutes: 30
+  snapshot_minutes: 120
   scoring_csv_path: data/train_data/intermediate_line_data_2_5_20261003_scoring.parquet
   # 2019 floor + max_na 800: the NaN budget is applied AFTER column cleaning, and
   # measured on 2026-09-24 it leaves the feature set untouched at every horizon
-  # (T-30: 2397 features at 300, 500 and 800 alike). The budget only decides
+  # (T-120: 2419 features at 300, 500 and 800 alike). The budget only decides
   # how many pre-2021 games survive: 300 drops every 2019-20 and 2020-21 game,
   # 800 keeps 1051 + 1085 of them here.
   season_year_floor: 2019

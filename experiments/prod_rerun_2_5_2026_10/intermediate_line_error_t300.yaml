@@ -1,30 +1,29 @@
-experiment_name: prodrerun25_t960_line_error
+experiment_name: prodrerun25_t300_line_error
 prediction_strategy: line_error_regressor
-training_version: "2.17-schema25-intermediate-prod-rerun-20261003"
-comparison_group: intermediate_prod_rerun_2_5_2026_10
+training_version: "2.17-schema25-prod-rerun-20261003"
+comparison_group: prod_rerun_2_5_2026_10
 hypothesis: >
-  The configuration promoted to 2_5/line_error/t0960/main, rerun unchanged
+  The configuration promoted to 2_5/line_error/t0300/main, rerun unchanged
   on the rebuilt intermediate dataset (Parquet, identifier dtypes fixed -- the
   seven market-dynamics features the old loader dropped now reach the model --
-  no imputation, compact Yahoo block). Source: p_t960_line_error.yaml (promo25_t960_line_error_20260925_103722).
-tags: [prod_rerun, intermediate_line, single_snapshot, t960, line_error, schema_2_5, promotion_sweep,
+  no imputation, compact Yahoo block). Source: p_t300_line_error.yaml (promo25_t300_line_error_20260925_082204).
+tags: [prod_rerun, intermediate_line, single_snapshot, t300, line_error, schema_2_5, promotion_sweep,
        floor_2019, max_na_800, fixed_train_games, max_window, cv_6x100, corr_odds_098,
        no_time_decay]
 device: cuda
 random_state: 16
 data:
   csv_path: data/train_data/intermediate_line_data_2_5_20261003.parquet
-  data_version: "20261003-intermediate-line-2.5-parquet-yahoo-compact-t960"
-  # Paste the checksum the builder prints (see README.md).
-  expected_checksum: null
+  data_version: "20261003-intermediate-line-2.5-parquet-yahoo-compact-t300"
+  expected_checksum: "sha256:7e41757f62bc49f4"
   dataset_type: intermediate_line
-  snapshot_minutes: 960
+  snapshot_minutes: 300
   scoring_csv_path: data/train_data/intermediate_line_data_2_5_20261003_scoring.parquet
   # 2019 floor + max_na 800: the NaN budget is applied AFTER column cleaning, and
   # measured on 2026-09-24 it leaves the feature set untouched at every horizon
-  # (T-960: 2454 features at 300, 500 and 800 alike). The budget only decides
+  # (T-300: 2446 features at 300, 500 and 800 alike). The budget only decides
   # how many pre-2021 games survive: 300 drops every 2019-20 and 2020-21 game,
-  # 800 keeps 621 + 614 of them here.
+  # 800 keeps 1026 + 1082 of them here.
   season_year_floor: 2019
   extend_history_dropping_season_gated_columns: false
   exclude_overtime_from_training: false
@@ -38,12 +37,12 @@ walk_forward:
   # 120 > test_games, so the six validation blocks do not overlap.
   step_games_between_tests: 120
   # FIXED at this horizon's maximum: the smallest of the six fold pools is
-  # 4870 games, rounded down to 4850. Fixed rather than tuned because a tuned
+  # 6257 games, rounded down to 6250. Fixed rather than tuned because a tuned
   # window is an argmax over noise (history_depth_line_error_2_5_2026_09), and
   # the longest window was best or tied-best in train_window_line_error_2_5_2026_09
   # (T-60, T-720) and in all three closing_*_6x100_2_5_2026_09 targets.
   # The production refit takes the same number of most recent games.
-  train_games: 4850
+  train_games: 6250
   # Explicitly null, NOT omitted: _base.yaml's [2500, 3000, 3500, 4000] would
   # otherwise be inherited and put the window back under Optuna.
   train_games_choices: null

@@ -1,7 +1,7 @@
-experiment_name: prodrerun25_spread_error
+experiment_name: prodrerun25_closing_spread_error
 prediction_strategy: spread_error_regressor
-training_version: "2.17-schema25-closing-prod-rerun-20261003"
-comparison_group: closing_prod_rerun_2_5_2026_10
+training_version: "2.17-schema25-prod-rerun-20261003"
+comparison_group: prod_rerun_2_5_2026_10
 hypothesis: >
   The configuration promoted to production, rerun unchanged on the rebuilt
   closing dataset (Parquet, identifier dtypes fixed, no imputation, compact
@@ -13,8 +13,7 @@ random_state: 16
 data:
   csv_path: data/train_data/closing_line_data_2_5_20261003.parquet
   data_version: "20261003-closing-2.5-parquet-yahoo-compact"
-  # Paste the checksum the builder prints (see README.md).
-  expected_checksum: null
+  expected_checksum: "sha256:7fa3465bcde6d8ec"
   dataset_type: closing_line
   season_year_floor: 2019
   extend_history_dropping_season_gated_columns: false
