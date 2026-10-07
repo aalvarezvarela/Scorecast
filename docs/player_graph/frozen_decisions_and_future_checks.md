@@ -39,6 +39,19 @@ tuned value.
 | `expected_guard` | Pair history across teams | All history counts equally, whatever team the defender was on | Simplest | See checks |
 | `expected_guard` | No history at all | `r_prior` and `r_hat` NaN; graphs use uniform shares | First days of 2017-18 only | — |
 | `expected_guard` | Stored output | Unnormalized `r_hat` plus evidence columns; `m_ij` computed in the graph | Keeps magnitude and confidence | — |
+| `expected_guard` | Stored parameters | One `season=YYYY.json` next to each `season=YYYY.parquet`; readers refuse to mix seasons built with different parameters | A partial rebuild or `--reshrink` cannot leave a global record that misdescribes other seasons | — |
+| Benchmark | Undefined predictions | An attacker whose rates are not all finite, or sum to 0, falls back to the constant rate (shares ∝ co-floor time), counted in a `fallback` column | Mirrors the graph's uniform fallback; otherwise an undefined prediction scored a perfect 0 (k = 0: 66.5% of attacker-games fall back, TVD 0.3175) | — |
+| `expected_guard` | Which pairs get a row | Every pair that shared a stint, from the stints (not `pair_game`) | An expected rate needs no tracking of the game itself, so 2016-17 and stint-only games are covered | — |
+| Stint graph | Representation | Fixed-shape arrays per batch (10 nodes, 20 teammate, 25 opponent, 50 guard edges), no graph objects | Every stint has the same shape; PyG vs plain tensors is still open (phase 6) | Phase 6 |
+| Stint graph | Guard weight | `m_ij = r_hat_ij / Σ r_hat_il` over the **five defenders on the floor** | Plan phase 2 | — |
+| Stint graph | Unknown rates | Uniform 0.2 for an attacker unless all five rates are known; flagged `guard_fallback` | Only when there is no history at all (2016-17, first days of 2017-18) | If partial gaps appear |
+| Stint graph | Guard-edge attributes | `r_hat`, `prior_weight`, `log1p(hist_cofloor_seconds_decayed)`, `has_pair_history`, `fallback` | So the encoder can tell long history from prior | See checks |
+| Stint graph | Unknown attributes | All attribute arrays finite: unknown `r_hat` stored as 0 with `guard_r_hat_known` False, `prior_weight` 1, exposure 0 | Arrays go into a network as they are; the mask keeps "unknown" distinct from "zero" | — |
+| Stint graph | Message passing | Templates hold each undirected pair once; `message_passing_edges()` lists teammate and opponent edges both ways, with `source_edge` to gather weights; guards stay defender → attacker, `guarded_by` optional | Undirected relations must pass messages both ways | Phase 6 (whether to use `guarded_by`) |
+| Stint graph | Teammate / opponent weight | Stint seconds (equal within a stint) | On a training graph every pair shares the whole stint | Familiarity attribute pending (node/pair tables) |
+| Stint graph | Labels | Per offensive side: pts/poss, TOV/poss, poss/48, 3PA/FGA, FTA/FGA, OREB/(OREB + opp DREB); weight = possessions; NaN when the denominator is 0 | Plan phase 6 | Phase 6 |
+| Stint graph | Non-positive possessions | Weight 0 and all labels NaN for a side with possessions ≤ 0 | The estimate goes negative in stints of a few seconds (an offensive rebound of the previous stint's miss is subtracted): 8-29 sides a season, down to -1.12; 5-6.5% of sides have exactly 0 | See checks |
+| Stint graph | Input contract | Reject any `pair_game` observed column or betting-named column (`TOTAL_LINE`, `SPREAD`, `MONEYLINE`, `ODDS`, `LINE_ERROR`) | Plan principle 7 and stage 1 rule | — |
 
 ## v0 benchmark (the reference phase 4B must beat)
 
@@ -76,6 +89,14 @@ target.
 - [ ] Decide which confidence variables become guard-edge attributes in the final encoder: `prior_weight`, effective co-floor exposure (`hist_cofloor_seconds_decayed` or its log), `has_pair_history`, `n_games`.
 - [ ] Revisit whether position-based priors remain useful once phase 4B predicts guarding directly from player profiles and team context.
 - [ ] Check whether a per-team prior (scheme / switching tendency) beats the league-wide position prior.
+
+### Stint graph
+
+- [ ] Add node features (as-of profile, soft position, games played) once the node table exists.
+- [ ] Add a teammate familiarity attribute (historical shared minutes) once the co-play table exists.
+- [ ] 2016-17 stints have uniform guard shares (no matchup history): start pretraining in 2017-18, or keep them (plan phase 6 decision).
+- [ ] Very short stints (median ~73 s) give noisy labels; check whether to drop stints under some possession count or rely on possession weights.
+- [ ] Possession estimate at stint boundaries: an offensive rebound credited to a stint whose miss was in the previous one. Check whether attributing it to the miss's stint fixes the negative estimates.
 
 ### Positions
 
