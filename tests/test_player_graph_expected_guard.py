@@ -9,7 +9,9 @@ from nba_ou.data_processing.player_graph.expected_guard import (
     ExpectedGuardParams,
     expected_guard,
     position_rates,
+    read_seasons,
     shrink,
+    write_season,
 )
 
 CUTOFF = pd.Timestamp("2024-01-01")
@@ -149,3 +151,23 @@ def test_no_history_at_all_leaves_the_rate_unknown():
     out = _guard([], _pairs(("g1", "g2")))
     assert np.isnan(out.iloc[0].r_hat) and np.isnan(out.iloc[0].r_prior)
     assert out.iloc[0].prior_weight == 1.0
+
+
+def test_empty_sources_leave_every_rate_unknown():
+    data = PointInTimeData.from_frames(pd.DataFrame(), pd.DataFrame(), pd.DataFrame())
+    out = expected_guard(data.as_of(CUTOFF), _pairs(("g1", "g2")))
+    assert np.isnan(out.iloc[0].r_hat) and not out.iloc[0].has_pair_history
+
+
+def test_metadata_is_stored_per_season_and_mixed_parameters_are_rejected(tmp_path):
+    table = pd.DataFrame({"r_hat": [0.1]})
+    v0 = {"provider": "expected_guard", "version": "v0", "k": 300.0}
+    write_season(tmp_path, 2018, table, v0)
+    write_season(tmp_path, 2019, table, v0)
+    frame, metadata = read_seasons(tmp_path, [2018, 2019])
+    assert len(frame) == 2 and metadata == v0
+    # A partial reshrink touches only its own season's record.
+    write_season(tmp_path, 2019, table, {**v0, "k": 600.0})
+    assert read_seasons(tmp_path, [2018])[1]["k"] == 300.0
+    with pytest.raises(ValueError, match="different parameters"):
+        read_seasons(tmp_path, [2018, 2019])

@@ -95,3 +95,11 @@ def test_starts_on_or_after_the_cutoff_are_not_counted():
     assert pos.loc["G0", "n_starts"] == 5
     early = positions_as_of(data.as_of(dates[0]))
     assert early.empty
+
+
+def test_empty_sources_give_no_positions_instead_of_an_error():
+    # from_frames() with nothing loaded: columnless matchups and box scores.
+    data = PointInTimeData.from_frames(pd.DataFrame(), pd.DataFrame(), pd.DataFrame())
+    pos = positions_as_of(data.as_of("2024-01-01"))
+    assert pos.empty
+    assert list(pos.columns[:3]) == list(PROBABILITY_COLUMNS)
