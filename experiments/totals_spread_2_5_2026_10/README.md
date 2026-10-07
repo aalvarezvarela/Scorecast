@@ -103,7 +103,53 @@ Then:
 - **CLV is not edge.** Positive CLV against the bet365 close does not mean the
   bets cover.
 
-Promotion is out of scope here. If a cell passes the gate, it goes through the
-same `training_pipeline.promote --to-s3` + `promote_build.py` path as the
-line_error slots (see `prod_rerun_2_5_2026_10/README.md`). Intermediate slots
-still cannot serve or refit daily until live snapshot features exist.
+## Results (read 2026-10-07, all 34 cells)
+
+Holdout seed-mean win rate on the 610 games line_error is scored on
+(break-even 52.4%):
+
+| | line_error (promoted 10-05) | total_points | spread_error |
+|---|---|---|---|
+| T-30 .. T-1080 | 54.4-57.7% | 49.4-54.6% | 48.5-54.1% |
+| closing | 54.6% | 51.7% (rerun 51.3%) | 49.9% (rerun 49.5%) |
+
+- No cell beats line_error at its own slot.
+- Every seed clears break-even only for total_points T-180 / T-360 / T-840.
+  That is about what luck gives across the ~2-3 independent tests that 16
+  correlated horizons amount to. At the closing line they score 54.3 / 50.1 /
+  51.2%.
+- Paired with line_error at the same slot, total_points picks the same side on
+  58-70% of games. Where the two disagree it wins 44.6-51.4%, below 50% at 4 of
+  the 5 slots checked. Its wins are line_error's wins.
+- When both agree, the win rate is 56-59%. "Bet only when both agree" is a
+  hypothesis found on this holdout, not yet tested on CV.
+- The closing cells repeat the `prodrerun25_closing_*` runs within noise.
+
+## Promotion (2026-10-07)
+
+**All 34 cells were promoted with no evidence of an edge.** That was a
+deliberate choice: they are promoted to produce predictions, so the null
+result can be measured live. They are not promoted as bet signals.
+
+- The closing cells replace the September total_points / spread_error builds.
+  Those builds expected the full Yahoo family and could not score current
+  prediction frames.
+- The 32 intermediate slots are new. All 48 intermediate slots (line_error
+  included) are now in `ENABLED_MODELS`. Until live snapshot features exist, the
+  daily jobs skip them: no refit, no prediction.
+
+```bash
+C=artifacts/experiments/totals_spread_2_5_2026_10
+for run in $(ls -d $C/ts25_*_2*); do
+  poetry run python -m training_pipeline.promote "$run" --to-s3 --replace-config --overwrite
+done
+slots=()
+for t in total_points spread_error; do
+  for h in 0 30 60 120 180 240 300 360 420 480 540 600 660 720 840 960 1080; do
+    slots+=(--slot "2_5/$t/t$(printf %04d "$h")/main")
+  done
+done
+poetry run python scripts/promote_build.py "${slots[@]}" --execute
+```
+
+The September closing builds stay in the registry as rollback targets.
