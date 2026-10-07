@@ -24,7 +24,10 @@ discards magnitude, so the evidence columns are kept next to it:
 
 from __future__ import annotations
 
+import json
+from collections.abc import Iterable
 from dataclasses import asdict, dataclass
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -72,7 +75,9 @@ def shrink(
     matchup = np.asarray(matchup_decayed, float)
     cofloor = np.asarray(cofloor_decayed, float)
     prior = np.asarray(r_prior, float)
-    return (matchup + k * prior) / (cofloor + k), k / (cofloor + k)
+    # k = 0 with no history is 0 / 0: NaN, i.e. unknown.
+    with np.errstate(divide="ignore", invalid="ignore"):
+        return (matchup + k * prior) / (cofloor + k), k / (cofloor + k)
 
 
 def _history(view: AsOfView, params: ExpectedGuardParams) -> pd.DataFrame:
@@ -188,3 +193,34 @@ def expected_guard(
 def provider_metadata(params: ExpectedGuardParams) -> dict:
     """What a stored table records about the provider that built it."""
     return {"provider": PROVIDER, "version": VERSION, **asdict(params)}
+
+
+def season_paths(root: Path, season: int) -> tuple[Path, Path]:
+    """``(table, metadata)`` paths of one stored season."""
+    return root / f"season={season}.parquet", root / f"season={season}.json"
+
+
+def write_season(root: Path, season: int, table: pd.DataFrame, metadata: dict) -> None:
+    """Store a season's table with the parameters that built it, side by side.
+
+    Metadata lives per file, so a partial rebuild or reshrink cannot leave a
+    global record that misdescribes the seasons it did not touch.
+    """
+    table_path, metadata_path = season_paths(root, season)
+    root.mkdir(parents=True, exist_ok=True)
+    table.to_parquet(table_path, index=False)
+    metadata_path.write_text(json.dumps(metadata, indent=2) + "\n")
+
+
+def read_seasons(root: Path, seasons: Iterable[int]) -> tuple[pd.DataFrame, dict]:
+    """Stored seasons and their common metadata; raises if their parameters differ."""
+    tables, metadata = [], {}
+    for season in seasons:
+        table_path, metadata_path = season_paths(root, season)
+        tables.append(pd.read_parquet(table_path))
+        metadata[season] = json.loads(metadata_path.read_text())
+    distinct = {json.dumps(value, sort_keys=True) for value in metadata.values()}
+    if len(distinct) > 1:
+        raise ValueError(f"Seasons were built with different parameters: {metadata}")
+    common = next(iter(metadata.values())) if metadata else {}
+    return pd.concat(tables, ignore_index=True), common

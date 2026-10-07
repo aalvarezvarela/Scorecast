@@ -13,6 +13,12 @@ co-floor time (known on a training graph, which is built from the stints)::
 The error is the total variation distance ``0.5 * sum_j |s_ij - e_ij|`` (0 =
 identical, 1 = disjoint), averaged over attacker-games weighted by the
 attacker's matchup seconds. Lower is better. Phase 4B must beat v0 here.
+
+An attacker whose rates do not define a distribution (any rate not finite, or
+all zero) falls back to the constant rate, ``e`` proportional to co-floor time,
+as a graph falls back to uniform shares. Without this an undefined prediction
+would score a perfect 0. :func:`estimator_errors` reports how many attacker-games
+fell back.
 """
 
 from __future__ import annotations
@@ -53,12 +59,27 @@ def benchmark_frame(pair_game: pd.DataFrame, expected: pd.DataFrame) -> pd.DataF
     return frame.reset_index(drop=True)
 
 
+def implied_shares(
+    frame: pd.DataFrame, rate: pd.Series | np.ndarray
+) -> tuple[pd.Series, pd.Series]:
+    """``(e, fallback)``: rate-implied shares per pair, and per attacker-game
+    whether the constant-rate fallback was used."""
+    groups = [frame["game_id"], frame["off_player_id"]]
+    cofloor = frame["cofloor_seconds"].to_numpy(float)
+    implied = pd.Series(np.asarray(rate, float) * cofloor, index=frame.index)
+    finite = np.isfinite(implied).groupby(groups).transform("all")
+    total = implied.where(finite, 0.0).groupby(groups).transform("sum")
+    usable = finite & (total > 0)
+    constant = pd.Series(cofloor, index=frame.index)
+    constant = constant / constant.groupby(groups).transform("sum")
+    shares = (implied / total).where(usable, constant)
+    return shares, (~usable).groupby(groups).first()
+
+
 def share_tvd(frame: pd.DataFrame, rate: pd.Series | np.ndarray) -> pd.Series:
     """TVD per attacker-game between observed and rate-implied shares."""
-    implied = np.asarray(rate, float) * frame["cofloor_seconds"].to_numpy(float)
-    implied = pd.Series(implied, index=frame.index)
+    implied, _ = implied_shares(frame, rate)
     groups = [frame["game_id"], frame["off_player_id"]]
-    implied = implied / implied.groupby(groups).transform("sum")
     return 0.5 * (frame["s"] - implied).abs().groupby(groups).sum()
 
 
@@ -73,7 +94,8 @@ def _weighted(values: pd.Series, weights: pd.Series) -> float:
 
 
 def estimator_errors(frame: pd.DataFrame, k_grid: Iterable[float]) -> pd.DataFrame:
-    """Weighted TVD per estimator, overall (``all``) and per season."""
+    """Weighted TVD per estimator, overall (``all``) and per season, plus the
+    share of attacker-games that fell back to the constant rate."""
     attackers = _attacker_table(frame)
     estimators = {
         "constant rate (co-floor only)": np.ones(len(frame)),
@@ -95,8 +117,12 @@ def estimator_errors(frame: pd.DataFrame, k_grid: Iterable[float]) -> pd.DataFra
     rows = {}
     for name, rate in estimators.items():
         error = share_tvd(frame, rate)
+        _, fallback = implied_shares(frame, rate)
         seasons = attackers["season_year"].loc[error.index]
-        row = {"all": _weighted(error, attackers["weight"])}
+        row = {
+            "fallback": float(fallback.loc[error.index].mean()),
+            "all": _weighted(error, attackers["weight"]),
+        }
         for season in sorted(seasons.unique()):
             mask = seasons.eq(season)
             row[int(season)] = _weighted(error[mask], attackers["weight"])
@@ -117,10 +143,7 @@ def prior_weight_buckets(frame: pd.DataFrame, k: float) -> pd.DataFrame:
         k,
     )
     groups = [frame["game_id"], frame["off_player_id"]]
-    implied = pd.Series(
-        rate * frame["cofloor_seconds"].to_numpy(float), index=frame.index
-    )
-    implied = implied / implied.groupby(groups).transform("sum")
+    implied, _ = implied_shares(frame, rate)
     attacker_weight = (implied * prior_weight).groupby(groups).sum()
     error = share_tvd(frame, rate)
     attackers = _attacker_table(frame)

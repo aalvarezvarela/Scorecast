@@ -45,6 +45,10 @@ _COUNTED_GAME_PREFIXES = ("002", "004", "005", "006")
 
 def start_counts(matchups: pd.DataFrame) -> pd.DataFrame:
     """Starts per player and position: ``player_id`` index, ``G``/``F``/``C``."""
+    if matchups.empty or "off_position" not in matchups.columns:
+        return pd.DataFrame(
+            0, index=pd.Index([], name="player_id"), columns=list(POSITIONS)
+        )
     starts = matchups.loc[
         matchups["off_position"].isin(POSITIONS),
         ["game_id", "off_player_id", "off_position"],
@@ -63,6 +67,11 @@ def profile_rates(
     player with ten minutes does not get extreme rates. Also returns
     ``minutes``.
     """
+    required = {"GAME_ID", "PLAYER_ID", "MIN", *PROFILE_STATS}
+    if box_scores.empty or not required.issubset(box_scores.columns):
+        return pd.DataFrame(
+            columns=[*PROFILE_STATS, "minutes"], index=pd.Index([], name="player_id")
+        )
     box = box_scores.loc[
         box_scores["GAME_ID"]
         .astype(str)
@@ -155,7 +164,9 @@ def positions_as_of(
     )
     out = pd.DataFrame(p, index=players, columns=list(PROBABILITY_COLUMNS))
     out["n_starts"] = n[:, 0].astype(int)
-    out["box_minutes"] = rates["minutes"].reindex(players).fillna(0.0)
+    out["box_minutes"] = pd.to_numeric(
+        rates["minutes"].reindex(players), errors="coerce"
+    ).fillna(0.0)
     out["has_profile"] = has_profile.to_numpy()
     out.index.name = "player_id"
     return out

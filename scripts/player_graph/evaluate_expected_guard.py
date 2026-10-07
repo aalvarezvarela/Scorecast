@@ -15,10 +15,10 @@ Reads ``pair_game`` and ``expected_guard/<version>``; no database.
 from __future__ import annotations
 
 import argparse
-import json
 from pathlib import Path
 
 import pandas as pd
+from nba_ou.data_processing.player_graph.expected_guard import read_seasons
 from nba_ou.data_processing.player_graph.guard_benchmark import (
     benchmark_frame,
     estimator_errors,
@@ -50,11 +50,7 @@ def main() -> None:
     args = parser.parse_args()
 
     root = args.local_root / "player_graph" / "expected_guard" / args.version
-    metadata = json.loads((root / "metadata.json").read_text())
-    expected = pd.concat(
-        [pd.read_parquet(root / f"season={season}.parquet") for season in args.seasons],
-        ignore_index=True,
-    )
+    expected, metadata = read_seasons(root, args.seasons)
     frame = benchmark_frame(
         read_pair_game(args.seasons, local_root=args.local_root), expected
     )
