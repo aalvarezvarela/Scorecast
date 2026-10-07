@@ -8,10 +8,17 @@ The goal is to give XGBoost features that capture who plays tonight, for how man
 
 **Scope.** 2_7 is a `SchemaLayer` on top of 2_6 (`src/nba_ou/create_training_data/schema_layers/`). Like every layer it **only adds columns**: it cannot change any 2_5 or 2_6 column, including the `LU_*` family. Improving an existing `LU_*` column in place would be a new base (`3_0`), so everything this plan produces lands as new `PI_*` columns (see the catalog). The stage 1 models are feature-pipeline components, like `minutes_model.py` today: they are trained and checkpointed to build the layer, not promoted through the XGBoost model registry. Both datasets get the layer: closing, and intermediate at each snapshot cutoff.
 
+**Feature base: 2_5, not 2_6.** Two things are kept apart here:
+
+- **The file.** Layers form a straight chain (`schema_layers/registry.py` requires 2_7's parent to be 2_6), so a 2_7 file always contains the 25 columns 2_6 added (8 `STARTER_*`, 17 `LU_*`).
+- **The model.** The 2_7 models start from the **2_5 features** plus the new `PI_*` columns. The 2_6 columns are dropped in the training config with `cleaning.exclude_cols_containing: ["LU_", "STARTER_"]`; on the 2_6 file these two patterns match exactly those 25 columns and nothing from 2_5. The 2_6 columns only come back in an explicit variant (phase 8).
+
+2_7 reuses 2_6's **code** (availability, scenarios, ratings) to build its graph, not 2_6's **columns**.
+
 **Two-stage architecture**
 
 - **Stage 1, player and game representation.** Learns from stints and from attacker-defender matchups how players, their combinations and their direct opponents produce efficiency, pace and style. It uses **no betting information** in v1: no total, spread or moneyline, neither as input nor as target. Market inputs (for example the spread for blowout risk in phase 4A) are tested only as explicit variants, so a stage 1 output never partly restates the market that XGBoost already sees.
-- **Stage 2, XGBoost.** Takes the stage 1 outputs for each game, plus the existing 2_6 features, and predicts the repo's targets: `TOTAL_POINTS`, `LINE_ERROR` and `SPREAD_ERROR`.
+- **Stage 2, XGBoost.** Takes the stage 1 outputs for each game, plus the existing 2_5 features, and predicts the repo's targets: `TOTAL_POINTS`, `LINE_ERROR` and `SPREAD_ERROR`.
 
 **Main path and controls.** The central artifact is a **player graph** (phase 2): players as nodes, teammate, opponent and **guards** edges, built from stints and matchup data. Every later phase either reads it or improves its weights. The main model path is a learned game embedding over that graph: a factorization machine (FM) first, then a GNN. The 2_6 RAPM projection is the control. Archetypes are an optional diagnostic.
 
@@ -88,7 +95,7 @@ The matchup graph is the only one built from direct player-against-player observ
 | Phase | What | Needs | Output |
 | --- | --- | --- | --- |
 | 0 | Point-in-time data: remaining gaps, matchup store completion | 2_6 availability, matchup store | Play probabilities by status and time; complete, daily-updated matchups |
-| 1 | Walk-forward harness and baseline | `experiments/` | Reference metrics for 2_5 and 2_6 |
+| 1 | Walk-forward harness and baseline | `experiments/` | Reference metrics for 2_5 |
 | 2 | **Player graph dataset** | 0 | Training graphs, matchup graphs, game-graph builder with v0 weights, oracle ceiling |
 | 3 | RAPM with a profile prior | 2 | Prior-adjusted ratings |
 | 4A | Minutes model | 2 | Better node weights (projected minutes, shared minutes) |
@@ -154,7 +161,8 @@ Before building anything, fix how things are measured. The harness exists (`trai
 **Deliverables**
 
 - Walk-forward from 2019-20 with the same splits for every experiment. 2019-20 is also where `LU_*` coverage starts (it needs injury reports for both teams).
-- References: the promoted 2_5 specs and the 2_6 arm. Run the pending 2_5 vs 2_6 campaign (lineup plan §10) first; 2_7 is compared against its outcome.
+- Reference: the promoted 2_5 specs, trained on the 2_5 features. Every 2_7 arm is 2_5 plus new columns, so the comparison is always against 2_5. The pending 2_5 vs 2_6 campaign (lineup plan §10) is useful context, not a prerequisite.
+- Every 2_7 training config sets `cleaning.exclude_cols_containing: ["LU_", "STARTER_"]` unless the arm is meant to include 2_6 columns (phase 8, variant L).
 - Metrics per target: MAE for `TOTAL_POINTS` and spread; directional accuracy at the repo's min-edge thresholds and simulated return against the line at T for `LINE_ERROR` (`scorers.py`).
 - The experiment log is the campaign config plus the run artifacts: which features, which stage 1 checkpoint, which graph weight versions, which T.
 - Stage 1 checkpoints stored by training date, so any past feature value can be reproduced.
@@ -384,7 +392,7 @@ A ridge model on the matchup edges: the attacker's points per partial possession
 
 ## Phase 5. Scalar game features into XGBoost (milestone 1)
 
-Reads scalar features off the game graph, using phase 3 ratings and the phase 4 weights. 2_6 is already the ratings-and-minutes part of this milestone (`LU_*`, reproduced as a readout in phase 2); 2_7 adds only what 2_6 lacks, starting with the first matchup features. Every feature here is an aggregation over the game graph: weighted sums over nodes, or over guard edges.
+Reads scalar features off the game graph, using phase 3 ratings and the phase 4 weights. Every feature here is an aggregation over the game graph: weighted sums over nodes, or over guard edges. The main arm is 2_5 plus these columns; the 2_6 `LU_*` columns are in the file but excluded from training (see the goal section).
 
 **Per-game calculation** (poss = projected possessions per team; spread in the repo's implied-home-margin convention)
 
@@ -402,7 +410,7 @@ HCA is already inside each side's ORtg (phase 3), so it is not added again.
 
 with `def^mu` the matchup-adjusted rating from phase 4B.
 
-**New features** (see the catalog): ORtg per side, share of tonight's minutes for low-sample players, the prior-adjusted absence counterfactual, matchup-weighted defense faced per side, defense faced by each side's top scorers, and the **matchup absence counterfactual**: how much defense each side loses when an absent defender's assignments pass to tonight's replacements (tonight's graph vs its full-health counterfactual). Projected pace, total, margin, scenario SD and the 2_6 absence impact already exist and are not duplicated.
+**New features** (see the catalog): ORtg per side, share of tonight's minutes for low-sample players, the prior-adjusted absence counterfactual, matchup-weighted defense faced per side, defense faced by each side's top scorers, and the **matchup absence counterfactual**: how much defense each side loses when an absent defender's assignments pass to tonight's replacements (tonight's graph vs its full-health counterfactual). The 2_6 level columns (projected pace, total, margin, scenario SD) are not recomputed: the level was null in 2_6, and the encoder heads (phase 8C) cover it. The absence idea is carried by the new `PI_*` counterfactuals; whether 2_6's own `LU_ABSENCE_IMPACT_*` still adds anything is phase 8's variant L.
 
 **Doubtful scenarios.** Features are computed on every scenario's game graph and passed as weighted mean and SD.
 
@@ -418,7 +426,7 @@ with `def^mu` the matchup-adjusted rating from phase 4B.
 - Performance by slice: games with absences, games with a key defender absent, early season, after trades.
 - Different prediction times T: where the edge against the line sits.
 
-**What to look at:** comparison with 2_6 per season and per slice; whether the matchup absence counterfactual adds slope beyond `LU_ABSENCE_IMPACT_DEF_PTS_BEFORE`; whether new features get sensible weight and sign in XGBoost.
+**What to look at:** comparison with 2_5 per season and per slice; whether the matchup absence counterfactual adds slope beyond `LU_ABSENCE_IMPACT_DEF_PTS_BEFORE` (an analysis on the file, not a training arm); whether new features get sensible weight and sign in XGBoost.
 
 ## Phase 6. Multitask pretraining (FM, then GNN with guard edges)
 
@@ -518,19 +526,23 @@ z_{\text{game}} = \text{POOL}_{\text{min-weighted}}(h_1, \dots, h_n) \in \mathbb
 
 ## Phase 8. Embeddings into XGBoost (ablations)
 
-Compares what each kind of stage 1 output adds on top of 2_6 plus the phase 5 columns. Every variant uses the same walk-forward, the same out-of-fold features and the seed protocol from phase 1. The winning variant's columns are what the 2_7 layer ships.
+Compares what each kind of stage 1 output adds on top of 2_5. Every variant uses the same walk-forward, the same out-of-fold features and the seed protocol from phase 1. The winning variant's columns are what the 2_7 layer ships.
 
-| Variant | Adds to 2_6 + phase 5 features | What it tells us |
+| Variant | Features | What it tells us |
 | --- | --- | --- |
-| A | Nothing | Reference |
-| B | FM scalars: chemistry, style interaction, matchup interaction, injured-replacement similarity | Whether named, stable interaction features help |
-| C | GNN head outputs (home points, away points, possessions) and their absence counterfactual | Whether the learned encoder beats the additive model |
+| R | 2_5 only | Reference: the promoted 2_5 specs |
+| A | R + phase 5 scalars | Whether the graph's scalar readouts help |
+| B | A + FM scalars: chemistry, style interaction, matchup interaction, injured-replacement similarity | Whether named, stable interaction features help |
+| C | A + GNN head outputs (home points, away points, possessions) and their absence counterfactual | Whether the learned encoder beats the additive model |
 | C0 | As C, from a GNN trained **without** guard edges or edge-level targets | Whether who-guards-whom is what makes the encoder useful |
 | D | C + small z (8-16 dims) | Whether there is signal beyond what the heads capture |
 | E | C + full z (16-32 dims) | Whether more dimensions help or just add noise |
 | F | Best of the above with FM embeddings instead of GNN | Whether the GNN's extra complexity pays off end to end |
+| L | Best of the above + the 9 `LU_ABSENCE_IMPACT_*` columns from 2_6 | Whether 2_6's one family with measured signal still adds anything on top of 2_7 |
 
-C vs C0 is the end-to-end test of the matchup graph; phase 5's matchup scalars vs A is the simple version of the same test.
+Variant L excludes `["STARTER_", "LU_PROJ_", "LU_FG3A_", "LU_ABSENCE_SHIFT_"]` instead of `["LU_", "STARTER_"]`; on the 2_6 file that keeps exactly the 9 `LU_ABSENCE_IMPACT_*` columns and drops nothing from 2_5.
+
+A vs R is the first end-to-end test of the graph. C vs C0 is the end-to-end test of the matchup graph; phase 5's matchup scalars inside A are the simple version of the same test.
 
 **Things to watch**
 
@@ -554,7 +566,9 @@ To be defined. Constraints already known:
 
 All features are computed per game and T from the game graph (roster, availability at T, projected minutes and expected guarding shares), as the weighted mean over doubtful scenarios unless stated. They are added in blocks, phase by phase. New columns use the `PI_` prefix and the `_BEFORE` convention that `select_training_columns()` filters on; per-side columns end in `_TEAM_HOME` / `_TEAM_AWAY`.
 
-**Already in 2_6 (not recomputed)**
+**In the file from 2_6, excluded from the main arm**
+
+These ideas from the earlier draft already exist as 2_6 columns. They are not recomputed as `PI_*` columns, and the main arm excludes them (goal section); only variant L re-admits the absence-impact family.
 
 | Idea in the earlier draft | 2_6 column |
 | --- | --- |
@@ -609,12 +623,14 @@ Before any of these is added, follow the "Adding Or Modifying Features" checklis
 - **Few rows for XGBoost.** ~8k games in the initial walk-forward. Mitigation: few features, added in blocks, with strong regularization for embedding variants.
 - **`GameRotation` dependency for new games.** PlayByPlayV2 is dead from 2024-25; the V3-only rebuild self-validates 89% of 2025-26 games, and the rest still depend on `GameRotation`, which can return corrupt rotations. Mitigation: improve the V3 rebuild.
 - **Schema-layer rule.** 2_7 can only add columns. Anything that would change an `LU_*` value needs a `3_0` base instead.
+- **2_6 columns slipping into the main arm.** The 2_5 start lives in each training config, not in the file, so a config that forgets the exclusion silently trains on 2_5 + 2_6 + 2_7. Mitigation: every 2_7 campaign config sets the exclusion, and the campaign README lists the feature count per arm so a stray 25 columns is visible.
 
 **Open questions**
 
 - [x] Which prediction times T to simulate? Closing plus the intermediate dataset's snapshots.
 - [x] Keep the FM as an intermediate step before the GNN? Yes.
 - [x] Box score DNP rows stored? Yes; `availability.py` classifies them.
+- [x] Feature base for the 2_7 models? 2_5. The file is built on 2_6 (layer chain), and the training configs exclude the 2_6 columns.
 - [x] Use who-guards-whom data? Yes, as a central part of the graph (phases 2, 4B, 6, 7).
 - [x] When is the graph built? Phase 2, before any model, with v0 weights that phase 4 upgrades.
 - [x] Can stage 1 use betting information? Not in v1; the spread-based blowout adjustment is tested as a variant.
