@@ -30,6 +30,13 @@ accessing configs, datasets, logs, or artifacts.
   horizon's longest feasible window (fixed), 6×100 folds. Part 2 then runs 5
   controls: seed replicates at T-240 / T-840 and recent-only windows (2021-22
   onward, same data) at T-240 / T-480 / T-960. Neither part locks.
+- `run_totals_spread_2_5_2026_10_part1_total_points.sh` and
+  `run_totals_spread_2_5_2026_10_part2_spread.sh`: total_points (part 1) and
+  spread_error (part 2) with the line_error recipe promoted on 2026-10-05, one
+  cell per slot: closing (max_na 800, ODDS_ 0.98, window 6,275) then T-30 ..
+  T-1080 in interleaved order. Each intermediate cell copies its
+  `prod_rerun_2_5_2026_10` line_error config and changes only the target.
+  ~45-55h per part. Neither part locks, so both run at once.
 - `run_train_window_line_error_2_5_2026_09_part1_t60.sh` and
   `run_train_window_line_error_2_5_2026_09_part2_t720.sh`: does older data help?
   Six cells per horizon on ONE identical dataset (2019 floor, max_na 800 in
