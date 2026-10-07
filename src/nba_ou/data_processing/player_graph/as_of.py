@@ -35,6 +35,7 @@ import pandas as pd
 CLOSING = "closing"
 
 STINT_DATE = "game_date"
+PAIR_GAME_DATE = "game_date"
 MATCHUP_DATE = "game_date"
 BOX_SCORE_DATE = "GAME_DATE"
 
@@ -152,6 +153,10 @@ class AsOfView:
         """Player box-score rows of games dated in ``[since, cutoff)``."""
         return self._slice(self.data.box_scores, BOX_SCORE_DATE, since)
 
+    def pair_game(self, since: Any | None = None) -> pd.DataFrame:
+        """Observed ``pair_game`` rows of games dated in ``[since, cutoff)``."""
+        return self._slice(self.data.pair_game, PAIR_GAME_DATE, since)
+
 
 @dataclass(frozen=True)
 class PointInTimeData:
@@ -165,6 +170,9 @@ class PointInTimeData:
     matchups: pd.DataFrame
     box_scores: pd.DataFrame
     injuries: Mapping[str | int, Any] = field(default_factory=dict)
+    pair_game: pd.DataFrame = field(
+        default_factory=lambda: pd.DataFrame(columns=["game_id", PAIR_GAME_DATE])
+    )
 
     @classmethod
     def from_frames(
@@ -174,6 +182,7 @@ class PointInTimeData:
         box_scores: pd.DataFrame,
         injuries: Mapping[str | int, Any] | None = None,
         game_dates: pd.DataFrame | None = None,
+        pair_game: pd.DataFrame | None = None,
     ) -> PointInTimeData:
         """Normalize ids and dates and sort.
 
@@ -192,7 +201,12 @@ class PointInTimeData:
                 sources.append((game_dates, "GAME_ID", "GAME_DATE"))
             matchups = _attach_matchup_dates(matchups, game_date_index(*sources))
         matchups = _sorted_by_date(matchups, MATCHUP_DATE, "game_id")
-        return cls(stints, matchups, box_scores, dict(injuries or {}))
+        pairs = _sorted_by_date(
+            pair_game if pair_game is not None else pd.DataFrame(),
+            PAIR_GAME_DATE,
+            "game_id",
+        )
+        return cls(stints, matchups, box_scores, dict(injuries or {}), pairs)
 
     @classmethod
     def load(
@@ -203,7 +217,7 @@ class PointInTimeData:
         injuries: Mapping[str | int, Any] | None = None,
         closing_injuries: bool = False,
     ) -> PointInTimeData:
-        """Read the local stint and matchup stores and the box scores from the DB.
+        """Read the local stint, matchup and ``pair_game`` stores and the DB.
 
         ``season_years`` are start years (2019 = 2019-20). Box scores also cover
         the season before the first, as player context, like the 2_6 layer.
@@ -217,6 +231,8 @@ class PointInTimeData:
         from nba_ou.data_processing.lineups.stint_store import read_stints
         from nba_ou.fetch_data.nba_lineups.matchups import MatchupStore
         from nba_ou.postgre_db import load_games_from_db
+
+        from .pair_game import read_pair_game
 
         seasons = sorted(set(season_years))
         stints = read_stints(seasons, local_root=local_root)
@@ -243,7 +259,8 @@ class PointInTimeData:
             )
 
             states[CLOSING] = load_injury_report_state()
-        return cls.from_frames(stints, matchups, box_scores, states, games)
+        pairs = read_pair_game(seasons, local_root=local_root)
+        return cls.from_frames(stints, matchups, box_scores, states, games, pairs)
 
     def as_of(self, date: Any) -> AsOfView:
         """Game data dated strictly before ``date`` (time of day is ignored)."""
