@@ -24,6 +24,9 @@ tuned value.
 | Data | First season | **2016-17** (`as_of.FIRST_SEASON`); `PointInTimeData.load` refuses earlier seasons | Stints exist from 2012-13 (audited 2026-10-08, same standard), but before 2016-17 there is no matchup tracking at all and adding them means infrastructure work before the encoder has shown any signal; 2016-25 is enough volume to test the approach first | Phase 6 (see checks: older seasons) |
 | Data | Player box scores | DB from 2018-19 on; **2016-17 and 2017-18 from the season CSVs** (`data/season_games_data/nba_players_YYYY_YY.csv`, the files the DB was loaded from). Whole seasons only: a season the DB holds is never mixed with CSV rows; every row carries `BOX_SOURCE` (`db` / `csv`) | The DB deletes box scores before 2018-19 (`delete_old_data.py`), the CSVs do not. On 2018-19, which both hold, the CSV equals the DB row for row (35,845 rows; minutes, every stat, `USG_PCT`, `START_POSITION`). The only difference is the CSV's turnover column name, `TO` | — |
 | Data | Box scores for game-graph rosters | **DB rows only** (`PointInTimeData.box_scores_2_6`), as 2_6 reads them; positions, node profiles and usage read all rows | v0 must reproduce 2_6 exactly; with CSV rows, a player who missed 2018-19 would get 2017-18 recent minutes. Re-verified after the change (see the integration check) | Phase 4A (the minutes provider may use the full history) |
+| Data | 2016-17 stint points | **Store rebuilt 2026-10-08** (`build_lineup_stints.py --season 2016 --force`; old store in `data/lineup_stints_backup/season=2016_pre_rebuild_20261008`) | It had been built from an archive version with placeholder "0" scores, rebuilt later without rebuilding the stints: 6,211 stints with negative points and 6,919 impossible ones in 1,034 of 1,304 games (-131 … +262), yet every game's total reconciled. After: same 39,421 stints, boundaries, lineups, FGA / FG3A / FTA / OREB / DREB / TOV and possessions (100%); points changed in 26,144 stints, totals identical, no stint below 0 | — |
+| Data | Stint point validation | `validate_game_stints` also rejects `points_anomaly`: a stint below -10 points, more than 10 points above `3·FGA + FTA`, or more than 3 negative stints in a game (`POINT_ANOMALY_LIMITS`); `scripts/lineups/audit_stint_points.py` reports the stored games | Opposite errors cancel in the game total. Small negative stints (1-2 in ~0.1% of games, down to -7) pass. Audit 2012-25 after the change: 0 games outside the limits. The 2 stored games that were outside (built before the check) were rebuilt from the current PBP: same values, and **not** feed corrections but stale scores on non-scoring events (`0021800927`: period-start events carrying 17-30 after a 26-37 quarter; `0022101075`: an instant-replay "support ruling" carrying 20-21 at 73-62), so the validator now rejects both and the store excludes them (`read_stints` reads status `ok` only). Stored 2_7 tables built before (pair_game, expected_guard, node profiles, oracle) still include them; negligible, refreshed on the next full rebuild | See checks |
+| Data | 2_6 ratings | **Not rebuilt**: 2_6 stays frozen and reproducible from its cache | Its cache was fitted on the corrupted 2016-17 points, so its offense / defense ratings of 2017-18 and 2018-19 inherit the corruption; with the 180-day half-life the 2016-17 weight is ≈ 0.03 by 2019-20, where 2_6 is evaluated. Pace is unaffected (possessions do not use the score) | If 2_6 is ever rebuilt |
 | Data | Preseason and All-Star rows | Excluded from position profiles | Do not describe a role | — |
 | `pair_game` | Guarding rate denominator | Our stints' co-floor seconds | NBA `pct_total_time_both_on` uses ≈ 0.39 × co-floor time (SD 0.056, 2023-24) and is rounded to 3 decimals | — |
 | `pair_game` | Matchup rows with no shared stint | Kept, `cofloor_seconds` 0, rate NaN | 3-151 rows a season (< 0.06%) | — |
@@ -87,7 +90,8 @@ tuned value.
 | Game graph | Prediction times | Closing and the 17 intermediate horizons (T-0 … T-1080) | — | — |
 | Snapshots | History date | As 2_6: the earlier of the game date and the cutoff's Eastern date, a cutoff before 05:00 ET counting as the previous day (`snapshot_history_dates`); rosters, ratings, guard and overlap history and positions are all read as of it; only availability is read at the UTC cutoff | Box scores and stints have dates, not publication times. At T-960 / T-1080 most snapshots read the previous day | — |
 | Snapshots | Rates per date | Expected lifts and guarding rates computed once per history date for every horizon's rosters | They depend only on the date and the rosters; ~17× less work | — |
-| Phase 3 | Zero-prior control | **Shared `lambda_offdef` = 10,000, `lambda_pace` = 10,000** (half-life 180 d, stints from 2016-17, 2_6's solver unchanged). Phase 3's profile prior must beat this, not only 2_6 | Chosen on **2018-19 only** by weighted squared error on the next stints, over a log grid 100 … 10⁶ plus infinity (2_6's grid was 10 … 1,000). Both optima are interior. 2_6 itself keeps 1,000 / 30,000 | After the main evaluation |
+| Phase 3 | Zero-prior control | **Shared `lambda_offdef` = 3,000, `lambda_pace` = 10,000** (half-life 180 d, stints from 2016-17 on the rebuilt store, 2_6's solver unchanged). Phase 3's profile prior must beat this, not only 2_6 | Chosen on **2018-19 only** by weighted squared error on the next stints, over a log grid 100 … 10⁶ plus infinity (2_6's grid was 10 … 1,000); both optima interior. A first run on the corrupted 2016-17 store had picked 10,000 / 10,000. 2_6 itself keeps 1,000 / 30,000 | After the main evaluation |
+| Phase 3 | What the profile prior must show | **Incremental value over a well-regularized RAPM** (the 3,000 / 10,000 control), not the repair of a failure: on clean data thin players do not degrade the zero-prior projection. Where it can add: profile information for thin players and debutants (who are below average on offense), and the level of pace for lineups with thin players | Step 1 and 2a on the rebuilt store; the earlier "RAPM fails with thin samples" came from the corrupted 2016-17 points | — |
 | Smoke-test GNN | Library | **PyTorch only for the phase 2 smoke test**: optional Poetry group `graph` (`torch 2.9.1`, the version the lock already resolved through `timeseries`; `poetry install --with graph`), no PyTorch Geometric | Stint graphs always have 10 nodes and fixed edge templates, so dense tensors suffice; dependency and code stay minimal while only the plumbing is tested | **PyG decision deferred until the phase 6 architecture is defined** (game graphs: variable node counts, scenarios, edge types and attributes, batching) |
 | Smoke-test GNN | Scope | Plumbing only: tables → tensors → message passing → node embeddings → pooling → prediction head → loss / backprop → checkpoint save / reload. Not the phase 6 architecture, no claim about signal | Plan phase 2 | Phase 6 |
 | Smoke-test GNN | Data | 2018-19 only (train 2018-10-16 → 2019-01-31, held out → 2019-03-31); the script refuses dates from 2019-07-01 | Evaluation hygiene: 2019-20 on is the 2_7 evaluation | — |
@@ -256,124 +260,106 @@ Stint-level labels are very noisy, so a ratio just under 1 is all a tiny model
 on three months can show; 3PA/FGA is the one label the node profiles clearly
 inform. The pace label has a problem of its own (see the stint graph checks).
 
-## Phase 3, step 1: where 2_6's RAPM fails for lack of sample (2018-19)
+## Phase 3, step 1: how 2_6's RAPM does with thin samples (2018-19)
 
-`python scripts/player_graph/rapm_exposure_diagnostic.py` (module
-`player_graph/rating_diagnostics.py`). Diagnostic only: the stored 2_6 ratings
-(solver v2, lambda_offdef 1,000, lambda_pace 30,000, half-life 180 d, stints from
-2016-17) scored on every 2018-19 stint as 2_6 projects it, against each player's
-**as-of exposure** (2_6's own `poss_weight`, decayed offensive possessions,
-reproduced to 1e-10; never the scored stint). Data share of a rating:
-`s = e / (e + lambda)`. Reference: 2_6's ridge with lambda → ∞ (no player
-information; the intercept is the decayed historical mean). `mse_gain` = drop in
-squared error the ratings achieve; SE clustered by game. 76,496 offensive
-stint-sides, 39,791 stints for pace; scoring reproduces
-`score_stint_predictions` exactly (MAE 47.1629 and 14.3636).
+`python scripts/player_graph/rapm_exposure_diagnostic.py --ratings …` (module
+`player_graph/rating_diagnostics.py`). Diagnostic only: ratings scored on every
+2018-19 stint as 2_6 projects them, against each player's **as-of exposure**
+(2_6's own `poss_weight`, decayed offensive possessions, reproduced to 1e-10;
+never the scored stint). Data share of a rating: `s = e / (e + lambda)`.
+Reference: the same ridge with lambda → ∞ (no player information; the intercept
+is the decayed historical mean). `mse_gain` = drop in squared error the ratings
+achieve; SE clustered by game. 76,434 offensive stint-sides, 39,759 stints for
+pace (2018-19 without the game now rejected as `points_anomaly`).
 
-| Efficiency, by the least-exposed of the ten (possession deciles) | Share | MSE gain ± SE | Rel. |
-| --- | --- | --- | --- |
-| q1 [0, 127] | 10% | -72.9 ± 16.3 | -1.9% |
-| q2 [127, 299] | 10% | -57.6 ± 16.8 | -1.5% |
-| q3-q6 [299, 1,063] | 40% | -42 to -62 each | -1.1 to -1.6% |
-| q7-q9 [1,063, 2,071] | 30% | -6.0 to +3.7 (all within 1 SE) | ≈ 0 |
-| q10 [2,072, 4,011] | 10% | +16.2 ± 10.0 | +0.5% |
-| **All** | 100% | **-33.1 ± 4.9** | **-0.90%** |
+**Correction (2026-10-08).** The first run scored 2_6's stored cache, whose
+ratings were fitted on the corrupted 2016-17 stints (see the Data rows): the
+ratings then *lost* to no information (-33 ± 5, -0.9%), worst whenever one
+player had less than ~1,000 possessions. That measured the corruption, not the
+sample size. The numbers below refit 2_6's penalties (1,000 / 30,000) on the
+rebuilt store, into a separate file
+(`data/player_graph/rating_diagnostics/clean_2_6_lambdas.parquet`); 2_6's own
+cache is untouched.
 
-| Efficiency, players of the ten with exposure ≤ 1,000 (data share ≤ 1/2) | 0 | 1 | 2 | 3 | 4+ |
+| Efficiency, by the least-exposed of the ten (possession deciles) | Share | MSE gain ± SE |
+| --- | --- | --- |
+| q1-q2 [0, 299] | 20% | +19.1 ± 7.0, +14.8 ± 8.1 |
+| q3-q5 [299, 856] | 30% | +12.2, +25.5, +23.9 (SE ≈ 8) |
+| q6 [856, 1,063] | 10% | +0.3 ± 8.2 |
+| q7-q10 [1,063, 4,011] | 40% | +26.3, +28.1, +24.9, +21.3 (SE ≈ 8) |
+| **All** | 100% | **+19.7 ± 2.5 (+0.54%)** |
+
+| Efficiency, players of the ten with exposure ≤ 1,000 | 0 | 1 | 2 | 3 | 4+ |
 | --- | --- | --- | --- | --- | --- |
 | Share of possessions | 43% | 28% | 14% | 7.5% | 6.7% |
-| MSE gain ± SE | -2.8 ± 6.1 | -41.5 ± 8.6 | -82.7 ± 14.8 | -45.4 ± 16.8 | -72.3 ± 18.4 |
+| MSE gain ± SE | +23.0 ± 3.7 | +20.4 ± 4.7 | +4.2 ± 6.9 | +34.8 ± 8.7 | +11.3 ± 9.3 |
 
 Reading (development season only; nothing here looked at 2019-25):
 
-- **Efficiency ratings do not beat "no player information" on 2018-19 stints**:
-  -0.90% MSE overall (MAE 47.16 vs 46.92). They are neutral when all ten
-  players have more than ~1,000 decayed possessions, and harmful as soon as
-  **one** has less (data share below 1/2). The damage starts at one thin player;
-  it is not confined to unrated players (1.2% of possessions).
-- **Offense vs defense**: a thin offensive five costs more (-94, -75, -61 for
-  exposure ≤ 100, 100-300, 300-1k) than a thin defensive five (-43, -63, -59).
-  For established players (3k-5k) offensive ratings help (+42.7 ± 13.8) while
-  defensive ratings add nothing (-5.0 ± 11.9).
-- **Variance, not level**: after the ratings the bias is flat across buckets
-  (+0.4 to +1.2 pts/100, overall +0.87). Thin offensive fives do score ~3
-  pts/100 less than established ones (bias of the reference ≈ 0 vs +3.5), and
-  the ratings already capture that on average; what hurts is the noise of the
-  thin players' ratings.
-- **Pace ratings help everywhere** (+2.0% overall, +1.7% to +2.6% per bucket),
-  but lineups with thin players play faster than predicted: bias +3.3 ± 1.4
-  (unrated), +2.2 ± 0.4 (≤ 100), +0.85 (100-300) vs +0.5 established. That is a
-  level error a profile prior can fix.
-- 2_6's lambda_offdef = 1,000 was chosen on 2021-25 with the old solver (MAE,
-  where it beat larger values); on 2018-19 the ratings lose to lambda → ∞. The
-  2019-25 behaviour is not looked at here.
-
-Consequences for phase 3 (to decide before steps 2-3):
-
-- Low-sample definition: data share ≤ 1/2 (exposure ≤ 1,000 at lambda 1,000)
-  is where the sign flips; compare phase 3 overall, on stints with ≥ 1 such
-  player (57% of possessions), with ≥ 1 player ≤ 300 (20%), and by the count.
-- **Control**: any prior must beat 2_6 **re-tuned on 2018-19 with a wider
-  lambda grid** (more shrinkage toward zero), not only 2_6 as stored; otherwise
-  a gain could be shrinkage strength alone.
-- For efficiency the prior has to earn its gain by reducing variance (a better
-  target to shrink toward); for pace also by fixing the level of thin players.
+- On clean data 2_6's ratings beat no information overall (+0.54%) and the
+  gain is roughly **flat across exposure**: thin players do not make the
+  projection worse than the intercept. Thin offensive fives score ~3-5
+  pts/100 less than established ones (bias of the reference -1 to -2.4 vs
+  +2.2 / +3.1), and the ratings capture that on average (bias after the
+  ratings +0.56 overall, flat).
+- **Pace** does not depend on the score and is unchanged: ratings help
+  everywhere (+2.0%), but lineups with thin players play faster than predicted
+  (bias +3.3 ± 1.4 unrated, +2.2 ± 0.4 at ≤ 100, +0.85 at 100-300, vs +0.5
+  established), a level error a profile prior can fix.
+- Low-sample slices kept for phase 3: ≥ 1 player ≤ 1,000 (57% of possessions),
+  ≥ 1 player ≤ 300 (20%), the count, and overall; offense, defense and pace
+  reported separately.
 
 ## Phase 3, step 2a: zero-prior control (penalties retuned on 2018-19)
 
-`python scripts/player_graph/rapm_lambda_sweep.py` (module
-`player_graph/rapm_sweep.py`): 2_6's walk-forward ridge accumulated once and
-solved for every penalty on each 2018-19 date, scored on the next stints
-exactly as in step 1. It reproduces the stored 2_6 predictions (max |diff|
-3.5e-6 efficiency, 5.6e-7 pace) and, at infinity, the decayed mean.
+`python scripts/player_graph/rapm_lambda_sweep.py --ratings data/player_graph/rating_diagnostics/clean_2_6_lambdas.parquet`
+(module `player_graph/rapm_sweep.py`): 2_6's walk-forward ridge accumulated
+once and solved for every penalty on each 2018-19 date, scored on the next
+stints exactly as in step 1. It reproduces the clean refit at 2_6's penalties
+(max |diff| 3e-14) and, at infinity, the decayed mean. 2018-19 without the
+game rejected as `points_anomaly`. Rerun on the rebuilt
+2016-17 store; the first run (corrupted history) had picked 10,000, the
+corruption asking for more shrinkage.
 
-Drop in squared error from lambda → ∞ (no player information), SE clustered
-by game:
+Drop in squared error from lambda → ∞, SE clustered by game:
 
-| Shared `lambda_offdef` | 100 | 300 | 1,000 (2_6) | 3,000 | **10,000** | 30,000 | 100,000 | 10⁶ |
+| Shared `lambda_offdef` | 100 | 300 | 1,000 (2_6) | **3,000** | 10,000 | 30,000 | 100,000 | 10⁶ |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| Efficiency, all | -235.6 | -130.4 | -33.1 ± 4.9 | +8.2 | **+14.7 ± 1.4** | +9.3 | +3.8 | +0.4 |
-| ≥ 1 player ≤ 1,000 | -336.0 | -188.4 | -56.1 | -0.0 | **+11.3 ± 1.8** | +7.5 | +3.1 | +0.4 |
-| MAE (∞: 46.92) | 48.55 | 47.85 | 47.16 | 46.85 | **46.79** | 46.85 | 46.89 | 46.92 |
+| Efficiency, all | -0.6 | +10.9 | +19.7 ± 2.5 | **+20.8 ± 1.8** (+0.57%) | +15.7 | +9.0 | +3.7 | +0.4 |
+| ≥ 1 player ≤ 1,000 | -12.0 | +5.1 | +17.2 | **+19.1 ± 2.3** | +14.1 | +7.9 | +3.1 | +0.4 |
+| MAE (∞: 46.96) | 46.94 | 46.84 | 46.77 | **46.76** | 46.82 | 46.89 | 46.93 | 46.96 |
 
 | `lambda_pace` | 1,000 | 3,000 | **10,000** | 30,000 (2_6) | 100,000 | 10⁶ |
 | --- | --- | --- | --- | --- | --- | --- |
-| Pace, all | +12.7 | +13.8 | **+14.4 ± 0.9** (+2.13%) | +13.6 | +11.1 | +3.9 |
+| Pace, all | +12.7 | +13.9 | **+14.4 ± 0.9** (+2.13%) | +13.6 | +11.1 | +3.9 |
 | MAE (∞: 14.65) | 14.46 | 14.42 | 14.38 | **14.36** | 14.39 | 14.55 |
 
-Best against 2_6 and against no information, per slice (paired):
+Best against 2_6's penalties and against no information, per slice (paired):
 
-| Slice | Share | Efficiency 10,000 vs 2_6 1,000 | vs ∞ | Pace 10,000 vs 2_6 30,000 | vs ∞ |
+| Slice | Share | Efficiency 3,000 vs 1,000 | vs ∞ | Pace 10,000 vs 30,000 | vs ∞ |
 | --- | --- | --- | --- | --- | --- |
-| All | 100% | +47.8 ± 3.9 | +14.7 ± 1.4 | +0.78 ± 0.20 | +14.4 ± 0.9 |
-| ≥ 1 player ≤ 1,000 | 57% | +67.4 ± 5.7 | +11.3 ± 1.8 | +0.95 ± 0.31 | +14.3 ± 1.2 |
-| ≥ 1 player ≤ 300 | 20% | +73.6 ± 9.6 | +8.7 ± 2.9 | +1.54 ± 0.60 | +15.6 ± 2.2 |
-| 0 players ≤ 1,000 | 43% | +22.0 ± 4.5 | +19.2 ± 2.1 | +0.56 ± 0.24 | +14.5 ± 1.3 |
-| 1 / 2 / 3 players | 28 / 14 / 7.5% | +55 / +91 / +60 | +14.0 / +8.1 / +14.5 | | |
-| 4+ players ≤ 1,000 | 6.7% | +75.9 ± 15.2 | +3.5 ± 4.0 | +2.66 ± 1.23 | +15.8 ± 3.8 |
+| All | 100% | +1.14 ± 0.82 | +20.8 ± 1.8 | +0.79 ± 0.20 | +14.4 ± 0.9 |
+| ≥ 1 player ≤ 1,000 | 57% | +1.92 ± 1.17 | +19.1 ± 2.3 | +0.95 ± 0.31 | +14.3 ± 1.2 |
+| ≥ 1 player ≤ 300 | 20% | +0.39 ± 1.97 | +17.4 ± 3.7 | +1.54 ± 0.60 | +15.6 ± 2.2 |
+| 0 players ≤ 1,000 | 43% | +0.11 ± 1.09 | +23.1 ± 2.8 | +0.57 ± 0.24 | +14.5 ± 1.3 |
+| 1 / 2 / 3 players | 28 / 14 / 7.5% | +1.0 / +7.0 / -4.2 | +21.4 / +11.3 / +30.7 | | |
+| 4+ players ≤ 1,000 | 6.7% | +1.82 ± 3.93 | +13.1 ± 5.8 | +2.66 ± 1.23 | +15.8 ± 3.8 |
 
 Secondary, separate offense / defense penalties (10 × 10 grid, infinity drops
-the block): the best pair is (10,000, 10,000), the shared value; offense only
-(defense dropped) +8.6, defense only +5.6, both +14.7. Defense adds
-**+6.2 ± 0.9** on top of offense (+5.0 ± 1.1 with a thin player on the floor).
+the block): the best pair is (3,000, 3,000), the shared value; offense only
++11.8, defense only +7.2, both +20.8: defense adds **+9.0 ± 1.2** on top of
+offense.
 
 Reading:
 
-- Step 1's "ratings lose to no information" was **under-shrinkage**: at 10,000
-  the efficiency ratings beat lambda → ∞ in every slice, and the retuned
-  baseline beats 2_6's ratings by +48 overall, +67-74 with thin players.
-- The gain from retuning is almost all **efficiency** (2_6's lambda_offdef was
-  10× too small for 2018-19); pace was nearly right (+0.8). Against no
-  information, offense and defense both carry signal (+8.6 and +6.2 marginal),
-  and pace ratings remove 2.1% of their target's squared error vs 0.4% for
-  efficiency.
-- Room left for the profile prior: the gain over no information shrinks with
-  thin players (+19.2 with none, +8.7 with one ≤ 300, +3.5 ± 4.0 with four or
-  more), and the step 1 pace bias of thin lineups is a level error shrinkage
-  cannot fix.
-- Pace: squared error prefers 10,000, MAE prefers 30,000 (2_6's value, chosen
-  by MAE); the difference is small. The pre-declared criterion (squared error)
-  is kept.
+- The efficiency optimum is flat between 1,000 and 3,000 (+1.14 ± 0.82); the
+  pre-declared criterion picks 3,000. 2_6's lambda_offdef was about right once
+  the history is clean.
+- Against no information, offense and defense both carry signal (+11.8 and
+  +9.0 marginal); pace ratings remove 2.1% of their target's squared error vs
+  0.57% for efficiency.
+- Pace: squared error prefers 10,000, MAE 30,000 (2_6's, chosen by MAE); the
+  difference is small and the pre-declared criterion is kept.
 
 ## Future checks
 
@@ -420,7 +406,6 @@ Reading:
 
 - [ ] Decide before the solver (step 3): the prior **replaces** 2_6's ridge toward 0, `(X'X + lambda I) beta = X'y + lambda beta0`, or a base penalty toward 0 is kept and one toward `beta0` added, `(X'X + (lambda_zero + lambda_prior) I) beta = X'y + lambda_prior beta0`.
 - [ ] Prior `f(profile, position) -> rating` (step 2): train on as-of (profile, rating) pairs available before each date, **weighted by the rating's reliability** (exposure / data share) or restricted to player-dates with enough history, so it learns what players of a profile are like rather than the noise of thin ratings. Rookies: earlier rookies at the same position.
-- [ ] Re-tune lambda_offdef / lambda_pace on 2018-19 only, with a grid wide enough not to end at an edge, as the control for the prior.
 
 ### Smoke-test GNN → phase 6
 
@@ -442,6 +427,7 @@ Reading:
 
 ### Data
 
+- [ ] **Transient score glitches in V3.** Most score decreases are not corrections: 26 games 2012-25 have a negative stint, and in nearly all of them the score drops on a non-scoring or misordered event and recovers at the next score (instant-replay rulings, period starts, technical free throws, made shots logged out of order). The builder keeps them as signed deltas, moving 1-3 points between stints; the 24 games within the limits stay in the store. Fix: ignore a decrease that the next scoring event reverses (keep only persistent ones, e.g. a rescinded basket), then rebuild the affected games.
 - [ ] Burn-in of 2016-17: `load` reads the CSVs only for requested seasons, so profiles and positions in the first weeks of 2016-17 are priors although 2015-16 box scores exist. Loading 2015-16 as box-score context only (no stints) is a possible improvement; test it in phase 6 if starting 2016-17 with little history hurts pretraining.
 - [ ] Check whether the matchup store can cover Play-In (`005`) and NBA Cup final (`006`) games.
 - [ ] Measure matchup revisions: morning-after fetch vs later refetch for a sample of games.
@@ -459,4 +445,5 @@ Audited 2026-10-08 (raw PBP V3 and GameRotation archive, rotations rebuilt from 
 ## Done
 
 - **k for v0** (2026-10-07): swept on 2018-19 only; 300 frozen (see table above).
+- **2016-17 stint store rebuilt** (2026-10-08): placeholder-score corruption removed; stint point validation and audit added; phase 3 steps 1 and 2a rerun on clean data (zero-prior control re-frozen at 3,000 / 10,000).
 - **Box-score backfill for 2016-17 and 2017-18** (2026-10-08): `as_of` falls back to the season CSVs for whole seasons the DB lacks; positions, node profiles and `expected_guard` rebuilt; game-graph rosters keep the DB rows only, and 2_6 is still reproduced exactly. k re-swept on 2018-19 only: 300 stays (see the frozen table and the benchmark).

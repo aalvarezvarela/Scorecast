@@ -170,8 +170,9 @@ def main() -> None:
 
     out = args.local_root / "player_graph" / "rating_diagnostics"
     out.mkdir(parents=True, exist_ok=True)
-    efficiency.to_parquet(out / f"ratings_2_6_efficiency_season={args.season}.parquet")
-    pace.to_parquet(out / f"ratings_2_6_pace_season={args.season}.parquet")
+    stem = args.ratings.stem
+    efficiency.to_parquet(out / f"{stem}_efficiency_season={args.season}.parquet")
+    pace.to_parquet(out / f"{stem}_pace_season={args.season}.parquet")
     print(f"\nrows written to {out}")
 
 
