@@ -157,6 +157,10 @@ class AsOfView:
         """Observed ``pair_game`` rows of games dated in ``[since, cutoff)``."""
         return self._slice(self.data.pair_game, PAIR_GAME_DATE, since)
 
+    def overlap_game(self, since: Any | None = None) -> pd.DataFrame:
+        """Per-game shared floor time of player pairs, ``[since, cutoff)``."""
+        return self._slice(self.data.overlap_game, PAIR_GAME_DATE, since)
+
 
 @dataclass(frozen=True)
 class PointInTimeData:
@@ -173,6 +177,9 @@ class PointInTimeData:
     pair_game: pd.DataFrame = field(
         default_factory=lambda: pd.DataFrame(columns=["game_id", PAIR_GAME_DATE])
     )
+    overlap_game: pd.DataFrame = field(
+        default_factory=lambda: pd.DataFrame(columns=["game_id", PAIR_GAME_DATE])
+    )
 
     @classmethod
     def from_frames(
@@ -183,6 +190,7 @@ class PointInTimeData:
         injuries: Mapping[str | int, Any] | None = None,
         game_dates: pd.DataFrame | None = None,
         pair_game: pd.DataFrame | None = None,
+        overlap_game: pd.DataFrame | None = None,
     ) -> PointInTimeData:
         """Normalize ids and dates and sort.
 
@@ -206,7 +214,12 @@ class PointInTimeData:
             PAIR_GAME_DATE,
             "game_id",
         )
-        return cls(stints, matchups, box_scores, dict(injuries or {}), pairs)
+        overlaps = _sorted_by_date(
+            overlap_game if overlap_game is not None else pd.DataFrame(),
+            PAIR_GAME_DATE,
+            "game_id",
+        )
+        return cls(stints, matchups, box_scores, dict(injuries or {}), pairs, overlaps)
 
     @classmethod
     def load(
@@ -232,6 +245,7 @@ class PointInTimeData:
         from nba_ou.fetch_data.nba_lineups.matchups import MatchupStore
         from nba_ou.postgre_db import load_games_from_db
 
+        from .overlap import build_overlap_game
         from .pair_game import read_pair_game
 
         seasons = sorted(set(season_years))
@@ -260,7 +274,17 @@ class PointInTimeData:
 
             states[CLOSING] = load_injury_report_state()
         pairs = read_pair_game(seasons, local_root=local_root)
-        return cls.from_frames(stints, matchups, box_scores, states, games, pairs)
+        overlaps = pd.concat(
+            [
+                build_overlap_game(stints.loc[stints["season_year"].eq(season)])
+                for season in (seasons if not stints.empty else [])
+            ]
+            or [pd.DataFrame()],
+            ignore_index=True,
+        )
+        return cls.from_frames(
+            stints, matchups, box_scores, states, games, pairs, overlaps
+        )
 
     def as_of(self, date: Any) -> AsOfView:
         """Game data dated strictly before ``date`` (time of day is ignored)."""
