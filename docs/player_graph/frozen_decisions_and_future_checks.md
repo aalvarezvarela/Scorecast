@@ -791,6 +791,55 @@ hedge given the ranking uncertainty**; concentrating more requires better
 ranking, not a calibration. Decision (by the rules fixed in advance): `tau = 1`,
 v1. C is frozen.
 
+## Phase 4A, step 3: participation A (v1 logistic), 2018-19
+
+`python scripts/player_graph/participation_diagnostic.py` (module
+`player_graph/participation.py`). `q = P(enters the rotation | medically
+available in this scenario)`; injury uncertainty stays in the scenario weights
+and `p_out` is never applied again inside a scenario. Labels: where the team
+filed a report (`availability_source = injury_report`, from 2018-12-17) only
+players not listed or with `p_out ≤ 0.1` are rows (questionable, doubtful and
+out are left out; a rotation player the report calls available who sits is a
+0); elsewhere (`heuristic`, weak labels) the engine's absence events are left
+out and every other non-playing roster player is a coach's decision. Logistic
+regression on 14 scenario features (baseline, depth rank among the available,
+C's gain, minutes vacated by others, number available, recent participation,
+streak out and return from ≥ 5 games out, last game's minutes, start share,
+rest and back-to-back, point of the season), refit monthly on earlier months
+(scaler included). 111,665 labelled rows (86k heuristic, 26k report); 38,989
+scored in 2018-19. The scenario is the engine's realized absences.
+
+| 2018-19 | Rows | Played | Brier logistic | Brier recent participation | Brier v0 (q = 1) | Log-loss logistic / recent |
+| --- | --- | --- | --- | --- | --- | --- |
+| All | 38,989 | 70% | **0.078** | 0.176 | 0.302 | 0.256 / 0.819 |
+| Rotation (b ≥ 15) | 19,379 | 95% | 0.025 | 0.069 | 0.052 | 0.101 / 0.341 |
+| Bench (b < 15) | 19,271 | 46% | 0.131 | 0.269 | 0.542 | 0.411 / 1.199 |
+| Returning (≥ 5 games out) | 6,723 | 8% | 0.071 | 0.438 | 0.921 | 0.260 / 2.416 |
+| C gain ≥ 3 min | 13,159 | 77% | 0.064 | 0.154 | 0.227 | 0.210 / 0.709 |
+| Depth rank 1-5 / 6-8 / 9-10 / 11+ | | 96 / 89 / 70 / 29% | 0.020 / 0.046 / 0.118 / 0.145 | | | |
+| Report labels / heuristic labels | 25,693 / 13,296 | 70 / 70% | 0.078 / 0.076 | 0.173 / 0.181 | 0.301 / 0.305 | |
+
+Calibration is good at the extremes (q ≤ 0.1: 3.7% predicted, 5.9% observed;
+q > 0.95: 98.9% vs 98.6%) and **over-confident in the middle**, more so on report
+labels: q 0.5-0.75 → 63% predicted, 54% observed (report) vs 57% (heuristic);
+q 0.75-0.9 → 84% vs 76% (report), 79% (heuristic). Three quarters of the
+training rows are heuristic.
+
+Raw minutes before any reconciliation, per 2018-19 team-game (2,620), over
+tonight's available players:
+
+| | Mean | SD | 5% | Median | 95% |
+| --- | --- | --- | --- | --- | --- |
+| Σ (b + C) | 274.2 | 24.8 | 246.9 | 269.2 | 322.6 |
+| Σ q·(b + C) | 237.4 | 12.4 | 219.5 | 236.8 | 256.6 |
+| What q takes off | 36.9 | 21.7 | 14.6 | 31.6 | 78.1 |
+
+B + C alone over-allocates by about 34 minutes (it assumes every available
+player plays); with q the raw total is nearly right on average (median scale to
+240: 1.014) with a spread of ±12 minutes for the reconciliation to absorb. The
+available players' actual minutes sum to 238.3 (players off the roster take
+the rest).
+
 ## Future checks
 
 ### Guarding weights (`expected_guard`)
@@ -837,6 +886,7 @@ v1. C is frozen.
 - [ ] Better ranking of the main substitute is what would let the shares concentrate (step 2c): coach-specific rotation patterns, lineup co-occurrence with the absent player, the substitute's minutes in the absent player's slot of the rotation.
 - [ ] v2 "next man up" features improve the prior's ranking (top-1 17% → 30%) but tie on minutes; revisit them together with any ranking improvement.
 - [ ] A saturation term for one player absorbing several absences (multi-absence games are where concentrated shares fail).
+- [ ] Participation q is over-confident in the middle (0.5-0.9), more on report labels: recalibrate on report-labelled data (e.g. Platt on recent months) or weight report labels up once enough exist; GBM is the challenger only if it clearly improves Brier / log-loss with good calibration.
 
 ### Phase 3 (RAPM with a profile prior)
 

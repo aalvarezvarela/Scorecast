@@ -249,6 +249,7 @@ class _TeamGame:
     roster: list[str]
     absences: dict[str, float]  # X -> vacated minutes
     s0: dict[tuple[str, str], float]  # (X, Y) -> structural share at the time
+    date: pd.Timestamp | None = None
 
 
 @dataclass
@@ -451,6 +452,7 @@ def walk_forward(
         }
         absences = {x: v for x, v in absences.items() if v >= params.min_vacated}
         eligible = [y for y in roster if y not in absences]
+        gain_c: dict[str, float] = defaultdict(float)
         context = None
         if params.feature_set == "v2" or score_v2:
             last = history[-1] if history else None
@@ -521,6 +523,7 @@ def walk_forward(
                 zip(candidates, s0, final, proportional, gain, strict=True)
             ):
                 s0_record[(x, y)] = a
+                gain_c[y] += vacated * f_
                 if score_v2:
                     absorption_rows_v2.append((s0_v2[k], final_v2[k]))
                 absorption_rows.append(
@@ -550,7 +553,22 @@ def walk_forward(
                     )
             if not np.isnan(gain).all():
                 state.last_replacement[(team, x)] = candidates[int(np.nanargmax(gain))]
+        # Participation features: tonight's scenario is the other players'
+        # absences; a player who is himself an absence event is described as
+        # if he were available (ranked among the eligible, no gain).
+        vacated_total = sum(absences.values())
+        available = [y for y in eligible if y in baseline]
+        previous = history[-1] if history else None
+        rest = (date - previous.date).days if previous and previous.date else np.nan
+        game_number = state.season_games[(team, season)]
         for y in sorted(set(roster) | set(played)):
+            pool = available if y in available else [*available, y]
+            ranked = sorted(pool, key=lambda p: (-baseline.get(p, 0.0), p))
+            streak = 0
+            for g in reversed(history):
+                if y in g.played or y not in g.roster:
+                    break
+                streak += 1
             player_rows.append(
                 {
                     "game_id": game_id,
@@ -563,6 +581,15 @@ def walk_forward(
                     "absent_event": y in absences,
                     "n_absent": len(absences),
                     "minutes": played.get(y, 0.0),
+                    "gain_c": gain_c.get(y, 0.0),
+                    "vacated_others": vacated_total - absences.get(y, 0.0),
+                    "n_available": len(available),
+                    "rank": ranked.index(y) + 1 if y in baseline else np.nan,
+                    "streak": streak,
+                    "last_minutes": previous.played.get(y, 0.0) if previous else 0.0,
+                    "start_share": start_share.get(y, 0.0),
+                    "rest_days": rest,
+                    "season_game": game_number,
                 }
             )
         # Tonight becomes history.
@@ -574,6 +601,7 @@ def walk_forward(
                 roster,
                 absences,
                 s0_record,
+                date,
             )
         )
         while len(state.history[team]) > params.history_games:
