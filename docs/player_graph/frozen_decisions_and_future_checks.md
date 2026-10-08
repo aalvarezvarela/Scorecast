@@ -94,6 +94,7 @@ tuned value.
 | Phase 3 | What the profile prior must show | **Incremental value over a well-regularized RAPM** (the 3,000 / 10,000 control), not the repair of a failure: on clean data thin players do not degrade the zero-prior projection. Where it can add: profile information for thin players and debutants (who are below average on offense), and the level of pace for lineups with thin players | Step 1 and 2a on the rebuilt store; the earlier "RAPM fails with thin samples" came from the corrupted 2016-17 points | — |
 | Phase 3 | Profile prior `f` (v0) | Three weighted linear ridges (offense, defense, pace) on 22 standardized profile features (per-36 rates, TS%, 3P%, usage, recent minutes, start share, soft G/F/C, log games in data, profile `prior_weight`, `has_box_history`); target `t = rating / s`, weight `s`, `s ≥ 0.02`; refit monthly on every checkpoint so far (scaler included); ridge strength **o 0.1, d 100, pace 0.1** | Strength chosen by player-grouped 5-fold CV on pairs before 2018-10-01 only, then frozen (o and pace are flat for 0.01-1). The rating's exposure is a weight, never a feature. Age, draft position, listed position, height / weight would be added if a source appears | Step 3 |
 | Phase 3 | Debut prior (v0) | A player with no box score before the date gets, per rating, the reliability-weighted mean `t` of earlier debutants (first game after 2016-12-01) in their first 20 games; as soon as he has a profile, `f` | No position before a first game; one value per rating | Step 3 |
+| Phase 3 | Profile-prior penalties | **Shared `lambda_offdef` = 3,000, `lambda_pace` = 10,000** toward `beta0`, the same as the zero-prior control | Retuned on **2018-19 only** with the same log grid and criterion; both optima interior and flat nearby (efficiency 10,000: -0.43 vs 3,000; pace 30,000: -0.05). Separate offense / defense penalties add +0.21 ± 0.34 | After the main evaluation |
 | Phase 3 | Pseudo-target protection | Weighted ridge with `w = s`, pairs with **`s` < 0.02 left out** (13% of the pairs, 0.4% of the weight); no robust loss | On the clean store `s · Var(t)` is flat and the only extremes are one-game players; a robust loss on `sqrt(s) · (t - f(x))` is added only if strong outliers reappear | If outliers reappear |
 | Smoke-test GNN | Library | **PyTorch only for the phase 2 smoke test**: optional Poetry group `graph` (`torch 2.9.1`, the version the lock already resolved through `timeseries`; `poetry install --with graph`), no PyTorch Geometric | Stint graphs always have 10 nodes and fixed edge templates, so dense tensors suffice; dependency and code stay minimal while only the plumbing is tested | **PyG decision deferred until the phase 6 architecture is defined** (game graphs: variable node counts, scenarios, edge types and attributes, batching) |
 | Smoke-test GNN | Scope | Plumbing only: tables → tensors → message passing → node embeddings → pooling → prediction head → loss / backprop → checkpoint save / reload. Not the phase 6 architecture, no claim about signal | Plan phase 2 | Phase 6 |
@@ -467,6 +468,72 @@ Reading (2018-19 only):
   for efficiency (pace: +7.7 of +14.4): the profile carries most of what the
   stints say about a player, so the best penalty toward it may well differ
   from 3,000.
+
+## Phase 3, step 3b: penalty toward the prior, retuned on 2018-19
+
+`python scripts/player_graph/rapm_profile_prior.py --sweep`: the zero-prior
+sweep's log grid with every block shrunk toward `beta0` (infinity = the profile
+alone), paired against the zero-prior control in the same run.
+
+| Penalty toward the prior | 100 | 300 | 1,000 | **3,000** | 10,000 | 30,000 | 100,000 | ∞ (profile alone) |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| Efficiency vs ∞ (no info) | -1.7 | +9.7 | +19.2 | **+23.0 ± 2.6** | +22.5 | +20.6 | +18.9 | +17.7 |
+| vs zero-prior control | -22.5 | -11.2 | -1.6 | **+2.15 ± 1.16** | +1.72 ± 1.24 | -0.21 | -1.93 | -3.12 |
+
+| Penalty toward the prior | 1,000 | 3,000 | **10,000** | 30,000 | 100,000 | 10⁶ | ∞ (profile alone) |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| Pace vs ∞ (no info) | +12.6 | +13.8 | **+14.7 ± 1.0** | +14.6 | +13.5 | +9.9 | +7.7 |
+| vs zero-prior control | -1.77 | -0.58 | **+0.27 ± 0.13** | +0.22 ± 0.17 | -0.92 | -4.52 | -6.76 |
+
+Secondary (separate offense / defense penalties toward the prior): best pair
+offense 10,000, defense 3,000, +23.16 vs no information, +0.21 ± 0.34 over the
+shared 3,000.
+
+**Phase 3 on the development season.** The best penalty toward the profile
+prior equals the best toward zero, so the final 2018-19 comparison is step 3's:
+best profile prior vs best zero prior, **+2.15 ± 1.16 (pts/100)²**
+(efficiency) and **+0.27 ± 0.13 (poss/48)²** (pace) on squared error; no gain on
+MAE (46.770 vs 46.764; 14.401 vs 14.376). The gain sits in lineups of
+established players; low-sample and debut slices are not better (small
+samples, wide errors). Against the plan's "Done when" (at least as good as the
+2_6 ratings, better for low-sample players): the first part holds on 2018-19,
+the second does not.
+
+## Phase 3: frozen before the 2019-25 evaluation (2026-10-08)
+
+Everything below was decided on 2018-19 (and earlier) only, and is committed
+before any 2019-25 result is generated. Nothing changes during or after the
+evaluation; looking at individual seasons does not reopen any of it.
+
+- **Main comparison:** clean zero-prior RAPM (shared `lambda_offdef` 3,000,
+  `lambda_pace` 10,000) vs clean profile-prior RAPM (same penalties, shrunk
+  toward `beta0`). Lambda → ∞ (no player information) and 2_6 as stored are
+  context only; 2_6 is not the control, since its older ratings carry the
+  2016-17 contamination.
+- **Frozen:** zero-prior and profile-prior penalties 3,000 / 10,000; `f`
+  ridge strengths 0.1 (offense) / 100 (defense) / 0.1 (pace); `f`'s 22
+  features and preprocessing (`log1p` games in data, standardization fitted on
+  each training window); `s_min` = 0.02; pseudo-targets `t = rating / s` with
+  weight `s`; debut prior; monthly expanding refit of `f`; half-life 180 d;
+  stints from 2016-17.
+- **Walk-forward:** for a date D, every `f_C`, profile, RAPM target and prior
+  depends only on information before D; seasons already observed join the
+  training as the evaluation advances (that is the walk-forward), but no
+  hyperparameter or design decision changes.
+- **Criteria:** primary, weighted squared error on the next stints (profile
+  prior − zero prior, SE clustered by game); secondary, MAE and the slices
+  (≥ 1 player ≤ 1,000; ≥ 1 ≤ 300; unrated players; debutants ≤ 10 games;
+  count of low-sample players), offense, defense and pace separately, pooled
+  2019-25 and per season.
+- **Interpretation, fixed in advance:**
+  - consistent out-of-sample gain in squared error without material MAE
+    degradation → the profile prior adds value;
+  - plus a gain in the low-sample / debut slices → confirms the original
+    hypothesis;
+  - only a marginal global gain and none in low-sample slices → a secondary
+    improvement / ablation, not an essential component;
+  - no out-of-sample gain → the profile prior does not enter the main
+    pipeline, and the negative result is documented.
 
 ## Future checks
 
