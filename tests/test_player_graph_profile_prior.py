@@ -100,3 +100,33 @@ def test_checkpoints_are_the_first_game_date_of_each_month():
 def test_features_exist_in_the_node_profiles():
     derived = {"log_games_in_data"}
     assert set(FEATURES) - derived <= set(PROFILE_COLUMNS)
+
+
+def test_provider_sources_and_strictly_earlier_models():
+    from nba_ou.data_processing.player_graph.profile_prior import (
+        SOURCE_DEBUT,
+        SOURCE_F,
+        SOURCE_ZERO,
+        PriorProvider,
+    )
+
+    profiles = _profiles(n=200)
+    true = 2.0 * profiles["pts_per36"].to_numpy()
+    pairs = prior_pairs(_ratings(profiles, true, np.linspace(500, 8000, 200)), profiles)
+    day = pd.Timestamp("2018-02-01")
+    today = profiles.head(3).assign(as_of_date=day)
+    today.loc[today.index[1], "has_box_history"] = False  # a debut
+    provider = PriorProvider(
+        pairs, today, debutants={"0"}, alphas={"o": 0.01, "d": 0.01, "pace": 0.01}
+    )
+    players = ["0", "1", "absent"]
+    out = provider(day, players)
+    assert provider.sources[day] == {
+        "0": SOURCE_F,
+        "1": SOURCE_DEBUT,
+        "absent": SOURCE_ZERO,
+    }
+    assert out["o"][0] == pytest.approx(true[0], abs=1e-2)
+    assert out["o"][2] == 0.0
+    with pytest.raises(ValueError, match="No profile-prior checkpoint"):
+        provider(pd.Timestamp("2017-12-31"), players)

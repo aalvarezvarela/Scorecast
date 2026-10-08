@@ -418,6 +418,56 @@ the training mean, and a position-only model. Not yet connected to the solver.
   +0.14 vs +1.00. Debutants are below average and faster, as the prior says,
   but the sizes are noisy.
 
+## Phase 3, step 3: RAPM shrunk toward the profile prior (same penalties)
+
+`python scripts/player_graph/rapm_profile_prior.py`: the zero-prior control's
+walk-forward ridge with only the target of the shrinkage changed,
+`(X'X + lambda I) beta = X'y + lambda beta0`, at the frozen 3,000 / 10,000.
+`beta0` comes from the latest monthly `f` (checkpoints up to the date). In the
+solver 93.6% of player-dates get `f`, 0.1% the debut prior and 6.3% the 0
+fallback, all of them players without a profile (last game beyond the
+2-season window); none of those is on the floor in a scored stint (763,142
+on-floor player appearances from `f`, 1,198 from the debut prior). Unrated
+players are scored at their prior. Scored as in steps 1 and 2a; SE clustered
+by game. The solver's prior path is tested: a constant prior is absorbed by
+the free intercept (identical predictions), fitted or fixed.
+
+| Efficiency slice | Share | Zero prior vs ∞ | Profile prior vs ∞ | Profile only vs ∞ | **Profile − zero** | Prior on offense only − zero | Prior on defense only − zero |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| All | 100% | +20.8 ± 1.8 | +23.0 ± 2.6 | +17.7 ± 2.3 | **+2.15 ± 1.16** | +0.60 ± 1.11 | +1.10 ± 0.48 |
+| ≥ 1 player ≤ 1,000 | 57% | +19.1 | +20.2 | +16.2 | +1.11 ± 1.73 | -0.62 ± 1.65 | +1.37 ± 0.69 |
+| ≥ 1 player ≤ 300 | 20% | +17.4 | +14.0 | +6.4 | -3.37 ± 3.65 | -4.77 ± 3.59 | -0.00 ± 1.44 |
+| 0 players ≤ 1,000 | 43% | +23.1 | +26.6 | +19.6 | +3.52 ± 1.40 | +2.21 ± 1.37 | +0.75 ± 0.62 |
+| 1 / 2 / 3 / 4+ players ≤ 1,000 | 28 / 14 / 7.5 / 6.7% | | | | +4.41 / -2.80 / +1.09 / -4.27 | | |
+| ≥ 1 unrated | 1.2% | +17.6 | +37.5 | +29.2 | +19.9 ± 16.9 | +22.3 ± 18.9 | -7.2 ± 6.7 |
+| ≥ 1 debut (≤ 10 games) | 15% | +18.2 | +17.4 | +9.6 | -0.87 ± 4.02 | -2.75 ± 3.97 | -0.04 ± 1.61 |
+
+| Pace slice | Zero prior vs ∞ | Profile prior vs ∞ | Profile only vs ∞ | **Profile − zero** |
+| --- | --- | --- | --- | --- |
+| All | +14.4 ± 0.9 | +14.7 ± 1.0 | +7.7 ± 1.0 | **+0.27 ± 0.13** |
+| ≥ 1 player ≤ 300 | +15.6 | +16.2 | +9.2 | +0.51 ± 0.41 |
+| ≥ 1 debut (≤ 10 games) | +15.5 | +15.4 | +8.5 | -0.15 ± 0.55 |
+
+MAE: efficiency 46.764 (zero prior) vs 46.770 (profile prior); pace 14.376 vs
+14.401.
+
+Reading (2018-19 only):
+
+- With the same penalties the profile prior is better on the pre-declared
+  criterion, squared error, but only by about 2 SE (efficiency +2.15 ± 1.16,
+  pace +0.27 ± 0.13), and not on MAE. The defensive prior is the steadier part
+  (+1.10 ± 0.48).
+- Against expectation, the gain sits in lineups of established players (0 or
+  1 thin player: +3.5, +4.4), not in thin ones (≥ 1 player ≤ 300: -3.4 ± 3.7;
+  debuts: -0.9 ± 4.0; small samples, wide errors). At lambda 3,000 even a
+  regular keeps only half of his effect, so the shrinkage target matters for
+  established players too; for thin players both `f` and the data are noisy
+  (`f`'s calibration slope there is 1.3-1.5).
+- `f` alone, with no RAPM data, recovers +17.7 of the zero-prior RAPM's +20.8
+  for efficiency (pace: +7.7 of +14.4): the profile carries most of what the
+  stints say about a player, so the best penalty toward it may well differ
+  from 3,000.
+
 ## Future checks
 
 ### Guarding weights (`expected_guard`)

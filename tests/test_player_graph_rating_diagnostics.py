@@ -176,3 +176,83 @@ def test_sweep_reproduces_2_6_and_the_infinite_lambda_reference():
     for config in ((50.0, inf), (inf, 50.0)):
         assert not np.allclose(eff[config], eff[(50.0, 50.0)])
         assert not np.allclose(eff[config], eff[(inf, inf)])
+
+
+def _rows_for_prior_tests():
+    stints = _stints()
+    ratings = _ratings(stints, lambda_offdef=50.0, lambda_pace=500.0)
+    dates = ratings["as_of_date"].unique()
+    efficiency, pace = scored_rows(
+        stints,
+        ratings,
+        decayed_exposure(stints, dates, half_life_days=30.0),
+        lambda_offdef=50.0,
+        lambda_pace=500.0,
+        league_means=decayed_league_means(stints, dates, half_life_days=30.0),
+    )
+    return stints, efficiency, pace
+
+
+def test_a_constant_prior_is_absorbed_by_the_intercept():
+    # Five attackers and five defenders in every row: shifting a whole block
+    # by a constant only moves the free intercept, so the predictions match
+    # the zero prior's, fitted or fixed (infinite penalty).
+    from nba_ou.data_processing.player_graph.rapm_sweep import sweep_predictions
+
+    stints, efficiency, pace = _rows_for_prior_tests()
+    inf = float("inf")
+
+    def constant(day, players):
+        n = len(players)
+        return {"o": np.full(n, 3.0), "d": np.full(n, -2.0), "pace": np.full(n, 1.5)}
+
+    eff, pac = sweep_predictions(
+        stints,
+        efficiency,
+        pace,
+        offdef_grid=[
+            (50.0, 50.0, False, False),
+            (50.0, 50.0, True, True),
+            (inf, inf, False, False),
+            (inf, inf, True, True),
+        ],
+        pace_grid=[(500.0, False), (500.0, True), (inf, True)],
+        half_life_days=30.0,
+        prior=constant,
+    )
+    assert np.allclose(eff[(50.0, 50.0, True, True)], eff[(50.0, 50.0, False, False)])
+    assert np.allclose(eff[(inf, inf, True, True)], efficiency["baseline_inf"])
+    assert np.allclose(pac[(500.0, True)], pac[(500.0, False)])
+    assert np.allclose(pac[(inf, True)], pace["baseline_inf"])
+
+
+def test_an_informative_prior_moves_the_ratings_toward_it():
+    from nba_ou.data_processing.player_graph.rapm_sweep import sweep_predictions
+
+    stints, efficiency, pace = _rows_for_prior_tests()
+    rng = np.random.default_rng(5)
+    values = {}
+
+    def informative(day, players):
+        for name in ("o", "d", "pace"):
+            values.setdefault(name, rng.normal(0, 5, len(players)))
+        return values
+
+    eff, _ = sweep_predictions(
+        stints,
+        efficiency,
+        pace,
+        offdef_grid=[(50.0, 50.0, False, False), (50.0, 50.0, True, True)],
+        pace_grid=[(500.0, False)],
+        half_life_days=30.0,
+        prior=informative,
+    )
+    assert not np.allclose(eff.iloc[:, 0], eff.iloc[:, 1])
+    with pytest.raises(ValueError, match="asks for a prior"):
+        sweep_predictions(
+            stints,
+            efficiency,
+            pace,
+            offdef_grid=[(50.0, 50.0, True, True)],
+            pace_grid=[500.0],
+        )

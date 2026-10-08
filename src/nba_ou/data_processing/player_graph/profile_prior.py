@@ -241,3 +241,89 @@ def debut_prior(pairs: pd.DataFrame, rating: str, debutants: set[str]) -> float:
     if rows.empty:
         return 0.0
     return float(np.average(rows[f"t_{rating}"], weights=rows[f"s_{rating}"]))
+
+
+# --------------------------------------------------------------------------
+# beta0 for the solver (phase 3, step 3)
+# --------------------------------------------------------------------------
+
+#: Where a player's prior came from on a date.
+SOURCE_F, SOURCE_DEBUT, SOURCE_ZERO = "f", "debut", "zero"
+
+
+class PriorProvider:
+    """``beta0`` per date for every player of the solver, from the latest
+    monthly ``f`` (checkpoints up to the date, all read before it).
+
+    * profile with box-score history on the date -> ``f(profile)``;
+    * profile without box scores (a debut) -> the debut prior;
+    * no profile on the date (last game beyond the 2-season window) -> 0,
+      the exceptional fallback, counted in :attr:`sources`.
+
+    Callable as the ``prior`` of ``rapm_sweep.sweep_predictions``.
+    """
+
+    def __init__(
+        self,
+        pairs: pd.DataFrame,
+        profiles: pd.DataFrame,
+        debutants: set[str],
+        alphas: dict[str, float],
+    ) -> None:
+        self.pairs = pairs.assign(
+            as_of_date=pd.to_datetime(pairs["as_of_date"]).dt.normalize()
+        )
+        self.checkpoints = sorted(self.pairs["as_of_date"].unique())
+        profiles = profiles.assign(
+            as_of_date=pd.to_datetime(profiles["as_of_date"]).dt.normalize(),
+            player_id=profiles["player_id"].astype(str),
+        )
+        self.profiles = {
+            day: part.set_index("player_id")
+            for day, part in profiles.groupby("as_of_date")
+        }
+        self.debutants = debutants
+        self.alphas = alphas
+        self._models: dict[pd.Timestamp, tuple[dict, dict]] = {}
+        #: day -> {player_id: source}
+        self.sources: dict[pd.Timestamp, dict[str, str]] = {}
+
+    def checkpoint(self, day: pd.Timestamp) -> pd.Timestamp:
+        eligible = [c for c in self.checkpoints if c <= day]
+        if not eligible:
+            raise ValueError(f"No profile-prior checkpoint on or before {day.date()}")
+        return eligible[-1]
+
+    def models(self, checkpoint: pd.Timestamp) -> tuple[dict, dict]:
+        """``({rating: f}, {rating: debut prior})`` fitted on checkpoints up to
+        ``checkpoint``."""
+        if checkpoint not in self._models:
+            train = self.pairs.loc[self.pairs["as_of_date"] <= checkpoint]
+            self._models[checkpoint] = (
+                {r: fit_prior(train, r, self.alphas[r]) for r in RATINGS},
+                {r: debut_prior(train, r, self.debutants) for r in RATINGS},
+            )
+        return self._models[checkpoint]
+
+    def __call__(self, day, players: list[str]) -> dict[str, np.ndarray]:
+        day = pd.Timestamp(day).normalize()
+        fs, debut = self.models(self.checkpoint(day))
+        profile = self.profiles.get(day, pd.DataFrame(columns=["has_box_history"]))
+        present = profile.reindex(players)
+        known = present["has_box_history"].notna().to_numpy()
+        boxed = present["has_box_history"].eq(True).to_numpy()
+        out = {}
+        for rating in RATINGS:
+            values = np.zeros(len(players))
+            if boxed.any():
+                values[boxed] = fs[rating].predict(present.loc[boxed])
+            values[known & ~boxed] = debut[rating]
+            out[rating] = values
+        self.sources[day] = dict(
+            zip(
+                players,
+                np.where(boxed, SOURCE_F, np.where(known, SOURCE_DEBUT, SOURCE_ZERO)),
+                strict=True,
+            )
+        )
+        return out
