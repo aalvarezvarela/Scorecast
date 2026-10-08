@@ -717,6 +717,52 @@ rule picks him 1.5% of the time, `s0` 17%, `s` 26%, and `s` gives him a median
 10%: the shares find the right group of teammates but stay too diffuse to
 name the one backup.
 
+## Phase 4A, step 2b: ranking vs concentration, next-man-up features, small search (2018-19)
+
+`rotation_diagnostic.py` now reports, on single absences vacating ≥ 20 min,
+whether a share rule **ranks** the real top absorber high and how much it
+**concentrates** on the teammates who really take the minutes, and scores the
+v2 structural features ("next man up": who replaced X last time, Y's minutes
+and start in the last game, his trend, whether he sits just outside the
+rotation) on the same rows as the v1 engine. v2 must not feed back into the
+baselines: used inside the engine it changed `b` and the events and worsened
+the minutes (s0's sharper wrong picks attribute gains to the wrong players).
+
+| Single absences ≥ 20 min (332) | `s0` v1 | `s0` v2 | `s` v1 | `s` v2 | Real |
+| --- | --- | --- | --- | --- | --- |
+| Top-1 / top-2 / top-3 recall of the real top absorber | 17 / 29 / 37% | 30 / 43 / 48% | 26 / 38 / 47% | 27 / 41 / 52% | |
+| Median rank of the real top absorber (≈ 12 candidates) | 5 | 4 | 4 | 3 | |
+| Share given to the real top (median) | 8% | 9% | 10% | 11% | 43% |
+| … when ranked first | 19% | 26% | 26% | 28% | |
+| Effective number of absorbers (median) | 12.5 | 12.1 | 9.3 | 9.0 | 5.6 |
+
+Reading: the ranking is reasonable (the real top absorber is in the top 3 about
+half of the time, median rank 3-4) and v2 improves the prior's ranking
+clearly, the final shares' only at top-3; the shares are **too flat**
+(9 effective absorbers vs 5.6 real; even correctly ranked first, the top
+absorber gets 26-28% of the minutes where the real one takes 43%). A sharper
+prior alone does not help the minutes: `s0` v2 has a worse squared error with
+2+ absences (50.0 vs 42.3), where several concentrated bags land on the same
+backup.
+
+Small predefined search (one parameter at a time around the defaults; MSE of
+the minutes, `b` + predicted gains, of every player who played in 2018-19,
+27,465 player-games, the same rows for every configuration):
+
+| Configuration | `s` v1 | `s` v2 |
+| --- | --- | --- |
+| Default (kappa 30, share half-life 82, rotation 15 min) | 37.59 | 37.59 |
+| Share half-life 41 | **37.15** | 37.18 |
+| Share half-life 164 | 37.88 | 37.95 |
+| kappa 10 / 100 | 37.88 / 37.52 | 38.07 / 37.49 |
+| Rotation threshold 12 / 18 min | 37.57 / 37.62 | 37.65 / 37.62 |
+| Proportional split, for reference | 52.8 | |
+| `s0` alone, for reference | 39.0 | 42.8 |
+
+The only change worth more than a tenth or two is the shorter share half-life
+(-0.44); kappa and the rotation threshold are flat. v1 and v2 shares tie on
+the criterion (v2 0.01 worse in MSE, 0.01 better in MAE).
+
 ## Future checks
 
 ### Guarding weights (`expected_guard`)

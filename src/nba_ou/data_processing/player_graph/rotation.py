@@ -57,6 +57,7 @@ class RotationParams:
     kappa: float = 30.0  # prior strength, in vacated minutes
     iterations: int = 3
     carryover_games: int = 10  # team games of a new season
+    feature_set: str = "v1"  # structural prior features: "v1" or "v2"
     rotation_minutes: float = 15.0  # baseline above which a DNP is unavailability
 
 
@@ -133,6 +134,17 @@ PAIR_FEATURES = (
     "start_share_y",
     "participation_y",
 )
+#: v2 adds "next man up" features: who replaced X last time, Y's minutes and
+#: start in the team's last game, his recent trend, and whether he sits just
+#: outside tonight's usual rotation.
+PAIR_FEATURES_V2 = (
+    *PAIR_FEATURES,
+    "replaced_x_last_time",
+    "last_minutes_y",
+    "started_last_y",
+    "trend_y",
+    "fringe_y",
+)
 
 
 def pair_features(
@@ -142,9 +154,11 @@ def pair_features(
     participation: Mapping[str, float],
     start_share: Mapping[str, float],
     positions: Mapping[str, np.ndarray],
+    extra: Mapping[str, Mapping[str, float]] | None = None,
 ) -> np.ndarray:
     """``(len(eligible), len(PAIR_FEATURES))`` features of each eligible
-    teammate Y for absent X. Ranks are by baseline among X and the eligible."""
+    teammate Y for absent X. Ranks are by baseline among X and the eligible.
+    With ``extra`` (feature name -> Y -> value) the v2 columns follow."""
     ranked = sorted([absent, *eligible], key=lambda p: (-baseline.get(p, 0.0), p))
     rank = {p: i + 1 for i, p in enumerate(ranked)}
     px = positions.get(absent, np.full(3, 1 / 3))
@@ -159,6 +173,11 @@ def pair_features(
                 float(px @ positions.get(y, np.full(3, 1 / 3))),
                 start_share.get(y, 0.0),
                 participation.get(y, 0.0),
+                *(
+                    [extra[name].get(y, 0.0) for name in PAIR_FEATURES_V2[7:]]
+                    if extra is not None
+                    else []
+                ),
             ]
         )
     return np.asarray(rows, dtype=float)
@@ -243,6 +262,8 @@ class RotationState:
     season_games: dict[tuple[str, int], int] = field(
         default_factory=lambda: defaultdict(int)
     )
+    #: (team, absent X) -> the teammate who gained most the last time X was out.
+    last_replacement: dict[tuple[str, str], str] = field(default_factory=dict)
 
     def roster(
         self, team: str, season: int, listed: Iterable[str] = ()
@@ -374,6 +395,7 @@ def walk_forward(
     listed: Mapping[tuple[str, str], set[str]] | None = None,
     params: RotationParams = DEFAULT_PARAMS,
     refit_monthly: bool = True,
+    score_v2: bool = False,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Process every team-game in date order; return ``(players, absorption)``.
 
@@ -382,13 +404,20 @@ def walk_forward(
     eligible teammate, ``V_X``, the structural ``s0``, the final ``s``, the
     proportional share (``b_Y / sum b``) and Y's actual gain over ``b_Y``.
     Everything for a game is computed from earlier games only.
+
+    ``score_v2`` also scores the v2 structural prior on the same events
+    (columns ``s0_v2``, ``s_v2``) without letting it feed back into the
+    baselines, so both feature sets are compared on identical rows.
     """
     listed = listed or {}
     state = RotationState(params)
     structural = StructuralShare()
+    structural_v2 = StructuralShare()
     single_events: list[dict] = []
+    single_events_v2: list[dict] = []
     month = None
     player_rows, absorption_rows = [], []
+    absorption_rows_v2: list[tuple[float, float]] = []
     for (date, game_id, team), game in minutes.groupby(
         ["game_date", "game_id", "team_id"], sort=True
     ):
@@ -396,6 +425,8 @@ def walk_forward(
             month = date.to_period("M")
             if len(single_events) >= 200:
                 structural = StructuralShare.fit(single_events)
+            if score_v2 and len(single_events_v2) >= 200:
+                structural_v2 = StructuralShare.fit(single_events_v2)
         season = int(game["season"].iloc[0])
         roster, current = state.roster(team, season, listed.get((game_id, team), ()))
         played = dict(zip(game["player_id"], game["minutes"], strict=True))
@@ -420,25 +451,78 @@ def walk_forward(
         }
         absences = {x: v for x, v in absences.items() if v >= params.min_vacated}
         eligible = [y for y in roster if y not in absences]
+        context = None
+        if params.feature_set == "v2" or score_v2:
+            last = history[-1] if history else None
+            ranked = sorted(
+                (y for y in eligible if y in baseline), key=lambda y: -baseline[y]
+            )
+            rotation = sum(baseline[y] >= params.rotation_minutes for y in ranked)
+            recent_played = {
+                y: [g.played[y] for g in history if y in g.played][-3:] for y in roster
+            }
+            context = {
+                "last_minutes_y": {
+                    y: last.played.get(y, 0.0) if last else 0.0 for y in roster
+                },
+                "started_last_y": {
+                    y: float(last is not None and y in last.started) for y in roster
+                },
+                "trend_y": {
+                    y: (
+                        (np.mean(recent_played[y]) - baseline[y])
+                        if recent_played[y] and y in baseline
+                        else 0.0
+                    )
+                    for y in roster
+                },
+                "fringe_y": {
+                    y: float(1 <= i + 1 - rotation <= 2) for i, y in enumerate(ranked)
+                },
+            }
         s0_record = {}
         for x, vacated in absences.items():
             candidates = [y for y in eligible if y in baseline]
             if not candidates:
                 continue
+            extra = None
+            if context is not None and params.feature_set == "v2":
+                extra = {
+                    **context,
+                    "replaced_x_last_time": {
+                        y: float(state.last_replacement.get((team, x)) == y)
+                        for y in candidates
+                    },
+                }
             features = pair_features(
-                x, candidates, baseline, participation, start_share, pos
+                x, candidates, baseline, participation, start_share, pos, extra
             )
             b = np.array([baseline[y] for y in candidates])
             s0 = structural(features, b)
             final = shares(x, candidates, evidence, s0, params.kappa)
+            if score_v2:
+                extra_v2 = {
+                    **context,
+                    "replaced_x_last_time": {
+                        y: float(state.last_replacement.get((team, x)) == y)
+                        for y in candidates
+                    },
+                }
+                features_v2 = pair_features(
+                    x, candidates, baseline, participation, start_share, pos, extra_v2
+                )
+                s0_v2 = structural_v2(features_v2, b)
+                final_v2 = shares(x, candidates, evidence, s0_v2, params.kappa)
             proportional = b / b.sum()
             gain = np.array(
                 [played[y] - baseline[y] if y in played else np.nan for y in candidates]
             )
-            for y, a, f_, p_, g_ in zip(
-                candidates, s0, final, proportional, gain, strict=True
+            for k, (y, a, f_, p_, g_) in enumerate(
+                zip(candidates, s0, final, proportional, gain, strict=True)
             ):
                 s0_record[(x, y)] = a
+                if score_v2:
+                    absorption_rows_v2.append((s0_v2[k], final_v2[k]))
                 absorption_rows.append(
                     {
                         "game_id": game_id,
@@ -460,6 +544,12 @@ def walk_forward(
                 single_events.append(
                     {"features": features, "vacated": vacated, "gain": gain}
                 )
+                if score_v2:
+                    single_events_v2.append(
+                        {"features": features_v2, "vacated": vacated, "gain": gain}
+                    )
+            if not np.isnan(gain).all():
+                state.last_replacement[(team, x)] = candidates[int(np.nanargmax(gain))]
         for y in sorted(set(roster) | set(played)):
             player_rows.append(
                 {
@@ -496,4 +586,7 @@ def walk_forward(
             if state.team_of.get(p) in (None, team):
                 state.team_of[p] = team
                 state.season_of[p] = season
-    return pd.DataFrame(player_rows), pd.DataFrame(absorption_rows)
+    absorption = pd.DataFrame(absorption_rows)
+    if score_v2:
+        absorption[["s0_v2", "s_v2"]] = np.asarray(absorption_rows_v2)
+    return pd.DataFrame(player_rows), absorption

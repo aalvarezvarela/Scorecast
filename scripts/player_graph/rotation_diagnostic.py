@@ -26,7 +26,10 @@ database for the injury reports used as roster evidence.
 from __future__ import annotations
 
 import argparse
+import json
 import time
+from collections import defaultdict
+from dataclasses import asdict, replace
 from pathlib import Path
 
 import numpy as np
@@ -41,7 +44,7 @@ from nba_ou.data_processing.player_graph.rotation import (
 
 SEASON = 2018
 FIRST = 2016
-RULES = ("proportional", "s0", "s")
+RULES = ("proportional", "s0", "s", "s0_v2", "s_v2")
 
 
 def listed_players() -> dict[tuple[str, str], set[str]]:
@@ -73,9 +76,87 @@ def predicted_gains(absorption: pd.DataFrame) -> pd.DataFrame:
     )
 
 
+def ranking_report(absorption: pd.DataFrame) -> pd.DataFrame:
+    """Single absences vacating >= 20 min: does each rule rank the real top
+    absorber high (ranking), and how much of X's minutes does it give the
+    teammates who really take them (concentration)?"""
+    single = absorption.loc[absorption["n_absent"].eq(1) & absorption["vacated"].ge(20)]
+    stats = {rule: defaultdict(list) for rule in RULES}
+    top_share, top3_share, real_effective = [], [], []
+    for _, event in single.groupby(["game_id", "team_id"]):
+        actual = event.loc[event["played"]].sort_values("gain", ascending=False)
+        if actual.empty or actual["gain"].iloc[0] <= 0:
+            continue
+        vacated = actual["vacated"].iloc[0]
+        top = actual["player_id"].iloc[0]
+        top3 = list(actual["player_id"].iloc[:3])
+        top_share.append(actual["gain"].iloc[0] / vacated)
+        top3_share.append(actual["gain"].iloc[:3].clip(lower=0).sum() / vacated)
+        positive = actual["gain"].clip(lower=0)
+        p = positive / positive.sum()
+        real_effective.append(np.exp(-(p[p > 0] * np.log(p[p > 0])).sum()))
+        for rule in RULES:
+            values = event.set_index("player_id")[rule]
+            if values.isna().all():
+                continue
+            order = values.sort_values(ascending=False)
+            rank = list(order.index).index(top) + 1
+            share = values / values.sum()
+            stats[rule]["top1"].append(rank <= 1)
+            stats[rule]["top2"].append(rank <= 2)
+            stats[rule]["top3"].append(rank <= 3)
+            stats[rule]["rank"].append(rank)
+            stats[rule]["share_to_real_top"].append(share[top])
+            stats[rule]["share_to_real_top3"].append(share[top3].sum())
+            stats[rule]["share_to_own_top3"].append(order.iloc[:3].sum() / values.sum())
+            q = share[share > 0]
+            stats[rule]["effective"].append(np.exp(-(q * np.log(q)).sum()))
+            if rank == 1:
+                stats[rule]["share_when_ranked_first"].append(share[top])
+    table = pd.DataFrame(
+        {
+            rule: {
+                "top-1 recall": np.mean(v["top1"]),
+                "top-2 recall": np.mean(v["top2"]),
+                "top-3 recall": np.mean(v["top3"]),
+                "mean rank of real top": np.mean(v["rank"]),
+                "median rank of real top": np.median(v["rank"]),
+                "share to real top (median)": np.median(v["share_to_real_top"]),
+                "share to real top 3 (median)": np.median(v["share_to_real_top3"]),
+                "share to own top 3 (median)": np.median(v["share_to_own_top3"]),
+                "effective absorbers (median)": np.median(v["effective"]),
+                "share to real top when ranked first (median)": (
+                    np.median(v["share_when_ranked_first"])
+                    if v["share_when_ranked_first"]
+                    else np.nan
+                ),
+            }
+            for rule, v in stats.items()
+        }
+    )
+    table.attrs = {
+        "events": len(top_share),
+        "top_share": float(np.median(top_share)),
+        "top3_share": float(np.median(top3_share)),
+        "real_effective": float(np.median(real_effective)),
+    }
+    return table
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--local-root", type=Path, default=Path("data"))
+    parser.add_argument(
+        "--feature-set", choices=("v1", "v2"), default=DEFAULT_PARAMS.feature_set
+    )
+    parser.add_argument("--kappa", type=float, default=DEFAULT_PARAMS.kappa)
+    parser.add_argument(
+        "--share-half-life", type=float, default=DEFAULT_PARAMS.share_half_life
+    )
+    parser.add_argument(
+        "--rotation-minutes", type=float, default=DEFAULT_PARAMS.rotation_minutes
+    )
+    parser.add_argument("--tag", help="Write only a JSON summary under rotation/runs/")
     args = parser.parse_args()
     started = time.time()
     stints = read_stints(list(range(FIRST, SEASON + 1)), local_root=args.local_root)
@@ -104,9 +185,18 @@ def main() -> None:
         return lookup.get((date, player), np.full(3, 1 / 3))
 
     listed = listed_players()
-    print(f"inputs in {time.time() - started:.0f}s; params {DEFAULT_PARAMS}")
+    params = replace(
+        DEFAULT_PARAMS,
+        feature_set=args.feature_set,
+        kappa=args.kappa,
+        share_half_life=args.share_half_life,
+        rotation_minutes=args.rotation_minutes,
+    )
+    print(f"inputs in {time.time() - started:.0f}s; params {params}")
     started = time.time()
-    players, absorption = walk_forward(minutes, positions, listed)
+    players, absorption = walk_forward(
+        minutes, positions, listed, params, score_v2=params.feature_set == "v1"
+    )
     print(f"walk-forward in {time.time() - started:.0f}s")
     season_games = set(minutes.loc[minutes["season"].eq(SEASON), "game_id"])
     players = players.loc[players["game_id"].isin(season_games)]
@@ -200,35 +290,55 @@ def main() -> None:
         f"  ordinary variation: var(minutes - b) without absences {((noise['minutes'] - noise['b']) ** 2).mean():.2f}"
     )
 
-    single = absorption.loc[absorption["n_absent"].eq(1) & absorption["vacated"].ge(20)]
-    hits = {rule: [] for rule in RULES}
-    captured = {rule: [] for rule in RULES}
-    taken = []
-    for _, event in single.groupby(["game_id", "team_id"]):
-        actual = event.loc[event["played"]]
-        if actual.empty:
-            continue
-        top = actual.loc[actual["gain"].idxmax()]
-        taken.append(top["gain"] / top["vacated"])
-        for rule in RULES:
-            if event[rule].isna().all():
-                continue
-            pick = event.loc[event[rule].idxmax()]
-            hits[rule].append(pick["player_id"] == top["player_id"])
-            captured[rule].append(top[rule])
+    ranking = ranking_report(absorption)
     print(
-        f"  top absorber, {len(taken)} single-absence events (V >= 20): he takes "
-        f"{np.median(taken):.0%} of V (median)"
+        f"\n4. RANKING AND CONCENTRATION, {ranking.attrs['events']} single-absence events "
+        f"(V >= 20); the real top absorber takes {ranking.attrs['top_share']:.0%} of V "
+        f"(median), the real top 3 {ranking.attrs['top3_share']:.0%}; real effective "
+        f"number of absorbers {ranking.attrs['real_effective']:.2f} (median)"
     )
+    print(ranking.round(3).to_string())
+    # Same rows for every configuration: every player who played and has a
+    # baseline, in every team-game, predicted b + the gains of that game's
+    # absences (0 when nobody is out).
+    everyone = played.loc[played["b"].notna()].merge(
+        gains[["game_id", "team_id", "player_id", *[f"pred_{r}" for r in RULES]]],
+        on=["game_id", "team_id", "player_id"],
+        how="left",
+    )
+    minutes_error = {}
     for rule in RULES:
-        print(
-            f"    {rule:12s} picks him {np.mean(hits[rule]):.1%}; share it gives him "
-            f"{np.median(captured[rule]):.0%} (median)"
+        error = (
+            everyone["b"] + everyone[f"pred_{rule}"].fillna(0.0) - everyone["minutes"]
         )
+        minutes_error[rule] = {
+            "MSE": float((error**2).mean()),
+            "MAE": float(error.abs().mean()),
+        }
+    print(
+        f"\n5. MINUTES of every player who played ({len(everyone):,} player-games), "
+        "b + predicted gains:"
+    )
+    print(pd.DataFrame(minutes_error).T.round(3).to_string())
+    summary = {
+        "minutes_error": minutes_error,
+        "params": asdict(params),
+        "gain_mse": {k: v["MSE s"] for k, v in rows.items()},
+        "gain_mse_s0": {k: v["MSE s0"] for k, v in rows.items()},
+        "ranking": ranking.to_dict(orient="index"),
+        "baseline_mae": float((clean["b"] - clean["minutes"]).abs().mean()),
+    }
     out = args.local_root / "player_graph" / "rotation"
     out.mkdir(parents=True, exist_ok=True)
-    players.to_parquet(out / f"players_season={SEASON}.parquet", index=False)
-    absorption.to_parquet(out / f"absorption_season={SEASON}.parquet", index=False)
+    if args.tag:
+        runs = out / "runs"
+        runs.mkdir(parents=True, exist_ok=True)
+        (runs / f"{args.tag}.json").write_text(
+            json.dumps(summary, indent=2, default=float) + "\n"
+        )
+    else:
+        players.to_parquet(out / f"players_season={SEASON}.parquet", index=False)
+        absorption.to_parquet(out / f"absorption_season={SEASON}.parquet", index=False)
 
 
 if __name__ == "__main__":
