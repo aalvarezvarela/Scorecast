@@ -96,6 +96,7 @@ tuned value.
 | Phase 3 | Debut prior (v0) | A player with no box score before the date gets, per rating, the reliability-weighted mean `t` of earlier debutants (first game after 2016-12-01) in their first 20 games; as soon as he has a profile, `f` | No position before a first game; one value per rating | Step 3 |
 | Phase 3 | Profile-prior penalties | **Shared `lambda_offdef` = 3,000, `lambda_pace` = 10,000** toward `beta0`, the same as the zero-prior control | Retuned on **2018-19 only** with the same log grid and criterion; both optima interior and flat nearby (efficiency 10,000: -0.43 vs 3,000; pace 30,000: -0.05). Separate offense / defense penalties add +0.21 ± 0.34 | After the main evaluation |
 | Phase 3 | **Final pipeline** (closed 2026-10-08) | Offense and defense: profile prior, lambda 3,000; pace: zero prior, lambda 10,000; `f` 0.1 / 100 / 0.1, monthly expanding refit, debut prior, 0 only without a profile | 2019-25 out of sample: efficiency +4.27 ± 0.48 over the zero prior (all seasons, larger for low-sample players and debuts, MAE better); pace -0.11 ± 0.05. The split was chosen after seeing 2019-25 (see the methodological note) | Never on 2019-25 |
+| Phase 4A | Redistribution shares C (**frozen**) | **v1 structural features, share half-life 41 team games, kappa 30 vacated minutes, rotation threshold 15 min, no sharpening (temperature 1)**; baseline half-life 15 team games | Chosen on **2018-19 only** by a small predefined one-at-a-time search on the minutes MSE of every player who played (same rows for every configuration); only the share half-life moved it (37.59 → 37.15). v2 features tie and stay optional. Any temperature above 1 is worse, monotonically (step 2c) | After the main evaluation |
 | Phase 3 | Pseudo-target protection | Weighted ridge with `w = s`, pairs with **`s` < 0.02 left out** (13% of the pairs, 0.4% of the weight); no robust loss | On the clean store `s · Var(t)` is flat and the only extremes are one-game players; a robust loss on `sqrt(s) · (t - f(x))` is added only if strong outliers reappear | If outliers reappear |
 | Smoke-test GNN | Library | **PyTorch only for the phase 2 smoke test**: optional Poetry group `graph` (`torch 2.9.1`, the version the lock already resolved through `timeseries`; `poetry install --with graph`), no PyTorch Geometric | Stint graphs always have 10 nodes and fixed edge templates, so dense tensors suffice; dependency and code stay minimal while only the plumbing is tested | **PyG decision deferred until the phase 6 architecture is defined** (game graphs: variable node counts, scenarios, edge types and attributes, batching) |
 | Smoke-test GNN | Scope | Plumbing only: tables → tensors → message passing → node embeddings → pooling → prediction head → loss / backprop → checkpoint save / reload. Not the phase 6 architecture, no claim about signal | Plan phase 2 | Phase 6 |
@@ -763,6 +764,33 @@ The only change worth more than a tenth or two is the shorter share half-life
 (-0.44); kappa and the rotation threshold are flat. v1 and v2 shares tie on
 the criterion (v2 0.01 worse in MSE, 0.01 better in MAE).
 
+## Phase 4A, step 2c: concentration calibration (temperature), 2018-19
+
+`python scripts/player_graph/rotation_temperature.py`: `s' = s^tau / Σ s^tau`
+over the same eligible teammates, on the frozen run's tables (baselines, events
+and targets unchanged). Criterion and decision rules fixed before running
+(minutes MSE of every player who played; v1 on a tie; `tau > 1` only for a
+clear gain; no small global gain bought with worse multi-absence games).
+
+| Shares | tau | Minutes MSE | Gain MSE, one absence | Gain MSE, 2+ absences | Share to real top (median) | Effective absorbers | Multi-absence games with a stacked player | Largest predicted gain / its actual |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| v1 | **1** | **37.15** | 32.57 | 39.88 | 10.0% | 9.7 | 10% | 10.1 / 8.9 |
+| v1 | 1.5 | 38.62 | 33.06 | 42.21 | 9.7% | 7.4 | 23% | 13.0 / 8.7 |
+| v1 | 2 | 41.54 | 34.25 | 46.74 | 9.0% | 5.7 | 31% | 15.6 / 8.8 |
+| v1 | 3 | 48.72 | 37.30 | 57.78 | 6.7% | 3.7 | 38% | 19.4 / 8.7 |
+| v2 | 1 | 37.18 | 32.23 | 40.10 | 10.8% | 9.5 | 19% | 12.0 / 9.6 |
+| v2 | 1.5-3 | 40.5-56.3 | 32.8-37.5 | 45.6-71.0 | 10.9-7.1% | 7.1-3.5 | 32-46% | 15.7-23.4 / 9.5 |
+
+Reading: sharpening concentrates the minutes on the model's own top pick, which
+is the real top absorber only about a quarter of the time, so the share given
+to the real top does not rise (it falls) while errors grow, worst with several
+absences, where more bags stack on one player (10% → 38% of those games). At
+`tau = 1` the model's largest predicted gain is already close to what that
+player really gains (10.1 vs 8.9 min). **The flat shares are the error-optimal
+hedge given the ranking uncertainty**; concentrating more requires better
+ranking, not a calibration. Decision (by the rules fixed in advance): `tau = 1`,
+v1. C is frozen.
+
 ## Future checks
 
 ### Guarding weights (`expected_guard`)
@@ -803,6 +831,12 @@ the criterion (v2 0.01 worse in MSE, 0.01 better in MAE).
 - [ ] Very short stints (median ~73 s) give noisy labels; check whether to drop stints under some possession count or rely on possession weights.
 - [ ] Possession estimate at stint boundaries: an offensive rebound credited to a stint whose miss was in the previous one. Check whether attributing it to the miss's stint fixes the negative estimates.
 - [ ] **Pace targets: stint duration as exposure (decided for phase 6).** `poss_per_48` is weighted by possessions like the other labels, so sub-second stints (free throws around a substitution: the clock is stopped, possessions are credited) dominate it: possession-weighted SD 136 around a mean of 112 (2018-10-16 → 2019-01-31), max 28,800; the smoke test's held-out loss / constant is 1.000. Keep those stints, but weight pace targets by the stint's **seconds** (exposure), so a sub-second stint counts next to nothing against one of several minutes and the weighted mean becomes Σ poss / Σ time (equivalently, model possessions with log-duration as an offset). Per-possession targets keep possession weights. Duration stays out of the encoder's inputs.
+
+### Phase 4A (minutes)
+
+- [ ] Better ranking of the main substitute is what would let the shares concentrate (step 2c): coach-specific rotation patterns, lineup co-occurrence with the absent player, the substitute's minutes in the absent player's slot of the rotation.
+- [ ] v2 "next man up" features improve the prior's ranking (top-1 17% → 30%) but tie on minutes; revisit them together with any ranking improvement.
+- [ ] A saturation term for one player absorbing several absences (multi-absence games are where concentrated shares fail).
 
 ### Phase 3 (RAPM with a profile prior)
 
