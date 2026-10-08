@@ -51,7 +51,7 @@ import pandas as pd
 class RotationParams:
     baseline_half_life: float = 15.0  # team games
     participation_window: int = 10  # team games before the current streak
-    share_half_life: float = 82.0  # team games
+    share_half_life: float = 41.0  # team games (frozen on 2018-19)
     history_games: int = 164  # team games kept per team
     min_vacated: float = 10.0  # minutes
     kappa: float = 30.0  # prior strength, in vacated minutes
