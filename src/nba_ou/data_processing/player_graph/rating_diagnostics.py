@@ -63,8 +63,10 @@ def decayed_exposure(
     half_life_days: float = 180.0,
 ) -> pd.DataFrame:
     """Per ``(as_of_date, player_id)``: ``poss_weight`` (decayed offensive
-    possessions) and ``seconds_weight`` (decayed seconds on court in stints
-    that enter the pace fit), from stints strictly before each date.
+    possessions), ``def_poss_weight`` (decayed possessions defended: the
+    diagonal of the ridge's defensive block) and ``seconds_weight`` (decayed
+    seconds on court in stints that enter the pace fit), from stints strictly
+    before each date.
 
     Mirrors the accumulation in ``walk_forward_player_ratings``.
     """
@@ -74,14 +76,26 @@ def decayed_exposure(
     for row in frame.to_dict("records"):
         home, away = _lineup(row["home_lineup"]), _lineup(row["away_lineup"])
         home_poss, away_poss = _poss(row, "home"), _poss(row, "away")
-        for lineup, poss in ((home, home_poss), (away, away_poss)):
+        for attacking, defending, poss in (
+            (home, away, home_poss),
+            (away, home, away_poss),
+        ):
             if poss > 0:
-                rows.extend((row["game_date"], pid, poss, 0.0) for pid in lineup)
+                rows.extend(
+                    (row["game_date"], pid, poss, 0.0, 0.0) for pid in attacking
+                )
+                rows.extend(
+                    (row["game_date"], pid, 0.0, poss, 0.0) for pid in defending
+                )
         seconds = (row["end_ds"] - row["start_ds"]) / 10
         if (home_poss + away_poss) / 2 > 0 and seconds > 0:
-            rows.extend((row["game_date"], pid, 0.0, seconds) for pid in home + away)
+            rows.extend(
+                (row["game_date"], pid, 0.0, 0.0, seconds) for pid in home + away
+            )
     daily = (
-        pd.DataFrame(rows, columns=["game_date", "player_id", "poss", "seconds"])
+        pd.DataFrame(
+            rows, columns=["game_date", "player_id", "poss", "def_poss", "seconds"]
+        )
         .groupby(["game_date", "player_id"], sort=True)
         .sum()
     )
@@ -90,6 +104,7 @@ def decayed_exposure(
     by_day = {day: part.droplevel(0) for day, part in daily.groupby(level=0)}
     targets = {pd.Timestamp(date).normalize() for date in target_dates}
     poss = np.zeros(len(players))
+    def_poss = np.zeros(len(players))
     seconds = np.zeros(len(players))
     output = []
     previous = None
@@ -97,16 +112,18 @@ def decayed_exposure(
         if previous is not None:
             factor = 0.5 ** ((day - previous).days / half_life_days)
             poss *= factor
+            def_poss *= factor
             seconds *= factor
         previous = day
         if day in targets:
-            seen = (poss > 0) | (seconds > 0)
+            seen = (poss > 0) | (def_poss > 0) | (seconds > 0)
             output.append(
                 pd.DataFrame(
                     {
                         "as_of_date": day,
                         "player_id": np.asarray(players)[seen],
                         "poss_weight": poss[seen],
+                        "def_poss_weight": def_poss[seen],
                         "seconds_weight": seconds[seen],
                     }
                 )
@@ -115,8 +132,15 @@ def decayed_exposure(
             part = by_day[day]
             ids = part.index.map(index).to_numpy()
             poss[ids] += part["poss"].to_numpy()
+            def_poss[ids] += part["def_poss"].to_numpy()
             seconds[ids] += part["seconds"].to_numpy()
-    columns = ["as_of_date", "player_id", "poss_weight", "seconds_weight"]
+    columns = [
+        "as_of_date",
+        "player_id",
+        "poss_weight",
+        "def_poss_weight",
+        "seconds_weight",
+    ]
     return (
         pd.concat(output, ignore_index=True)
         if output
