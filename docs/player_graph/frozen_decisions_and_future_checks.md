@@ -66,6 +66,14 @@ tuned value.
 | Game graph | Full-health counterfactual | Its own graph (`scenario_id = -1`), every roster player available | Absence features compare tonight with it | — |
 | Game graph | Guard shares | `m_ij = r_hat_ij·E[overlap_ij] / Σ_l r_hat_il·E[overlap_il]` over the defenders playing in the scenario; unknown rates → shares ∝ overlap (`fallback`) | Same form as the guard benchmark's implied share; an absent defender leaves the denominator, which reassigns his attackers with no extra rule | Phase 4B |
 | Game graph | Storage | Tables: `scenarios`, `nodes`, `edges` (teammate and opponent stored once, guards directed) | Node count varies per game, unlike stints | Phase 6 |
+| Oracle | Purpose | **Diagnostic only**: the game's own minutes, rotation and guarding never produce a feature or train a model | Plan principle 7 | — |
+| Oracle | Factor decomposition | `m_ij ∝ r_ij·overlap_ij`. Oracle rotation (4A) replaces node minutes **and** overlap with actual values, keeping `r_hat`; oracle guards (4B) replaces only `r_hat` with the observed rate, keeping projected minutes and expected overlap; oracle both replaces all | Keeps 4A (who plays, how much, with whom) and 4B (given they share the floor, who guards whom) apart; observed overlap in the guard oracle would mix them | — |
+| Oracle | Actual minutes and overlap | **Regulation only** (periods 1-4) from the stints | Minutes sum to 240 per team and overlaps are consistent with them; an overtime game does not reveal its overtime | — |
+| Oracle | Observed rate | `pair_game.guard_rate` (whole game: matchups have no timestamps); a pair without one keeps `r_hat` | With both oracles the shares are exactly the observed matchup distribution in games without overtime; with overtime, whole-game rates times regulation overlap only approximate it | — |
+| Oracle | Full-health counterfactual | No actual version, so it keeps projected minutes and expected overlap: v0's for the rotation oracle; the guard oracle's (observed rates where a pair has one, `r_hat` for an absent defender) for the guard and both oracles | An absent player has no observed assignment; each impact changes only the factors its oracle changes | — |
+| Oracle | Readouts | R1 = 2_6 projection (only minutes move it); R2 = R1 with each team's defense replaced by `5·Σ_i w_i Σ_j m_ij·def_j`, `w_i ∝ min_i·usage_i` | With shares proportional to floor time R2 equals R1 (tested), so R2 − R1 is who guards whom | — |
+| Oracle | Usage | As-of `USG_PCT`, minutes-weighted over 365 days, shrunk to the league with 200 minutes; identical in every version | Only the studied weights may change between versions | — |
+| Oracle | Measures | Level calibrated with 2_6's `walk_forward_offset` (2018-19 built only to warm it up); total MAE; edge vs `LINE_ERROR` (corr, slope, hit rate); absence impact vs `LINE_ERROR`; all games, \|v0 R1 impact\| > 3, key defender out (top-2 RAPM defender of his team's ≥ 20-minute rotation, expected absent ≥ 50%) | Plan phase 2 | — |
 | Game graph | Prediction time | Closing only | Intermediate snapshots only change the injury state | Next step |
 
 ## v0 benchmark (the reference phase 4B must beat)
@@ -124,6 +132,59 @@ the 2_6 projection off the v0 graphs' node minutes and compares it with 2_6's
 
 The injury report digest matched the build's (`293dfbebdb5b2820`).
 
+## Oracle: how to read it
+
+The oracle is **not a strict mathematical ceiling**:
+
+- It can **overstate** what is attainable: actual minutes and assignments react to the game itself (blowouts and garbage time, foul trouble, a hot scorer drawing a different defender).
+- It can **understate** what matchups are worth: R2 uses 2_6's stint RAPM `def_j`, which credits the five defenders equally, not the matchup-adjusted defensive rating of phase 4B.
+- The absence counterfactual has no observed version: for an absent defender the full-health graph keeps his expected `r_hat`.
+
+### v0 oracle result (2026-10-08)
+
+`python scripts/player_graph/oracle_ceiling.py summarize --seasons 2019-2025`:
+8,759 closing games with all four versions (2018-19 only warms up the level
+calibration). Paired difference vs v0 on the same games, mean ± SE; a negative
+absolute error and a positive hit rate (side of the closing line) are better.
+
+| Slice | Readout | Oracle | \|error\| | Hit rate |
+| --- | --- | --- | --- | --- |
+| All (8,759) | R1 | rotation (4A) | **-0.090 ± 0.026** | **+1.40 ± 0.47 pp** |
+| All | R2 | guards (4B) | +0.001 ± 0.006 | -0.10 ± 0.24 pp |
+| All | R2 | both | -0.082 ± 0.027 | +1.06 ± 0.47 pp |
+| All | R2 − R1 | v0 | -0.003 ± 0.006 | |
+| \|v0 impact\| > 3 (2,281) | R1 | rotation | -0.094 ± 0.053 | +0.35 ± 0.90 pp |
+| \|v0 impact\| > 3 | R2 | guards | -0.016 ± 0.013 | 0.00 ± 0.49 pp |
+| Key defender out (4,005) | R1 | rotation | **-0.172 ± 0.039** | **+1.60 ± 0.70 pp** |
+| Key defender out | R2 | guards | -0.008 ± 0.010 | +0.47 ± 0.37 pp |
+
+v0 itself: total MAE 14.53, hit rate 50.6% against the closing line.
+
+Reading:
+
+- **Rotation (4A) has measurable headroom**, about twice as large when a key
+  defender is out. It is an upper bound that includes reactive information
+  (garbage time, foul trouble), so a projection model will recover only part
+  of it; the target is who replaces whom in absence games.
+- **Guard weights (4B) have none in this readout**: even the observed
+  assignments do not move R2, and R2 ≈ R1 in v0. With stint RAPM `def_j`,
+  reweighting the same five defenders changes little. Any 4B value must come
+  from new information, i.e. the **matchup-adjusted defensive rating**, not
+  from better assignment weights. v0 guard weights stay as they are.
+
+Decisions taken from it (2026-10-08):
+
+- 4A focuses on **absence redistribution** (who absorbs an absent player's
+  minutes, and how rotation and overlap change), not on fine-tuning minutes in
+  normal games.
+- No more work on `expected_guard` weights (k, half-life, window) until
+  player-vs-player information is shown to add signal. What was tested is
+  narrow: guard weights add nothing **when they only weight a scalar RAPM
+  defensive rating**. The next 4B test is the matchup-adjusted defensive
+  rating, with R2 and the oracle rerun on it. Guard edges stay as structure for
+  the FM / GNN, where they can interact with attacker and defender embeddings
+  and the rest of the floor.
+
 ## Future checks
 
 ### Guarding weights (`expected_guard`)
@@ -153,6 +214,8 @@ The injury report digest matched the build's (`293dfbebdb5b2820`).
 - [ ] Intermediate snapshots (each snapshot's injury state).
 - [ ] Guard benchmark on game graphs: expected overlap instead of the actual co-floor time, to measure how much projected minutes and overlaps degrade guard shares (part of the oracle).
 - [ ] Doubtful players beyond 3 per team are folded into their most likely state (2_6 rule); revisit if games with many doubts matter.
+- [ ] **Phase 4A requirement, not a v0 change.** `allocate_minutes` (2_6) has no 48-minute cap: with absences a player can be allocated more than 48 minutes (5.4% of v0 games 2019-25, 3-7% a season), and then the overlap cap `min(min_i, min_j)` binds and guard shares stop being proportional to floor time. v0 keeps it on purpose, because v0 must replicate 2_6 exactly. The 4A / v1 minutes provider must satisfy `0 <= minutes <= 48` per player and `sum = 240` per team, and we measure whether fixing it adds anything beyond being physically correct.
+- [ ] Rerun the oracle with phase 4B's matchup-adjusted defensive rating in R2 (the v0 oracle uses stint RAPM `def_j`).
 
 ### Stint graph
 

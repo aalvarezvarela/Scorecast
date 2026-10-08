@@ -207,6 +207,23 @@ def _roster_pairs(game_id: str, home: list[str], away: list[str]) -> tuple:
     return undirected, directed
 
 
+def guard_shares(
+    groups: list[pd.Series], rate: np.ndarray, overlap: np.ndarray
+) -> tuple[np.ndarray, np.ndarray]:
+    """``(m, fallback)``: ``m`` proportional to ``rate * overlap`` within each
+    group (one attacker in one scenario). A group whose rates are not all
+    finite, or whose load sums to 0, gets shares proportional to the overlap
+    and ``fallback`` True."""
+    index = groups[0].index
+    load = pd.Series(np.asarray(rate, float) * np.asarray(overlap, float), index=index)
+    overlap = pd.Series(np.asarray(overlap, float), index=index)
+    finite = np.isfinite(load).groupby(groups).transform("all")
+    total = load.where(finite, 0.0).groupby(groups).transform("sum")
+    usable = finite & (total > 0)
+    constant = overlap / overlap.groupby(groups).transform("sum")
+    return (load / total).where(usable, constant).to_numpy(), (~usable).to_numpy()
+
+
 def _scenario_edges(
     game_id: str,
     scenario: dict,
@@ -245,22 +262,15 @@ def _scenario_edges(
         pd.MultiIndex.from_arrays([a, b])
     ).to_numpy()
     rate = directed["r_hat"].to_numpy(float)
-    load = pd.Series(
-        rate * directed["expected_overlap"].to_numpy(), index=directed.index
+    shares, fallback = guard_shares(
+        [directed["off_player_id"]], rate, directed["expected_overlap"].to_numpy()
     )
-    by_attacker = directed["off_player_id"]
-    finite = np.isfinite(load).groupby(by_attacker).transform("all")
-    total = load.where(finite, 0.0).groupby(by_attacker).transform("sum")
-    usable = finite & (total > 0)
-    constant = directed["expected_overlap"] / directed["expected_overlap"].groupby(
-        by_attacker
-    ).transform("sum")
     guard_edges = pd.DataFrame(
         {
             "relation": "guards",
             "src": directed["def_player_id"],
             "dst": directed["off_player_id"],
-            "weight": (load / total).where(usable, constant).to_numpy(),
+            "weight": shares,
             "expected_overlap": directed["expected_overlap"].to_numpy(),
             "r_hat": np.nan_to_num(rate, nan=0.0),
             "r_hat_known": np.isfinite(rate),
@@ -269,7 +279,7 @@ def _scenario_edges(
                 directed["hist_cofloor_seconds_decayed"].fillna(0.0).to_numpy()
             ),
             "has_pair_history": directed["has_pair_history"].eq(True).to_numpy(),
-            "fallback": (~usable).to_numpy(),
+            "fallback": fallback,
         }
     )
     pair_edges = pairs[
