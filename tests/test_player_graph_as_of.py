@@ -4,9 +4,11 @@ import numpy as np
 import pandas as pd
 import pytest
 from nba_ou.data_processing.player_graph.as_of import (
+    BOX_SOURCE,
     CLOSING,
     PointInTimeData,
     game_date_index,
+    with_local_box_scores,
 )
 
 DATES = {
@@ -185,3 +187,88 @@ def test_load_keeps_box_scores_of_the_october_2020_finals(monkeypatch, tmp_path)
     data = PointInTimeData.load([2019], local_root=tmp_path)
     assert spans[0].max() == pd.Timestamp("2020-10-11")
     assert len(data.as_of("2020-10-12").box_scores()) == 1
+
+
+# As in the season CSVs: ids without leading zeros, minutes as "MM.000000:SS",
+# turnovers called TO, empty minutes for a DNP.
+CSV_ROWS = [
+    {"GAME_ID": 21700001, "TEAM_ID": 1610612737, "PLAYER_ID": 203145,
+     "START_POSITION": "G", "MIN": "30.000000:30", "PTS": 12, "TO": 2},
+    {"GAME_ID": 21700001, "TEAM_ID": 1610612737, "PLAYER_ID": 2,
+     "START_POSITION": None, "MIN": None, "PTS": 0, "TO": 0},
+    # Not in the games table (e.g. an exhibition): dropped, as from the DB.
+    {"GAME_ID": 91700001, "TEAM_ID": 1, "PLAYER_ID": 3,
+     "START_POSITION": None, "MIN": "10.000000:00", "PTS": 4, "TO": 0},
+]  # fmt: skip
+GAMES_2017 = pd.DataFrame({"GAME_ID": ["0021700001"], "GAME_DATE": ["2017-10-17"]})
+
+
+def _write_csv(root, year, rows):
+    path = root / f"nba_players_{year}_{(year + 1) % 100:02d}.csv"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    pd.DataFrame(rows).to_csv(path, index=False)
+
+
+def _db_box(game_id="0021800001", date="2018-10-16"):
+    return pd.DataFrame(
+        {
+            "GAME_ID": [game_id],
+            "GAME_DATE": [pd.Timestamp(date)],
+            "PLAYER_ID": ["9"],
+            "MIN": [20.0],
+            "TOV": [1.0],
+        }
+    )
+
+
+def test_a_season_the_database_lacks_is_read_from_the_csvs(tmp_path):
+    _write_csv(tmp_path, 2017, CSV_ROWS)
+    box = with_local_box_scores(_db_box(), [2017, 2018], GAMES_2017, tmp_path)
+    local = box.loc[box[BOX_SOURCE].eq("csv")].set_index("PLAYER_ID")
+    assert box[BOX_SOURCE].value_counts().to_dict() == {"csv": 2, "db": 1}
+    assert list(local.index) == ["203145", "2"]
+    assert (local["GAME_ID"] == "0021700001").all()
+    assert (local["GAME_DATE"] == pd.Timestamp("2017-10-17")).all()
+    assert local.loc["203145", "MIN"] == pytest.approx(30.5)
+    assert local.loc["2", "MIN"] == 0
+    assert local.loc["203145", "TOV"] == 2
+
+
+def test_a_season_the_database_holds_is_never_mixed_with_csv_rows(tmp_path):
+    _write_csv(tmp_path, 2017, CSV_ROWS)
+    db = _db_box("0021700001", "2017-10-17")
+    box = with_local_box_scores(db, [2017], GAMES_2017, tmp_path)
+    assert box[BOX_SOURCE].eq("db").all() and len(box) == 1
+
+
+def test_game_graph_rosters_read_only_the_database_rows(tmp_path):
+    _write_csv(tmp_path, 2017, CSV_ROWS)
+    box = with_local_box_scores(_db_box(), [2017, 2018], GAMES_2017, tmp_path)
+    data = PointInTimeData.from_frames(pd.DataFrame(), pd.DataFrame(), box)
+    assert data.box_scores_2_6["GAME_ID"].tolist() == ["0021800001"]
+    assert len(data.as_of("2018-10-17").box_scores()) == 3
+
+
+def test_load_reads_the_csvs_for_seasons_without_database_box_scores(
+    monkeypatch, tmp_path
+):
+    from nba_ou import postgre_db
+    from nba_ou.create_training_data.schema_layers import inputs
+    from nba_ou.data_processing.lineups import stint_store
+
+    _write_csv(tmp_path / "season_games_data", 2017, CSV_ROWS)
+    monkeypatch.setattr(
+        inputs,
+        "load_player_history",
+        lambda dates: pd.DataFrame(columns=["GAME_ID", "GAME_DATE", "PLAYER_ID"]),
+    )
+    monkeypatch.setattr(postgre_db, "load_games_from_db", lambda seasons: GAMES_2017)
+    monkeypatch.setattr(stint_store, "read_stints", lambda *a, **k: pd.DataFrame())
+    data = PointInTimeData.load([2017], local_root=tmp_path)
+    assert len(data.as_of("2017-10-18").box_scores()) == 2
+    assert data.box_scores_2_6.empty
+
+
+def test_load_rejects_seasons_before_2_7_starts(tmp_path):
+    with pytest.raises(ValueError, match="2_7 starts in 2016"):
+        PointInTimeData.load([2015, 2016], local_root=tmp_path)

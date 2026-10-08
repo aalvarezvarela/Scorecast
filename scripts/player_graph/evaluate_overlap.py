@@ -20,7 +20,7 @@ from pathlib import Path
 
 import pandas as pd
 from nba_ou.data_processing.lineups.stint_store import read_stints
-from nba_ou.data_processing.player_graph.as_of import PointInTimeData
+from nba_ou.data_processing.player_graph.as_of import FIRST_SEASON, PointInTimeData
 from nba_ou.data_processing.player_graph.overlap import (
     OverlapParams,
     build_overlap_game,
@@ -32,7 +32,6 @@ from nba_ou.data_processing.player_graph.overlap_benchmark import (
 )
 
 DEFAULT_K_GRID = (150.0, 300.0, 600.0, 1200.0, 2400.0, 5000.0, 10000.0)
-FIRST_STINT_SEASON = 2016
 
 
 def season_range(text: str) -> list[int]:
@@ -45,7 +44,7 @@ def benchmark_pairs(
 ) -> pd.DataFrame:
     """Every evaluated pair-game with its as-of evidence columns."""
     history_years = -(-params.window_days // 365)
-    loaded = range(max(FIRST_STINT_SEASON, seasons[0] - history_years), seasons[-1] + 1)
+    loaded = range(max(FIRST_SEASON, seasons[0] - history_years), seasons[-1] + 1)
     stints = read_stints(list(loaded), local_root=local_root)
     overlaps = pd.concat(
         [build_overlap_game(stints.loc[stints["season_year"].eq(s)]) for s in loaded],

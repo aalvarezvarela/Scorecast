@@ -21,7 +21,9 @@ tuned value.
 | --- | --- | --- | --- | --- |
 | `as_of` | Cutoff for game data | `game_date < D`, time of day ignored | Same rule as 2_6; a game finished earlier on D is excluded | Only if intraday snapshots need same-day games |
 | `as_of` | Injury cutoff | Timestamp, done upstream in SQL | `injury_report_aiven.fetch` already returns the last report before tip / snapshot | — |
-| Data | Player box scores | Start in 2018-19 (DB has none before) | Measured 2026-10-07: 0 player rows for 2014-15 to 2017-18 | If pretraining should start in 2016-17 / 2017-18 |
+| Data | First season | **2016-17** (`as_of.FIRST_SEASON`); `PointInTimeData.load` refuses earlier seasons | Stints exist from 2012-13 (audited 2026-10-08, same standard), but before 2016-17 there is no matchup tracking at all and adding them means infrastructure work before the encoder has shown any signal; 2016-25 is enough volume to test the approach first | Phase 6 (see checks: older seasons) |
+| Data | Player box scores | DB from 2018-19 on; **2016-17 and 2017-18 from the season CSVs** (`data/season_games_data/nba_players_YYYY_YY.csv`, the files the DB was loaded from). Whole seasons only: a season the DB holds is never mixed with CSV rows; every row carries `BOX_SOURCE` (`db` / `csv`) | The DB deletes box scores before 2018-19 (`delete_old_data.py`), the CSVs do not. On 2018-19, which both hold, the CSV equals the DB row for row (35,845 rows; minutes, every stat, `USG_PCT`, `START_POSITION`). The only difference is the CSV's turnover column name, `TO` | — |
+| Data | Box scores for game-graph rosters | **DB rows only** (`PointInTimeData.box_scores_2_6`), as 2_6 reads them; positions, node profiles and usage read all rows | v0 must reproduce 2_6 exactly; with CSV rows, a player who missed 2018-19 would get 2017-18 recent minutes. Re-verified after the change (see the integration check) | Phase 4A (the minutes provider may use the full history) |
 | Data | Preseason and All-Star rows | Excluded from position profiles | Do not describe a role | — |
 | `pair_game` | Guarding rate denominator | Our stints' co-floor seconds | NBA `pct_total_time_both_on` uses ≈ 0.39 × co-floor time (SD 0.056, 2023-24) and is rounded to 3 decimals | — |
 | `pair_game` | Matchup rows with no shared stint | Kept, `cofloor_seconds` 0, rate NaN | 3-151 rows a season (< 0.06%) | — |
@@ -30,9 +32,9 @@ tuned value.
 | Positions | Representation | Soft G/F/C probabilities | Avoids a hard threshold between starts and profile | Phase 4B |
 | Positions | Blend | `(starts + c·q) / (n_starts + c)`, `c = 5` pseudo-starts | Not tuned | See checks |
 | Positions | Profile classifier | Multinomial LR on per-36 AST, OREB, DREB, BLK, STL, FG3A, FGA, PF; trained on players with ≥ 10 starts; rates shrunk with 200 league-average minutes | Out of sample (next-60-day start position): 80-93% accuracy, 60-84% for < 10 prior starts | See checks |
-| Positions | No box scores and no starts | League share of starts per position | Affects 2017-18 bench players | — |
+| Positions | No box scores and no starts | League share of starts per position | Only debuts and the first games of 2016-17 since the CSV backfill | — |
 | Positions | Window | 3 seasons before D | Same as the guarding history | — |
-| `expected_guard` | Shrinkage strength `k` | **300 co-floor seconds** | Chosen on **2018-19 only**: weighted TVD 0.2755 (k=200), 0.2756 (300), 0.2786 (600), 0.2860 (1200). 200 and 300 tie; 300 kept as the slightly more conservative value | After the main out-of-sample evaluation |
+| `expected_guard` | Shrinkage strength `k` | **300 co-floor seconds** | Chosen on **2018-19 only**. Re-swept 2026-10-08 after the box-score backfill changed the 2018-19 position prior: weighted TVD 0.2743 (k=150), 0.2737 (200), **0.2736 (300)**, 0.2741 (400), 0.2760 (600), 0.2827 (1200); 300 is now the minimum outright and stays frozen. First sweep (no box scores before 2018-19): 0.2755 (200), 0.2756 (300), 0.2786 (600), 0.2860 (1200) | After the main out-of-sample evaluation |
 | `expected_guard` | Temporal decay | Half-life 365 days, applied to matchup and co-floor seconds before summing | Not tuned | See checks |
 | `expected_guard` | History window | 3 seasons (1,095 days) | Not tuned | See checks |
 | `expected_guard` | Position prior | `p_i' R p_j`, `R` = decayed 3×3 rate by attacker × defender position, positions as of D | Diagonal-dominant as expected (C on C 0.22, G on G 0.10 as of 2024-06-06) | Phase 4B |
@@ -70,9 +72,9 @@ tuned value.
 | Node profiles | Temporal rule | Box scores strictly before the as-of date (`as_of` view); preseason and All-Star excluded; window 2 seasons, half-life 180 days | Profiles should track the current role; not tuned | See checks |
 | Node profiles | Shrinkage | Toward the league: 200 minutes for rates and usage, 100 shooting attempts for TS%, 50 three-point attempts for 3P% | Low-minute and replacement players are the noisiest and matter most for the absence counterfactual | See checks |
 | Node profiles | Confidence | `minutes_window`, `games_window`, `minutes_decayed` (effective sample), `prior_weight = 200 / (minutes_decayed + 200)`, `days_since_last_game`, `games_in_data`, `has_box_history` | So the encoder can tell a measured profile from a prior | — |
-| Node profiles | No box scores | League rates, `prior_weight` 1, `has_box_history` False (all of 2016-17 and 2017-18, which the database lacks, and debuts) | A graph can always be built | Backfill check |
+| Node profiles | No box scores | League rates, `prior_weight` 1, `has_box_history` False (debuts, and the first games of 2016-17 where the data starts) | A graph can always be built | — |
 | Node profiles | Storage | `data/player_graph/node_profiles/season=YYYY.parquet` keyed `(as_of_date, player_id)`, for every game date and the day before (intermediate history dates); parameters in `season=YYYY.json` | Joins to any graph through its `as_of_date` | — |
-| Node profiles | Player set | Everyone seen in the window in counted box scores (no preseason / All-Star, positive minutes), matchups or stints, **plus the date's own stint players** (debuts, first games in the data), whose profile is still read strictly before the date | Preseason-only players would only add prior rows; without same-day players 1.8% of 2016-17 stint nodes had no profile. Coverage of stint nodes: 100% every season; with box history 98.1% (2018-19), 99.5-99.7% (2019-25), 0% (2016-18, no box scores) | — |
+| Node profiles | Player set | Everyone seen in the window in counted box scores (no preseason / All-Star, positive minutes), matchups or stints, **plus the date's own stint players** (debuts, first games in the data), whose profile is still read strictly before the date | Preseason-only players would only add prior rows; without same-day players 1.8% of 2016-17 stint nodes had no profile. Coverage of stint nodes: 100% every season; with box history 98.3% (2016-17), 99.5-99.7% (2017-25). Before the CSV backfill: 0% in 2016-17 and 2017-18, 98.1% in 2018-19 | — |
 | Oracle | Purpose | **Diagnostic only**: the game's own minutes, rotation and guarding never produce a feature or train a model | Plan principle 7 | — |
 | Oracle | Factor decomposition | `m_ij ∝ r_ij·overlap_ij`. Oracle rotation (4A) replaces node minutes **and** overlap with actual values, keeping `r_hat`; oracle guards (4B) replaces only `r_hat` with the observed rate, keeping projected minutes and expected overlap; oracle both replaces all | Keeps 4A (who plays, how much, with whom) and 4B (given they share the floor, who guards whom) apart; observed overlap in the guard oracle would mix them | — |
 | Oracle | Actual minutes and overlap | **Regulation only** (periods 1-4) from the stints | Minutes sum to 240 per team and overlaps are consistent with them; an overtime game does not reveal its overtime | — |
@@ -94,9 +96,22 @@ expected and observed in-game guarding shares, 188,238 attacker-games:
 | Estimator | All | 2019 | 2020 | 2021 | 2022 | 2023 | 2024 | 2025 |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | Constant rate (co-floor only) | 0.3605 | 0.3947 | 0.3809 | 0.3561 | 0.3561 | 0.3581 | 0.3452 | 0.3390 |
-| Position prior only | 0.2996 | 0.3267 | 0.3125 | 0.2972 | 0.2990 | 0.3004 | 0.2863 | 0.2799 |
-| Pair history only | 0.2713 | 0.2883 | 0.2807 | 0.2737 | 0.2685 | 0.2658 | 0.2617 | 0.2638 |
-| **v0 (k = 300)** | **0.2571** | 0.2753 | 0.2666 | 0.2576 | 0.2553 | 0.2542 | 0.2470 | 0.2471 |
+| Position prior only | 0.2994 | 0.3256 | 0.3123 | 0.2972 | 0.2990 | 0.3004 | 0.2863 | 0.2799 |
+| Pair history only | 0.2713 | 0.2882 | 0.2807 | 0.2737 | 0.2685 | 0.2658 | 0.2617 | 0.2638 |
+| **v0 (k = 300)** | **0.2571** | 0.2751 | 0.2666 | 0.2576 | 0.2553 | 0.2542 | 0.2470 | 0.2471 |
+
+Since the box-score backfill (2026-10-08). Before it, 2019-20 read 0.3267
+(position prior), 0.2883 (pair history) and 0.2753 (v0), and the position prior
+was 0.3125 in 2020-21 and 0.2996 overall; nothing else moved. That is the
+expected footprint: positions use a 3-season window, so only seasons whose
+window reaches 2016-18 can change. Pair by pair, every history column (`n_games`,
+raw and decayed co-floor and matchup seconds, `has_pair_history`) and
+`prior_weight` are identical before and after in every season; only `r_prior`
+and `r_hat` move, by a mean 0.015 / 0.010 (2017-18), 0.0035 / 0.0019
+(2018-19), 0.0009 / 0.0005 (2019-20), 0.0002 / 0.0001 (2020-21), and are
+bit-identical from 2021-22 on. (The pair-history-only baseline moves too
+because it shrinks with k = 1e-6, so a pair with no history still gets
+`r_prior`.)
 
 Error by the attacker's share-weighted `prior_weight` rises monotonically, so
 the evidence columns carry information:
@@ -138,6 +153,7 @@ the 2_6 projection off the v0 graphs' node minutes and compares it with 2_6's
 | 2019-10-22 → 2019-11-15 (season start) | 174 | 0 | 100% equal |
 | 2018-10-16 → 2018-12-15 (no reports yet) | 435, all uncovered | — | the same 435 games NaN in the file and without graphs |
 | 2019-01-01 → 2019-02-15 | 318 | 1.1e-13 | 100% equal |
+| 2018-12-17 → 2019-01-31 (after the box-score backfill; first covered games) | 327 | 1.1e-13 | 100% equal |
 
 Intermediate (`--intermediate …`), against `intermediate_line_data_2_6_20261003`
 with each snapshot's report state and history date; games without a graph
@@ -147,6 +163,7 @@ are exactly the file's NaN rows at every horizon:
 | --- | --- | --- | --- | --- |
 | 2023-12-01 → 2023-12-31 | 0, 360, 720, 1080 | 208 / 168 / 152 / 150 | ≤ 1.4e-13 | 100% equal |
 | 2019-10-22 → 2019-11-10 | all 17 | 139 (T-0) … 89 (T-1080) | ≤ 5.7e-14 | 100% equal |
+| 2019-10-22 → 2019-11-05 (after the box-score backfill) | 0, 360, 1080 | 102 / 88 / 68 | ≤ 5.7e-14 | 100% equal |
 
 The injury report digest matched the build's (`293dfbebdb5b2820`).
 
@@ -177,6 +194,12 @@ absolute error and a positive hit rate (side of the closing line) are better.
 | Key defender out | R2 | guards | -0.008 ± 0.010 | +0.47 ± 0.37 pp |
 
 v0 itself: total MAE 14.53, hit rate 50.6% against the closing line.
+
+The stored oracle tables predate the box-score backfill and were not rebuilt.
+For 2019-25 the backfill only moves `r_prior` in 2019-20 and 2020-21 (mean
+|Δ| ≤ 0.0009, see the benchmark) and the 2018-19 warm-up of the level
+calibration; the as-of usage window (365 days) never reaches the CSV seasons
+from 2019-20 on. Rebuild them with the 4B rerun.
 
 Reading:
 
@@ -254,13 +277,24 @@ Decisions taken from it (2026-10-08):
 
 - [ ] Evaluate calibration of the G/F/C probabilities (reliability curve, Brier score), not only classification accuracy.
 - [ ] Tune the pseudo-start count `c` and the minimum starts used as classifier labels.
-- [ ] Add a profile for 2017-18 bench players (no box scores) from matchup production, or backfill the 2016-17 / 2017-18 box scores.
 
 ### Data
 
+- [ ] Burn-in of 2016-17: `load` reads the CSVs only for requested seasons, so profiles and positions in the first weeks of 2016-17 are priors although 2015-16 box scores exist. Loading 2015-16 as box-score context only (no stints) is a possible improvement; test it in phase 6 if starting 2016-17 with little history hurts pretraining.
 - [ ] Check whether the matchup store can cover Play-In (`005`) and NBA Cup final (`006`) games.
 - [ ] Measure matchup revisions: morning-after fetch vs later refetch for a sample of games.
+
+### Older seasons (2012-13 → 2015-16)
+
+Audited 2026-10-08 (raw PBP V3 and GameRotation archive, rotations rebuilt from PBP V2, stints built). Kept out of 2_7 for now; recorded so the extension can be decided on evidence.
+
+- Stint quality is practically the same standard as 2016-25: validated stints for 98.2% (2012-13), 99.5%, 99.8%, 99.2% (2015-16) of regular-season and playoff games, every rotation rebuilt from PBP V2 (as for 2016-17); summed team PTS, FGA, FG3A, FTA, OREB, DREB and TOV equal the box score in 100% of team-games. Gaps: 2012-13's final night (16 games, no PBP V3 in the archive, the API serves it) and 3-10 games a season that failed the V2 rebuild self-check.
+- Box scores are complete in the CSVs (100% of games, `START_POSITION` and `USG_PCT` populated). The DB games table starts in 2014-15, so 2012-13 and 2013-14 would also need game dates from the games CSVs.
+- **No observed matchup edges before 2017-18**: NBA matchup tracking starts that season (the archive starts there too; a live API probe on 2026-10-08 hit a rate-limit block, so not re-verified at the source). Guard edges would be position-prior only (`prior_weight` 1, `has_pair_history` False) or masked. RAPM ratings would need a separate fit for as-of dates before 2017-10 (refitting from 2012 would change the ratings 2_6 uses). No official injury reports (they start 2018-12-17), so no game graphs.
+- [ ] These seasons could extend the stage 1 pretraining of **teammate / opponent interactions** (stint graphs: nodes, teammate and opponent edges, stint labels).
+- [ ] In phase 6, compare pretraining from 2012-13 against the current history (2016-17 on) before taking on the extra cost. Note the era shift: pace in the stints rises from 93.7 possessions per 48 (2012-13) to ~102 (2018-25).
 
 ## Done
 
 - **k for v0** (2026-10-07): swept on 2018-19 only; 300 frozen (see table above).
+- **Box-score backfill for 2016-17 and 2017-18** (2026-10-08): `as_of` falls back to the season CSVs for whole seasons the DB lacks; positions, node profiles and `expected_guard` rebuilt; game-graph rosters keep the DB rows only, and 2_6 is still reproduced exactly. k re-swept on 2018-19 only: 300 stays (see the frozen table and the benchmark).

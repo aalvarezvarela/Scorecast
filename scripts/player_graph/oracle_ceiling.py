@@ -43,7 +43,11 @@ from nba_ou.data_processing.lineups.features import (
     load_rating_book,
     walk_forward_offset,
 )
-from nba_ou.data_processing.player_graph.as_of import CLOSING, PointInTimeData
+from nba_ou.data_processing.player_graph.as_of import (
+    CLOSING,
+    FIRST_SEASON,
+    PointInTimeData,
+)
 from nba_ou.data_processing.player_graph.expected_guard import expected_guard
 from nba_ou.data_processing.player_graph.game_graph import (
     FULL_HEALTH,
@@ -204,7 +208,7 @@ def build(seasons: list[int], force: bool) -> None:
         return
     started = time.time()
     data = PointInTimeData.load(
-        range(max(2016, todo[0] - 3), todo[-1] + 1), closing_injuries=True
+        range(max(FIRST_SEASON, todo[0] - 3), todo[-1] + 1), closing_injuries=True
     )
     state = data.injury_report(CLOSING)
     p_out = player_out_probabilities(state.statuses)
@@ -216,7 +220,7 @@ def build(seasons: list[int], force: bool) -> None:
         started = time.time()
         games = season_games(season)
         dates = games.set_index("GAME_ID")["GAME_DATE"]
-        nights = game_nights(games, data.box_scores, p_out, excluded=excluded)
+        nights = game_nights(games, data.box_scores_2_6, p_out, excluded=excluded)
         v0 = build_game_graphs(data, games, nights, report_covered=state.covered)
         stints = regulation_stints(
             data.stints.loc[data.stints["game_id"].isin(set(v0.scenarios["game_id"]))]

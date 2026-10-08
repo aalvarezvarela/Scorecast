@@ -9,8 +9,8 @@ expected rate needs no tracking of the game itself, so games without matchups
 
     python scripts/player_graph/build_expected_guard.py --min-season 2016 --max-season 2025
 
-Needs ``pair_game`` (``build_pair_game.py``) and the database (box scores for
-the profile positions). Output:
+Needs ``pair_game`` (``build_pair_game.py``) and the box scores (database, or
+its CSVs before 2018-19) for the profile positions. Output:
 ``data/player_graph/expected_guard/v0/season=YYYY.parquet``, each next to a
 ``season=YYYY.json`` with the parameters that built it. ``--reshrink`` applies
 a new k to the stored seasons it is given and updates their own JSON only.
@@ -24,7 +24,7 @@ import time
 from pathlib import Path
 
 import pandas as pd
-from nba_ou.data_processing.player_graph.as_of import PointInTimeData
+from nba_ou.data_processing.player_graph.as_of import FIRST_SEASON, PointInTimeData
 from nba_ou.data_processing.player_graph.expected_guard import (
     VERSION,
     ExpectedGuardParams,
@@ -102,7 +102,7 @@ def reshrink(out_dir: Path, seasons: range, k: float) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--local-root", type=Path, default=Path("data"))
-    parser.add_argument("--min-season", type=int, default=2016)
+    parser.add_argument("--min-season", type=int, default=FIRST_SEASON)
     parser.add_argument("--max-season", type=int, required=True)
     defaults = ExpectedGuardParams()
     parser.add_argument("--k", type=float, default=defaults.k)
@@ -123,7 +123,7 @@ def main() -> None:
     # History reaches back one window before the first season built.
     first = args.min_season - -(-params.window_days // 365)
     data = PointInTimeData.load(
-        range(max(first, 2016), args.max_season + 1), local_root=args.local_root
+        range(max(first, FIRST_SEASON), args.max_season + 1), local_root=args.local_root
     )
     for season in range(args.min_season, args.max_season + 1):
         started = time.time()
