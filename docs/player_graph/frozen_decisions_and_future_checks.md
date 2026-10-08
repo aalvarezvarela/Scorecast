@@ -607,6 +607,71 @@ lambda 3,000; pace shrunk toward zero at lambda 10,000; `f` ridge strengths
 0.1 / 100 / 0.1; monthly expanding refit; debut and no-profile fallbacks as
 defined above.
 
+## Phase 4A, step 1: where 2_6's projected minutes fail (2018-19)
+
+`python scripts/player_graph/minutes_diagnostic.py` (module
+`player_graph/minutes_diagnostics.py`). Diagnostic only, development season.
+Projected minutes are 2_6's closing projection, the scenario-weighted
+`allocate_minutes` the v0 game graph carries; actual minutes are regulation
+minutes from the stints. 868 games whose two teams had filed a report and that
+have validated stints (1,736 team-games, 24,855 player rows); both sides sum to
+240 per team-game.
+
+| Per-player MAE (min) | Nobody out | ≥ 1 listed out |
+| --- | --- | --- |
+| Available, projected starters | 4.74 | 5.28 |
+| Available, projected bench | 4.75 | 5.84 |
+| Listed uncertain (0.1 < p_out < 0.9) | 11.16 (they play 48% of the time) | |
+| Not on the projected roster | 15.5 (projected 0, play 15.5 on average) | |
+
+| Misallocated minutes per team-game (Σ \|proj − actual\| / 2) | 0 out | 1 out | 2 out | 3+ out |
+| --- | --- | --- | --- | --- |
+| Total | 34.7 | 36.6 | 36.7 | 43.3 |
+| Available players who did not play | 7.3 | 7.5 | 6.2 | 6.5 |
+| Players not on the roster | 1.2 | 1.3 | 1.4 | 1.1 |
+| Everyone else (ordinary variation) | 25.4 | 26.7 | 28.1 | 34.8 |
+
+By the absent player's full-health minutes: 33.5 (< 15), 37.8 (15-25),
+39.7 (25-32), 41.5 (> 32). By final margin, ordinary variation rises with
+blowouts (26.5 below 10 points, 30.6 at 20+).
+
+**Redistribution** (1,110 team-games with someone listed out; 37,497 absent
+full-health minutes):
+
+| Who absorbs the absent minutes | `allocate_minutes` | Reality |
+| --- | --- | --- |
+| Projected starters | 52% | 36% |
+| Projected bench | 48% | 56% |
+| Players not on the projected roster | 0% | 7% |
+| Least / middle / most position-similar third | 31 / 38 / 31% | 20 / 36 / 36% |
+
+- The absent minutes go mostly to **one** player: with a single ≥ 20-minute
+  player out (302 team-games), the top actual absorber takes a median **53%**
+  of them, where `allocate_minutes` gives him 8%. He is a projected bench
+  player 79% of the time, with a median full-health rank of 8 (outside the
+  usual rotation), and the most position-similar available player only 15%
+  of the time. Across available players, corr(projected change, actual
+  change) is 0.17 (slope 0.45).
+- **Returning players**: 87% of the minutes played by players off the
+  projected roster belong to players with ≥ 20 games in the data (18.7 min on
+  average): starters back from an absence longer than the 10-game roster
+  window, who drop off the roster.
+- **Available players who do not play** (14.1 projected min per team-game): 55%
+  of it is deep bench (< 10 full-health min, 43% of them play at all), 24%
+  rotation players (≥ 15 min) who sit 1.9% of the time unannounced.
+- **Above 48 minutes**: 1.6% of team-games have a scenario over 48 (max 82.5),
+  9.2% with 3+ players out; expected minutes over 48 in 0.9%.
+- The 2018-19 oracle tables are too small to split the rotation oracle's gain
+  by game type (+0.12 ± 0.17 overall; 88% of games have someone listed out on
+  either side).
+
+Reading: most of the misallocation is ordinary in-game variation (blowouts,
+fouls, matchups), which no pre-game projection recovers. What a pre-game model
+can recover is concentrated and specific: who takes an absent player's
+minutes (one backup, usually from the end of the rotation, not every teammate
+in proportion), keeping returning players on the roster, the deep bench's
+low chance of playing, and the 0 ≤ minutes ≤ 48 / sum 240 constraint.
+
 ## Future checks
 
 ### Guarding weights (`expected_guard`)
