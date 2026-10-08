@@ -139,3 +139,30 @@ def log_loss(q: pd.Series, played: pd.Series, eps: float = 1e-3) -> float:
     q = q.clip(eps, 1 - eps)
     y = played.astype(float)
     return float(-(y * np.log(q) + (1 - y) * np.log(1 - q)).mean())
+
+
+def monthly_models(
+    train_rows: pd.DataFrame,
+    months: list[pd.Period],
+    *,
+    min_train_rows: int = 5_000,
+    c: float = 1.0,
+) -> dict[pd.Period, object]:
+    """For each month, the logistic ``q`` fitted (scaler included) on the
+    labelled rows of earlier months only; months without enough history are
+    left out."""
+    from sklearn.linear_model import LogisticRegression
+    from sklearn.pipeline import make_pipeline
+    from sklearn.preprocessing import StandardScaler
+
+    train_month = pd.to_datetime(train_rows["game_date"]).dt.to_period("M")
+    features = feature_matrix(train_rows)
+    models = {}
+    for month in sorted(set(months)):
+        past = train_month < month
+        if past.sum() < min_train_rows:
+            continue
+        model = make_pipeline(StandardScaler(), LogisticRegression(C=c, max_iter=1000))
+        model.fit(features.loc[past], train_rows.loc[past, "played"])
+        models[month] = model
+    return models
