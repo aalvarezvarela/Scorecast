@@ -255,6 +255,69 @@ Stint-level labels are very noisy, so a ratio just under 1 is all a tiny model
 on three months can show; 3PA/FGA is the one label the node profiles clearly
 inform. The pace label has a problem of its own (see the stint graph checks).
 
+## Phase 3, step 1: where 2_6's RAPM fails for lack of sample (2018-19)
+
+`python scripts/player_graph/rapm_exposure_diagnostic.py` (module
+`player_graph/rating_diagnostics.py`). Diagnostic only: the stored 2_6 ratings
+(solver v2, lambda_offdef 1,000, lambda_pace 30,000, half-life 180 d, stints from
+2016-17) scored on every 2018-19 stint as 2_6 projects it, against each player's
+**as-of exposure** (2_6's own `poss_weight`, decayed offensive possessions,
+reproduced to 1e-10; never the scored stint). Data share of a rating:
+`s = e / (e + lambda)`. Reference: 2_6's ridge with lambda → ∞ (no player
+information; the intercept is the decayed historical mean). `mse_gain` = drop in
+squared error the ratings achieve; SE clustered by game. 76,496 offensive
+stint-sides, 39,791 stints for pace; scoring reproduces
+`score_stint_predictions` exactly (MAE 47.1629 and 14.3636).
+
+| Efficiency, by the least-exposed of the ten (possession deciles) | Share | MSE gain ± SE | Rel. |
+| --- | --- | --- | --- |
+| q1 [0, 127] | 10% | -72.9 ± 16.3 | -1.9% |
+| q2 [127, 299] | 10% | -57.6 ± 16.8 | -1.5% |
+| q3-q6 [299, 1,063] | 40% | -42 to -62 each | -1.1 to -1.6% |
+| q7-q9 [1,063, 2,071] | 30% | -6.0 to +3.7 (all within 1 SE) | ≈ 0 |
+| q10 [2,072, 4,011] | 10% | +16.2 ± 10.0 | +0.5% |
+| **All** | 100% | **-33.1 ± 4.9** | **-0.90%** |
+
+| Efficiency, players of the ten with exposure ≤ 1,000 (data share ≤ 1/2) | 0 | 1 | 2 | 3 | 4+ |
+| --- | --- | --- | --- | --- | --- |
+| Share of possessions | 43% | 28% | 14% | 7.5% | 6.7% |
+| MSE gain ± SE | -2.8 ± 6.1 | -41.5 ± 8.6 | -82.7 ± 14.8 | -45.4 ± 16.8 | -72.3 ± 18.4 |
+
+Reading (development season only; nothing here looked at 2019-25):
+
+- **Efficiency ratings do not beat "no player information" on 2018-19 stints**:
+  -0.90% MSE overall (MAE 47.16 vs 46.92). They are neutral when all ten
+  players have more than ~1,000 decayed possessions, and harmful as soon as
+  **one** has less (data share below 1/2). The damage starts at one thin player;
+  it is not confined to unrated players (1.2% of possessions).
+- **Offense vs defense**: a thin offensive five costs more (-94, -75, -61 for
+  exposure ≤ 100, 100-300, 300-1k) than a thin defensive five (-43, -63, -59).
+  For established players (3k-5k) offensive ratings help (+42.7 ± 13.8) while
+  defensive ratings add nothing (-5.0 ± 11.9).
+- **Variance, not level**: after the ratings the bias is flat across buckets
+  (+0.4 to +1.2 pts/100, overall +0.87). Thin offensive fives do score ~3
+  pts/100 less than established ones (bias of the reference ≈ 0 vs +3.5), and
+  the ratings already capture that on average; what hurts is the noise of the
+  thin players' ratings.
+- **Pace ratings help everywhere** (+2.0% overall, +1.7% to +2.6% per bucket),
+  but lineups with thin players play faster than predicted: bias +3.3 ± 1.4
+  (unrated), +2.2 ± 0.4 (≤ 100), +0.85 (100-300) vs +0.5 established. That is a
+  level error a profile prior can fix.
+- 2_6's lambda_offdef = 1,000 was chosen on 2021-25 with the old solver (MAE,
+  where it beat larger values); on 2018-19 the ratings lose to lambda → ∞. The
+  2019-25 behaviour is not looked at here.
+
+Consequences for phase 3 (to decide before steps 2-3):
+
+- Low-sample definition: data share ≤ 1/2 (exposure ≤ 1,000 at lambda 1,000)
+  is where the sign flips; compare phase 3 overall, on stints with ≥ 1 such
+  player (57% of possessions), with ≥ 1 player ≤ 300 (20%), and by the count.
+- **Control**: any prior must beat 2_6 **re-tuned on 2018-19 with a wider
+  lambda grid** (more shrinkage toward zero), not only 2_6 as stored; otherwise
+  a gain could be shrinkage strength alone.
+- For efficiency the prior has to earn its gain by reducing variance (a better
+  target to shrink toward); for pace also by fixing the level of thin players.
+
 ## Future checks
 
 ### Guarding weights (`expected_guard`)
@@ -295,6 +358,12 @@ inform. The pace label has a problem of its own (see the stint graph checks).
 - [ ] Very short stints (median ~73 s) give noisy labels; check whether to drop stints under some possession count or rely on possession weights.
 - [ ] Possession estimate at stint boundaries: an offensive rebound credited to a stint whose miss was in the previous one. Check whether attributing it to the miss's stint fixes the negative estimates.
 - [ ] **Pace targets: stint duration as exposure (decided for phase 6).** `poss_per_48` is weighted by possessions like the other labels, so sub-second stints (free throws around a substitution: the clock is stopped, possessions are credited) dominate it: possession-weighted SD 136 around a mean of 112 (2018-10-16 → 2019-01-31), max 28,800; the smoke test's held-out loss / constant is 1.000. Keep those stints, but weight pace targets by the stint's **seconds** (exposure), so a sub-second stint counts next to nothing against one of several minutes and the weighted mean becomes Σ poss / Σ time (equivalently, model possessions with log-duration as an offset). Per-possession targets keep possession weights. Duration stays out of the encoder's inputs.
+
+### Phase 3 (RAPM with a profile prior)
+
+- [ ] Decide before the solver (step 3): the prior **replaces** 2_6's ridge toward 0, `(X'X + lambda I) beta = X'y + lambda beta0`, or a base penalty toward 0 is kept and one toward `beta0` added, `(X'X + (lambda_zero + lambda_prior) I) beta = X'y + lambda_prior beta0`.
+- [ ] Prior `f(profile, position) -> rating` (step 2): train on as-of (profile, rating) pairs available before each date, **weighted by the rating's reliability** (exposure / data share) or restricted to player-dates with enough history, so it learns what players of a profile are like rather than the noise of thin ratings. Rookies: earlier rookies at the same position.
+- [ ] Re-tune lambda_offdef / lambda_pace on 2018-19 only, with a grid wide enough not to end at an edge, as the control for the prior.
 
 ### Smoke-test GNN → phase 6
 
