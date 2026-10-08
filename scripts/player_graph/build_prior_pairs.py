@@ -15,6 +15,10 @@ fails and amplified targets would carry noise into ``f``.
 
 Development data only (through 2018-19). Reads the stint store and the node
 profiles; no database. Writes ``data/player_graph/profile_prior/pairs.parquet``.
+
+``--evaluation --last-season 2025`` builds the pairs of the frozen 2019-25
+evaluation into ``pairs_evaluation.parquet`` (each pair still reads only its
+own past); development files are never overwritten by it.
 """
 
 from __future__ import annotations
@@ -91,9 +95,16 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--local-root", type=Path, default=Path("data"))
     parser.add_argument("--last-season", type=int, default=LAST_DEVELOPMENT_SEASON)
+    parser.add_argument(
+        "--evaluation",
+        action="store_true",
+        help="Evaluation only: pairs past 2018-19 for the frozen 2019-25 check",
+    )
     args = parser.parse_args()
-    if args.last_season > LAST_DEVELOPMENT_SEASON:
+    if args.last_season > LAST_DEVELOPMENT_SEASON and not args.evaluation:
         raise SystemExit("The prior is developed on seasons up to 2018-19 only")
+    if args.evaluation:
+        print("EVALUATION ONLY: nothing here may be used to choose anything")
     seasons = list(range(2016, args.last_season + 1))
     started = time.time()
     stints = read_stints(seasons, local_root=args.local_root)
@@ -128,8 +139,9 @@ def main() -> None:
         inspect(pairs, name)
     out = args.local_root / "player_graph" / "profile_prior"
     out.mkdir(parents=True, exist_ok=True)
-    pairs.to_parquet(out / "pairs.parquet", index=False)
-    print(f"\nwritten to {out / 'pairs.parquet'}")
+    name = "pairs_evaluation.parquet" if args.evaluation else "pairs.parquet"
+    pairs.to_parquet(out / name, index=False)
+    print(f"\nwritten to {out / name}")
 
 
 if __name__ == "__main__":
