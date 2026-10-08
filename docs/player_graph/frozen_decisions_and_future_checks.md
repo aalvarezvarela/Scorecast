@@ -66,6 +66,13 @@ tuned value.
 | Game graph | Full-health counterfactual | Its own graph (`scenario_id = -1`), every roster player available | Absence features compare tonight with it | — |
 | Game graph | Guard shares | `m_ij = r_hat_ij·E[overlap_ij] / Σ_l r_hat_il·E[overlap_il]` over the defenders playing in the scenario; unknown rates → shares ∝ overlap (`fallback`) | Same form as the guard benchmark's implied share; an absent defender leaves the denominator, which reassigns his attackers with no extra rule | Phase 4B |
 | Game graph | Storage | Tables: `scenarios`, `nodes`, `edges` (teammate and opponent stored once, guards directed) | Node count varies per game, unlike stints | Phase 6 |
+| Node profiles | Content | Per-36 rates (PTS, FGA, FG3A, FTA, OREB, DREB, AST, TOV, STL, BLK, PF), TS%, 3P%, `USG_PCT`, recent minutes (last 10 games played), start share, soft G/F/C | Plan phase 2 node features; initial inputs of the player embeddings | Phase 6 |
+| Node profiles | Temporal rule | Box scores strictly before the as-of date (`as_of` view); preseason and All-Star excluded; window 2 seasons, half-life 180 days | Profiles should track the current role; not tuned | See checks |
+| Node profiles | Shrinkage | Toward the league: 200 minutes for rates and usage, 100 shooting attempts for TS%, 50 three-point attempts for 3P% | Low-minute and replacement players are the noisiest and matter most for the absence counterfactual | See checks |
+| Node profiles | Confidence | `minutes_window`, `games_window`, `minutes_decayed` (effective sample), `prior_weight = 200 / (minutes_decayed + 200)`, `days_since_last_game`, `games_in_data`, `has_box_history` | So the encoder can tell a measured profile from a prior | — |
+| Node profiles | No box scores | League rates, `prior_weight` 1, `has_box_history` False (all of 2016-17 and 2017-18, which the database lacks, and debuts) | A graph can always be built | Backfill check |
+| Node profiles | Storage | `data/player_graph/node_profiles/season=YYYY.parquet` keyed `(as_of_date, player_id)`, for every game date and the day before (intermediate history dates); parameters in `season=YYYY.json` | Joins to any graph through its `as_of_date` | — |
+| Node profiles | Player set | Everyone seen in the window in counted box scores (no preseason / All-Star, positive minutes), matchups or stints, **plus the date's own stint players** (debuts, first games in the data), whose profile is still read strictly before the date | Preseason-only players would only add prior rows; without same-day players 1.8% of 2016-17 stint nodes had no profile. Coverage of stint nodes: 100% every season; with box history 98.1% (2018-19), 99.5-99.7% (2019-25), 0% (2016-18, no box scores) | — |
 | Oracle | Purpose | **Diagnostic only**: the game's own minutes, rotation and guarding never produce a feature or train a model | Plan principle 7 | — |
 | Oracle | Factor decomposition | `m_ij ∝ r_ij·overlap_ij`. Oracle rotation (4A) replaces node minutes **and** overlap with actual values, keeping `r_hat`; oracle guards (4B) replaces only `r_hat` with the observed rate, keeping projected minutes and expected overlap; oracle both replaces all | Keeps 4A (who plays, how much, with whom) and 4B (given they share the floor, who guards whom) apart; observed overlap in the guard oracle would mix them | — |
 | Oracle | Actual minutes and overlap | **Regulation only** (periods 1-4) from the stints | Minutes sum to 240 per team and overlaps are consistent with them; an overtime game does not reveal its overtime | — |
@@ -235,6 +242,13 @@ Decisions taken from it (2026-10-08):
 - [ ] 2016-17 stints have uniform guard shares (no matchup history): start pretraining in 2017-18, or keep them (plan phase 6 decision).
 - [ ] Very short stints (median ~73 s) give noisy labels; check whether to drop stints under some possession count or rely on possession weights.
 - [ ] Possession estimate at stint boundaries: an offensive rebound credited to a stint whose miss was in the previous one. Check whether attributing it to the miss's stint fixes the negative estimates.
+
+### Node profiles
+
+- [ ] Tune / ablate the profile window and half-life (2 seasons, 180 days) and the shrinkage priors, judged by what the embeddings or phase 3's prior gain, not on their own.
+- [ ] Add size (height, weight) if a source appears; position is only inferred.
+- [ ] Rookie prior from earlier rookies at the same inferred position (plan phase 3) instead of the league average.
+- [ ] Opponent-adjusted rates (a player's per-36 depends on the defenses he faced).
 
 ### Positions
 
