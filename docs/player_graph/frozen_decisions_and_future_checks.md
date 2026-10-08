@@ -52,6 +52,21 @@ tuned value.
 | Stint graph | Labels | Per offensive side: pts/poss, TOV/poss, poss/48, 3PA/FGA, FTA/FGA, OREB/(OREB + opp DREB); weight = possessions; NaN when the denominator is 0 | Plan phase 6 | Phase 6 |
 | Stint graph | Non-positive possessions | Weight 0 and all labels NaN for a side with possessions ≤ 0 | The estimate goes negative in stints of a few seconds (an offensive rebound of the previous stint's miss is subtracted): 8-29 sides a season, down to -1.12; 5-6.5% of sides have exactly 0 | See checks |
 | Stint graph | Input contract | Reject any `pair_game` observed column or betting-named column (`TOTAL_LINE`, `SPREAD`, `MONEYLINE`, `ODDS`, `LINE_ERROR`) | Plan principle 7 and stage 1 rule | — |
+| Overlap | Provider | **Pair lift** (v0); independence (`min_i·min_j/48`) kept as the baseline / ablation | Overlap weights teammate/opponent edges and enters every guard share (`m_ij ∝ r_hat·E[overlap]`) | See checks |
+| Overlap | Per-game table | Every pair of players who both played a game, including pairs that never shared the floor (shared 0); independence uses the game's real length (overtime) | The zeros are what a lift below 1 must learn. Exact invariants: shared time sums to 4× (teammates) and 5× (opponents) the player's seconds | — |
+| Overlap | Shrinkage target | The **relation's** decayed league lift, not 1 | Teammate overlap under independence is biased high (only 4 teammate slots): actual / independent = 0.903 (2018-19), 0.906 (2023-24). Opponents are 1.000 by construction | — |
+| Overlap | Shrinkage strength | **k_teammate = 150, k_opponent = 1,200** independent-overlap seconds | Chosen on **2018-19 only**. Teammates: TVD 0.218 (independence) → 0.172, flat for k = 0-300. Opponents: 0.162 → 0.1560 at 1,200 (0.1563 at 2,400), pair history alone is worse (0.176): opponents meet a few times a season | After the main evaluation |
+| Overlap benchmark | Undefined predictions | Same sample for every estimator (player-games with actual shared time); an undefined lift falls back to independence and a player whose predicted shares sum to 0 gets independence shares, counted in `fallback` (share of player-games) | Undefined predictions used to be dropped, which could score 0 on a shrunken sample. v0 and all baselines: fallback 0, numbers unchanged | — |
+| Overlap | Decay and window | Half-life 365 days, 3 seasons | Same as `expected_guard`; not tuned | See checks |
+| Overlap | Cap | `E[overlap] = min(lift·min_i·min_j/48, min_i, min_j)` | Plan check: never above either player's minutes | — |
+| Game graph | Rosters, availability, minutes, scenarios | 2_6 unchanged: `game_nights` / `build_player_nights`, `chance_out`, `enumerate_scenarios` (≤ 3 uncertain per team), `allocate_minutes` (recent average rescaled to 240); scenarios where a team has nobody to play are dropped | Reproduces 2_6 exactly (see below) | Phase 4A |
+| Game graph | Injury report coverage | Required argument; a game without both teams' reports before the cutoff gets **no graphs** (features NaN), counted in `metadata["skipped_games"]` | As 2_6: everybody "available" without a report is a falsely certain projection. Oct-Dec 2018: 435 games skipped, exactly the 435 the 2_6 file leaves NaN | — |
+| Game graph | Zero-minute roster players | Not nodes, no edges | A recent average of 0 (only coach's-decision DNPs) gave 0/0 guard shares; 132 such nodes in December 2023 alone. They add nothing to 2_6's sums | — |
+| Game graph | Edge attributes per relation | `lift`, `lift_prior_weight` on teammate/opponent; `r_hat`, `r_hat_known`, `guard_prior_weight` on guards; non-applicable columns NaN; `weight`, `expected_overlap`, `log_exposure` always finite | One edge table for all relations | Phase 6 adapter |
+| Game graph | Full-health counterfactual | Its own graph (`scenario_id = -1`), every roster player available | Absence features compare tonight with it | — |
+| Game graph | Guard shares | `m_ij = r_hat_ij·E[overlap_ij] / Σ_l r_hat_il·E[overlap_il]` over the defenders playing in the scenario; unknown rates → shares ∝ overlap (`fallback`) | Same form as the guard benchmark's implied share; an absent defender leaves the denominator, which reassigns his attackers with no extra rule | Phase 4B |
+| Game graph | Storage | Tables: `scenarios`, `nodes`, `edges` (teammate and opponent stored once, guards directed) | Node count varies per game, unlike stints | Phase 6 |
+| Game graph | Prediction time | Closing only | Intermediate snapshots only change the injury state | Next step |
 
 ## v0 benchmark (the reference phase 4B must beat)
 
@@ -77,6 +92,38 @@ Part of this error can never be removed: observed shares react to the game
 (foul trouble, a hot scorer drawing a different defender), so 0 is not the
 target.
 
+## Overlap benchmark (v0 reference)
+
+`python scripts/player_graph/evaluate_overlap.py --seasons 2019-2025 --k-grid 150 1200`:
+lifts as of each game, scored against the time pairs actually shared given
+the players' actual seconds, 8,854 games. Lower is better.
+
+| Relation | Metric | Independence | Pair history only | **v0 (k per relation)** |
+| --- | --- | --- | --- | --- |
+| Teammate | TVD | 0.1976 | 0.1647 | **0.1644** |
+| Teammate | Relative absolute error | 0.4081 | 0.3334 | **0.3335** |
+| Opponent | TVD | 0.1499 | 0.1679 | **0.1462** |
+| Opponent | Relative absolute error | 0.2998 | 0.3326 | **0.2929** |
+
+The lift matters for teammates (-17% TVD) and helps opponents a little (-2.5%);
+pair history alone is worse than independence for opponents.
+
+## Integration check: 2_6 reproduced from the game graph
+
+`python scripts/player_graph/check_game_graph_readout.py --from … --to …` reads
+the 2_6 projection off the v0 graphs' node minutes and compares it with 2_6's
+`project_lineup_games` on the same rosters and with the 2_6 closing file
+(`closing_line_data_2_6_20261003`):
+
+| Window | Games | vs `project_lineup_games` (max \|diff\|) | vs file `LU_ABSENCE_IMPACT_PTS_BEFORE`, `LU_PROJ_POSS_BEFORE` |
+| --- | --- | --- | --- |
+| 2023-12-01 → 2023-12-31 | 208 | 1.1e-13 | 100% equal |
+| 2019-10-22 → 2019-11-15 (season start) | 174 | 0 | 100% equal |
+| 2018-10-16 → 2018-12-15 (no reports yet) | 435, all uncovered | — | the same 435 games NaN in the file and without graphs |
+| 2019-01-01 → 2019-02-15 | 318 | 1.1e-13 | 100% equal |
+
+The injury report digest matched the build's (`293dfbebdb5b2820`).
+
 ## Future checks
 
 ### Guarding weights (`expected_guard`)
@@ -89,6 +136,23 @@ target.
 - [ ] Decide which confidence variables become guard-edge attributes in the final encoder: `prior_weight`, effective co-floor exposure (`hist_cofloor_seconds_decayed` or its log), `has_pair_history`, `n_games`.
 - [ ] Revisit whether position-based priors remain useful once phase 4B predicts guarding directly from player profiles and team context.
 - [ ] Check whether a per-team prior (scheme / switching tendency) beats the league-wide position prior.
+
+### Overlap
+
+- [ ] Compare independence vs pair lift end to end (oracle, phase 5 readouts, guard benchmark on game graphs), not only on shared time.
+- [ ] Revisit the lift shrinkage (k per relation) beyond v0, and whether the prior should depend on role (starter-starter vs bench) instead of only the relation.
+- [ ] Check whether teammates and opponents need further different treatment (e.g. opponent lift driven by both teams' rotation patterns rather than the pair).
+- [ ] Pairwise overlaps need not add up to a realizable five-man rotation over 48 minutes. Fine as expected edge weights in v0; check whether global consistency (e.g. iterative proportional fitting so each player shares exactly 4× / 5× his minutes) is needed.
+- [ ] Tune / ablate half-life and window for the lift, as for `expected_guard`.
+- [ ] The ~0.90 teammate prior corrects a structural limit of `min_i·min_j/48`: with a player on the floor only four teammate slots remain. Try a same-team null model that encodes the four slots explicitly (e.g. `min_i·min_j·4 / (5·48 − min_i)` symmetrized, or a fitted rotation model) instead of correcting independence with a mean lift.
+
+### Game graph
+
+- [ ] In the encoder ablations (phases 6-8), measure what teammate, opponent and guard edges each add on their own. The overlap gain is much larger for teammates than for opponents, so uniform-ish opponent edges may add little once guard edges are present.
+
+- [ ] Intermediate snapshots (each snapshot's injury state).
+- [ ] Guard benchmark on game graphs: expected overlap instead of the actual co-floor time, to measure how much projected minutes and overlaps degrade guard shares (part of the oracle).
+- [ ] Doubtful players beyond 3 per team are folded into their most likely state (2_6 rule); revisit if games with many doubts matter.
 
 ### Stint graph
 
