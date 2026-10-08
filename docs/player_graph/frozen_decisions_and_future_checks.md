@@ -87,6 +87,7 @@ tuned value.
 | Game graph | Prediction times | Closing and the 17 intermediate horizons (T-0 … T-1080) | — | — |
 | Snapshots | History date | As 2_6: the earlier of the game date and the cutoff's Eastern date, a cutoff before 05:00 ET counting as the previous day (`snapshot_history_dates`); rosters, ratings, guard and overlap history and positions are all read as of it; only availability is read at the UTC cutoff | Box scores and stints have dates, not publication times. At T-960 / T-1080 most snapshots read the previous day | — |
 | Snapshots | Rates per date | Expected lifts and guarding rates computed once per history date for every horizon's rosters | They depend only on the date and the rosters; ~17× less work | — |
+| Phase 3 | Zero-prior control | **Shared `lambda_offdef` = 10,000, `lambda_pace` = 10,000** (half-life 180 d, stints from 2016-17, 2_6's solver unchanged). Phase 3's profile prior must beat this, not only 2_6 | Chosen on **2018-19 only** by weighted squared error on the next stints, over a log grid 100 … 10⁶ plus infinity (2_6's grid was 10 … 1,000). Both optima are interior. 2_6 itself keeps 1,000 / 30,000 | After the main evaluation |
 | Smoke-test GNN | Library | **PyTorch only for the phase 2 smoke test**: optional Poetry group `graph` (`torch 2.9.1`, the version the lock already resolved through `timeseries`; `poetry install --with graph`), no PyTorch Geometric | Stint graphs always have 10 nodes and fixed edge templates, so dense tensors suffice; dependency and code stay minimal while only the plumbing is tested | **PyG decision deferred until the phase 6 architecture is defined** (game graphs: variable node counts, scenarios, edge types and attributes, batching) |
 | Smoke-test GNN | Scope | Plumbing only: tables → tensors → message passing → node embeddings → pooling → prediction head → loss / backprop → checkpoint save / reload. Not the phase 6 architecture, no claim about signal | Plan phase 2 | Phase 6 |
 | Smoke-test GNN | Data | 2018-19 only (train 2018-10-16 → 2019-01-31, held out → 2019-03-31); the script refuses dates from 2019-07-01 | Evaluation hygiene: 2019-20 on is the 2_7 evaluation | — |
@@ -317,6 +318,62 @@ Consequences for phase 3 (to decide before steps 2-3):
   a gain could be shrinkage strength alone.
 - For efficiency the prior has to earn its gain by reducing variance (a better
   target to shrink toward); for pace also by fixing the level of thin players.
+
+## Phase 3, step 2a: zero-prior control (penalties retuned on 2018-19)
+
+`python scripts/player_graph/rapm_lambda_sweep.py` (module
+`player_graph/rapm_sweep.py`): 2_6's walk-forward ridge accumulated once and
+solved for every penalty on each 2018-19 date, scored on the next stints
+exactly as in step 1. It reproduces the stored 2_6 predictions (max |diff|
+3.5e-6 efficiency, 5.6e-7 pace) and, at infinity, the decayed mean.
+
+Drop in squared error from lambda → ∞ (no player information), SE clustered
+by game:
+
+| Shared `lambda_offdef` | 100 | 300 | 1,000 (2_6) | 3,000 | **10,000** | 30,000 | 100,000 | 10⁶ |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| Efficiency, all | -235.6 | -130.4 | -33.1 ± 4.9 | +8.2 | **+14.7 ± 1.4** | +9.3 | +3.8 | +0.4 |
+| ≥ 1 player ≤ 1,000 | -336.0 | -188.4 | -56.1 | -0.0 | **+11.3 ± 1.8** | +7.5 | +3.1 | +0.4 |
+| MAE (∞: 46.92) | 48.55 | 47.85 | 47.16 | 46.85 | **46.79** | 46.85 | 46.89 | 46.92 |
+
+| `lambda_pace` | 1,000 | 3,000 | **10,000** | 30,000 (2_6) | 100,000 | 10⁶ |
+| --- | --- | --- | --- | --- | --- | --- |
+| Pace, all | +12.7 | +13.8 | **+14.4 ± 0.9** (+2.13%) | +13.6 | +11.1 | +3.9 |
+| MAE (∞: 14.65) | 14.46 | 14.42 | 14.38 | **14.36** | 14.39 | 14.55 |
+
+Best against 2_6 and against no information, per slice (paired):
+
+| Slice | Share | Efficiency 10,000 vs 2_6 1,000 | vs ∞ | Pace 10,000 vs 2_6 30,000 | vs ∞ |
+| --- | --- | --- | --- | --- | --- |
+| All | 100% | +47.8 ± 3.9 | +14.7 ± 1.4 | +0.78 ± 0.20 | +14.4 ± 0.9 |
+| ≥ 1 player ≤ 1,000 | 57% | +67.4 ± 5.7 | +11.3 ± 1.8 | +0.95 ± 0.31 | +14.3 ± 1.2 |
+| ≥ 1 player ≤ 300 | 20% | +73.6 ± 9.6 | +8.7 ± 2.9 | +1.54 ± 0.60 | +15.6 ± 2.2 |
+| 0 players ≤ 1,000 | 43% | +22.0 ± 4.5 | +19.2 ± 2.1 | +0.56 ± 0.24 | +14.5 ± 1.3 |
+| 1 / 2 / 3 players | 28 / 14 / 7.5% | +55 / +91 / +60 | +14.0 / +8.1 / +14.5 | | |
+| 4+ players ≤ 1,000 | 6.7% | +75.9 ± 15.2 | +3.5 ± 4.0 | +2.66 ± 1.23 | +15.8 ± 3.8 |
+
+Secondary, separate offense / defense penalties (10 × 10 grid, infinity drops
+the block): the best pair is (10,000, 10,000), the shared value; offense only
+(defense dropped) +8.6, defense only +5.6, both +14.7. Defense adds
+**+6.2 ± 0.9** on top of offense (+5.0 ± 1.1 with a thin player on the floor).
+
+Reading:
+
+- Step 1's "ratings lose to no information" was **under-shrinkage**: at 10,000
+  the efficiency ratings beat lambda → ∞ in every slice, and the retuned
+  baseline beats 2_6's ratings by +48 overall, +67-74 with thin players.
+- The gain from retuning is almost all **efficiency** (2_6's lambda_offdef was
+  10× too small for 2018-19); pace was nearly right (+0.8). Against no
+  information, offense and defense both carry signal (+8.6 and +6.2 marginal),
+  and pace ratings remove 2.1% of their target's squared error vs 0.4% for
+  efficiency.
+- Room left for the profile prior: the gain over no information shrinks with
+  thin players (+19.2 with none, +8.7 with one ≤ 300, +3.5 ± 4.0 with four or
+  more), and the step 1 pace bias of thin lineups is a level error shrinkage
+  cannot fix.
+- Pace: squared error prefers 10,000, MAE prefers 30,000 (2_6's value, chosen
+  by MAE); the difference is small. The pre-declared criterion (squared error)
+  is kept.
 
 ## Future checks
 

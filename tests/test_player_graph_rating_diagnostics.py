@@ -143,3 +143,36 @@ def test_summary_and_buckets_add_up():
     assert list(table.index) == ["0 (unrated)", "(0, 100]", "(1k, 3k]", "> 5k", "all"]
     assert table.loc["all", "weight_share"] == 1
     assert table.drop(index="all")["weight_share"].sum() == pytest.approx(1)
+
+
+def test_sweep_reproduces_2_6_and_the_infinite_lambda_reference():
+    from nba_ou.data_processing.player_graph.rapm_sweep import sweep_predictions
+
+    stints = _stints()
+    ratings = _ratings(stints, lambda_offdef=50.0, lambda_pace=500.0)
+    dates = ratings["as_of_date"].unique()
+    efficiency, pace = scored_rows(
+        stints,
+        ratings,
+        decayed_exposure(stints, dates, half_life_days=30.0),
+        lambda_offdef=50.0,
+        lambda_pace=500.0,
+        league_means=decayed_league_means(stints, dates, half_life_days=30.0),
+    )
+    inf = float("inf")
+    eff, pac = sweep_predictions(
+        stints,
+        efficiency,
+        pace,
+        offdef_grid=[(50.0, 50.0), (inf, inf), (50.0, inf), (inf, 50.0)],
+        pace_grid=[500.0, inf],
+        half_life_days=30.0,
+    )
+    assert np.allclose(eff[(50.0, 50.0)], efficiency["predicted"], atol=1e-5)
+    assert np.allclose(pac[500.0], pace["predicted"], atol=1e-5)
+    assert np.allclose(eff[(inf, inf)], efficiency["baseline_inf"])
+    assert np.allclose(pac[inf], pace["baseline_inf"])
+    # One block removed: a different model from both the full fit and the mean.
+    for config in ((50.0, inf), (inf, 50.0)):
+        assert not np.allclose(eff[config], eff[(50.0, 50.0)])
+        assert not np.allclose(eff[config], eff[(inf, inf)])

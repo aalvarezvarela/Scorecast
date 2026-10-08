@@ -251,6 +251,8 @@ def scored_rows(
                 base
                 | {
                     "offense": side,
+                    "offense_players": attacking,
+                    "defense_players": defending,
                     "weight": poss,
                     "actual": 100 * float(row[f"{side}_pts"]) / poss,
                     "predicted": league
@@ -273,6 +275,7 @@ def scored_rows(
                 base
                 | {
                     "weight": seconds,
+                    "players": home + away,
                     "actual": game_poss * 2880 / seconds,
                     "predicted": league
                     + sum(pace.get((date, pid), 0.0) for pid in home + away),
