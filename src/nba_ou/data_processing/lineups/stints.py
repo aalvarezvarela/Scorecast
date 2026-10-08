@@ -11,6 +11,7 @@ import json
 import re
 from collections import defaultdict
 
+import numpy as np
 import pandas as pd
 
 
@@ -262,6 +263,45 @@ def build_game_stints(
     return out
 
 
+#: Limits of a plausible score correction. NBA V3 sometimes corrects an
+#: earlier scoring play later in the game, so a stint can lose a few points
+#: (1-2 negative stints in ~0.1% of games, down to -7) and another can score a
+#: little above its own attempts. Points that only reconcile with the final
+#: score by large opposite errors are not corrections: the 2016-17 store built
+#: from placeholder "0" scores had stints of -131 and +262 in 79% of games.
+POINT_ANOMALY_LIMITS = {
+    "min_points": -10,  # no stint below this
+    "max_excess": 10,  # points above 3 * FGA + FTA
+    "max_negative_stints": 3,  # per game, both sides
+}
+
+
+def point_anomalies(stints: pd.DataFrame) -> dict[str, int]:
+    """Per-game point diagnostics: negative stints, the lowest stint score and
+    the largest score above what the stint's own attempts allow."""
+    points = np.concatenate([stints.home_pts.to_numpy(), stints.away_pts.to_numpy()])
+    attempts = np.concatenate(
+        [
+            3 * stints.home_fga.to_numpy() + stints.home_fta.to_numpy(),
+            3 * stints.away_fga.to_numpy() + stints.away_fta.to_numpy(),
+        ]
+    )
+    return {
+        "negative_stints": int((points < 0).sum()),
+        "min_points": int(points.min()) if len(points) else 0,
+        "max_excess": int((points - attempts).max()) if len(points) else 0,
+    }
+
+
+def points_are_plausible(anomalies: dict[str, int]) -> bool:
+    limits = POINT_ANOMALY_LIMITS
+    return (
+        anomalies["min_points"] >= limits["min_points"]
+        and anomalies["max_excess"] <= limits["max_excess"]
+        and anomalies["negative_stints"] <= limits["max_negative_stints"]
+    )
+
+
 def validate_game_stints(
     stints: pd.DataFrame,
     rotation_home: pd.DataFrame,
@@ -271,11 +311,15 @@ def validate_game_stints(
     away_points: int,
     box_minutes: pd.DataFrame,
 ) -> None:
-    """Reject a game unless points and each player's minutes reconcile."""
+    """Reject a game unless points and each player's minutes reconcile and
+    no stint's points are implausible (:data:`POINT_ANOMALY_LIMITS`)."""
     if (int(stints.home_pts.sum()), int(stints.away_pts.sum())) != (
         home_points, away_points
     ):
         raise StintValidationError("points_mismatch")
+    # Matching totals are not enough: opposite errors cancel in the sum.
+    if not points_are_plausible(point_anomalies(stints)):
+        raise StintValidationError("points_anomaly")
     if not {"TEAM_ID", "PLAYER_ID", "MIN"}.issubset(box_minutes):
         raise StintValidationError("missing_box_minutes")
     for rotation in (rotation_home, rotation_away):

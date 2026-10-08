@@ -4,6 +4,7 @@ from nba_ou.data_processing.lineups.stints import (
     StintValidationError,
     build_game_stints,
     elapsed_ds,
+    point_anomalies,
     validate_game_stints,
 )
 
@@ -142,3 +143,55 @@ def test_restated_rebound_counter_does_not_double_count():
     ])
     stints = build_game_stints(rotation("H"), rotation("A"), pbp)
     assert stints.home_oreb.sum() == 3
+
+
+def _game():
+    pbp = pd.DataFrame([
+        event(1, 1, "PT07M00.00S", "Made Shot", team="H", home="2"),
+        event(2, 1, "PT07M00.00S", "Substitution", team="H"),
+        event(3, 4, "PT00M00.00S", "period"),
+    ])
+    home, away = rotation("H", substitute=True), rotation("A")
+    box = pd.DataFrame(
+        [("H", str(i), 48) for i in range(1, 7)] + [("A", str(i), 48) for i in range(1, 6)],
+        columns=["TEAM_ID", "PLAYER_ID", "MIN"],
+    )
+    box.loc[box.TEAM_ID.eq("H") & box.PLAYER_ID.eq("5"), "MIN"] = 5
+    box.loc[box.TEAM_ID.eq("H") & box.PLAYER_ID.eq("6"), "MIN"] = 43
+    return build_game_stints(home, away, pbp), home, away, box
+
+
+def _points(stints, values):
+    """``values`` for the first stints, 0 for the rest."""
+    return list(values) + [0] * (len(stints) - len(values))
+
+
+def test_opposite_point_errors_are_rejected_even_when_totals_match():
+    # The 2016-17 placeholder-score pattern: the running score falls to 0 in
+    # one stint and jumps back in another, so the game total still matches.
+    stints, home, away, box = _game()
+    stints["home_pts"] = _points(stints, [40, -38])
+    assert point_anomalies(stints) == {
+        "negative_stints": 1, "min_points": -38, "max_excess": 37,
+    }
+    with pytest.raises(StintValidationError, match="points_anomaly"):
+        validate_game_stints(stints, home, away, home_points=2, away_points=0,
+                             box_minutes=box)
+
+
+def test_a_small_score_correction_is_accepted():
+    # V3 rescinding an earlier basket later in the game: a few points below 0.
+    stints, home, away, box = _game()
+    stints["home_pts"] = _points(stints, [4, -2])
+    validate_game_stints(stints, home, away, home_points=2, away_points=0,
+                         box_minutes=box)
+
+
+def test_many_negative_stints_are_rejected():
+    stints, home, away, box = _game()
+    stints["home_pts"] = _points(stints, [3, -1, 3, -1])
+    stints["away_pts"] = _points(stints, [2, -1, 0, -1])
+    assert point_anomalies(stints)["negative_stints"] == 4
+    with pytest.raises(StintValidationError, match="points_anomaly"):
+        validate_game_stints(stints, home, away, home_points=4, away_points=0,
+                             box_minutes=box)
