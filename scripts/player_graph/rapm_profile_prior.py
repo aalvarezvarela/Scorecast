@@ -16,7 +16,14 @@ for:
 
 Paired differences have standard errors clustered by game.
 
+``--sweep`` retunes the penalty toward the prior on 2018-19 only (the best
+penalty toward an informative prior need not be the best toward zero): the
+zero-prior sweep's log grid, shared offense / defense plus pace, and a
+secondary grid of separate offense / defense penalties; selection by
+weighted squared error on all rows, compared with the zero-prior control.
+
     python scripts/player_graph/rapm_profile_prior.py
+    python scripts/player_graph/rapm_profile_prior.py --sweep
 
 Development season only (2018-19). Reads the stint store, the node profiles,
 the prior pairs and alphas (``build_prior_pairs.py``, ``fit_profile_prior.py``)
@@ -115,15 +122,16 @@ def report(rows, predictions, names, paired) -> pd.DataFrame:
     return table
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--local-root", type=Path, default=Path("data"))
-    parser.add_argument(
-        "--dates-from",
-        type=Path,
-        default=Path("data/player_graph/rating_diagnostics/clean_2_6_lambdas.parquet"),
-    )
-    args = parser.parse_args()
+GRID = (100.0, 300.0, 1e3, 3e3, 1e4, 3e4, 1e5, 3e5, 1e6, INF)
+PACE_GRID = (1e3, 3e3, 1e4, 3e4, 1e5, 3e5, 1e6, 3e6, 1e7, INF)
+
+
+def label(value: float) -> str:
+    return "inf" if np.isinf(value) else f"{value:g}"
+
+
+def load(args):
+    """Season rows (with unrated / debut counts), history and the provider."""
     root = args.local_root / "player_graph"
     history = read_stints([2016, 2017, SEASON], local_root=args.local_root)
     stints = history.loc[history["season_year"].eq(SEASON)]
@@ -171,7 +179,12 @@ def main() -> None:
     pairs = pd.read_parquet(root / "profile_prior" / "pairs.parquet")
     alphas = json.loads((root / "profile_prior" / "alphas.json").read_text())["alphas"]
     provider = PriorProvider(pairs, profiles, debutants, alphas)
+    return history, efficiency, pace, provider, alphas
 
+
+def same_penalties(args) -> None:
+    root = args.local_root / "player_graph"
+    history, efficiency, pace, provider, alphas = load(args)
     started = time.time()
     eff, pac = sweep_predictions(
         history,
@@ -240,6 +253,153 @@ def main() -> None:
     pac.set_axis(list(PACE), axis=1).to_parquet(
         out / f"profile_prior_pace_season={SEASON}.parquet"
     )
+
+
+def curve(rows, predictions, configs, reference, control) -> pd.DataFrame:
+    """Per penalty toward the prior: gain vs no information (all and two
+    low-sample slices), paired gain vs the zero-prior control, MAE."""
+    masks = slices(rows)
+    out = {}
+    for name, config in configs.items():
+        line = {}
+        for slice_name in ("all", ">= 1 player <= 1000", ">= 1 player <= 300"):
+            mask = masks[slice_name]
+            gain, se = squared_error_gain(
+                rows.loc[mask],
+                predictions.loc[mask, config].to_numpy(),
+                predictions.loc[mask, reference].to_numpy(),
+            )
+            line[f"{slice_name} vs inf"] = f"{gain:+7.2f} ± {se:5.2f}"
+        gain, se = squared_error_gain(
+            rows, predictions[config].to_numpy(), predictions[control].to_numpy()
+        )
+        line["vs zero-prior control"] = f"{gain:+6.2f} ± {se:4.2f}"
+        line["_gain"] = squared_error_gain(
+            rows, predictions[config].to_numpy(), predictions[reference].to_numpy()
+        )[0]
+        line["MAE"] = np.average(
+            (rows["actual"] - predictions[config]).abs(), weights=rows["weight"]
+        )
+        out[name] = line
+    return pd.DataFrame(out).T
+
+
+def sweep(args) -> None:
+    root = args.local_root / "player_graph"
+    history, efficiency, pace, provider, alphas = load(args)
+    control, no_info = EFFICIENCY["zero prior"], EFFICIENCY["no info"]
+    diagonal = {label(lam): (lam, lam, True, True) for lam in GRID}
+    secondary = [(lo, ld, True, True) for lo in GRID for ld in GRID if lo != ld]
+    pace_control, pace_none = PACE["zero prior"], PACE["no info"]
+    pace_configs = {label(lam): (lam, True) for lam in PACE_GRID}
+    started = time.time()
+    eff, pac = sweep_predictions(
+        history,
+        efficiency,
+        pace,
+        offdef_grid=[control, no_info, *diagonal.values(), *secondary],
+        pace_grid=[pace_control, pace_none, *pace_configs.values()],
+        prior=provider,
+    )
+    print(
+        f"season {SEASON}: {len(efficiency):,} offensive stint-sides, "
+        f"{len(pace):,} pace stints; {2 + len(diagonal) + len(secondary)} "
+        f"offense/defense and {2 + len(pace_configs)} pace configurations in "
+        f"{time.time() - started:.0f}s; f alphas {alphas}"
+    )
+    pd.set_option("display.width", 250, "display.max_columns", 30)
+
+    table = curve(efficiency, eff, diagonal, no_info, control)
+    print("\nEFFICIENCY, profile prior, shared offense/defense penalty (inf = the")
+    print("profile alone): drop in squared error, (pts/100)^2")
+    print(table.drop(columns="_gain").round(3).to_string())
+    best = diagonal[table["_gain"].astype(float).idxmax()]
+    pace_table = curve(pace, pac, pace_configs, pace_none, pace_control)
+    print("\nPACE, profile prior: drop in squared error, (poss/48)^2")
+    print(pace_table.drop(columns="_gain").round(3).to_string())
+    best_pace = pace_configs[pace_table["_gain"].astype(float).idxmax()]
+
+    print(
+        f"\nbest profile-prior penalties: efficiency {label(best[0])}, pace "
+        f"{label(best_pace[0])} (zero-prior control: {label(control[0])}, "
+        f"{label(pace_control[0])})"
+    )
+    named = {"best profile": best, "zero prior": control, "no info": no_info}
+    print(f"\nEFFICIENCY, best profile prior ({label(best[0])}) vs the control:")
+    print(
+        report(
+            efficiency,
+            eff,
+            {**named, "profile prior": best, "profile only": diagonal["inf"]},
+            [("best profile", "zero prior")],
+        ).to_string()
+    )
+    pace_named = {
+        "best profile": best_pace,
+        "zero prior": pace_control,
+        "no info": pace_none,
+        "profile prior": best_pace,
+        "profile only": pace_configs["inf"],
+    }
+    print(f"\nPACE, best profile prior ({label(best_pace[0])}) vs the control:")
+    print(report(pace, pac, pace_named, [("best profile", "zero prior")]).to_string())
+
+    names = [label(lam) for lam in GRID]
+    grid = pd.DataFrame(index=pd.Index(names, name="off \\ def"), columns=names)
+    reference = eff[no_info].to_numpy()
+    for lo in GRID:
+        for ld in GRID:
+            grid.loc[label(lo), label(ld)] = squared_error_gain(
+                efficiency, eff[(lo, ld, True, True)].to_numpy(), reference
+            )[0]
+    grid = grid.astype(float)
+    print("\nSECONDARY: separate penalties toward the prior, drop in squared error")
+    print("vs no information (rows: offense, columns: defense; inf = profile alone)")
+    print(grid.round(2).to_string())
+    pair = grid.stack().idxmax()
+    pair_config = tuple(INF if v == "inf" else float(v) for v in pair) + (True, True)
+    gain, se = squared_error_gain(
+        efficiency, eff[pair_config].to_numpy(), eff[best].to_numpy()
+    )
+    print(
+        f"best pair (off {pair[0]}, def {pair[1]}): {grid.stack().max():+.2f}; vs "
+        f"best shared {label(best[0])}: {gain:+.2f} ± {se:.2f}"
+    )
+
+    (root / "profile_prior" / "lambda_sweep.json").write_text(
+        json.dumps(
+            {
+                "season": SEASON,
+                "selection": "weighted squared error on the season's stints, all rows",
+                "lambda_offdef_profile_prior": best[0],
+                "lambda_pace_profile_prior": best_pace[0],
+                "zero_prior_control": {
+                    "lambda_offdef": control[0],
+                    "lambda_pace": pace_control[0],
+                },
+                "secondary_best_pair": {
+                    "lambda_off": pair_config[0],
+                    "lambda_def": pair_config[1],
+                },
+                "f_alphas": alphas,
+            },
+            indent=2,
+        )
+        + "\n"
+    )
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--local-root", type=Path, default=Path("data"))
+    parser.add_argument(
+        "--dates-from",
+        type=Path,
+        default=Path("data/player_graph/rating_diagnostics/clean_2_6_lambdas.parquet"),
+    )
+    parser.add_argument("--sweep", action="store_true")
+    args = parser.parse_args()
+    sweep(args) if args.sweep else same_penalties(args)
 
 
 if __name__ == "__main__":
