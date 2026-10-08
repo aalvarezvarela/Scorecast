@@ -74,7 +74,9 @@ tuned value.
 | Oracle | Readouts | R1 = 2_6 projection (only minutes move it); R2 = R1 with each team's defense replaced by `5·Σ_i w_i Σ_j m_ij·def_j`, `w_i ∝ min_i·usage_i` | With shares proportional to floor time R2 equals R1 (tested), so R2 − R1 is who guards whom | — |
 | Oracle | Usage | As-of `USG_PCT`, minutes-weighted over 365 days, shrunk to the league with 200 minutes; identical in every version | Only the studied weights may change between versions | — |
 | Oracle | Measures | Level calibrated with 2_6's `walk_forward_offset` (2018-19 built only to warm it up); total MAE; edge vs `LINE_ERROR` (corr, slope, hit rate); absence impact vs `LINE_ERROR`; all games, \|v0 R1 impact\| > 3, key defender out (top-2 RAPM defender of his team's ≥ 20-minute rotation, expected absent ≥ 50%) | Plan phase 2 | — |
-| Game graph | Prediction time | Closing only | Intermediate snapshots only change the injury state | Next step |
+| Game graph | Prediction times | Closing and the 17 intermediate horizons (T-0 … T-1080) | — | — |
+| Snapshots | History date | As 2_6: the earlier of the game date and the cutoff's Eastern date, a cutoff before 05:00 ET counting as the previous day (`snapshot_history_dates`); rosters, ratings, guard and overlap history and positions are all read as of it; only availability is read at the UTC cutoff | Box scores and stints have dates, not publication times. At T-960 / T-1080 most snapshots read the previous day | — |
+| Snapshots | Rates per date | Expected lifts and guarding rates computed once per history date for every horizon's rosters | They depend only on the date and the rosters; ~17× less work | — |
 
 ## v0 benchmark (the reference phase 4B must beat)
 
@@ -129,6 +131,15 @@ the 2_6 projection off the v0 graphs' node minutes and compares it with 2_6's
 | 2019-10-22 → 2019-11-15 (season start) | 174 | 0 | 100% equal |
 | 2018-10-16 → 2018-12-15 (no reports yet) | 435, all uncovered | — | the same 435 games NaN in the file and without graphs |
 | 2019-01-01 → 2019-02-15 | 318 | 1.1e-13 | 100% equal |
+
+Intermediate (`--intermediate …`), against `intermediate_line_data_2_6_20261003`
+with each snapshot's report state and history date; games without a graph
+are exactly the file's NaN rows at every horizon:
+
+| Window | Horizons | Snapshots with graphs | vs `project_lineup_games` | vs file |
+| --- | --- | --- | --- | --- |
+| 2023-12-01 → 2023-12-31 | 0, 360, 720, 1080 | 208 / 168 / 152 / 150 | ≤ 1.4e-13 | 100% equal |
+| 2019-10-22 → 2019-11-10 | all 17 | 139 (T-0) … 89 (T-1080) | ≤ 5.7e-14 | 100% equal |
 
 The injury report digest matched the build's (`293dfbebdb5b2820`).
 

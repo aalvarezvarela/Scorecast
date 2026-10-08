@@ -11,8 +11,14 @@ the 2_6 projection off the graphs' node minutes, and compares it with
    (the injury report store is live; its digest is printed next to the
    manifest's).
 
+``--intermediate`` does the same for snapshot graphs at the given horizons
+against the 2_6 intermediate file, with each snapshot's own report state and
+history date.
+
     python scripts/player_graph/check_game_graph_readout.py \\
         --from 2023-10-24 --to 2023-11-30
+    python scripts/player_graph/check_game_graph_readout.py \\
+        --from 2023-12-01 --to 2023-12-31 --intermediate 0 360 1080
 
 Needs the database (box scores, injury reports) and the local stores.
 """
@@ -44,6 +50,110 @@ from nba_ou.data_processing.player_graph.game_graph import (
 from nba_ou.utils.general_utils import get_season_year_from_date
 
 CLOSING_2_6 = Path("data/train_data/closing_line_data_2_6_20261003.parquet")
+INTERMEDIATE_2_6 = Path("data/train_data/intermediate_line_data_2_6_20261003.parquet")
+#: The sidecar the 2_6 intermediate build read its cutoffs from (manifest).
+INTERMEDIATE_SCORING = Path(
+    "data/train_data/intermediate_line_data_2_5_20261003_scoring.parquet"
+)
+
+
+def check_intermediate(start, end, horizons: list[int]) -> None:
+    """Snapshot graphs vs 2_6's projection and the 2_6 intermediate file."""
+    from nba_ou.data_processing.injury_status.report_state import (
+        load_snapshot_report_states,
+    )
+    from nba_ou.data_processing.player_graph.snapshots import (
+        SNAPSHOT_COLUMN,
+        build_intermediate_graphs,
+        reference_nights,
+        snapshot_frame,
+        snapshot_nights,
+    )
+
+    file = pd.read_parquet(
+        INTERMEDIATE_2_6,
+        columns=[
+            "GAME_ID",
+            "GAME_DATE",
+            SNAPSHOT_COLUMN,
+            "TEAM_ID_TEAM_HOME",
+            "TEAM_ID_TEAM_AWAY",
+            "LU_ABSENCE_IMPACT_PTS_BEFORE",
+            "LU_PROJ_POSS_BEFORE",
+        ],
+    )
+    file["GAME_ID"] = file["GAME_ID"].astype(str).str.zfill(10)
+    file["GAME_DATE"] = pd.to_datetime(file["GAME_DATE"]).dt.normalize()
+    file = file.loc[
+        file["GAME_DATE"].between(start, end) & file[SNAPSHOT_COLUMN].isin(horizons)
+    ]
+    games = file.drop_duplicates("GAME_ID").rename(
+        columns={
+            "TEAM_ID_TEAM_HOME": "HOME_TEAM_ID",
+            "TEAM_ID_TEAM_AWAY": "AWAY_TEAM_ID",
+        }
+    )[["GAME_ID", "GAME_DATE", "HOME_TEAM_ID", "AWAY_TEAM_ID"]]
+    games = games.assign(
+        HOME_TEAM_ID=games["HOME_TEAM_ID"].astype(str),
+        AWAY_TEAM_ID=games["AWAY_TEAM_ID"].astype(str),
+    )
+    cutoffs = pd.read_parquet(INTERMEDIATE_SCORING)
+    cutoffs = cutoffs.loc[cutoffs[SNAPSHOT_COLUMN].isin(horizons)]
+    frame = snapshot_frame(games, cutoffs)
+
+    started = time.time()
+    first = get_season_year_from_date(start)
+    seasons = range(max(2016, first - 3), get_season_year_from_date(end) + 1)
+    data = PointInTimeData.load(seasons)
+    states = load_snapshot_report_states(
+        frame.rename(
+            columns={
+                "GAME_ID": "game_id",
+                SNAPSHOT_COLUMN: "snapshot_minutes",
+                "SNAPSHOT_TS_UTC": "as_of",
+            }
+        )[["game_id", "snapshot_minutes", "as_of"]]
+    )
+    print(f"loaded in {time.time() - started:.0f}s; {len(frame):,} snapshots")
+    started = time.time()
+    graphs = build_intermediate_graphs(data, frame, states)
+    print(f"snapshot graphs in {time.time() - started:.0f}s")
+
+    book = load_rating_book()
+    reference = reference_nights(frame, data.box_scores)
+    stored = file.set_index(["GAME_ID", SNAPSHOT_COLUMN])
+    print(
+        f"\n{'horizon':>8} {'games':>6} {'skipped':>8} {'vs 2_6 (max diff)':>18} "
+        f"{'vs file: equal':>15} {'NaN agree':>10}"
+    )
+    for horizon in horizons:
+        part = frame.loc[frame[SNAPSHOT_COLUMN].eq(horizon)]
+        readout = readout_2_6(graphs[horizon], book).set_index("GAME_ID")
+        nights, _ = snapshot_nights(part, reference, states[horizon])
+        direct = project_lineup_games(
+            part.assign(GAME_DATE=part["AS_OF_DATE"])[
+                ["GAME_ID", "GAME_DATE", "HOME_TEAM_ID", "AWAY_TEAM_ID"]
+            ],
+            data.box_scores,
+            book,
+            nights=nights,
+        ).set_index("GAME_ID")
+        diff = (
+            readout["impact_points"] - direct["impact_points"].reindex(readout.index)
+        ).abs()
+        rows = stored.xs(horizon, level=SNAPSHOT_COLUMN)
+        both = readout.join(rows, how="inner").dropna(
+            subset=["LU_ABSENCE_IMPACT_PTS_BEFORE"]
+        )
+        equal = (
+            (both["impact_points"] - both["LU_ABSENCE_IMPACT_PTS_BEFORE"]).abs() < 1e-6
+        ) & ((both["possessions"] - both["LU_PROJ_POSS_BEFORE"]).abs() < 1e-6)
+        file_nan = set(rows.index[rows["LU_ABSENCE_IMPACT_PTS_BEFORE"].isna()])
+        no_graph = set(part["GAME_ID"]) - set(readout.index)
+        print(
+            f"{horizon:>8} {len(readout):>6} {graphs[horizon].metadata['skipped_games']['uncovered']:>8} "
+            f"{diff.max():>18.2e} {equal.mean():>14.1%} {str(file_nan == no_graph):>10}"
+        )
 
 
 def main() -> None:
@@ -51,8 +161,18 @@ def main() -> None:
     parser.add_argument("--from", dest="start", required=True)
     parser.add_argument("--to", dest="end", required=True)
     parser.add_argument("--file", type=Path, default=CLOSING_2_6)
+    parser.add_argument(
+        "--intermediate",
+        type=int,
+        nargs="+",
+        metavar="MINUTES",
+        help="Check these intermediate horizons instead of closing",
+    )
     args = parser.parse_args()
     start, end = pd.Timestamp(args.start), pd.Timestamp(args.end)
+    if args.intermediate:
+        check_intermediate(start, end, args.intermediate)
+        return
 
     file = pd.read_parquet(
         args.file,

@@ -78,6 +78,7 @@ FULL_HEALTH = -1  # scenario_id of the full-health graph
 SCENARIO_COLUMNS = (
     "game_id",
     "game_date",
+    "as_of_date",
     "scenario_id",
     "is_full_health",
     "weight",
@@ -301,58 +302,87 @@ def _scenario_edges(
     return edges.reindex(columns=list(EDGE_COLUMNS))
 
 
-def build_game_graphs(
-    data: PointInTimeData,
-    games: pd.DataFrame,
-    nights: Mapping[tuple[str, str], list[PlayerNight]],
-    *,
-    report_covered: set[tuple[str, str]],
-    params: GameGraphParams = DEFAULT_PARAMS,
-) -> GameGraphs:
-    """Game graphs of ``games`` (``GAME_ID``, ``GAME_DATE``, ``HOME_TEAM_ID``,
-    ``AWAY_TEAM_ID``), with rosters and availability from ``nights``
-    (``lineups.features.game_nights``).
-
-    ``report_covered`` holds the ``(game_id, team_id)`` that had filed an
-    injury report before the cutoff (``InjuryReportState.covered``). A game
-    without both teams covered, or without a roster on either side, gets no
-    graphs; ``metadata`` counts both.
-    """
-    covered = {(str(game).zfill(10), str(team)) for game, team in report_covered}
-    skipped = {"uncovered": 0, "no_roster": 0}
+def _normalized_games(games: pd.DataFrame) -> pd.DataFrame:
     games = games.assign(
         GAME_ID=games["GAME_ID"].astype(str).str.zfill(10),
         GAME_DATE=pd.to_datetime(games["GAME_DATE"]).dt.normalize(),
         HOME_TEAM_ID=games["HOME_TEAM_ID"].astype(str),
         AWAY_TEAM_ID=games["AWAY_TEAM_ID"].astype(str),
     ).drop_duplicates("GAME_ID")
-    scenario_rows, node_frames, edge_frames = [], [], []
-    for date, today in games.groupby("GAME_DATE", sort=True):
-        rosters = {}
+    as_of = games["AS_OF_DATE"] if "AS_OF_DATE" in games else games["GAME_DATE"]
+    games["AS_OF_DATE"] = pd.to_datetime(as_of).dt.normalize()
+    if games["AS_OF_DATE"].gt(games["GAME_DATE"]).any():
+        raise ValueError("A game's as-of date cannot be after its game date")
+    return games
+
+
+def _empty(frame_columns: tuple[str, ...]) -> pd.DataFrame:
+    return pd.DataFrame(columns=list(frame_columns))
+
+
+def build_snapshot_graphs(
+    data: PointInTimeData,
+    games: pd.DataFrame,
+    snapshots: Mapping[object, tuple],
+    params: GameGraphParams = DEFAULT_PARAMS,
+) -> dict[object, GameGraphs]:
+    """Game graphs of several prediction times sharing the same history.
+
+    ``games``: ``GAME_ID``, ``GAME_DATE``, ``HOME_TEAM_ID``, ``AWAY_TEAM_ID``
+    and optionally ``AS_OF_DATE``, the date history is read strictly before
+    (defaults to ``GAME_DATE``; an intermediate snapshot can read an earlier
+    one). ``snapshots`` maps a key (e.g. minutes before tip) to that time's
+    ``(nights, report_covered)``, optionally with a third element, the game
+    ids that snapshot covers (default: every game). Expected lifts and guarding
+    rates depend only on the as-of date and the rosters, so they are computed
+    once per date for every snapshot's rosters and reused.
+    """
+    games = _normalized_games(games)
+    covered = {
+        key: {(str(game).zfill(10), str(team)) for game, team in inputs[1]}
+        for key, inputs in snapshots.items()
+    }
+    members = {
+        key: (
+            {str(game).zfill(10) for game in inputs[2]}
+            if len(inputs) > 2
+            else set(games["GAME_ID"])
+        )
+        for key, inputs in snapshots.items()
+    }
+    skipped = {key: {"uncovered": 0, "no_roster": 0} for key in snapshots}
+    rows = {key: ([], [], []) for key in snapshots}
+    for as_of_date, today in games.groupby("AS_OF_DATE", sort=True):
+        rosters: dict[object, dict[str, tuple]] = {key: {} for key in snapshots}
+        roster_players: dict[str, tuple[set, set]] = {}
+        for key, inputs in snapshots.items():
+            nights = inputs[0]
+            for game in today.itertuples(index=False):
+                if game.GAME_ID not in members[key]:
+                    continue
+                teams = (
+                    (game.GAME_ID, game.HOME_TEAM_ID),
+                    (game.GAME_ID, game.AWAY_TEAM_ID),
+                )
+                if not all(team in covered[key] for team in teams):
+                    skipped[key]["uncovered"] += 1
+                    continue
+                home, away = nights.get(teams[0]), nights.get(teams[1])
+                if not home or not away:
+                    skipped[key]["no_roster"] += 1
+                    continue
+                rosters[key][game.GAME_ID] = (game.GAME_DATE, home, away)
+                players = roster_players.setdefault(game.GAME_ID, (set(), set()))
+                players[0].update(p.player_id for p in home)
+                players[1].update(p.player_id for p in away)
+        if not roster_players:
+            continue
         undirected, directed = [], []
-        for game in today.itertuples(index=False):
-            if (game.GAME_ID, game.HOME_TEAM_ID) not in covered or (
-                game.GAME_ID,
-                game.AWAY_TEAM_ID,
-            ) not in covered:
-                skipped["uncovered"] += 1
-                continue
-            home = nights.get((game.GAME_ID, game.HOME_TEAM_ID))
-            away = nights.get((game.GAME_ID, game.AWAY_TEAM_ID))
-            if not home or not away:
-                skipped["no_roster"] += 1
-                continue
-            rosters[game.GAME_ID] = (home, away)
-            pairs, guards = _roster_pairs(
-                game.GAME_ID,
-                [p.player_id for p in home],
-                [p.player_id for p in away],
-            )
+        for game_id, (home, away) in roster_players.items():
+            pairs, guards = _roster_pairs(game_id, sorted(home), sorted(away))
             undirected += pairs
             directed += guards
-        if not rosters:
-            continue
-        view = data.as_of(date)
+        view = data.as_of(as_of_date)
         lifts = expected_lift(
             view,
             pd.DataFrame(
@@ -370,52 +400,92 @@ def build_game_graphs(
         )
         check_encoder_inputs(lifts)
         check_encoder_inputs(guards)
-        lifts_by_game = dict(tuple(lifts.groupby("game_id")))
-        guards_by_game = dict(tuple(guards.groupby("game_id")))
-        for game_id, (home, away) in rosters.items():
-            for scenario in _scenarios(home, away, params.max_enumerated):
-                scenario_rows.append(
-                    {"game_id": game_id, "game_date": date}
-                    | {k: scenario[k] for k in SCENARIO_COLUMNS[2:]}
-                )
-                node_frames.append(
-                    pd.DataFrame(
-                        [
-                            (game_id, scenario["scenario_id"], player, side, played)
-                            for side in ("home", "away")
-                            for player, played in sorted(scenario[side].items())
-                        ],
-                        columns=list(NODE_COLUMNS),
+        lifts_by_game = {
+            game: frame.drop(columns="game_id")
+            for game, frame in lifts.groupby("game_id")
+        }
+        guards_by_game = {
+            game: frame.drop(columns="game_id")
+            for game, frame in guards.groupby("game_id")
+        }
+        for key, by_game in rosters.items():
+            scenario_rows, node_frames, edge_frames = rows[key]
+            for game_id, (game_date, home, away) in by_game.items():
+                for scenario in _scenarios(home, away, params.max_enumerated):
+                    scenario_rows.append(
+                        {
+                            "game_id": game_id,
+                            "game_date": game_date,
+                            "as_of_date": as_of_date,
+                        }
+                        | {k: scenario[k] for k in SCENARIO_COLUMNS[3:]}
                     )
-                )
-                edge_frames.append(
-                    _scenario_edges(
-                        game_id,
-                        scenario,
-                        lifts_by_game[game_id].drop(columns="game_id"),
-                        guards_by_game[game_id].drop(columns="game_id"),
-                        params.game_minutes,
+                    node_frames.append(
+                        pd.DataFrame(
+                            [
+                                (game_id, scenario["scenario_id"], player, side, played)
+                                for side in ("home", "away")
+                                for player, played in sorted(scenario[side].items())
+                            ],
+                            columns=list(NODE_COLUMNS),
+                        )
                     )
-                )
-    return GameGraphs(
-        scenarios=pd.DataFrame(scenario_rows, columns=list(SCENARIO_COLUMNS)),
-        nodes=(
-            pd.concat(node_frames, ignore_index=True)
-            if node_frames
-            else pd.DataFrame(columns=list(NODE_COLUMNS))
-        ),
-        edges=(
-            pd.concat(edge_frames, ignore_index=True)
-            if edge_frames
-            else pd.DataFrame(columns=list(EDGE_COLUMNS))
-        ),
-        metadata={
-            "version": VERSION,
-            "skipped_games": skipped,
-            "guard": params.guard.__dict__,
-            "overlap": params.overlap.__dict__,
-        },
-    )
+                    edge_frames.append(
+                        _scenario_edges(
+                            game_id,
+                            scenario,
+                            lifts_by_game[game_id],
+                            guards_by_game[game_id],
+                            params.game_minutes,
+                        )
+                    )
+    out = {}
+    for key, (scenario_rows, node_frames, edge_frames) in rows.items():
+        out[key] = GameGraphs(
+            scenarios=pd.DataFrame(scenario_rows, columns=list(SCENARIO_COLUMNS)),
+            nodes=(
+                pd.concat(node_frames, ignore_index=True)
+                if node_frames
+                else _empty(NODE_COLUMNS)
+            ),
+            edges=(
+                pd.concat(edge_frames, ignore_index=True)
+                if edge_frames
+                else _empty(EDGE_COLUMNS)
+            ),
+            metadata={
+                "version": VERSION,
+                "snapshot": key,
+                "skipped_games": skipped[key],
+                "guard": params.guard.__dict__,
+                "overlap": params.overlap.__dict__,
+            },
+        )
+    return out
+
+
+def build_game_graphs(
+    data: PointInTimeData,
+    games: pd.DataFrame,
+    nights: Mapping[tuple[str, str], list[PlayerNight]],
+    *,
+    report_covered: set[tuple[str, str]],
+    params: GameGraphParams = DEFAULT_PARAMS,
+) -> GameGraphs:
+    """Closing game graphs of ``games`` (``GAME_ID``, ``GAME_DATE``,
+    ``HOME_TEAM_ID``, ``AWAY_TEAM_ID``), with rosters and availability from
+    ``nights`` (``lineups.features.game_nights``).
+
+    ``report_covered`` holds the ``(game_id, team_id)`` that had filed an
+    injury report before the cutoff (``InjuryReportState.covered``). A game
+    without both teams covered, or without a roster on either side, gets no
+    graphs; ``metadata`` counts both.
+    """
+    graphs = build_snapshot_graphs(
+        data, games, {"closing": (nights, report_covered)}, params
+    )["closing"]
+    graphs.metadata.pop("snapshot")
+    return graphs
 
 
 def readout_2_6(graphs: GameGraphs, ratings) -> pd.DataFrame:
@@ -439,7 +509,7 @@ def readout_2_6(graphs: GameGraphs, ratings) -> pd.DataFrame:
     }
     rows = []
     for game_id, scenarios in graphs.scenarios.groupby("game_id", sort=False):
-        rated = ratings.for_date(scenarios["game_date"].iloc[0])
+        rated = ratings.for_date(scenarios["as_of_date"].iloc[0])
         if rated is None:
             continue
         team_ratings, league_ortg, league_pace = rated
