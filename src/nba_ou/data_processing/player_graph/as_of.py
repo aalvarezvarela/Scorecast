@@ -18,6 +18,13 @@ Two kinds of cutoff:
 Everything is loaded once and sorted by date; a view slices with
 ``searchsorted`` and returns copies, so a consumer that edits a frame cannot
 change what the next view sees.
+
+Box scores come from the database, which keeps them from 2018-19 on. Earlier
+2_7 seasons (2016-17, 2017-18) are read from the per-season CSVs the database
+was loaded from (identical on 2018-19, the season both hold), and every row
+says where it came from in ``BOX_SOURCE``. The game-graph rosters read only
+the database rows (:attr:`PointInTimeData.box_scores_2_6`), as 2_6 does, so
+v0 keeps reproducing it.
 """
 
 from __future__ import annotations
@@ -38,6 +45,15 @@ STINT_DATE = "game_date"
 PAIR_GAME_DATE = "game_date"
 MATCHUP_DATE = "game_date"
 BOX_SCORE_DATE = "GAME_DATE"
+
+#: First season (start year) 2_7 reads. Stints exist from 2012-13, but the
+#: seasons before 2016-17 have no matchup tracking and are a future extension
+#: (``docs/player_graph/frozen_decisions_and_future_checks.md``).
+FIRST_SEASON = 2016
+
+#: Where a box-score row came from: ``"db"`` or ``"csv"``.
+BOX_SOURCE = "BOX_SOURCE"
+DEFAULT_BOX_CSV_DIR = Path("data/season_games_data")
 
 
 def _game_ids(values: pd.Series) -> pd.Series:
@@ -122,6 +138,65 @@ def game_date_index(*frames: tuple[pd.DataFrame, str, str]) -> pd.Series:
     return dates.set_index("game_id")["game_date"]
 
 
+def season_of(game_ids: pd.Series) -> pd.Series:
+    """Start year encoded in the game id (``0021700001`` -> 2017)."""
+    return 2000 + _game_ids(game_ids).str[3:5].astype(int)
+
+
+def local_box_scores(
+    season_years: Iterable[int],
+    games: pd.DataFrame,
+    data_dir: Path = DEFAULT_BOX_CSV_DIR,
+) -> pd.DataFrame:
+    """Box scores of ``season_years`` from the per-season CSVs.
+
+    Cleaned like the database rows (``clear_player_statistics``): dated from
+    ``games`` (``GAME_ID``, ``GAME_DATE``: the games table), rows of games it
+    does not hold dropped, minutes parsed. The CSVs call turnovers ``TO``.
+    """
+    from nba_ou.data_processing.players.attach_player_features import (
+        clear_player_statistics,
+    )
+
+    ids = {column: str for column in ("GAME_ID", "TEAM_ID", "PLAYER_ID", "MIN")}
+    frames = []
+    for year in sorted(set(season_years)):
+        path = data_dir / f"nba_players_{year}_{(year + 1) % 100:02d}.csv"
+        if not path.exists():
+            raise FileNotFoundError(f"No box-score CSV for season {year}: {path}")
+        frames.append(pd.read_csv(path, dtype=ids))
+    if not frames:
+        return pd.DataFrame(columns=["GAME_ID", BOX_SCORE_DATE])
+    box = pd.concat(frames, ignore_index=True).rename(columns={"TO": "TOV"})
+    box["GAME_ID"] = _game_ids(box["GAME_ID"])
+    games = games.assign(
+        GAME_ID=_game_ids(games["GAME_ID"]),
+        GAME_DATE=pd.to_datetime(games["GAME_DATE"]),
+    )
+    return clear_player_statistics(box, games)
+
+
+def with_local_box_scores(
+    box_scores: pd.DataFrame,
+    season_years: Iterable[int],
+    games: pd.DataFrame,
+    data_dir: Path = DEFAULT_BOX_CSV_DIR,
+) -> pd.DataFrame:
+    """Database box scores plus the CSV rows of the seasons it lacks entirely.
+
+    Only whole seasons fall back: a season the database holds is never mixed
+    with CSV rows. Every row gets ``BOX_SOURCE``.
+    """
+    box_scores = box_scores.assign(**{BOX_SOURCE: "db"})
+    held = set(season_of(box_scores["GAME_ID"])) if len(box_scores) else set()
+    missing = [year for year in sorted(set(season_years)) if year not in held]
+    if not missing:
+        return box_scores
+    local = local_box_scores(missing, games, data_dir).assign(**{BOX_SOURCE: "csv"})
+    parts = [frame for frame in (box_scores, local) if not frame.empty]
+    return pd.concat(parts or [box_scores], ignore_index=True)
+
+
 @dataclass(frozen=True)
 class AsOfView:
     """Game data strictly before :attr:`cutoff`."""
@@ -196,7 +271,7 @@ class PointInTimeData:
 
         Matchups are dated from ``game_dates`` (``GAME_ID``, ``GAME_DATE``: the
         games table), the box scores and the stints. The games table matters:
-        player box scores start in 2018-19, matchups in 2017-18.
+        the database keeps box scores from 2018-19 on, matchups start in 2017-18.
         """
         stints = _sorted_by_date(stints, STINT_DATE, "game_id")
         box_scores = _sorted_by_date(box_scores, BOX_SCORE_DATE, "GAME_ID")
@@ -232,8 +307,11 @@ class PointInTimeData:
     ) -> PointInTimeData:
         """Read the local stint, matchup and ``pair_game`` stores and the DB.
 
-        ``season_years`` are start years (2019 = 2019-20). Box scores also cover
-        the season before the first, as player context, like the 2_6 layer.
+        ``season_years`` are start years (2019 = 2019-20), none before
+        :data:`FIRST_SEASON`. Box scores also cover the season before the first
+        when the database has it, as player context, like the 2_6 layer; a
+        requested season the database lacks is read from the CSVs
+        (:func:`with_local_box_scores`).
         ``closing_injuries`` reads the closing ``InjuryReportState`` from the
         database; intermediate states need snapshot cutoffs and are passed in
         through ``injuries`` (``load_snapshot_report_states``).
@@ -249,6 +327,11 @@ class PointInTimeData:
         from .pair_game import read_pair_game
 
         seasons = sorted(set(season_years))
+        if seasons and seasons[0] < FIRST_SEASON:
+            raise ValueError(
+                f"2_7 starts in {FIRST_SEASON}; asked for {seasons[0]} (the earlier "
+                "stints are a future extension, see the frozen decisions doc)"
+            )
         stints = read_stints(seasons, local_root=local_root)
         store = MatchupStore(local_root)
         held = [store.read(season) for season in seasons]
@@ -265,7 +348,12 @@ class PointInTimeData:
         span = pd.Series(
             [pd.Timestamp(seasons[0], 10, 1), pd.to_datetime(games["GAME_DATE"]).max()]
         )
-        box_scores = load_player_history(span)
+        box_scores = with_local_box_scores(
+            load_player_history(span),
+            seasons,
+            games,
+            data_dir=local_root / "season_games_data",
+        )
         states = dict(injuries or {})
         if closing_injuries:
             from nba_ou.data_processing.injury_status.report_state import (
@@ -285,6 +373,17 @@ class PointInTimeData:
         return cls.from_frames(
             stints, matchups, box_scores, states, games, pairs, overlaps
         )
+
+    @property
+    def box_scores_2_6(self) -> pd.DataFrame:
+        """The box scores 2_6 reads: database rows only.
+
+        Game-graph rosters and recent minutes use these, so v0 reproduces 2_6;
+        2_7's own history (positions, node profiles, usage) reads all rows.
+        """
+        if BOX_SOURCE not in self.box_scores.columns:
+            return self.box_scores
+        return self.box_scores.loc[self.box_scores[BOX_SOURCE].ne("csv")]
 
     def as_of(self, date: Any) -> AsOfView:
         """Game data dated strictly before ``date`` (time of day is ignored)."""

@@ -42,7 +42,11 @@ from nba_ou.data_processing.lineups.features import (
     load_rating_book,
     project_lineup_games,
 )
-from nba_ou.data_processing.player_graph.as_of import CLOSING, PointInTimeData
+from nba_ou.data_processing.player_graph.as_of import (
+    CLOSING,
+    FIRST_SEASON,
+    PointInTimeData,
+)
 from nba_ou.data_processing.player_graph.game_graph import (
     build_game_graphs,
     readout_2_6,
@@ -103,7 +107,7 @@ def check_intermediate(start, end, horizons: list[int]) -> None:
 
     started = time.time()
     first = get_season_year_from_date(start)
-    seasons = range(max(2016, first - 3), get_season_year_from_date(end) + 1)
+    seasons = range(max(FIRST_SEASON, first - 3), get_season_year_from_date(end) + 1)
     data = PointInTimeData.load(seasons)
     states = load_snapshot_report_states(
         frame.rename(
@@ -120,7 +124,7 @@ def check_intermediate(start, end, horizons: list[int]) -> None:
     print(f"snapshot graphs in {time.time() - started:.0f}s")
 
     book = load_rating_book()
-    reference = reference_nights(frame, data.box_scores)
+    reference = reference_nights(frame, data.box_scores_2_6)
     stored = file.set_index(["GAME_ID", SNAPSHOT_COLUMN])
     print(
         f"\n{'horizon':>8} {'games':>6} {'skipped':>8} {'vs 2_6 (max diff)':>18} "
@@ -134,7 +138,7 @@ def check_intermediate(start, end, horizons: list[int]) -> None:
             part.assign(GAME_DATE=part["AS_OF_DATE"])[
                 ["GAME_ID", "GAME_DATE", "HOME_TEAM_ID", "AWAY_TEAM_ID"]
             ],
-            data.box_scores,
+            data.box_scores_2_6,
             book,
             nights=nights,
         ).set_index("GAME_ID")
@@ -198,12 +202,12 @@ def main() -> None:
 
     started = time.time()
     first = get_season_year_from_date(start)
-    seasons = range(max(2016, first - 3), get_season_year_from_date(end) + 1)
+    seasons = range(max(FIRST_SEASON, first - 3), get_season_year_from_date(end) + 1)
     data = PointInTimeData.load(seasons, closing_injuries=True)
     state = data.injury_report(CLOSING)
     p_out = player_out_probabilities(state.statuses)
     excluded = roster_exclusions(state.statuses)
-    nights = game_nights(games, data.box_scores, p_out, excluded=excluded)
+    nights = game_nights(games, data.box_scores_2_6, p_out, excluded=excluded)
     print(f"loaded in {time.time() - started:.0f}s; {len(games)} games")
 
     started = time.time()
@@ -217,7 +221,7 @@ def main() -> None:
 
     book = load_rating_book()
     readout = readout_2_6(graphs, book).set_index("GAME_ID")
-    direct = project_lineup_games(games, data.box_scores, book, nights=nights)
+    direct = project_lineup_games(games, data.box_scores_2_6, book, nights=nights)
     direct = direct.set_index("GAME_ID").reindex(readout.index)
     print("\n1. graph readout vs 2_6 project_lineup_games on the same rosters:")
     for column, key in (

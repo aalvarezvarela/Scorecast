@@ -8,7 +8,7 @@ that date, from games strictly before it
 
     python scripts/player_graph/build_node_profiles.py --min-season 2016 --max-season 2025
 
-Needs the database (box scores). Output:
+Needs the database (box scores; CSVs before 2018-19). Output:
 ``data/player_graph/node_profiles/season=YYYY.parquet`` and ``season=YYYY.json``
 with the parameters.
 """
@@ -22,7 +22,7 @@ from dataclasses import asdict
 from pathlib import Path
 
 import pandas as pd
-from nba_ou.data_processing.player_graph.as_of import PointInTimeData
+from nba_ou.data_processing.player_graph.as_of import FIRST_SEASON, PointInTimeData
 from nba_ou.data_processing.player_graph.node_profiles import (
     DEFAULT_PARAMS,
     counted_box_scores,
@@ -65,13 +65,13 @@ def players_in_window(view, window_days: int) -> pd.Index:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--local-root", type=Path, default=Path("data"))
-    parser.add_argument("--min-season", type=int, default=2016)
+    parser.add_argument("--min-season", type=int, default=FIRST_SEASON)
     parser.add_argument("--max-season", type=int, required=True)
     args = parser.parse_args()
     params = DEFAULT_PARAMS
     history_years = -(-params.window_days // 365) + 1
     data = PointInTimeData.load(
-        range(max(2016, args.min_season - history_years), args.max_season + 1),
+        range(max(FIRST_SEASON, args.min_season - history_years), args.max_season + 1),
         local_root=args.local_root,
     )
     out_dir = args.local_root / "player_graph" / "node_profiles"

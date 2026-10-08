@@ -122,7 +122,7 @@ def build_intermediate_graphs(
     (``report_state.load_snapshot_report_states``). Snapshots sharing a
     history date share their expected lifts and guarding rates.
     """
-    reference = reference_nights(frame, data.box_scores)
+    reference = reference_nights(frame, data.box_scores_2_6)
     out: dict[int, GameGraphs] = {}
     # Group by history date so each date's rates are computed once for every
     # horizon reading it.

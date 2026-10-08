@@ -22,9 +22,10 @@ Per player:
   days since the last appearance, games in the data so far (experience),
   ``has_box_history``.
 
-A player with no box scores (all of 2017-18, which the database lacks, or a
-debut) gets league rates with ``prior_weight`` 1, so a graph can always be
-built and the encoder can tell the profile is only a prior.
+A player with no box scores before the date (a debut, or anyone in the first
+games of 2016-17, where 2_7's data starts) gets league rates with
+``prior_weight`` 1, so a graph can always be built and the encoder can tell the
+profile is only a prior.
 """
 
 from __future__ import annotations
