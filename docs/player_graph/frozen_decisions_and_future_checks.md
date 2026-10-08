@@ -51,6 +51,7 @@ tuned value.
 | Stint graph | Unknown attributes | All attribute arrays finite: unknown `r_hat` stored as 0 with `guard_r_hat_known` False, `prior_weight` 1, exposure 0 | Arrays go into a network as they are; the mask keeps "unknown" distinct from "zero" | — |
 | Stint graph | Message passing | Templates hold each undirected pair once; `message_passing_edges()` lists teammate and opponent edges both ways, with `source_edge` to gather weights; guards stay defender → attacker, `guarded_by` optional | Undirected relations must pass messages both ways | Phase 6 (whether to use `guarded_by`) |
 | Stint graph | Teammate / opponent weight | Stint seconds (equal within a stint) | On a training graph every pair shares the whole stint | Familiarity attribute pending (node/pair tables) |
+| Stint graph | Stint duration | **Exposure / loss weight only, never an encoder input**. Short stints are kept, not dropped; their duration decides how much they count | Duration describes how much of the outcome was observed, not who played. The smoke test feeds the encoder profiles, `is_home` and guard attributes only (teammate / opponent messages are means, not seconds-weighted) | Phase 6 (pace weights, see checks) |
 | Stint graph | Labels | Per offensive side: pts/poss, TOV/poss, poss/48, 3PA/FGA, FTA/FGA, OREB/(OREB + opp DREB); weight = possessions; NaN when the denominator is 0 | Plan phase 6 | Phase 6 |
 | Stint graph | Non-positive possessions | Weight 0 and all labels NaN for a side with possessions ≤ 0 | The estimate goes negative in stints of a few seconds (an offensive rebound of the previous stint's miss is subtracted): 8-29 sides a season, down to -1.12; 5-6.5% of sides have exactly 0 | See checks |
 | Stint graph | Input contract | Reject any `pair_game` observed column or betting-named column (`TOTAL_LINE`, `SPREAD`, `MONEYLINE`, `ODDS`, `LINE_ERROR`) | Plan principle 7 and stage 1 rule | — |
@@ -86,6 +87,9 @@ tuned value.
 | Game graph | Prediction times | Closing and the 17 intermediate horizons (T-0 … T-1080) | — | — |
 | Snapshots | History date | As 2_6: the earlier of the game date and the cutoff's Eastern date, a cutoff before 05:00 ET counting as the previous day (`snapshot_history_dates`); rosters, ratings, guard and overlap history and positions are all read as of it; only availability is read at the UTC cutoff | Box scores and stints have dates, not publication times. At T-960 / T-1080 most snapshots read the previous day | — |
 | Snapshots | Rates per date | Expected lifts and guarding rates computed once per history date for every horizon's rosters | They depend only on the date and the rosters; ~17× less work | — |
+| Smoke-test GNN | Library | **PyTorch only for the phase 2 smoke test**: optional Poetry group `graph` (`torch 2.9.1`, the version the lock already resolved through `timeseries`; `poetry install --with graph`), no PyTorch Geometric | Stint graphs always have 10 nodes and fixed edge templates, so dense tensors suffice; dependency and code stay minimal while only the plumbing is tested | **PyG decision deferred until the phase 6 architecture is defined** (game graphs: variable node counts, scenarios, edge types and attributes, batching) |
+| Smoke-test GNN | Scope | Plumbing only: tables → tensors → message passing → node embeddings → pooling → prediction head → loss / backprop → checkpoint save / reload. Not the phase 6 architecture, no claim about signal | Plan phase 2 | Phase 6 |
+| Smoke-test GNN | Data | 2018-19 only (train 2018-10-16 → 2019-01-31, held out → 2019-03-31); the script refuses dates from 2019-07-01 | Evaluation hygiene: 2019-20 on is the 2_7 evaluation | — |
 
 ## v0 benchmark (the reference phase 4B must beat)
 
@@ -226,6 +230,31 @@ Decisions taken from it (2026-10-08):
   the FM / GNN, where they can interact with attacker and defender embeddings
   and the rest of the floor.
 
+## Smoke-test GNN (phase 2, 2026-10-08)
+
+`python scripts/player_graph/smoke_test_gnn.py` (module
+`player_graph/smoke_gnn.py`, tests `tests/test_player_graph_smoke_gnn.py`).
+Model: input MLP, 2 relational layers (mean teammate and opponent messages, guard
+messages conditioned on the edge attributes and weighted by `m_ij`), mean pooling
+of each five, one head per offensive side; 15,366 parameters, dim 32. Inputs:
+27 node features (the as-of profile on the game date, counts as `log1p`, plus
+`is_home`) and 7 guard attributes, standardized on the training stints.
+
+| Check | Result |
+| --- | --- |
+| Tables → tensors | 23,730 train / 11,666 held-out stints; nodes (n, 10, 27), guards (n, 50, 7), labels (n, 2, 6); every input finite, every node with a profile |
+| Label coverage | 94.9% (per-possession labels, pace); 84.9% (3PA/FGA, FTA/FGA); 66.2% (OREB rate); 5.1% of sides have no possessions (weight 0) |
+| Guard inputs | fallback 0.0%, pair history 75.9% of guard edges (2018-19) |
+| Training | 8 epochs in 13 s on CPU; epoch loss 0.9995 → 0.9923 (noisy) |
+| Held-out loss / constant | 0.995 (pts/poss), 0.994 (TOV/poss), 1.000 (pace), 0.957 (3PA/FGA), 0.995 (FTA/FGA), 0.993 (OREB rate) |
+| Player order within a side | max \|diff\| 2.4e-07 after reordering the home lineups |
+| Checkpoint | `data/player_graph/smoke_gnn/checkpoint.pt` (73 KiB): reloaded predictions identical |
+| Unit tests | profile alignment, missing profile raises, order invariance, masked labels never enter the loss, every parameter gets a gradient, overfits 8 stints, checkpoint round trip |
+
+Stint-level labels are very noisy, so a ratio just under 1 is all a tiny model
+on three months can show; 3PA/FGA is the one label the node profiles clearly
+inform. The pace label has a problem of its own (see the stint graph checks).
+
 ## Future checks
 
 ### Guarding weights (`expected_guard`)
@@ -265,6 +294,13 @@ Decisions taken from it (2026-10-08):
 - [ ] 2016-17 stints have uniform guard shares (no matchup history): start pretraining in 2017-18, or keep them (plan phase 6 decision).
 - [ ] Very short stints (median ~73 s) give noisy labels; check whether to drop stints under some possession count or rely on possession weights.
 - [ ] Possession estimate at stint boundaries: an offensive rebound credited to a stint whose miss was in the previous one. Check whether attributing it to the miss's stint fixes the negative estimates.
+- [ ] **Pace targets: stint duration as exposure (decided for phase 6).** `poss_per_48` is weighted by possessions like the other labels, so sub-second stints (free throws around a substitution: the clock is stopped, possessions are credited) dominate it: possession-weighted SD 136 around a mean of 112 (2018-10-16 → 2019-01-31), max 28,800; the smoke test's held-out loss / constant is 1.000. Keep those stints, but weight pace targets by the stint's **seconds** (exposure), so a sub-second stint counts next to nothing against one of several minutes and the weighted mean becomes Σ poss / Σ time (equivalently, model possessions with log-duration as an offset). Per-possession targets keep possession weights. Duration stays out of the encoder's inputs.
+
+### Smoke-test GNN → phase 6
+
+- [ ] Revisit PyTorch Geometric (`HeteroData`, batching of graphs with variable node counts) when the phase 6 architecture is defined, especially for game graphs and scenarios.
+- [ ] Node features currently join the stint graphs in `smoke_gnn.node_inputs`; move the join into the stint-graph loader when phase 6 fixes the inputs.
+- [ ] A CPU-only PyTorch wheel (or a separate source) if the CUDA build's size matters; the machine has no GPU.
 
 ### Node profiles
 
