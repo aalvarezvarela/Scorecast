@@ -89,6 +89,14 @@ playwright = "^1.57.0"
 [tool.poetry.group.timeseries.dependencies]
 tabpfn-time-series = "^1.0.8"
 
+# 2_7 player graph research (phase 2 smoke-test GNN, phase 6 encoders); not
+# needed by production: poetry install --with graph
+[tool.poetry.group.graph]
+optional = true
+
+[tool.poetry.group.graph.dependencies]
+torch = "2.9.1"
+
 [build-system]
 requires = ["poetry-core"]
 build-backend = "poetry.core.masonry.api"
