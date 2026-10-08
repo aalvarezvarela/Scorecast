@@ -672,6 +672,51 @@ minutes (one backup, usually from the end of the rotation, not every teammate
 in proportion), keeping returning players on the roster, the deep bench's
 low chance of playing, and the 0 ≤ minutes ≤ 48 / sum 240 constraint.
 
+## Phase 4A, step 2: expanded roster, baseline minutes and redistribution shares (2018-19)
+
+`python scripts/player_graph/rotation_diagnostic.py` (module
+`player_graph/rotation.py`). Pieces B and C of the v1 minutes provider and the
+expanded roster, walk-forward over 2016-17 → 2018-19 (each team-game from
+earlier games only), checked on 2018-19; participation (A) and the final
+0-48 / 240 reconciliation are not connected yet. Absences here are the
+realized ones (on the roster, did not play, vacating ≥ 10 min), so this
+measures the structure, not the injury report.
+
+Definitions (v1): `b_Y = E[min_Y | Y plays, full-health]`, a decayed mean
+(half-life 15 team games) of his played minutes net of the gains attributed to
+that game's absences (clipped at 0); `V_X = q_X·b_X` with `q_X = 1` for rotation
+players (`b ≥ 15`, whose missed games are unavailability) and his recent
+participation rate otherwise, pending the participation model; `s(X→Y) ≥ 0`,
+`Σ_Y s = 1`: pair evidence (decayed, half-life 82 team games; simultaneous
+absences split EM-style in proportion to `V_X·s`) shrunk toward a structural
+softmax prior `s0` (depth rank, rank gap, minutes, position similarity, start
+share, participation; refit monthly on single-absence events), clipped at 0
+and renormalized over tonight's available teammates.
+
+| Check (2018-19) | Result |
+| --- | --- |
+| Expanded roster: players who played, on the roster | 98.8%; 1.68 min per team-game off the roster (2_6's 10-game window: 2.70); left: 235 player-games new to the team (mid-season moves without report evidence), 94 first games in the data |
+| B in team-games without absence events (4,026 player-games) | MAE 4.57, bias -0.49 (mean of the last 10 games played: 4.72, +1.19) |
+
+Predicted minute gains of available teammates who played (`Σ_X V_X·s(X→Y)`)
+against their actual gain over `b` (23,439 teammate-games in 2,248 team-games
+with absences; mean squared error):
+
+| Rule | All | One absence | 2+ absences | Corr (all) |
+| --- | --- | --- | --- | --- |
+| Predict no gain (variance of the gain) | 46.6 | 35.0 | 49.6 | — |
+| Proportional (`allocate_minutes`) | 55.8 | 36.1 | 65.4 | 0.14 |
+| Structural prior `s0` | 39.6 | 34.0 | 42.3 | 0.40 |
+| **`s0` + pair history** | **37.9** | **32.8** | **40.4** | **0.44** |
+
+Ordinary variation (minutes − `b` without absences): 35.6. Absences add about
+11 to the variance of a teammate's minutes; the shares remove about 8.7 of
+them, while the proportional split adds 9. Top absorber (332 single absences
+of ≥ 20 min): he takes a median 43% of the vacated minutes; the proportional
+rule picks him 1.5% of the time, `s0` 17%, `s` 26%, and `s` gives him a median
+10%: the shares find the right group of teammates but stay too diffuse to
+name the one backup.
+
 ## Future checks
 
 ### Guarding weights (`expected_guard`)
