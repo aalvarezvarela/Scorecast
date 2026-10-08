@@ -397,6 +397,7 @@ def walk_forward(
     params: RotationParams = DEFAULT_PARAMS,
     refit_monthly: bool = True,
     score_v2: bool = False,
+    on_team_game: Callable[[dict], None] | None = None,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Process every team-game in date order; return ``(players, absorption)``.
 
@@ -405,6 +406,11 @@ def walk_forward(
     eligible teammate, ``V_X``, the structural ``s0``, the final ``s``, the
     proportional share (``b_Y / sum b``) and Y's actual gain over ``b_Y``.
     Everything for a game is computed from earlier games only.
+
+    ``on_team_game`` receives, before each team-game is looked at, the
+    engine's state as of that game (roster, baselines, participation, pair
+    evidence, structural prior, history): what a pre-game provider may use.
+    Nothing about the game itself is passed.
 
     ``score_v2`` also scores the v2 structural prior on the same events
     (columns ``s0_v2``, ``s_v2``) without letting it feed back into the
@@ -440,6 +446,26 @@ def walk_forward(
             for y in roster
         }
         pos = {p: positions(date, p) for p in roster}
+        if on_team_game is not None:
+            on_team_game(
+                {
+                    "game_id": game_id,
+                    "team": team,
+                    "date": date,
+                    "season": season,
+                    "roster": roster,
+                    "current": current,
+                    "baseline": baseline,
+                    "participation": participation,
+                    "evidence": evidence,
+                    "structural": structural,
+                    "start_share": start_share,
+                    "positions": pos,
+                    "history": history,
+                    "season_game": state.season_games[(team, season)],
+                    "params": params,
+                }
+            )
         absences = {
             x: baseline[x]
             * (

@@ -882,6 +882,47 @@ Reading: v1 cuts the player error by 13% and the misallocated minutes by
 1.4%, about 7 minutes per team-game) and almost never needs the cap, so it
 does not hide a calibration problem of A + B + C.
 
+## Phase 4A, step 5: true pre-game evaluation with the report's scenarios (2018-19)
+
+`python scripts/player_graph/pregame_minutes_evaluation.py`. Both providers
+project minutes for the closing report's scenarios (`p_out`,
+`enumerate_scenarios`) and the expected minutes are the scenario-weighted mean.
+v1 is `minutes_provider.ScenarioProvider`, fed by a pre-game callback of the
+rotation engine (its as-of state only) with q models fitted on earlier months;
+its full-health graph is the same provider with nobody sitting. 868 games with
+both reports, 1,736 team-games. Integration check: v0's scenario graphs
+reproduce 2_6's closing file (absence impact and possessions) to 1e-13.
+
+| Player MAE (min) | v0 realized | v1 realized | **v0 report** | **v1 report** |
+| --- | --- | --- | --- | --- |
+| All | 4.58 | 4.09 | 5.13 | **4.75** |
+| Starters / bench | 5.47 / 4.11 | 4.67 / 3.78 | 5.61 / 4.87 | 4.95 / 4.64 |
+| No uncertainty / questionable or doubtful listed | 4.56 / 4.67 | 4.05 / 4.20 | 4.96 / 5.68 | 4.54 / 5.44 |
+| 0 / 1 / 2+ listed out | 4.01 / 4.11 / 4.94 | 3.51 / 3.74 / 4.38 | 4.59 / 4.64 / 5.49 | 4.19 / 4.33 / 5.08 |
+| Key player out (b ≥ 25) / not | 5.04 / 4.24 | 4.51 / 3.78 | 5.61 / 4.78 | 5.20 / 4.41 |
+| Most likely scenario matched / missed | 4.54 / 4.72 | 4.04 / 4.23 | 4.98 / 5.59 | 4.58 / 5.25 |
+| Deep bench (rank 11+) | 3.56 | 3.04 | 3.62 | 3.09 |
+| Returning (≥ 5 games out) | 1.63 | 1.38 | **2.06** | **2.24** |
+
+Misallocated minutes per team-game: v0 36.8 → v1 34.0 with the report
+(realized: 32.8 → 29.3). Going from realized absences to the report's scenarios
+costs v0 +0.55 and v1 +0.66 player MAE: availability uncertainty, not the
+rotation model.
+
+Total (R1 read off each provider's scenario graphs, clean ratings for both,
+`walk_forward_offset` calibration, 764 calibrated games): total MAE v0 14.415,
+v1 14.333, **v1 better by +0.082 ± 0.054**. Absence impact against each
+provider's own full-health graph: mean |impact| v0 1.69, v1 1.80, correlation
+0.85.
+
+**Integration failure found: long absences not on the report.** The only slice
+where v1 is worse than v0 is players out ≥ 5 games. They are not real returns:
+not listed on the report, out 11-30 games (1,357 rows, play 8%, 0.8 min) or 31+
+(980 rows, play 2%, 0.2 min), v1 projects 1.7 and 1.3 min where v0 (10-game
+window) projects 0.7 and 0.1. They are most likely waived players and G League
+assignments the report does not list, kept by the expanded roster because they
+have not appeared elsewhere, with a q that does not reach 0.
+
 ## Future checks
 
 ### Guarding weights (`expected_guard`)
