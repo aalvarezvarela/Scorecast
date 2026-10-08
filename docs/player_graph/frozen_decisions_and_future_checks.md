@@ -92,6 +92,9 @@ tuned value.
 | Snapshots | Rates per date | Expected lifts and guarding rates computed once per history date for every horizon's rosters | They depend only on the date and the rosters; ~17× less work | — |
 | Phase 3 | Zero-prior control | **Shared `lambda_offdef` = 3,000, `lambda_pace` = 10,000** (half-life 180 d, stints from 2016-17 on the rebuilt store, 2_6's solver unchanged). Phase 3's profile prior must beat this, not only 2_6 | Chosen on **2018-19 only** by weighted squared error on the next stints, over a log grid 100 … 10⁶ plus infinity (2_6's grid was 10 … 1,000); both optima interior. A first run on the corrupted 2016-17 store had picked 10,000 / 10,000. 2_6 itself keeps 1,000 / 30,000 | After the main evaluation |
 | Phase 3 | What the profile prior must show | **Incremental value over a well-regularized RAPM** (the 3,000 / 10,000 control), not the repair of a failure: on clean data thin players do not degrade the zero-prior projection. Where it can add: profile information for thin players and debutants (who are below average on offense), and the level of pace for lineups with thin players | Step 1 and 2a on the rebuilt store; the earlier "RAPM fails with thin samples" came from the corrupted 2016-17 points | — |
+| Phase 3 | Profile prior `f` (v0) | Three weighted linear ridges (offense, defense, pace) on 22 standardized profile features (per-36 rates, TS%, 3P%, usage, recent minutes, start share, soft G/F/C, log games in data, profile `prior_weight`, `has_box_history`); target `t = rating / s`, weight `s`, `s ≥ 0.02`; refit monthly on every checkpoint so far (scaler included); ridge strength **o 0.1, d 100, pace 0.1** | Strength chosen by player-grouped 5-fold CV on pairs before 2018-10-01 only, then frozen (o and pace are flat for 0.01-1). The rating's exposure is a weight, never a feature. Age, draft position, listed position, height / weight would be added if a source appears | Step 3 |
+| Phase 3 | Debut prior (v0) | A player with no box score before the date gets, per rating, the reliability-weighted mean `t` of earlier debutants (first game after 2016-12-01) in their first 20 games; as soon as he has a profile, `f` | No position before a first game; one value per rating | Step 3 |
+| Phase 3 | Pseudo-target protection | Weighted ridge with `w = s`, pairs with **`s` < 0.02 left out** (13% of the pairs, 0.4% of the weight); no robust loss | On the clean store `s · Var(t)` is flat and the only extremes are one-game players; a robust loss on `sqrt(s) · (t - f(x))` is added only if strong outliers reappear | If outliers reappear |
 | Smoke-test GNN | Library | **PyTorch only for the phase 2 smoke test**: optional Poetry group `graph` (`torch 2.9.1`, the version the lock already resolved through `timeseries`; `poetry install --with graph`), no PyTorch Geometric | Stint graphs always have 10 nodes and fixed edge templates, so dense tensors suffice; dependency and code stay minimal while only the plumbing is tested | **PyG decision deferred until the phase 6 architecture is defined** (game graphs: variable node counts, scenarios, edge types and attributes, batching) |
 | Smoke-test GNN | Scope | Plumbing only: tables → tensors → message passing → node embeddings → pooling → prediction head → loss / backprop → checkpoint save / reload. Not the phase 6 architecture, no claim about signal | Plan phase 2 | Phase 6 |
 | Smoke-test GNN | Data | 2018-19 only (train 2018-10-16 → 2019-01-31, held out → 2019-03-31); the script refuses dates from 2019-07-01 | Evaluation hygiene: 2019-20 on is the 2_7 evaluation | — |
@@ -360,6 +363,60 @@ Reading:
   0.57% for efficiency.
 - Pace: squared error prefers 10,000, MAE 30,000 (2_6's, chosen by MAE); the
   difference is small and the pre-declared criterion is kept.
+
+## Phase 3, step 2b: pseudo-targets of the profile prior
+
+`python scripts/player_graph/build_prior_pairs.py` (module
+`player_graph/profile_prior.py`; nothing fitted yet). Pairs: every rated player
+at the first game date of each month, 2016-12 → 2019-06 (25 checkpoints,
+14,786 pairs, 744 players), zero-prior ratings at 3,000 / 10,000 and the as-of
+node profile. 234 rated player-dates are left out: their last game is beyond
+the 2-season profile window (median residual exposure 10 possessions).
+
+Pseudo-target `t = rating / s` with `s = e / (e + lambda)`, a **diagonal
+approximation** of the ridge's shrinkage (RAPM's columns are correlated, so `t`
+is a pseudo-target for `f`, not the player's true rating). With weight `w = s`
+each pair contributes `x · rating` to the normal equations whatever `s` is, so
+tiny shares cannot destabilize the fit by themselves.
+
+- `s · Var(t)` is flat across share buckets (offense 1.6-2.5, defense 1.6-2.5,
+  pace 1.0-1.8): on clean data the approximation is consistent. (On the
+  corrupted store it was 37-166 for offense, with -29 / +24 ratings for a
+  single player.)
+- Extremes sit only at `s` < 0.005 (one-game players, 0.0% of the weight);
+  the largest standardized offensive target is Curry's (t ≈ 10.5 at s ≈ 0.55).
+- The median `t` rises with exposure (offense -7.8 at s < 0.005, +1.3 at
+  s > 0.5): thin players are below average, which `f` has to learn through
+  its experience features.
+
+## Phase 3, step 2c: the profile prior `f` on its own (2018-19, out of time)
+
+`python scripts/player_graph/fit_profile_prior.py`. Each 2018-19 checkpoint is
+predicted by an `f` fitted on the checkpoints strictly before it; weighted MSE
+of the pseudo-targets (`s ≥ 0.02`), against zero (the ridge's current prior),
+the training mean, and a position-only model. Not yet connected to the solver.
+
+| Rating | Pairs | MSE `f` | MSE zero | `f` vs zero | Calibration slope | Mean `t - f` |
+| --- | --- | --- | --- | --- | --- | --- |
+| Offense, all | 5,126 | 4.42 | 7.67 | **-42%** | 0.93 | -0.12 |
+| Offense, exposure ≤ 1,000 | 2,121 | 13.36 | 19.78 | -33% | 1.49 | +0.15 |
+| Offense, exposure > 1,000 | 3,005 | 2.91 | 5.61 | -48% | 0.91 | -0.16 |
+| Defense, all | 5,127 | 5.25 | 6.21 | **-15%** | 1.01 | +0.05 |
+| Defense, exposure ≤ 1,000 | 2,121 | 15.51 | 16.58 | -6% | 1.34 | +0.27 |
+| Pace, all | 5,942 | 1.84 | 2.74 | **-33%** | 1.01 | -0.41 |
+
+- The prior has the right **scale** (slopes 0.93, 1.01, 1.01; above 1 for thin
+  players, whose targets are noisiest) and is **centered** for offense and
+  defense. Pace sits 0.4 poss/48 above 2018-19's targets, a level shift that a
+  free intercept absorbs when every player carries it.
+- Position alone predicts almost nothing (offense 7.65 vs 7.67); the profile
+  rates do the work (offense mainly points per shot, assists and turnovers;
+  defense steals, blocks and defensive rebounds). Features are correlated, so
+  single coefficients are a sanity check only.
+- Debut prior as of 2018-10-01 vs the 2018-19 debutants' realized targets in
+  their first 20 games: offense -2.49 vs -0.78, defense -0.42 vs -1.81, pace
+  +0.14 vs +1.00. Debutants are below average and faster, as the prior says,
+  but the sizes are noisy.
 
 ## Future checks
 
