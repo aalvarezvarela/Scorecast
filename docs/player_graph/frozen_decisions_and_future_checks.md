@@ -95,6 +95,7 @@ tuned value.
 | Phase 3 | Profile prior `f` (v0) | Three weighted linear ridges (offense, defense, pace) on 22 standardized profile features (per-36 rates, TS%, 3P%, usage, recent minutes, start share, soft G/F/C, log games in data, profile `prior_weight`, `has_box_history`); target `t = rating / s`, weight `s`, `s ≥ 0.02`; refit monthly on every checkpoint so far (scaler included); ridge strength **o 0.1, d 100, pace 0.1** | Strength chosen by player-grouped 5-fold CV on pairs before 2018-10-01 only, then frozen (o and pace are flat for 0.01-1). The rating's exposure is a weight, never a feature. Age, draft position, listed position, height / weight would be added if a source appears | Step 3 |
 | Phase 3 | Debut prior (v0) | A player with no box score before the date gets, per rating, the reliability-weighted mean `t` of earlier debutants (first game after 2016-12-01) in their first 20 games; as soon as he has a profile, `f` | No position before a first game; one value per rating | Step 3 |
 | Phase 3 | Profile-prior penalties | **Shared `lambda_offdef` = 3,000, `lambda_pace` = 10,000** toward `beta0`, the same as the zero-prior control | Retuned on **2018-19 only** with the same log grid and criterion; both optima interior and flat nearby (efficiency 10,000: -0.43 vs 3,000; pace 30,000: -0.05). Separate offense / defense penalties add +0.21 ± 0.34 | After the main evaluation |
+| Phase 3 | **Final pipeline** (closed 2026-10-08) | Offense and defense: profile prior, lambda 3,000; pace: zero prior, lambda 10,000; `f` 0.1 / 100 / 0.1, monthly expanding refit, debut prior, 0 only without a profile | 2019-25 out of sample: efficiency +4.27 ± 0.48 over the zero prior (all seasons, larger for low-sample players and debuts, MAE better); pace -0.11 ± 0.05. The split was chosen after seeing 2019-25 (see the methodological note) | Never on 2019-25 |
 | Phase 3 | Pseudo-target protection | Weighted ridge with `w = s`, pairs with **`s` < 0.02 left out** (13% of the pairs, 0.4% of the weight); no robust loss | On the clean store `s · Var(t)` is flat and the only extremes are one-game players; a robust loss on `sqrt(s) · (t - f(x))` is added only if strong outliers reappear | If outliers reappear |
 | Smoke-test GNN | Library | **PyTorch only for the phase 2 smoke test**: optional Poetry group `graph` (`torch 2.9.1`, the version the lock already resolved through `timeseries`; `poetry install --with graph`), no PyTorch Geometric | Stint graphs always have 10 nodes and fixed edge templates, so dense tensors suffice; dependency and code stay minimal while only the plumbing is tested | **PyG decision deferred until the phase 6 architecture is defined** (game graphs: variable node counts, scenarios, edge types and attributes, batching) |
 | Smoke-test GNN | Scope | Plumbing only: tables → tensors → message passing → node embeddings → pooling → prediction head → loss / backprop → checkpoint save / reload. Not the phase 6 architecture, no claim about signal | Plan phase 2 | Phase 6 |
@@ -535,6 +536,77 @@ evaluation; looking at individual seasons does not reopen any of it.
   - no out-of-sample gain → the profile prior does not enter the main
     pipeline, and the negative result is documented.
 
+## Phase 3 out-of-sample result, 2019-25 (one pass, 2026-10-08)
+
+`python scripts/player_graph/evaluate_profile_prior.py` (committed before it
+ran), configuration as frozen above. 513,152 offensive stint-sides and 267,379
+pace stints on 1,419 dates. Players on the floor took `beta0` from `f`
+5,121,883 times and from the debut prior 9,637 times, never from the 0
+fallback. Drop in squared error, SE clustered by game.
+
+| Efficiency, pooled | Share | Zero prior vs ∞ | Profile prior vs ∞ | 2_6 stored vs ∞ | **Profile − zero** | Prior on offense − zero | Prior on defense − zero |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| All | 100% | +21.8 ± 0.7 | +26.0 ± 1.0 | +20.4 ± 1.0 | **+4.27 ± 0.48** | +1.98 ± 0.46 | +1.68 ± 0.22 |
+| ≥ 1 player ≤ 1,000 | 59% | +21.9 | +26.4 | +20.2 | +4.52 ± 0.72 | +1.95 ± 0.67 | +1.97 ± 0.32 |
+| ≥ 1 player ≤ 300 | 22% | +19.2 | +23.8 | +18.6 | +4.63 ± 1.51 | +1.32 ± 1.50 | +0.71 ± 0.66 |
+| 0 players ≤ 1,000 | 41% | +21.6 | +25.5 | +20.8 | +3.90 ± 0.56 | +2.04 ± 0.54 | +1.28 ± 0.26 |
+| 1 / 2 / 3 players ≤ 1,000 | 26 / 16 / 8.3% | | | | +3.08 / +6.29 / +2.61 | | |
+| 4+ players ≤ 1,000 | 9.0% | +20.3 | +27.7 | +20.0 | +7.47 ± 2.62 | +0.63 ± 2.95 | -2.12 ± 1.25 |
+| ≥ 1 unrated | 1.3% | +17.6 | +33.4 | +19.9 | +15.7 ± 7.0 | +14.7 ± 7.4 | -6.5 ± 3.0 |
+| ≥ 1 debut (≤ 10 games) | 16% | +22.3 | +29.6 | +22.3 | +7.33 ± 1.74 | +3.81 ± 1.77 | +0.37 ± 0.81 |
+
+| Efficiency by season | 2019-20 | 2020-21 | 2021-22 | 2022-23 | 2023-24 | 2024-25 | 2025-26 |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| Profile − zero | +3.85 ± 1.35 | +7.24 ± 1.38 | +1.58 ± 1.22 | +4.48 ± 1.18 | +4.15 ± 1.25 | +4.16 ± 1.27 | +4.69 ± 1.24 |
+| MAE zero → profile | 48.250 → 48.224 | 46.890 → 46.828 | 47.821 → 47.808 | 46.992 → 46.935 | 47.273 → 47.232 | 48.338 → 48.292 | 49.563 → 49.499 |
+
+| Pace, pooled | Zero prior vs ∞ | Profile prior vs ∞ | **Profile − zero** |
+| --- | --- | --- | --- |
+| All | +11.29 ± 0.31 | +11.18 ± 0.34 | **-0.11 ± 0.05** |
+| ≥ 1 player ≤ 300 | +10.07 | +9.63 | -0.44 ± 0.16 |
+| 4+ players ≤ 1,000 | +10.75 | +9.72 | -1.03 ± 0.30 |
+| ≥ 1 debut (≤ 10 games) | +10.66 | +10.09 | -0.57 ± 0.21 |
+| ≥ 1 unrated | +9.62 | +11.23 | +1.61 ± 0.83 |
+
+Pace by season, profile − zero: -0.28, -0.49, -0.20, -0.03, +0.05, +0.09,
++0.04 (SE 0.11-0.20). MAE pooled: efficiency 47.886 (zero) → 47.842 (profile),
+2_6 stored 47.875, no information 48.090; pace 14.474 → 14.498, 2_6 stored
+14.468.
+
+Reading against the rules fixed in advance:
+
+- **Efficiency (offense and defense): the profile prior adds value.** The gain
+  in squared error is consistent (positive in all 7 seasons, 6 of them beyond
+  2 SE; pooled +4.27 ± 0.48, about 20% more than the zero prior's gain over no
+  information), and MAE improves in every season. It is **larger in the
+  low-sample and debut slices** (debuts +7.33 ± 1.74, 4+ thin players +7.47 ±
+  2.62, unrated +15.7 ± 7.0 vs +3.90 with none thin), which confirms the
+  original hypothesis out of sample, although the development season did not
+  show it. Both blocks contribute (offense +1.98, defense +1.68).
+- **Pace: no out-of-sample gain.** Slightly worse in squared error
+  (-0.11 ± 0.05) and MAE, worst in the thin and debut slices, negative in the
+  first seasons and about 0 later; only unrated players gain. The pace prior
+  does not enter the main pipeline; pace keeps the zero prior.
+- The phase's "Done when" holds for efficiency (better than 2_6 as stored and
+  than the clean zero prior, and better for low-sample players) and not for
+  pace.
+- Hypothesis, not shown: the out-of-sample gain is larger than on 2018-19
+  because `f` has more history as the walk-forward advances (about 20 months
+  of pairs when 2018-19 starts; the per-season gain settles near +4 from
+  2022-23).
+
+**Methodological note.** The final split (profile prior for efficiency, zero
+prior for pace) was decided **after** observing the 2019-25 results. They
+validate separately that the prior works for efficiency and not for pace, but
+2019-25 is no longer an untouched holdout for the resulting hybrid pipeline:
+it must not be used again to evaluate that combination as if it were.
+
+**Phase 3 closed (2026-10-08).** Frozen pipeline, never re-selected on
+2019-25: offense and defense shrunk toward the profile prior at
+lambda 3,000; pace shrunk toward zero at lambda 10,000; `f` ridge strengths
+0.1 / 100 / 0.1; monthly expanding refit; debut and no-profile fallbacks as
+defined above.
+
 ## Future checks
 
 ### Guarding weights (`expected_guard`)
@@ -619,5 +691,6 @@ Audited 2026-10-08 (raw PBP V3 and GameRotation archive, rotations rebuilt from 
 ## Done
 
 - **k for v0** (2026-10-07): swept on 2018-19 only; 300 frozen (see table above).
+- **Phase 3 closed** (2026-10-08): profile prior for offense and defense, zero prior for pace (out-of-sample 2019-25 result above).
 - **2016-17 stint store rebuilt** (2026-10-08): placeholder-score corruption removed; stint point validation and audit added; phase 3 steps 1 and 2a rerun on clean data (zero-prior control re-frozen at 3,000 / 10,000).
 - **Box-score backfill for 2016-17 and 2017-18** (2026-10-08): `as_of` falls back to the season CSVs for whole seasons the DB lacks; positions, node profiles and `expected_guard` rebuilt; game-graph rosters keep the DB rows only, and 2_6 is still reproduced exactly. k re-swept on 2018-19 only: 300 stays (see the frozen table and the benchmark).
