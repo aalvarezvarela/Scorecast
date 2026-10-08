@@ -840,6 +840,48 @@ player plays); with q the raw total is nearly right on average (median scale to
 available players' actual minutes sum to 238.3 (players off the roster take
 the rest).
 
+## Phase 4A, step 4: reconciliation and v1 vs v0 minutes (2018-19, controlled)
+
+`python scripts/player_graph/minutes_provider_diagnostic.py` (module
+`player_graph/minutes_provider.py`). `raw_i = q_i·(b_i + C_i)` over tonight's
+available players, reconciled per team to `0 ≤ m ≤ 48`, `Σ m = 240` with
+`m_i = min(48, c·raw_i)` and `c` by bisection (the weighted least-squares
+projection onto the capped simplex; proportional rescaling until the cap
+binds). Every version sees the same scenario, the engine's realized absences:
+v0 is 2_6's `game_nights` + `allocate_minutes` with those players sitting.
+2,620 team-games, 40,654 player rows (anyone projected or playing).
+
+| Reconciliation, per team-game | Median | 95% | 99% | Max |
+| --- | --- | --- | --- | --- |
+| Raw sum (min) | 236.8 | 256.5 | 271.5 | 311.4 |
+| Scale `c` | 1.014 | 1.093 | 1.179 | 1.463 |
+| Minutes moved, Σ \|m − raw\| | 7.2 | 24.6 | 43.0 | 75.9 |
+| Largest single change (min) | 1.0 | 3.6 | 6.3 | 14.9 |
+
+0 infeasible team-games; the 48-minute cap binds in 0.04%; `c` falls outside
+0.85-1.15 in 2.0% (15 team-games beyond 0.8 / 1.25, mostly raw totals near 186-191
+for teams carrying players without a baseline yet).
+
+| Player MAE (min) | v0 | v1 raw | **v1** |
+| --- | --- | --- | --- |
+| All | 4.66 | 4.08 | **4.07** |
+| Starters / bench | 5.59 / 4.22 | 4.80 / 3.73 | 4.78 / 3.73 |
+| No absence / 1 / 2+ | 4.40 / 4.21 / 4.98 | 3.84 / 3.68 / 4.36 | 3.86 / 3.65 / 4.36 |
+| Absent player's baseline < 15 / 15-25 / 25-32 / > 32 | 4.09 / 4.43 / 4.98 / 5.20 | 3.50 / 3.86 / 4.43 / 4.42 | 3.48 / 3.82 / 4.43 / 4.42 |
+| Returning (≥ 5 games out) | 1.87 | 1.56 | 1.55 |
+| Deep bench (rank 11+) / rank ≤ 10 | 3.50 / 5.30 | 2.56 / 4.91 | 2.56 / 4.90 |
+
+Misallocated minutes per team-game: **v0 36.2 → v1 31.6** (no absence 41.6 →
+36.5; one 34.0 → 29.4; two or more 35.9 → 31.4; absent player above 32 min
+38.9 → 33.1). C survives the reconciliation: for teammates of the absentees
+who played, corr(projected − b, actual − b) is 0.318 (v0), 0.437 (raw), 0.436
+(reconciled), and their minutes MSE 51.6, 39.7, 39.4.
+
+Reading: v1 cuts the player error by 13% and the misallocated minutes by
+4.6 per team-game, in every slice; the reconciliation only rescales (median
+1.4%, about 7 minutes per team-game) and almost never needs the cap, so it
+does not hide a calibration problem of A + B + C.
+
 ## Future checks
 
 ### Guarding weights (`expected_guard`)
