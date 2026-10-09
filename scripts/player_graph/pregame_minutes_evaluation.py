@@ -25,8 +25,12 @@ Reports:
    the same for both providers.
 
     python scripts/player_graph/pregame_minutes_evaluation.py
+    python scripts/player_graph/pregame_minutes_evaluation.py --evaluation --seasons 2019-2025
 
-Development season only. Needs the database.
+Development season 2018-19 by default (R1 with the clean refit of 2_6's
+penalties, which covers only 2018-19). ``--evaluation`` is required for any
+later season: the one-pass check of the frozen provider, with R1 on 2_6's
+rating cache for both providers. Needs the database.
 """
 
 from __future__ import annotations
@@ -116,7 +120,23 @@ def main() -> None:
         help="Team games out before a player needs a recent report listing; 0 = no limit",
     )
     parser.add_argument("--tag", default="")
+    parser.add_argument("--seasons", default=str(SEASON), help="2018 or 2019-2025")
+    parser.add_argument(
+        "--evaluation",
+        action="store_true",
+        help="Required past 2018-19: the frozen provider's one-pass evaluation",
+    )
     args = parser.parse_args()
+    first_season, _, last_season = args.seasons.partition("-")
+    seasons = list(range(int(first_season), int(last_season or first_season) + 1))
+    if max(seasons) > SEASON and not args.evaluation:
+        raise SystemExit("Seasons after 2018-19 need --evaluation")
+    ratings_path = CLEAN_RATINGS if seasons == [SEASON] else None
+    label = f"{seasons[0]}" if len(seasons) == 1 else f"{seasons[0]}_{seasons[-1]}"
+    if args.evaluation:
+        print(
+            "EVALUATION: frozen 4A v1 provider, one pass, nothing is selected on these seasons"
+        )
     params = replace(
         DEFAULT_PARAMS, roster_absence_games=args.roster_absence_games or None
     )
@@ -125,7 +145,7 @@ def main() -> None:
         f"{params.report_recency_games}"
     )
     started = time.time()
-    data = PointInTimeData.load(range(FIRST, SEASON + 1), closing_injuries=True)
+    data = PointInTimeData.load(range(FIRST, max(seasons) + 1), closing_injuries=True)
     state = data.injury_report("closing")
     p_out = player_out_probabilities(state.statuses)
     excluded = roster_exclusions(state.statuses)
@@ -145,7 +165,7 @@ def main() -> None:
                 / f"season={s}.parquet",
                 columns=["as_of_date", "player_id", *PROBABILITY_COLUMNS],
             )
-            for s in range(FIRST, SEASON + 1)
+            for s in range(FIRST, max(seasons) + 1)
         ],
         ignore_index=True,
     )
@@ -157,7 +177,7 @@ def main() -> None:
     # Pass 1: the engine's rows train q month by month.
     players, _ = walk_forward(minutes, positions, listed, params)
     rows = labelled_rows(players, p_out, covered)
-    season_minutes = minutes.loc[minutes["season"].eq(SEASON)]
+    season_minutes = minutes.loc[minutes["season"].isin(seasons)]
     months = sorted(season_minutes["game_date"].dt.to_period("M").unique())
     models = monthly_models(rows, months)
     # Pass 2: the same engine feeds the scenario provider.
@@ -165,7 +185,7 @@ def main() -> None:
     walk_forward(minutes, positions, listed, params, on_team_game=provider)
     print(f"engine passes in {time.time() - started:.0f}s")
 
-    first = data.stints.loc[data.stints["season_year"].eq(SEASON)].drop_duplicates(
+    first = data.stints.loc[data.stints["season_year"].isin(seasons)].drop_duplicates(
         "game_id"
     )
     games = pd.DataFrame(
@@ -429,7 +449,7 @@ def main() -> None:
     print(
         "\n3. TOTAL: R1 and absence impact, each provider with its own full-health graph"
     )
-    book = load_rating_book(CLEAN_RATINGS)
+    book = load_rating_book(ratings_path)
     readouts = {}
     for name, graphs in (("v0", v0_graphs), ("v1", v1_graphs)):
         frame = readout_2_6(graphs, book).set_index("GAME_ID")
@@ -469,11 +489,42 @@ def main() -> None:
         f"  absence impact: mean |impact| v0 {frame['v0_impact'].abs().mean():.3f}, v1 "
         f"{frame['v1_impact'].abs().mean():.3f}; corr(v0, v1) {frame[['v0_impact', 'v1_impact']].corr().iloc[0, 1]:.3f}"
     )
+    season_of = season_minutes.drop_duplicates("game_id").set_index("game_id")["season"]
+    table["season"] = table["game_id"].map(season_of)
+    frame["season"] = frame.index.map(season_of)
     out = args.local_root / "player_graph" / "rotation"
     table.to_parquet(
-        out / f"pregame_minutes{args.tag}_season={SEASON}.parquet", index=False
+        out / f"pregame_minutes{args.tag}_season={label}.parquet", index=False
     )
-    frame.to_parquet(out / f"pregame_totals{args.tag}_season={SEASON}.parquet")
+    frame.to_parquet(out / f"pregame_totals{args.tag}_season={label}.parquet")
+    if len(seasons) > 1:
+        print("\n4. BY SEASON")
+        rows_by = {}
+        for season, part in table.groupby("season"):
+            line = {
+                f"MAE {c}": (part[c] - part["actual"]).abs().mean() for c in columns
+            }
+            per_team = (
+                part.assign(
+                    **{c: (part[c] - part["actual"]).abs() for c in ("v0", "v1")}
+                )
+                .groupby(["game_id", "team_id"])[["v0", "v1"]]
+                .sum()
+                / 2
+            )
+            line["misallocated v0"] = per_team["v0"].mean()
+            line["misallocated v1"] = per_team["v1"].mean()
+            games = frame.loc[frame["season"].eq(season)].dropna(
+                subset=["v0_err", "v1_err"]
+            )
+            gain = games["v0_err"] - games["v1_err"]
+            line["R1 games"] = len(games)
+            line["R1 v1 better by"] = gain.mean()
+            line["R1 SE"] = (
+                gain.std(ddof=1) / np.sqrt(len(gain)) if len(gain) > 1 else np.nan
+            )
+            rows_by[season] = line
+        print(pd.DataFrame(rows_by).T.round(3).to_string())
 
 
 if __name__ == "__main__":
