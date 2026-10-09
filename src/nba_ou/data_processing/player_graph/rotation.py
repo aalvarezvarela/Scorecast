@@ -7,7 +7,12 @@ Minutes are **regulation** minutes from the validated stints.
 
 **Expanded roster.** A player belongs to the team he last appeared for (or
 was last listed for on an injury report) until he appears for another team.
-Within a season he stays however many games he misses. Across a season
+Within a season he stays through absences of up to ``roster_absence_games``
+team games; beyond that only while the team's injury report has listed him
+in one of its last ``report_recency_games`` games (tonight's pre-game report
+included), so a long injury keeps him and a waived player or an unlisted G
+League assignment drops off, as 2_6's 10-game window does. Before reports
+existed nobody is listed, which is that window. Across a season
 boundary he stays for the team's first ``carryover_games`` games, but he
 creates no absence event until he appears or is listed this season: a player
 who left in the summer and never played elsewhere would otherwise haunt his
@@ -58,6 +63,8 @@ class RotationParams:
     iterations: int = 3
     carryover_games: int = 10  # team games of a new season
     feature_set: str = "v1"  # structural prior features: "v1" or "v2"
+    roster_absence_games: int | None = 10  # None: no limit (first v1)
+    report_recency_games: int = 5
     rotation_minutes: float = 15.0  # baseline above which a DNP is unavailability
 
 
@@ -265,6 +272,11 @@ class RotationState:
     )
     #: (team, absent X) -> the teammate who gained most the last time X was out.
     last_replacement: dict[tuple[str, str], str] = field(default_factory=dict)
+    #: team -> games processed; (team, player) -> index of his last game played
+    #: for the team / of the last game whose report listed him.
+    team_games: dict[str, int] = field(default_factory=lambda: defaultdict(int))
+    last_played: dict[tuple[str, str], int] = field(default_factory=dict)
+    last_listed: dict[tuple[str, str], int] = field(default_factory=dict)
 
     def roster(
         self, team: str, season: int, listed: Iterable[str] = ()
@@ -277,7 +289,7 @@ class RotationState:
         current = {
             p
             for p, t in self.team_of.items()
-            if t == team and self.season_of.get(p) == season
+            if t == team and self.season_of.get(p) == season and self._kept(team, p)
         } | {p for p in listed if self.team_of.get(p, team) == team}
         carried = set()
         if self.season_games[(team, season)] < self.params.carryover_games:
@@ -287,6 +299,19 @@ class RotationState:
                 if t == team and self.season_of.get(p) == season - 1
             }
         return sorted(current | carried), current
+
+    def _kept(self, team: str, player: str) -> bool:
+        """Still on the roster after his absence (tonight's listing is added
+        by the caller)."""
+        limit = self.params.roster_absence_games
+        if limit is None:
+            return True
+        games = self.team_games[team]
+        last = self.last_played.get((team, player))
+        if last is None or games - 1 - last <= limit:
+            return True
+        listed = self.last_listed.get((team, player))
+        return listed is not None and listed >= games - self.params.report_recency_games
 
 
 def _decayed(n: int, half_life: float) -> np.ndarray:
@@ -633,10 +658,14 @@ def walk_forward(
         while len(state.history[team]) > params.history_games:
             state.history[team].popleft()
         state.season_games[(team, season)] += 1
+        index = state.team_games[team]
+        state.team_games[team] += 1
         for p in played:
             state.team_of[p] = team
             state.season_of[p] = season
+            state.last_played[(team, p)] = index
         for p in listed.get((game_id, team), ()):
+            state.last_listed[(team, p)] = index
             if state.team_of.get(p) in (None, team):
                 state.team_of[p] = team
                 state.season_of[p] = season

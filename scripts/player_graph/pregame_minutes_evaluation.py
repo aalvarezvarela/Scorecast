@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import argparse
 import time
+from dataclasses import replace
 from pathlib import Path
 
 import numpy as np
@@ -64,7 +65,11 @@ from nba_ou.data_processing.player_graph.participation import (
     walk_forward_q,
 )
 from nba_ou.data_processing.player_graph.positions import PROBABILITY_COLUMNS
-from nba_ou.data_processing.player_graph.rotation import team_game_minutes, walk_forward
+from nba_ou.data_processing.player_graph.rotation import (
+    DEFAULT_PARAMS,
+    team_game_minutes,
+    walk_forward,
+)
 
 SEASON = 2018
 FIRST = 2016
@@ -104,7 +109,21 @@ def misallocated(frame: pd.DataFrame, columns, by=None) -> pd.DataFrame:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--local-root", type=Path, default=Path("data"))
+    parser.add_argument(
+        "--roster-absence-games",
+        type=int,
+        default=DEFAULT_PARAMS.roster_absence_games,
+        help="Team games out before a player needs a recent report listing; 0 = no limit",
+    )
+    parser.add_argument("--tag", default="")
     args = parser.parse_args()
+    params = replace(
+        DEFAULT_PARAMS, roster_absence_games=args.roster_absence_games or None
+    )
+    print(
+        f"roster rule: {params.roster_absence_games} games, report recency "
+        f"{params.report_recency_games}"
+    )
     started = time.time()
     data = PointInTimeData.load(range(FIRST, SEASON + 1), closing_injuries=True)
     state = data.injury_report("closing")
@@ -136,14 +155,14 @@ def main() -> None:
         return lookup.get((d, p), np.full(3, 1 / 3))
 
     # Pass 1: the engine's rows train q month by month.
-    players, _ = walk_forward(minutes, positions, listed)
+    players, _ = walk_forward(minutes, positions, listed, params)
     rows = labelled_rows(players, p_out, covered)
     season_minutes = minutes.loc[minutes["season"].eq(SEASON)]
     months = sorted(season_minutes["game_date"].dt.to_period("M").unique())
     models = monthly_models(rows, months)
     # Pass 2: the same engine feeds the scenario provider.
     provider = ScenarioProvider(p_out, excluded, covered, models)
-    walk_forward(minutes, positions, listed, on_team_game=provider)
+    walk_forward(minutes, positions, listed, params, on_team_game=provider)
     print(f"engine passes in {time.time() - started:.0f}s")
 
     first = data.stints.loc[data.stints["season_year"].eq(SEASON)].drop_duplicates(
@@ -324,6 +343,62 @@ def main() -> None:
         for k in keys
     ]
 
+    # Games out since the last appearance for the team, from the stints alone
+    # (independent of either roster rule).
+    order = minutes.drop_duplicates(["game_id", "team_id"]).sort_values(
+        ["game_date", "game_id"]
+    )
+    order["index"] = order.groupby("team_id").cumcount()
+    index = order.set_index(["game_id", "team_id"])["index"].to_dict()
+    appearances = minutes.assign(
+        index=[
+            index[k] for k in zip(minutes["game_id"], minutes["team_id"], strict=True)
+        ]
+    )
+    seen = (
+        appearances.groupby(["team_id", "player_id"])["index"].apply(sorted).to_dict()
+    )
+
+    def gap(g, t, p):
+        idx = index.get((g, t))
+        past = [i for i in seen.get((t, p), []) if i < idx] if idx is not None else []
+        return idx - past[-1] - 1 if past else np.nan
+
+    table["gap"] = [
+        gap(g, t, p)
+        for g, t, p in zip(
+            table["game_id"], table["team_id"], table["player_id"], strict=True
+        )
+    ]
+    table["gap_band"] = pd.cut(
+        table["gap"], [-1, 10, 30, 10_000], labels=["0-10 out", "11-30 out", "31+ out"]
+    )
+    on_roster = season_players.set_index(KEYS)["on_roster"].to_dict()
+    table["on_roster"] = [
+        on_roster.get(k, False)
+        for k in zip(
+            table["game_id"], table["team_id"], table["player_id"], strict=True
+        )
+    ]
+    pd.set_option("display.width", 250, "display.max_columns", 30)
+    print("\nGAP SINCE LAST APPEARANCE (stints): rows not playing / playing")
+    for played_flag, part in table.groupby(table["actual"] > 0):
+        print(f"  played = {played_flag}")
+        summary = part.groupby("gap_band", observed=True).agg(
+            rows=("actual", "size"),
+            actual=("actual", "mean"),
+            v0=("v0", "mean"),
+            v1=("v1", "mean"),
+            v1_realized=("v1_realized", "mean"),
+        )
+        print(summary.round(3).to_string())
+    returns = table.loc[(table["actual"] > 0) & (table["gap"] > 10)]
+    print(
+        f"  true returns (play after > 10 games out): {len(returns)}; on the v1 "
+        f"roster {returns['on_roster'].mean():.1%}; MAE v0 "
+        f"{(returns['v0'] - returns['actual']).abs().mean():.2f}, v1 "
+        f"{(returns['v1'] - returns['actual']).abs().mean():.2f}"
+    )
     pd.set_option("display.width", 250, "display.max_columns", 30)
     print(
         f"\n1. EXPECTED MINUTES (report scenarios) vs ACTUAL: {table.groupby(['game_id', 'team_id']).ngroups} team-games, {len(table):,} rows"
@@ -395,8 +470,10 @@ def main() -> None:
         f"{frame['v1_impact'].abs().mean():.3f}; corr(v0, v1) {frame[['v0_impact', 'v1_impact']].corr().iloc[0, 1]:.3f}"
     )
     out = args.local_root / "player_graph" / "rotation"
-    table.to_parquet(out / f"pregame_minutes_season={SEASON}.parquet", index=False)
-    frame.to_parquet(out / f"pregame_totals_season={SEASON}.parquet")
+    table.to_parquet(
+        out / f"pregame_minutes{args.tag}_season={SEASON}.parquet", index=False
+    )
+    frame.to_parquet(out / f"pregame_totals{args.tag}_season={SEASON}.parquet")
 
 
 if __name__ == "__main__":

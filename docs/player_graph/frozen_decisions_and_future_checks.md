@@ -97,6 +97,8 @@ tuned value.
 | Phase 3 | Profile-prior penalties | **Shared `lambda_offdef` = 3,000, `lambda_pace` = 10,000** toward `beta0`, the same as the zero-prior control | Retuned on **2018-19 only** with the same log grid and criterion; both optima interior and flat nearby (efficiency 10,000: -0.43 vs 3,000; pace 30,000: -0.05). Separate offense / defense penalties add +0.21 ± 0.34 | After the main evaluation |
 | Phase 3 | **Final pipeline** (closed 2026-10-08) | Offense and defense: profile prior, lambda 3,000; pace: zero prior, lambda 10,000; `f` 0.1 / 100 / 0.1, monthly expanding refit, debut prior, 0 only without a profile | 2019-25 out of sample: efficiency +4.27 ± 0.48 over the zero prior (all seasons, larger for low-sample players and debuts, MAE better); pace -0.11 ± 0.05. The split was chosen after seeing 2019-25 (see the methodological note) | Never on 2019-25 |
 | Phase 4A | Redistribution shares C (**frozen**) | **v1 structural features, share half-life 41 team games, kappa 30 vacated minutes, rotation threshold 15 min, no sharpening (temperature 1)**; baseline half-life 15 team games | Chosen on **2018-19 only** by a small predefined one-at-a-time search on the minutes MSE of every player who played (same rows for every configuration); only the share half-life moved it (37.59 → 37.15). v2 features tie and stay optional. Any temperature above 1 is worse, monotonically (step 2c) | After the main evaluation |
+| Phase 4A | **Minutes provider v1 frozen** (2026-10-09) | Expanded roster (rule below), B, C (v1, 41, 30, 15, tau 1), A (logistic), reconciliation 0-48 / 240, injury-report scenario integration; see "Phase 4A: minutes provider v1 frozen" | Development numbers in steps 1-6 | Never on 2019-25 |
+| Phase 4A | Expanded roster after long absences | **Kept beyond 10 missed team games only if the team's report listed him in one of its last 5 games** (as of the game; tonight's pre-game report included) | Removes ~87% of the minutes v1 gave to waived / unlisted players and improves every comparable error on 2018-19 (report scenarios: player MAE 4.751 → 4.656 on the same rows); costs 34 of 140 real long returns, never listed | If a roster / transactions feed appears |
 | Phase 3 | Pseudo-target protection | Weighted ridge with `w = s`, pairs with **`s` < 0.02 left out** (13% of the pairs, 0.4% of the weight); no robust loss | On the clean store `s · Var(t)` is flat and the only extremes are one-game players; a robust loss on `sqrt(s) · (t - f(x))` is added only if strong outliers reappear | If outliers reappear |
 | Smoke-test GNN | Library | **PyTorch only for the phase 2 smoke test**: optional Poetry group `graph` (`torch 2.9.1`, the version the lock already resolved through `timeseries`; `poetry install --with graph`), no PyTorch Geometric | Stint graphs always have 10 nodes and fixed edge templates, so dense tensors suffice; dependency and code stay minimal while only the plumbing is tested | **PyG decision deferred until the phase 6 architecture is defined** (game graphs: variable node counts, scenarios, edge types and attributes, batching) |
 | Smoke-test GNN | Scope | Plumbing only: tables → tensors → message passing → node embeddings → pooling → prediction head → loss / backprop → checkpoint save / reload. Not the phase 6 architecture, no claim about signal | Plan phase 2 | Phase 6 |
@@ -923,6 +925,84 @@ window) projects 0.7 and 0.1. They are most likely waived players and G League
 assignments the report does not list, kept by the expanded roster because they
 have not appeared elsewhere, with a q that does not reach 0.
 
+## Phase 4A, step 6: roster membership after long absences (2018-19)
+
+Rule (`RotationParams.roster_absence_games = 10`, `report_recency_games = 5`): a
+player who has missed more than 10 team games stays on the expanded roster only
+while his team's injury report has listed him in one of its last 5 games
+(tonight's pre-game report included), strictly as of the game. Before reports
+existed nobody is listed, which is 2_6's 10-game window. B, C and A rebuilt on
+the new rosters and every evaluation rerun; the old rule is
+`roster_absence_games = None`. Comparisons on the same rows (union of both
+runs, 0 where a version projects nothing) or per team-game:
+
+| 2018-19 | Old rule (no limit) | **New rule** |
+| --- | --- | --- |
+| Report scenarios, v1 player MAE (same 24,867 rows; v0 5.132) | 4.751 | **4.656** |
+| Realized absences, v1 player MAE (same rows) | 4.089 | 4.035 |
+| Report scenarios, misallocated min per team-game (v0 36.75) | 34.02 | **33.35** |
+| Realized absences, misallocated (all 2,620 team-games; v0 36.2) | 31.56 | 31.45 |
+| Minutes given to players out > 10 games who do not play (v1, report; v0 ≈ 805) | ≈ 3,190 | **≈ 400** |
+| True returns (play after > 10 games out, 140): kept on the roster | 98.6% | 75.7% |
+| True returns: MAE (v0 9.06) | 7.38 | 7.54 |
+| Expanded-roster coverage of players who played (all of 2018-19) | 98.8% | 98.6% |
+| R1 total, v1 better than v0 by | +0.082 ± 0.054 | +0.091 ± 0.053 |
+| C after reconciliation, corr(projected − b, actual − b) | 0.436 | 0.449 |
+
+The rule removes about 87% of the ghost minutes (now fewer than v0's) and
+improves every comparable error. Its cost is 34 of 140 real long returns
+falling off the roster (mostly marginal players back from G League stints or
+long healthy scratches, never listed), whose error grows slightly but stays
+well below v0's; and, where no reports exist (2016-17 to mid-December 2018),
+long injuries drop off after 10 games like in v0, so C stops modelling them
+there. B improves (MAE 4.54 vs 4.57 in team-games without absences); A's Brier
+(0.081 vs 0.078) and C's MSE rows change with the population, not comparable
+one to one; the raw A + B + C total moves closer to 240 (median scale 1.009).
+
+## Phase 4A: minutes provider v1 frozen, before the 2019-25 evaluation
+
+Frozen on 2018-19 (and earlier) only, committed before any 2019-25 result:
+
+- **Expanded roster**: last team until he appears for another; carry-over of
+  last season's players for 10 team games without phantom absences; beyond 10
+  missed team games only with a report listing in the team's last 5 games.
+- **B**: `b = E[min | plays, full health]`, decayed mean (half-life 15 team
+  games) of played minutes net of attributed absence gains.
+- **C**: v1 structural features, share half-life 41, kappa 30, rotation
+  threshold 15 min, no sharpening (temperature 1); `V_X = q_X·b_X` with `q = 1`
+  for rotation players.
+- **A**: logistic participation `q = P(enters the rotation | medically
+  available)` on 14 scenario features, report labels where filed (`p_out ≤ 0.1`),
+  heuristic labels elsewhere, refit monthly on earlier months.
+- **Reconciliation**: `min(48, c·q·(b + C))`, `c` by bisection, 240 per team and
+  scenario.
+- **Scenario integration**: the closing report's `p_out` and exclusions,
+  `enumerate_scenarios` as in v0, full-health graph from the same provider.
+
+Evaluation of 2019-25 (`pregame_minutes_evaluation.py --evaluation --seasons
+2019-2025`), one walk-forward pass with history from 2016-17; for a date D every
+roster, baseline, share, q model and report state reads only information
+before D (tonight's pre-game report included); no architecture, rule or
+hyperparameter changes after it runs.
+
+- **Main comparison**: v1 vs v0 expected minutes from the closing report's
+  scenarios.
+- **Primary criteria**: player MAE of expected vs actual regulation minutes
+  (on the union of both providers' rows) and misallocated minutes per
+  team-game, pooled 2019-25 and per season.
+- **Secondary**: the same under realized absences, the cost of availability,
+  the slices of step 5 (role, uncertainty, players out, key player out, most
+  likely scenario matched, returns, deep bench); R1 total MAE (walk-forward
+  offset, paired SE) and absence impact, each provider against its own
+  full-health graph, with 2_6's rating cache for both (its 2016-17
+  contamination weighs about 0.04 by 2019-20).
+- **Reading, fixed in advance**: a consistent minutes improvement over seasons
+  → v1 replaces v0 as the minutes provider of the game graph; a significant R1
+  gain → it also translates to totals; minutes better but R1 within noise →
+  v1 is kept for its structure (graph weights, phase 5-6) without a claim on
+  totals; no minutes improvement → v1 does not replace v0, and the negative
+  result is documented.
+
 ## Future checks
 
 ### Guarding weights (`expected_guard`)
@@ -969,6 +1049,9 @@ have not appeared elsewhere, with a q that does not reach 0.
 - [ ] Better ranking of the main substitute is what would let the shares concentrate (step 2c): coach-specific rotation patterns, lineup co-occurrence with the absent player, the substitute's minutes in the absent player's slot of the rotation.
 - [ ] v2 "next man up" features improve the prior's ranking (top-1 17% → 30%) but tie on minutes; revisit them together with any ranking improvement.
 - [ ] A saturation term for one player absorbing several absences (multi-absence games are where concentrated shares fail).
+- [ ] Incorporate a historical roster / transactions feed (signings, waivers, trades) for the expanded roster.
+- [ ] G League and two-way assignments: long returns never listed on the report fall off the expanded roster after 10 games (34 of 140 in 2018-19).
+- [ ] Revisit the periods before injury reports existed (2016-17 to mid-December 2018), where long injuries drop off after 10 games and C stops modelling them, if they become important for training.
 - [ ] Participation q is over-confident in the middle (0.5-0.9), more on report labels: recalibrate on report-labelled data (e.g. Platt on recent months) or weight report labels up once enough exist; GBM is the challenger only if it clearly improves Brier / log-loss with good calibration.
 
 ### Phase 3 (RAPM with a profile prior)
