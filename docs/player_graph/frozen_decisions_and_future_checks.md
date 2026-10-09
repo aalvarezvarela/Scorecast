@@ -1003,6 +1003,69 @@ hyperparameter changes after it runs.
   totals; no minutes improvement → v1 does not replace v0, and the negative
   result is documented.
 
+## Phase 4A out-of-sample result, 2019-25 (one pass, 2026-10-09)
+
+`python scripts/player_graph/pregame_minutes_evaluation.py --evaluation
+--seasons 2019-2025` (committed before it ran, 06a757a), configuration as
+frozen above. 8,845 games with both teams' closing report, 17,690 team-games,
+255,764 player rows (union of both providers and actual players). v0's
+scenario graphs reproduce 2_6's closing file on all 8,845 games (max
+difference 1.4e-13 in absence impact, 7.1e-14 in possessions).
+
+| Pooled 2019-25 | v0 | v1 | v1 − v0 |
+| --- | --- | --- | --- |
+| **Player MAE, report scenarios** | 5.423 | 4.733 | **-0.690** |
+| **Misallocated minutes per team-game** | 39.20 | 34.22 | **-4.98** |
+| Player MAE, realized absences | 5.040 | 4.291 | -0.749 |
+| Cost of availability (realized → report) | +0.383 | +0.442 | |
+| R1 total MAE (8,744 calibrated games) | 14.540 | 14.513 | **+0.027 ± 0.016** better |
+| Mean absolute absence impact | 2.157 | 2.374 | corr 0.841 |
+
+| By season | 2019-20 | 2020-21 | 2021-22 | 2022-23 | 2023-24 | 2024-25 | 2025-26 |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| Player MAE v0 → v1 | 5.526 → 4.851 | 5.418 → 4.879 | 5.563 → 4.889 | 5.412 → 4.675 | 5.219 → 4.500 | 5.389 → 4.611 | 5.450 → 4.759 |
+| Misallocated v0 → v1 | 39.86 → 34.99 | 39.76 → 35.81 | 39.89 → 35.06 | 39.01 → 33.70 | 38.07 → 32.83 | 38.80 → 33.20 | 39.18 → 34.21 |
+| R1, v1 better by | +0.082 ± 0.051 | +0.085 ± 0.045 | -0.057 ± 0.042 | +0.048 ± 0.035 | +0.004 ± 0.039 | +0.032 ± 0.045 | +0.012 ± 0.043 |
+
+Slices (player MAE, report scenarios, v0 → v1): starters 6.021 → 5.041, bench
+5.107 → 4.570; teams with questionable / doubtful players 6.076 → 5.513,
+without 5.331 → 4.624; 0 / 1 / 2+ out 4.936 → 4.047, 4.922 → 4.253, 5.638 →
+4.969; key player out 5.761 → 5.072; most likely scenario missed 5.844 →
+5.156; returning after ≥ 5 out 3.639 → 3.171; deep bench 4.173 → 3.159. Long
+absences: 1,792 true returns (play after > 10 team games out), 81.7% on v1's
+roster, MAE v0 10.67 → v1 8.64; but the 400 returns after 31+ games out get
+less from v1 (2.82 projected vs 5.01 for v0, actual 13.26), and players who
+do not play after 11-30 / 31+ games out get slightly more ghost minutes from
+v1 (1.21 / 1.10 vs 1.11 / 0.99).
+
+Reading against the rules fixed in advance:
+
+- **Minutes: consistent improvement → v1 replaces v0 as the game graph's
+  minutes provider.** Better in every season on both primary criteria (player
+  MAE -0.54 to -0.78, misallocated -4.0 to -5.6 per team-game), in every
+  slice, under realized absences and under the report's scenarios. Larger
+  than on 2018-19 because v0 is worse in these seasons (5.42 vs 5.13) while v1
+  holds (4.73 vs 4.75).
+- **Totals: R1 within noise → no claim on totals.** Pooled +0.027 ± 0.016
+  (1.7 SE; 0.017 clustered by date), positive in 6 of 7 seasons but beyond 2
+  SE in none. v1 is kept for its structure (graph weights for phases 5-6)
+  without a claim that it improves the total.
+- Descriptive, after the reading (not a selection): the R1 gain does not grow
+  where the providers disagree most (terciles of |impact v1 − impact v0|:
+  +0.027, +0.039, +0.015) nor with a key player out (+0.025 vs +0.033 without),
+  so the small gain is not concentrated where the minutes changed.
+- v1 loses a little more than v0 from the realized absences to the report's
+  scenarios (+0.442 vs +0.383), and its gain is smaller on teams with
+  questionable / doubtful players; consistent with the over-confident q in the
+  middle range (future check).
+
+**Phase 4A closed (2026-10-09).** The frozen v1 provider replaces v0 as the
+game graph's minutes provider; its value is a more realistic rotation for
+phases 5-6, with no claim that better minutes alone improve the total. 2019-25
+is no longer an untouched holdout for the minutes provider: any later change to
+it is developed on 2018-19 or earlier and must not be re-judged on these
+seasons as if they were.
+
 ## Future checks
 
 ### Guarding weights (`expected_guard`)
@@ -1052,6 +1115,8 @@ hyperparameter changes after it runs.
 - [ ] Incorporate a historical roster / transactions feed (signings, waivers, trades) for the expanded roster.
 - [ ] G League and two-way assignments: long returns never listed on the report fall off the expanded roster after 10 games (34 of 140 in 2018-19).
 - [ ] Revisit the periods before injury reports existed (2016-17 to mid-December 2018), where long injuries drop off after 10 games and C stops modelling them, if they become important for training.
+- [ ] Questionable / doubtful scenarios: v1 loses more than v0 from realized absences to the report's scenarios (+0.442 vs +0.383 player MAE, 2019-25) and gains less on teams with questionable or doubtful players; look at how scenario weights and q combine for them.
+- [ ] Very long absences: returns after 31+ team games out get less from v1 than from v0 (2.82 vs 5.01 projected, actual 13.26; 400 rows 2019-25), and players still out after 11+ games get slightly more ghost minutes from v1.
 - [ ] Participation q is over-confident in the middle (0.5-0.9), more on report labels: recalibrate on report-labelled data (e.g. Platt on recent months) or weight report labels up once enough exist; GBM is the challenger only if it clearly improves Brier / log-loss with good calibration.
 
 ### Phase 3 (RAPM with a profile prior)
@@ -1098,5 +1163,6 @@ Audited 2026-10-08 (raw PBP V3 and GameRotation archive, rotations rebuilt from 
 
 - **k for v0** (2026-10-07): swept on 2018-19 only; 300 frozen (see table above).
 - **Phase 3 closed** (2026-10-08): profile prior for offense and defense, zero prior for pace (out-of-sample 2019-25 result above).
+- **Phase 4A closed** (2026-10-09): minutes provider v1 replaces v0 in the game graph; better minutes in all 7 out-of-sample seasons, R1 within noise (result above).
 - **2016-17 stint store rebuilt** (2026-10-08): placeholder-score corruption removed; stint point validation and audit added; phase 3 steps 1 and 2a rerun on clean data (zero-prior control re-frozen at 3,000 / 10,000).
 - **Box-score backfill for 2016-17 and 2017-18** (2026-10-08): `as_of` falls back to the season CSVs for whole seasons the DB lacks; positions, node profiles and `expected_guard` rebuilt; game-graph rosters keep the DB rows only, and 2_6 is still reproduced exactly. k re-swept on 2018-19 only: 300 stays (see the frozen table and the benchmark).
