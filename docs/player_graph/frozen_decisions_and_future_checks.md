@@ -1066,6 +1066,104 @@ is no longer an untouched holdout for the minutes provider: any later change to
 it is developed on 2018-19 or earlier and must not be re-judged on these
 seasons as if they were.
 
+## Phase 4B, step 1: what a matchup-adjusted defensive effect can measure (2017-18, 2018-19)
+
+`python scripts/player_graph/matchup_defense_diagnostic.py`
+(`player_graph/matchup_defense.py`). Diagnostic only, nothing frozen. The
+`pair_game` rows (attacker × defender × game) are labels and history only. For
+a target `y` per exposure `w` each row gets the attacker's as-of norm (his
+decayed rate, half-life 365 days, shrunk toward his position's rate with an
+empirical-Bayes weight from 2017-18) and a residual `r = y − w·norm`; a
+defender's effect is `D_j = Σr / Σw` (positive = his attackers beat their
+norms). Signal by split-half covariance (each defender's games alternate
+between halves; the covariance across defenders is the variance of the
+persistent effect), empirical-Bayes shrinkage `k = φ/σ²` from 2017-18;
+walk-forward on 2018-19 with as-of estimates centered by date, scored as the
+drop in squared error of each defender-game's residual at slope 1 (nothing
+fitted on 2018-19). 2017-18 counts from December, after the attacker norms'
+burn-in.
+
+**Data defect: doubled matchup exposure.** 65 late-season 2018-19 games
+(`0021801152`-`0021801219`), one 2020-21 game (`0022000870`) and two 2021-22
+playoff games (`0042100131`, `0042100235`) carry every row's matched seconds
+and partial possessions at exactly twice their value (same rows, normal
+points); `0022200861` (2022-23) has zero points on every row and inflated
+seconds. All come from the archive. Game-level `Σ matchup_seconds / Σ
+cofloor_seconds` is 0.075-0.087 in every season and about 0.16 in these games,
+so `doubled_exposure_games` flags them at 0.12. All phase 4B history is read
+through `read_matchup_history`, which drops them; `read_pair_game` is unchanged,
+so they are still in the pair history of `expected_guard` v0, which stays as
+built (see future checks).
+
+**The NBA's credit measures defensive role, not effectiveness.** Points and
+shots are credited to whoever is matched when the shot goes up, while partial
+possessions follow guarding time. Per unit of guarding time, centers are
+credited 1.42× the average attempts (1.37× the points) and guards 0.87×; a
+center against guards sits +40 attempts per 100 partial possessions above the
+guards' norms (help at the rim credited as the matchup). The resulting
+"effects" are large and stable (attempts per possession: SD 5.3 per 100,
+split-half r 0.94, season to season 0.91; walk-forward gain 32%) but correlate
++0.71 with the defender's blocks and point the wrong way against stint RAPM:
+the better rim protector looks worse. Shot-credited volume is not a
+defensive-skill target. The one exception is efficiency on credited shots
+(points per attempt): small (SD 0.04, split-half r 0.19-0.23, season to season
+0.34) but consistent with RAPM (corr 0.38) and adding to it jointly
+(t 8.2 and 5.3); walk-forward +0.60 ± 0.07%.
+
+**Time attribution.** Each attacker's whole-game residual is spread over his
+defenders by their share of his partial possessions (seconds for the
+per-minute target), so it no longer matters who was nearest when the shot
+went up. No position structure is left (defender × attacker position cells
+within ±1.1 per 100), and the season effect has the right sign against stint
+RAPM `d` (corr −0.14; −0.26 among centers, −0.21 among guards). 2018-19:
+
+| Time-attributed target | Defender SD | Split-half r | Season → season r | Within-team SD | Team SD | Walk-forward: defender | Team | Team + within |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| Points per 100 poss. | 0.87 | 0.43 | 0.28 | 0.64 | 0.61 | **+1.05 ± 0.18%** | +0.72 ± 0.21% | **+1.21 ± 0.23%** |
+| Attempts per 100 poss. | 0.59 | 0.46 | 0.32 | 0.54 | 0.19 | +1.07 ± 0.20% | +0.26 ± 0.17% | +1.03 ± 0.21% |
+| 3PA per 100 poss. | 0.43 | 0.64 | 0.31 | 0.25 | 0.35 | +1.91 ± 0.26% | +1.23 ± 0.32% | +1.81 ± 0.34% |
+| FTA per 100 poss. | 0.37 | 0.48 | 0.28 | 0.21 | 0.30 | +0.35 ± 0.27% | +1.01 ± 0.22% | +1.20 ± 0.23% |
+| Turnovers per 100 poss. | 0.24 | 0.48 | 0.37 | 0.07 | 0.22 | +1.18 ± 0.15% | +1.27 ± 0.18% | +1.34 ± 0.19% |
+| Points per attempt | 0.024 | 0.29 | 0.25 | 0.008 | 0.025 | +0.64 ± 0.14% | +0.85 ± 0.21% | +0.88 ± 0.21% |
+| Points per matched minute | 0.054 | 0.49 | 0.36 | 0.035 | 0.045 | +1.94 ± 0.24% | +1.57 ± 0.28% | +2.06 ± 0.29% |
+
+- Small and slow: one game's reliability is about 0.03 and a season's
+  0.6-0.7 (`k` ≈ 1,700 partial possessions for points, about 35 games of a
+  defender's matched possessions). The empirical-Bayes shrinkage is
+  calibrated (walk-forward slope 1.02 ± 0.08 for points).
+- Efficiency allowed is a **team** property: within-team signal is about 0
+  (SD 0.008, split-half r 0.04-0.07). The individual part is in volume:
+  attempts, 3PA and turnovers.
+- Nearly orthogonal to stint RAPM: `−d` predicts none of the time-attributed
+  residual (slope 0.02 ± 0.02, corr 0.005; joint t −0.4 next to `D_j`'s 12.7).
+
+**Does the effect depend on the attacker?** Interaction cells (defender ×
+attacker position, usage tercile or 3PA-share tercile, cut on 2017-18
+exposure), net of the defender's own effect and the type's mean:
+
+- Shot credit: large and stable (position: interaction SD 10 per 100, about 4×
+  the main effect's variance) and the same role structure as above.
+- Time attribution: some split-half covariance (interaction SD 0.4-0.8 per 100,
+  t 2-9) but a reliability of 0.1-0.4 at a cell's median exposure. Walk-forward,
+  the defender's own cells add +0.04 ± 0.03% (position), +0.03 ± 0.02% (usage)
+  and −0.01 ± 0.02% (3PA share) to points; generic type means shared by all
+  defenders slightly hurt (usage −0.48 ± 0.13%). Defender × attacker-type
+  effects are not measurable per cell at this volume.
+
+Reading (development seasons only):
+
+- The target for the matchup-adjusted defensive effect is the
+  **time-attributed** residual, not the NBA's shot credit (efficiency on
+  credited shots is the only shot-credited piece that behaves like skill).
+- The data support a **scalar** defender effect (plus the team's), not a
+  per-attacker-type one; attacker-dependent effects are left to phase 6, where
+  the FM / GNN can share parameters across attacker and defender profiles
+  instead of estimating cells.
+- The effect is small, persistent, calibrated with empirical-Bayes shrinkage
+  and nearly orthogonal to stint RAPM `d`. Whether it adds to points allowed
+  and totals beyond RAPM is the next question (the plan's own validation:
+  future stints' points allowed, then R2 and the oracle rerun).
+
 ## Future checks
 
 ### Guarding weights (`expected_guard`)
@@ -1118,6 +1216,13 @@ seasons as if they were.
 - [ ] Questionable / doubtful scenarios: v1 loses more than v0 from realized absences to the report's scenarios (+0.442 vs +0.383 player MAE, 2019-25) and gains less on teams with questionable or doubtful players; look at how scenario weights and q combine for them.
 - [ ] Very long absences: returns after 31+ team games out get less from v1 than from v0 (2.82 vs 5.01 projected, actual 13.26; 400 rows 2019-25), and players still out after 11+ games get slightly more ghost minutes from v1.
 - [ ] Participation q is over-confident in the middle (0.5-0.9), more on report labels: recalibrate on report-labelled data (e.g. Platt on recent months) or weight report labels up once enough exist; GBM is the challenger only if it clearly improves Brier / log-loss with good calibration.
+
+### Phase 4B (matchups)
+
+- [ ] **Doubled matchup exposure (69 archive games, 2018-19 to 2022-23). Required before phase 4B is frozen or evaluated on 2019-25:** either repair the store (re-fetch the games from `BoxScoreMatchupsV3`, or halve the exposure columns once a re-fetch confirms the factor) and rebuild `pair_game` and `expected_guard`, or a sensitivity check showing that excluding them does not materially change the guard weights. Until then phase 4B reads matchups only through `read_matchup_history`, and `expected_guard` v0 stays as built.
+- [ ] Attacker-dependent defense (defender × attacker type) through shared parameters in the FM / GNN (phase 6), not per-cell estimates; revisit per-cell effects only if more seasons of history change their reliability.
+- [ ] Efficiency on shots the NBA credits to the defender (the one shot-credited measure consistent with RAPM) as a separate component of the matchup-adjusted rating, if the time-attributed rating proves useful.
+- [ ] Attacker norms: position prior and 365-day half-life were not tuned; the usage-tier type means did not transfer from 2017-18 to 2018-19.
 
 ### Phase 3 (RAPM with a profile prior)
 
