@@ -70,3 +70,55 @@ def test_shares_are_non_negative_and_sum_to_one():
     )
     assert (out >= 0).all() and out.sum() == pytest.approx(1.0)
     assert out.argmax() == 1
+
+
+def _absent_after(game, listed_from=None):
+    """A team where ``ghost`` plays the first 5 games and never again;
+    ``listed_from``: game index from which the report lists him (or None)."""
+    rows, listed = [], {}
+    for k in range(30):
+        date = pd.Timestamp("2018-10-16") + pd.Timedelta(days=2 * k)
+        game_id = f"00218{k:05d}"
+        players = dict(REGULARS)
+        players[BACKUP] = 12.0
+        if k < game:
+            players["ghost"] = 10.0
+        for p, m in players.items():
+            rows.append((game_id, date, 2018, TEAM, p, m, p in "abcde"))
+        if listed_from is not None and k >= listed_from:
+            listed[(game_id, TEAM)] = {"ghost"}
+    minutes = pd.DataFrame(
+        rows,
+        columns=[
+            "game_id",
+            "game_date",
+            "season",
+            "team_id",
+            "player_id",
+            "minutes",
+            "started",
+        ],
+    )
+    return minutes, listed
+
+
+def test_a_long_unlisted_absence_leaves_the_roster_a_listed_one_stays():
+    flat = lambda d, p: np.full(3, 1 / 3)  # noqa: E731
+
+    def last_on_roster(players):
+        ghost = players.loc[players["player_id"].eq("ghost") & players["on_roster"]]
+        return int(ghost["game_id"].str[-5:].astype(int).max())
+
+    # Last played in game 4: kept while he has missed at most 10 games.
+    minutes, _ = _absent_after(5)
+    players, _ = walk_forward(minutes, flat, refit_monthly=False)
+    assert last_on_roster(players) == 15
+    # Listed on the report during the absence: kept to the end.
+    minutes, listed = _absent_after(5, listed_from=5)
+    players, _ = walk_forward(minutes, flat, listed, refit_monthly=False)
+    assert last_on_roster(players) == 29
+    # The first v1 rule (no limit) kept him too.
+    no_limit = RotationParams(roster_absence_games=None)
+    minutes, _ = _absent_after(5)
+    players, _ = walk_forward(minutes, flat, params=no_limit, refit_monthly=False)
+    assert last_on_roster(players) == 29
