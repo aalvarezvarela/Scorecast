@@ -14,6 +14,13 @@ its CSVs before 2018-19) for the profile positions. Output:
 ``data/player_graph/expected_guard/v0/season=YYYY.parquet``, each next to a
 ``season=YYYY.json`` with the parameters that built it. ``--reshrink`` applies
 a new k to the stored seasons it is given and updates their own JSON only.
+
+``--exclude-corrupt-matchups`` drops the games of
+``matchup_defense.doubled_exposure_games`` from the pair history
+(``PointInTimeData.without_corrupt_matchups``) and writes to
+``data/player_graph/expected_guard/v0_without_corrupt_matchups/`` with the same
+parameters, for the phase 4B sensitivity check
+(``expected_guard_sensitivity.py``). The stored v0 is not touched.
 """
 
 from __future__ import annotations
@@ -24,14 +31,19 @@ import time
 from pathlib import Path
 
 import pandas as pd
-from nba_ou.data_processing.player_graph.as_of import FIRST_SEASON, PointInTimeData
+from nba_ou.data_processing.player_graph.as_of import (
+    CORRECTED_MATCHUP_HISTORY,
+    FIRST_SEASON,
+    ORIGINAL_MATCHUP_HISTORY,
+    PointInTimeData,
+)
 from nba_ou.data_processing.player_graph.expected_guard import (
-    VERSION,
     ExpectedGuardParams,
     expected_guard,
     provider_metadata,
     season_paths,
     shrink,
+    stored_version,
     write_season,
 )
 from nba_ou.data_processing.player_graph.pair_game import cofloor_seconds
@@ -109,13 +121,25 @@ def main() -> None:
     parser.add_argument("--half-life-days", type=float, default=defaults.half_life_days)
     parser.add_argument("--window-days", type=int, default=defaults.window_days)
     parser.add_argument(
+        "--exclude-corrupt-matchups",
+        action="store_true",
+        help="Drop doubled-exposure games from the pair history (separate output)",
+    )
+    parser.add_argument(
         "--reshrink",
         action="store_true",
         help="Only recompute r_hat and prior_weight of the stored tables for --k",
     )
     args = parser.parse_args()
     params = ExpectedGuardParams(args.k, args.half_life_days, args.window_days)
-    out_dir = args.local_root / "player_graph" / "expected_guard" / VERSION
+    history = (
+        CORRECTED_MATCHUP_HISTORY
+        if args.exclude_corrupt_matchups
+        else ORIGINAL_MATCHUP_HISTORY
+    )
+    out_dir = (
+        args.local_root / "player_graph" / "expected_guard" / stored_version(history)
+    )
     if args.reshrink:
         reshrink(out_dir, range(args.min_season, args.max_season + 1), args.k)
         return
@@ -125,10 +149,17 @@ def main() -> None:
     data = PointInTimeData.load(
         range(max(first, FIRST_SEASON), args.max_season + 1), local_root=args.local_root
     )
+    excluded: set[str] = set()
+    if args.exclude_corrupt_matchups:
+        data, excluded = data.without_corrupt_matchups()
+    metadata = provider_metadata(params, data.matchup_history)
+    if excluded:
+        metadata["excluded_matchup_games"] = sorted(excluded)
+        print(f"pair history without {len(excluded)} corrupt matchup games", flush=True)
     for season in range(args.min_season, args.max_season + 1):
         started = time.time()
         table = build_season(data, season, params)
-        write_season(out_dir, season, table, provider_metadata(params))
+        write_season(out_dir, season, table, metadata)
         path, _ = season_paths(out_dir, season)
         no_history = (~table["has_pair_history"]).mean() if len(table) else float("nan")
         print(

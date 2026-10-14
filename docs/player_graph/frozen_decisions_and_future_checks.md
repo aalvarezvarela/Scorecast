@@ -1271,6 +1271,80 @@ on development data. That guarding interactions carry information a single
 additive defender rating cannot express (who takes the shots, the rest of
 the floor) is a phase 6 hypothesis, not a result.
 
+## Phase 4B: sensitivity of `expected_guard` v0 to the corrupt matchup games (2026-10-14)
+
+`PointInTimeData.without_corrupt_matchups` (or `load(...,
+exclude_corrupt_matchups=True)`) drops the 69 games of
+`doubled_exposure_games` from the pair history, whole games at a time. The
+numerator (matched seconds) and the denominator (co-floor seconds) of every
+pair rate leave together, along with the game counts and the position prior.
+The raw matchups stay: positions read only their start-position labels and
+node profiles only their players, never the exposure. `expected_guard` is
+the graph's only reader of pair history.
+
+`build_expected_guard.py --exclude-corrupt-matchups` rebuilt 2018-19 to
+2025-26 into `expected_guard/v0_without_corrupt_matchups/` with v0's
+parameters (k 300, half-life 365 days, 3-season window); nothing was
+retuned. `expected_guard_sensitivity.py tables` compares the two:
+
+- Every as-of date through 2019-04-01, the first corrupt game's date, is
+  identical; the first difference is on 2019-04-02.
+- Two games (`0021800927`, `0022101075`) have rows only in the stored v0.
+  Their stints were rejected by the points validator after v0 was built, a
+  stint-store change unrelated to matchups. The comparison uses the
+  2,050,334 shared pairs.
+
+| Season | Mean abs. Δ `r_hat` (relative) | p99 | Guard-share TVD between versions (weighted) | p99 | Attacker-games > 0.01 | Benchmark TVD vs observed: v0 → corrected |
+| --- | --- | --- | --- | --- | --- | --- |
+| 2018-19 | 5.7e-4 (0.5%) | 9.1e-3 | 0.0017 | 0.072 | 2.2% | 0.27470 → 0.27470 |
+| 2019-20 | 2.2e-3 (2.3%) | 3.4e-2 | 0.0108 | 0.148 | 14.4% | 0.27506 → 0.27436 |
+| 2020-21 | 1.0e-3 (1.2%) | 1.4e-2 | 0.0057 | 0.086 | 9.7% | 0.26661 → 0.26630 |
+| 2021-22 | 4.9e-4 (0.6%) | 6.1e-3 | 0.0028 | 0.049 | 5.4% | 0.25773 → 0.25776 |
+| 2022-23 | 1.3e-4 (0.1%) | 1.5e-4 | 0.0006 | 0.0066 | 0.9% | 0.25521 → 0.25515 |
+| 2023-24 | 5.7e-5 | 1.2e-4 | 0.0003 | 0.0045 | 0.6% | 0.25421 → 0.25418 |
+| 2024-25 | 2.9e-5 | 5.5e-5 | 0.0002 | 0.0028 | 0.4% | 0.24700 → 0.24699 |
+| 2025-26 | 5.6e-6 | 1.5e-5 | 0.00003 | 0.00003 | 0.07% | 0.24709 → 0.24709 |
+
+All seasons: guard-share TVD between the versions 0.0026; benchmark TVD
+0.25934 → 0.25921. `r_hat` averages about 0.08, so "relative" is mean
+`|Δ r_hat| / r_hat`.
+
+- **Roll-off.** The monthly mean `|Δ r_hat|` is 5e-3 in April 2019, about 2e-3
+  in 2019-20, 1e-3 in 2020-21, 5e-4 in 2021-22 and about 1e-4 from 2022-23. It
+  reaches 0 from March 2026, three years after the last corrupt game. One
+  local spike: June 2023 (1.7e-2), the Finals between the two teams of the
+  zero-points game `0022200861` (Heat vs Nuggets, 2023-02-13).
+- **Game graphs** (`expected_guard_sensitivity.py graphs`: closing v0
+  graphs of 2018-19 to 2020-21, 2_6's rating cache). R1 is identical.
+  - Guard-edge TVD per attacker and scenario: 0.004 / 0.010 / 0.005 (p99 0.13 /
+    0.15 / 0.08).
+  - R2 moves by 0.026 / 0.072 / 0.033 points on average (max 2.26 / 1.06 /
+    0.46).
+  - For scale, R2's own guard effect `|R2 − R1|` is 1.10 / 0.53 / 0.45 points,
+    and R2 itself adds nothing to total MAE (−0.003 ± 0.006, 2019-25).
+
+**Reading: negligible.** The change is small and transient: concentrated in
+2019-20 and 2020-21, fading with the window. The benchmark against observed
+shares does not move (where it does, the corrected history is marginally
+better). The frozen settings stay (k 300, half-life 365 days, 3-season
+window); nothing is retuned because of the correction.
+
+**Two pair histories, kept apart (decision 2026-10-14).**
+
+| Matchup history | `PointInTimeData` | Stored `expected_guard` | Used by |
+| --- | --- | --- | --- |
+| `original` | `load(...)` (default) | `expected_guard/v0/` (unchanged since phase 2) | Phase 2, the v0 oracle, the guard and overlap benchmarks: the reproducible reference |
+| `without_corrupt_matchups` | `load(..., exclude_corrupt_matchups=True)` | `expected_guard/v0_without_corrupt_matchups/` | Phase 5 graphs and every representation-learning experiment after it |
+
+`PointInTimeData.matchup_history` carries the label and every artifact
+records it: game-graph metadata (`matchup_history`) and the stored
+`expected_guard` JSONs (`matchup_history`, plus `excluded_matchup_games` for
+the corrected one). `read_seasons` refuses to mix seasons with different
+metadata, and `stored_version(matchup_history)` maps a history to its
+directory, so the phase 5 pipeline must name its history explicitly.
+
+## Future checks
+
 ## Future checks
 
 ### Guarding weights (`expected_guard`)
@@ -1308,6 +1382,7 @@ the floor) is a phase 6 hypothesis, not a result.
 - [ ] Add node features (as-of profile, soft position, games played) once the node table exists.
 - [ ] Add a teammate familiarity attribute (historical shared minutes) once the co-play table exists.
 - [ ] 2016-17 stints have uniform guard shares (no matchup history): start pretraining in 2017-18, or keep them (plan phase 6 decision).
+- [ ] Observed guarding labels from `pair_game` (matched seconds, guard rates, shares) must skip the 69 corrupt matchup games when phase 6 uses them as targets: read them through `read_matchup_history` or `PointInTimeData.without_corrupt_matchups`.
 - [ ] Very short stints (median ~73 s) give noisy labels; check whether to drop stints under some possession count or rely on possession weights.
 - [ ] Possession estimate at stint boundaries: an offensive rebound credited to a stint whose miss was in the previous one. Check whether attributing it to the miss's stint fixes the negative estimates.
 - [ ] **Pace targets: stint duration as exposure (decided for phase 6).** `poss_per_48` is weighted by possessions like the other labels, so sub-second stints (free throws around a substitution: the clock is stopped, possessions are credited) dominate it: possession-weighted SD 136 around a mean of 112 (2018-10-16 → 2019-01-31), max 28,800; the smoke test's held-out loss / constant is 1.000. Keep those stints, but weight pace targets by the stint's **seconds** (exposure), so a sub-second stint counts next to nothing against one of several minutes and the weighted mean becomes Σ poss / Σ time (equivalently, model possessions with log-duration as an offset). Per-possession targets keep possession weights. Duration stays out of the encoder's inputs.
@@ -1326,7 +1401,8 @@ the floor) is a phase 6 hypothesis, not a result.
 
 ### Phase 4B (matchups)
 
-- [ ] **Doubled matchup exposure (69 archive games, 2018-19 to 2022-23). Required before phase 4B is frozen or evaluated on 2019-25:** either repair the store (re-fetch the games from `BoxScoreMatchupsV3`, or halve the exposure columns once a re-fetch confirms the factor) and rebuild `pair_game` and `expected_guard`, or a sensitivity check showing that excluding them does not materially change the guard weights. Until then phase 4B reads matchups only through `read_matchup_history`, and `expected_guard` v0 stays as built.
+- [x] **Doubled matchup exposure (69 archive games, 2018-19 to 2022-23):** sensitivity check done (2026-10-14, section above): excluding them changes the guard weights negligibly; v0's settings stay. Phase 4B reads matchups through `read_matchup_history`; the pair history without them is `PointInTimeData.without_corrupt_matchups`.
+- [ ] Repair the matchup store itself (re-fetch the 69 games from `BoxScoreMatchupsV3`, or halve the exposure columns once a re-fetch confirms the factor) and rebuild `pair_game`, if the exposure of those games is ever needed (e.g. phase 6 labels).
 - [ ] Attacker-dependent defense (defender × attacker type) through shared parameters in the FM / GNN (phase 6), not per-cell estimates; revisit per-cell effects only if more seasons of history change their reliability.
 - [ ] Efficiency on shots the NBA credits to the defender (the one shot-credited measure consistent with RAPM) as a separate component of the matchup-adjusted rating, if the time-attributed rating proves useful.
 - [ ] Attacker norms: position prior and 365-day half-life were not tuned; the usage-tier type means did not transfer from 2017-18 to 2018-19.
@@ -1344,6 +1420,17 @@ the floor) is a phase 6 hypothesis, not a result.
 - [ ] Revisit PyTorch Geometric (`HeteroData`, batching of graphs with variable node counts) when the phase 6 architecture is defined, especially for game graphs and scenarios.
 - [ ] Node features currently join the stint graphs in `smoke_gnn.node_inputs`; move the join into the stint-graph loader when phase 6 fixes the inputs.
 - [ ] A CPU-only PyTorch wheel (or a separate source) if the CUDA build's size matters; the machine has no GPU.
+- [ ] **Hardware before buying it.** With the first representative phase 6 GNN, benchmark CPU and GPU training time and peak GPU memory over a few batch sizes before deciding what hardware is needed. Working assumption to test, not to provision on: 8 GB of VRAM may be enough and 12-16 GB comfortable.
+
+### Phase 6 / phase 8 (encoder and embeddings)
+
+- [ ] **Market-conditioned graph encoder (future ablation; no change to the current pretraining architecture or the phase 6 plan).** The current design keeps the encoder market-blind and brings betting lines in only downstream, in XGBoost. Test whether giving the encoder the market's expectation helps it learn how player relationships interact with the expected scoring environment, beyond what XGBoost already learns from the embeddings and the line separately:
+  1. Baseline: market-blind GNN embeddings + the betting line and existing features in XGBoost.
+  2. Market-conditioned encoder: the pregame total line as a global graph-level feature, so it can shape the graph representations.
+  3. Optional: a market-blind encoder with the line entering a small neural readout after pooling.
+
+  Only the line actually available at prediction time T, never a later closing line for an earlier snapshot. Strictly temporal out-of-fold features; judged by the increment over the existing line-aware XGBoost baseline. A later ablation can add the spread / market-implied team totals as further global context.
+- [ ] Guarding interactions as a phase 6 hypothesis (phase 4B, step 2): a single additive defender rating cannot express how defensive pressure changes team scoring; test whether the FM / GNN learns attacker × defender × teammate interactions, including the redistribution of offensive opportunities.
 
 ### Node profiles
 
@@ -1362,6 +1449,7 @@ the floor) is a phase 6 hypothesis, not a result.
 - [ ] **Transient score glitches in V3.** Most score decreases are not corrections: 26 games 2012-25 have a negative stint, and in nearly all of them the score drops on a non-scoring or misordered event and recovers at the next score (instant-replay rulings, period starts, technical free throws, made shots logged out of order). The builder keeps them as signed deltas, moving 1-3 points between stints; the 24 games within the limits stay in the store. Fix: ignore a decrease that the next scoring event reverses (keep only persistent ones, e.g. a rescinded basket), then rebuild the affected games.
 - [ ] Burn-in of 2016-17: `load` reads the CSVs only for requested seasons, so profiles and positions in the first weeks of 2016-17 are priors although 2015-16 box scores exist. Loading 2015-16 as box-score context only (no stints) is a possible improvement; test it in phase 6 if starting 2016-17 with little history hurts pretraining.
 - [ ] Check whether the matchup store can cover Play-In (`005`) and NBA Cup final (`006`) games.
+- **Two games rejected by the stint points validator (separate from the corrupt matchup games).** `0021800927` (2019-02-28) and `0022101075` (2022-03-21) failed the `points_anomaly` check added in d2d9c04 (stale scores on non-scoring events) and are no longer in the stint store, so stint-based data (RAPM history, stint graphs, overlaps) does not contain them. They remain where the defect does not reach: `pair_game` (built before the rejection; their co-floor time is a full regulation game and their tracking is unaffected, so they stay in both pair histories) and the closing 2_6 dataset (their totals are valid). The stored `expected_guard` v0 still has rows for their own pairs; the corrected tables do not. Any rebuild of stints from the archive must keep them rejected; they must not come back into stint-based training data.
 - [ ] Measure matchup revisions: morning-after fetch vs later refetch for a sample of games.
 
 ### Older seasons (2012-13 → 2015-16)
@@ -1380,5 +1468,6 @@ Audited 2026-10-08 (raw PBP V3 and GameRotation archive, rotations rebuilt from 
 - **Phase 3 closed** (2026-10-08): profile prior for offense and defense, zero prior for pace (out-of-sample 2019-25 result above).
 - **Phase 4A closed** (2026-10-09): minutes provider v1 replaces v0 in the game graph; better minutes in all 7 out-of-sample seasons, R1 within noise (result above).
 - **Scalar matchup-adjusted defensive rating rejected** (2026-10-14): no information on future stints' points beyond RAPM on 2018-19; kept as a documented experiment (phase 4B, step 2).
+- **Phase 4B closed** (2026-10-14): guard-edge provider `expected_guard` v0 with its frozen settings (k 300, half-life 365 days, 3-season window), insensitive to the corrupt matchup games; phase 5 onward reads the corrected pair history (`without_corrupt_matchups`), the original stays the phase 2 reference; the scalar matchup rating rejected; stint RAPM stays `def_j`. Guarding interactions move to phase 6 as a hypothesis; phase 6 guarding labels exclude the same 69 games.
 - **2016-17 stint store rebuilt** (2026-10-08): placeholder-score corruption removed; stint point validation and audit added; phase 3 steps 1 and 2a rerun on clean data (zero-prior control re-frozen at 3,000 / 10,000).
 - **Box-score backfill for 2016-17 and 2017-18** (2026-10-08): `as_of` falls back to the season CSVs for whole seasons the DB lacks; positions, node profiles and `expected_guard` rebuilt; game-graph rosters keep the DB rows only, and 2_6 is still reproduced exactly. k re-swept on 2018-19 only: 300 stays (see the frozen table and the benchmark).

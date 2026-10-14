@@ -32,7 +32,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from .as_of import AsOfView
+from .as_of import CORRECTED_MATCHUP_HISTORY, ORIGINAL_MATCHUP_HISTORY, AsOfView
 from .positions import POSITIONS, PROBABILITY_COLUMNS, positions_as_of
 
 PROVIDER = "expected_guard"
@@ -190,9 +190,27 @@ def expected_guard(
     return out[[*extra, *COLUMNS]]
 
 
-def provider_metadata(params: ExpectedGuardParams) -> dict:
+def provider_metadata(
+    params: ExpectedGuardParams, matchup_history: str = ORIGINAL_MATCHUP_HISTORY
+) -> dict:
     """What a stored table records about the provider that built it."""
-    return {"provider": PROVIDER, "version": VERSION, **asdict(params)}
+    return {
+        "provider": PROVIDER,
+        "version": VERSION,
+        "matchup_history": matchup_history,
+        **asdict(params),
+    }
+
+
+def stored_version(matchup_history: str) -> str:
+    """Directory of the stored tables built from ``matchup_history``: ``v0``
+    (as built in phase 2, the frozen reference) or
+    ``v0_without_corrupt_matchups`` (phase 5 onward)."""
+    if matchup_history == ORIGINAL_MATCHUP_HISTORY:
+        return VERSION
+    if matchup_history == CORRECTED_MATCHUP_HISTORY:
+        return f"{VERSION}_{CORRECTED_MATCHUP_HISTORY}"
+    raise ValueError(f"Unknown matchup history {matchup_history!r}")
 
 
 def season_paths(root: Path, season: int) -> tuple[Path, Path]:
