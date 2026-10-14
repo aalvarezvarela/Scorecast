@@ -103,3 +103,45 @@ def test_empty_sources_give_no_positions_instead_of_an_error():
     pos = positions_as_of(data.as_of("2024-01-01"))
     assert pos.empty
     assert list(pos.columns[:3]) == list(PROBABILITY_COLUMNS)
+
+
+def _box_only_data(n_games=12):
+    """2016-17-like: box scores with START_POSITION, no matchups at all."""
+    data, dates = _data(n_games)
+    box = data.box_scores.copy()
+    starters = box["PLAYER_ID"].str.match(r"^[GFC]\d$")
+    box["START_POSITION"] = np.where(starters, box["PLAYER_ID"].str[0], None)
+    return PointInTimeData.from_frames(pd.DataFrame(), pd.DataFrame(), box), dates
+
+
+def test_without_matchups_v0_positions_are_uninformative():
+    data, dates = _box_only_data()
+    pos = positions_as_of(data.as_of(dates[-1] + pd.Timedelta(days=1)))
+    assert pos[list(PROBABILITY_COLUMNS)].to_numpy() == pytest.approx(1 / 3)
+    assert pos["n_starts"].eq(0).all()
+
+
+def test_box_starts_give_positions_without_matchups():
+    data, dates = _box_only_data()
+    pos = positions_as_of(
+        data.as_of(dates[-1] + pd.Timedelta(days=1)), box_starts=True
+    )
+    assert pos.loc["G0", "n_starts"] == len(dates)
+    assert pos.loc["G0", "p_G"] > 0.9 and pos.loc["C2", "p_C"] > 0.9
+    assert pos.loc["benchC"][list(PROBABILITY_COLUMNS)].idxmax() == "p_C"
+    # Strictly before the cutoff.
+    assert positions_as_of(data.as_of(dates[5]), box_starts=True).loc[
+        "F1", "n_starts"
+    ] == 5
+
+
+def test_box_starts_count_each_game_once_next_to_the_matchups():
+    data, dates = _data()
+    box = data.box_scores.copy()
+    starters = box["PLAYER_ID"].str.match(r"^[GFC]\d$")
+    box["START_POSITION"] = np.where(starters, box["PLAYER_ID"].str[0], None)
+    both = PointInTimeData.from_frames(pd.DataFrame(), data.matchups, box)
+    cutoff = dates[-1] + pd.Timedelta(days=1)
+    v0 = positions_as_of(data.as_of(cutoff))
+    v1 = positions_as_of(both.as_of(cutoff), box_starts=True)
+    pd.testing.assert_frame_equal(v0, v1.loc[v0.index])

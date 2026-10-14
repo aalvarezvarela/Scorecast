@@ -20,7 +20,11 @@ a new k to the stored seasons it is given and updates their own JSON only.
 (``PointInTimeData.without_corrupt_matchups``) and writes to
 ``data/player_graph/expected_guard/v0_without_corrupt_matchups/`` with the same
 parameters, for the phase 4B sensitivity check
-(``expected_guard_sensitivity.py``). The stored v0 is not touched.
+(``expected_guard_sensitivity.py``) and phase 5 onward. The stored v0 is not
+touched. Every season's JSON lists the corrupt games of the whole stored pair
+history (``CORRUPT_SCAN_SEASONS``), not only those inside its own window, so
+seasons built separately (2016-17 and 2017-18 for phase 6) carry the same
+record and ``read_seasons`` reads them together.
 """
 
 from __future__ import annotations
@@ -46,8 +50,18 @@ from nba_ou.data_processing.player_graph.expected_guard import (
     stored_version,
     write_season,
 )
-from nba_ou.data_processing.player_graph.pair_game import cofloor_seconds
+from nba_ou.data_processing.player_graph.matchup_defense import (
+    doubled_exposure_games,
+)
+from nba_ou.data_processing.player_graph.pair_game import (
+    cofloor_seconds,
+    read_pair_game,
+)
 from nba_ou.data_processing.player_graph.positions import positions_as_of
+
+#: Seasons scanned for corrupt matchup games (the stored pair history,
+#: 2017-18 -> 2025-26).
+CORRUPT_SCAN_SEASONS = range(2017, 2026)
 
 
 def build_season(
@@ -151,11 +165,22 @@ def main() -> None:
     )
     excluded: set[str] = set()
     if args.exclude_corrupt_matchups:
-        data, excluded = data.without_corrupt_matchups()
+        data, dropped = data.without_corrupt_matchups()
+        # Game-level detector: the games dropped from the loaded window are
+        # exactly the stored history's corrupt games inside it.
+        excluded = doubled_exposure_games(
+            read_pair_game(CORRUPT_SCAN_SEASONS, local_root=args.local_root)
+        )
+        if not dropped <= excluded:
+            raise SystemExit(f"Unexpected corrupt games: {sorted(dropped - excluded)}")
     metadata = provider_metadata(params, data.matchup_history)
     if excluded:
         metadata["excluded_matchup_games"] = sorted(excluded)
-        print(f"pair history without {len(excluded)} corrupt matchup games", flush=True)
+        print(
+            f"pair history without {len(excluded)} corrupt matchup games "
+            f"({len(dropped)} inside the loaded seasons)",
+            flush=True,
+        )
     for season in range(args.min_season, args.max_season + 1):
         started = time.time()
         table = build_season(data, season, params)

@@ -257,20 +257,17 @@ def stint_labels(stints: pd.DataFrame) -> tuple[np.ndarray, np.ndarray]:
     return labels, np.where(empty, 0.0, possessions)
 
 
-def build_stint_graphs(stints: pd.DataFrame, expected: pd.DataFrame) -> StintGraphs:
-    """Stint graphs with v0 guard weights.
-
-    ``stints``: rows of the stint store. ``expected``: ``expected_guard`` rows
-    with ``game_id``, covering the pairs of those stints (missing pairs fall
-    back to uniform shares).
-    """
-    check_encoder_inputs(expected)
+def guard_pairs(
+    stints: pd.DataFrame, table: pd.DataFrame, columns: tuple[str, ...]
+) -> pd.DataFrame:
+    """Every stint's 50 attacker-defender pairs in ``GUARD_EDGES`` order
+    (``n_stints * 50`` rows: stint, attacking side, attacker k, defender l),
+    with ``columns`` of ``table`` (one row per ``game_id`` and pair; a pair it
+    lacks gets NaN)."""
     stints = stints.reset_index(drop=True)
     n = len(stints)
     home = _lineups(stints, "home_lineup")
     away = _lineups(stints, "away_lineup")
-
-    # (n, side, attacker k, defender l), flattened in GUARD_EDGES order.
     attackers = np.empty((n, 2, 5, 5), dtype=object)
     defenders = np.empty((n, 2, 5, 5), dtype=object)
     attackers[:, 0] = home[:, :, None]
@@ -285,12 +282,27 @@ def build_stint_graphs(stints: pd.DataFrame, expected: pd.DataFrame) -> StintGra
         }
     )
     keys = ["game_id", "off_player_id", "def_player_id"]
-    table = expected[[*keys, *_EXPECTED_COLUMNS]].copy()
+    table = table[[*keys, *columns]].copy()
     for key in keys:
         table[key] = table[key].astype(str)
     if table.duplicated(keys).any():
-        raise ValueError("expected_guard has more than one row per game and pair")
-    flat = flat.merge(table, on=keys, how="left", validate="many_to_one")
+        raise ValueError("The guard table has more than one row per game and pair")
+    return flat.merge(table, on=keys, how="left", validate="many_to_one")
+
+
+def build_stint_graphs(stints: pd.DataFrame, expected: pd.DataFrame) -> StintGraphs:
+    """Stint graphs with v0 guard weights.
+
+    ``stints``: rows of the stint store. ``expected``: ``expected_guard`` rows
+    with ``game_id``, covering the pairs of those stints (missing pairs fall
+    back to uniform shares).
+    """
+    check_encoder_inputs(expected)
+    stints = stints.reset_index(drop=True)
+    n = len(stints)
+    home = _lineups(stints, "home_lineup")
+    away = _lineups(stints, "away_lineup")
+    flat = guard_pairs(stints, expected, _EXPECTED_COLUMNS)
 
     def grid(column: str, dtype=float) -> np.ndarray:
         return flat[column].to_numpy(dtype).reshape(n, 2, 5, 5)
