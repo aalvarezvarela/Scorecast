@@ -139,6 +139,16 @@ merge queries (phase 1) can't replay the old tape key for key. For those,
 the new input layer is first checked to return frames equal to the
 tape's, and then the build is compared as above.
 
+**Development loop: `stage_harness.py`.** A full replayed intermediate build
+takes 20+ minutes. `stage_harness.py capture` saves one stage's inputs and
+output from a replayed reference build (`artifacts/perf/stage/inj_2025`, the
+snapshot injury stage of `inter_2025`). `stage_harness.py run` then reruns only
+that stage with the code under test, answers its queries from the same tape,
+and compares the result `--exact`. It is a development check only.
+`run_candidate_suite.sh <worktree> <ref dir> <out>` is the acceptance: it
+replays every reference tape with a pinned candidate commit and compares each
+output with its reference.
+
 **0.3 Stage timer for the closing builder**, like the intermediate
 `_stage_logger`. It prints `[mm:ss]` per stage so every PR can state its
 before/after numbers.
@@ -247,6 +257,30 @@ horizons. Extend the same idea:
 - if still dominant, run horizons in a small process pool. Memory limits it
   to about 2 workers on this machine for a full build, which is why
   de-duplication comes first.
+
+**Iteration 1 (4d5b496, 2026-10-14): done for the per-horizon inputs.**
+The report-independent inputs are now prepared once instead of 17 times:
+- the stat players, their sort, the roster lookup index, the bench and
+  prior-roster lookups (`PreparedPlayerHistory`, `PlayerLookupIndex`);
+- the All-Star players, votes and indexes (`PreparedAllStarInputs`);
+- the box history and player form (`PreparedBoxHistory`);
+- the raw availability effects, shared by the three families and all horizons
+  through a `RowCache` bound to a digest of the game history.
+
+The same commit also makes four exact per-call changes, used by closing as well:
+- the availability loop reads only its ~12 columns of the ~2,000-column frame;
+- team-history windows and player memberships are memoised;
+- the All-Star roster lookup returns ids without building frames, keeping the
+  set's insertion order, because float sums over it depend on that order;
+- player timelines are binary-searched.
+
+Harness result, season 2025, under py-spy with another build running:
+885 s -> 374 s, bit-identical (frame digest equal). What remains is mostly
+the first horizon's player loop, where every row is a RowCache miss. That
+is Phase 2.3 (per-row pandas in `latest_player_states`/`rank_player_states`),
+not per-horizon work. Still open from this phase: the referee stage reading
+from the 1.2 cache, and `build_status_events`, which differs per horizon only
+through the drift's covered games.
 
 ### Phase 4 — Same-day predictions: full history, compute only tonight
 
