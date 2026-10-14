@@ -1,4 +1,6 @@
 import re
+from collections.abc import Callable
+from dataclasses import dataclass
 
 import pandas as pd
 from tqdm import tqdm
@@ -12,8 +14,8 @@ from nba_ou.data_processing.past_injuries.past_injuries import (
     N_TOP_PLAYERS_INJURED,
     N_TOP_PLAYERS_NON_INJURED,
     N_TOP_PLAYERS_QUESTIONABLE,
+    PlayerLookupIndex,
     create_injury_streak_lookup,
-    create_player_lookup,
     get_injured_players_dict,
 )
 from nba_ou.data_processing.players.feature_profile import ACTIVE_PROFILE
@@ -289,6 +291,45 @@ def precompute_stat_players(df_players, stat_cols) -> pd.DataFrame:
     return df_players
 
 
+@dataclass(frozen=True)
+class PreparedPlayerHistory:
+    """The players as ``add_player_history_features``' row loop reads them.
+
+    Everything that builder derives from the players alone before its loop: the
+    statistic columns, the sort, the roster lookup's index, and the bench and
+    prior-roster lookups. A caller that runs the builder repeatedly on the same
+    players with different reports (the snapshot builder, once per horizon)
+    prepares it once with :func:`prepare_player_history`. Passing it computes
+    exactly what the builder would compute itself.
+    """
+
+    stat_cols: tuple[str, ...]
+    players: pd.DataFrame
+    lookup_index: PlayerLookupIndex
+    bench_lookup: Callable
+    prior_roster_lookup: Callable
+
+
+def prepare_player_history(
+    df_players, stat_cols, *, stat_players: pd.DataFrame | None = None
+) -> PreparedPlayerHistory:
+    if isinstance(stat_cols, str):
+        stat_cols = [stat_cols]
+    if stat_players is None:
+        stat_players = precompute_stat_players(df_players, stat_cols)
+    # Sort df_players once before the loop for optimal performance
+    players = stat_players.copy()
+    players["GAME_DATE"] = pd.to_datetime(players["GAME_DATE"], errors="coerce")
+    players.sort_values(["PLAYER_ID", "GAME_DATE"], kind="mergesort", inplace=True)
+    return PreparedPlayerHistory(
+        stat_cols=tuple(stat_cols),
+        players=players,
+        lookup_index=PlayerLookupIndex(players),
+        bench_lookup=_build_bench_stats_lookup(players),
+        prior_roster_lookup=_build_prior_roster_lookup(players),
+    )
+
+
 def add_player_history_features(
     df_team,
     df_players,
@@ -303,6 +344,7 @@ def add_player_history_features(
     snapshot_report_listed_players: dict | None = None,
     row_cache: RowCache | None = None,
     stat_players: pd.DataFrame | None = None,
+    prepared_players: PreparedPlayerHistory | None = None,
 ):
     """
     Main function to attach top player statistics and injured player stats to team data.
@@ -351,6 +393,10 @@ def add_player_history_features(
             df_players, stat_cols)``, for callers that run this builder
             repeatedly on the same players. It is exactly what the builder
             would compute itself, so passing it changes no value.
+        prepared_players (PreparedPlayerHistory, optional):
+            ``prepare_player_history(df_players, stat_cols)``, the same for
+            everything the builder derives from the players alone. Replaces
+            ``stat_players``.
 
     Returns:
         pd.DataFrame: Updated df_team with extra columns for top players and injured players
@@ -407,9 +453,15 @@ def add_player_history_features(
 
     # Collect all column names first to avoid fragmentation
     all_new_cols = []
-    if stat_players is None:
-        stat_players = precompute_stat_players(df_players, stat_cols)
-    df_players = stat_players
+    if prepared_players is None:
+        prepared_players = prepare_player_history(
+            df_players, stat_cols, stat_players=stat_players
+        )
+    elif prepared_players.stat_cols != tuple(stat_cols):
+        raise ValueError(
+            f"prepared_players was built for {prepared_players.stat_cols}, "
+            f"not {tuple(stat_cols)}"
+        )
     for stat_col in stat_cols:
         # 1) Cumulative averages for the chosen stat: precomputed above
 
@@ -553,13 +605,9 @@ def add_player_history_features(
     new_cols_df = pd.DataFrame(None, index=df_team.index, columns=all_new_cols)
     df_team = pd.concat([df_team, new_cols_df], axis=1)
 
-    # Sort df_players once before the loop for optimal performance
-    df_players = df_players.copy()
-    df_players["GAME_DATE"] = pd.to_datetime(df_players["GAME_DATE"], errors="coerce")
-    df_players.sort_values(["PLAYER_ID", "GAME_DATE"], kind="mergesort", inplace=True)
-
-    # Create optimized lookup function (precomputes indexes once)
-    player_lookup = create_player_lookup(df_players, injured_dict=membership_dict)
+    df_players = prepared_players.players
+    # Create optimized lookup function (the players' indexes are precomputed)
+    player_lookup = prepared_players.lookup_index.lookup_for(membership_dict)
     injury_streak_lookup = create_injury_streak_lookup(
         df_team,
         injured_dict,
@@ -581,8 +629,8 @@ def add_player_history_features(
         if build_questionable_group
         else None
     )
-    bench_lookup = _build_bench_stats_lookup(df_players)
-    prior_roster_lookup = _build_prior_roster_lookup(df_players)
+    bench_lookup = prepared_players.bench_lookup
+    prior_roster_lookup = prepared_players.prior_roster_lookup
 
     # 3) Iterate over each row in df_team (only needed columns for efficiency)
     cols_needed = ["GAME_ID", "TEAM_ID", "SEASON_ID", "GAME_DATE"]

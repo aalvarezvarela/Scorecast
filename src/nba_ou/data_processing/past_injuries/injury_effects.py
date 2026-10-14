@@ -1,3 +1,4 @@
+import hashlib
 from functools import lru_cache
 from typing import Any
 
@@ -10,6 +11,8 @@ from nba_ou.config.odds_columns import (
     total_line_col,
 )
 from tqdm import tqdm
+
+from nba_ou.utils.row_cache import RowCache
 
 #: Minimum games per group before a standard error is reported. The mean
 #: difference itself needs one game per side; a spread around it needs two.
@@ -183,13 +186,27 @@ class _TeamHistoryIndex:
     hundred rows rather than re-masking the whole team-game history. Rows keep
     the history frame's order, so means and variances sum the same values in
     the same order as a frame filter would.
+
+    Two memos keep repeated queries cheap without changing a value. A query's
+    window (the team's rows before the date) is shared by every player queried
+    for that team-game. A player's injured/available membership over all of
+    the team's rows is computed once per ``player_key``, and a window then
+    selects from it: the same booleans as testing the window's rows directly.
+
+    ``effect_cache`` carries effects across instances built on the same
+    history, such as the snapshot builder's three families at each of its
+    horizons. An effect is a function of the window and the two masks over it,
+    so it is keyed on exactly those, and the cache is bound to a digest of the
+    history arrays: an instance over a different history refuses it.
     """
 
     #: Stands in for an unparseable GAME_ID: never a member of a game-id set,
     #: just as ``isin`` never matches a missing value.
     _MISSING_GAME_ID = np.iinfo("int64").min
 
-    def __init__(self, df_hist: pd.DataFrame) -> None:
+    def __init__(
+        self, df_hist: pd.DataFrame, effect_cache: RowCache | None = None
+    ) -> None:
         # A missing team or season never matches a query, as in the frame masks.
         team_ids = pd.to_numeric(df_hist["TEAM_ID"], errors="coerce").to_numpy(
             dtype="float64", na_value=np.nan
@@ -218,6 +235,61 @@ class _TeamHistoryIndex:
             for group in np.split(order, boundaries)
             if group.size
         }
+        self._windows: dict[tuple, tuple[np.ndarray, np.ndarray]] = {}
+        self._memberships: dict[tuple, tuple[np.ndarray, np.ndarray | None]] = {}
+        self._effect_cache = effect_cache
+        if effect_cache is not None:
+            effect_cache.bind(("_TeamHistoryIndex", self._history_digest(team_ids)))
+
+    def _history_digest(self, team_ids: np.ndarray) -> str:
+        digest = hashlib.sha256()
+        for values in (
+            team_ids,
+            self._season_years,
+            self._dates.view("int64"),
+            self._game_ids,
+            *(self._metrics[metric] for metric in EFFECT_METRICS),
+        ):
+            digest.update(np.ascontiguousarray(values).tobytes())
+        digest.update(repr(EFFECT_METRICS).encode())
+        return digest.hexdigest()
+
+    #: Windows kept at once. Rows are queried game by game, so only the last
+    #: few team-games' windows are ever asked for again.
+    _MAX_WINDOWS = 256
+
+    def _window(self, team_id, positions, season_years, before_date):
+        key = (team_id, season_years, before_date)
+        window = self._windows.get(key)
+        if window is None:
+            in_window = np.isin(self._season_years[positions], season_years) & (
+                self._dates[positions] < np.datetime64(before_date)
+            )
+            window = (in_window, positions[in_window])
+            if len(self._windows) >= self._MAX_WINDOWS:
+                self._windows.clear()
+            self._windows[key] = window
+        return window
+
+    def _membership(
+        self, team_id, positions, injured_games, available_games, player_key
+    ):
+        """Injured and available flags over all of the team's rows."""
+        key = (team_id, player_key)
+        membership = None if player_key is None else self._memberships.get(key)
+        if membership is None:
+            game_ids = self._game_ids[positions]
+            membership = (
+                np.isin(game_ids, np.fromiter(injured_games, "int64")),
+                (
+                    None
+                    if available_games is None
+                    else np.isin(game_ids, np.fromiter(available_games, "int64"))
+                ),
+            )
+            if player_key is not None:
+                self._memberships[key] = membership
+        return membership
 
     def player_effect(
         self,
@@ -226,30 +298,47 @@ class _TeamHistoryIndex:
         before_date: pd.Timestamp,
         injured_games: set,
         available_games: set | None,
+        player_key=None,
     ):
-        positions = self._positions.get(int(team_id))
+        """``player_key``, when given, must identify ``injured_games`` and
+        ``available_games``: every query with that key passes the same sets."""
+        team_id = int(team_id)
+        positions = self._positions.get(team_id)
         if positions is None:
             return _empty_effect_result()
-        in_window = np.isin(self._season_years[positions], season_years) & (
-            self._dates[positions] < np.datetime64(before_date)
-        )
-        rows = positions[in_window]
+        in_window, rows = self._window(team_id, positions, season_years, before_date)
         if rows.size == 0:
             return _empty_effect_result()
 
-        game_ids = self._game_ids[rows]
-        inj_mask = np.isin(game_ids, np.fromiter(injured_games, "int64"))
-        if available_games is None:
+        injured_flags, available_flags = self._membership(
+            team_id, positions, injured_games, available_games, player_key
+        )
+        inj_mask = injured_flags[in_window]
+        if available_flags is None:
             present_mask = ~inj_mask
         else:
-            present_mask = (
-                np.isin(game_ids, np.fromiter(available_games, "int64")) & ~inj_mask
-            )
+            present_mask = available_flags[in_window] & ~inj_mask
         n_inj = int(inj_mask.sum())
         n_present = int(present_mask.sum())
         n_total = n_inj + n_present
         if n_inj == 0 or n_present == 0:
             return _empty_effect_result(n_inj, n_present, n_total)
+
+        if self._effect_cache is not None:
+            # The window is fixed by (team, seasons, date) on a bound history;
+            # the effect then depends only on which of its rows are which.
+            cache_key = (
+                team_id,
+                season_years,
+                before_date,
+                np.packbits(inj_mask).tobytes(),
+                np.packbits(present_mask).tobytes(),
+            )
+            cached = self._effect_cache.rows.get(cache_key)
+            if cached is not None:
+                self._effect_cache.hits += 1
+                return cached
+            self._effect_cache.misses += 1
 
         effects, standard_errors, injured_counts, present_counts = [], [], [], []
         for metric in EFFECT_METRICS:
@@ -270,7 +359,7 @@ class _TeamHistoryIndex:
             injured_counts.append(metric_n_inj)
             present_counts.append(metric_n_present)
 
-        return (
+        result = (
             tuple(effects),
             tuple(standard_errors),
             tuple(injured_counts),
@@ -279,6 +368,9 @@ class _TeamHistoryIndex:
             n_present,
             n_total,
         )
+        if self._effect_cache is not None:
+            self._effect_cache.rows[cache_key] = result
+        return result
 
 
 def _expanding_empirical_bayes_weights(
@@ -400,9 +492,13 @@ def add_top3_availability_effect_features_for_columns(
     include_per_player_columns: bool = False,
     include_detailed_sample_size_features: bool = False,
     emit_max_abs_effects: bool = False,
+    effect_cache: RowCache | None = None,
 ) -> pd.DataFrame:
     """
     Compute player availability impact features from past games only (< current game date).
+
+    ``effect_cache`` shares raw per-player effects between calls on the same
+    game history (see ``_TeamHistoryIndex``); it changes no value.
 
     Changes vs previous version:
       - DIFF_FROM_LINE is always computed against TOTAL_LINE_<main book> selected by
@@ -533,7 +629,7 @@ def add_top3_availability_effect_features_for_columns(
         df_hist["SEASON_YEAR"], errors="coerce"
     ).astype("Int64")
 
-    team_history = _TeamHistoryIndex(df_hist)
+    team_history = _TeamHistoryIndex(df_hist, effect_cache)
 
     @lru_cache(maxsize=250_000)
     def _cached_effect(
@@ -558,6 +654,7 @@ def add_top3_availability_effect_features_for_columns(
             before_date,
             injured_games_for_player,
             available_games_for_player,
+            player_key=player_id,
         )
 
     def _out_col(side: str, i: int, metric: str) -> str:
@@ -615,10 +712,24 @@ def add_top3_availability_effect_features_for_columns(
     away_n_present = np.zeros((n, n_away_players), dtype="float64")
     away_n_total = np.zeros((n, n_away_players), dtype="float64")
 
-    # itertuples is faster than apply for 25k rows
+    # itertuples is faster than apply for 25k rows. Only the columns the loop
+    # reads: a tuple per row of a frame ~2,000 columns wide costs more than the
+    # effects themselves, and each column yields the same values either way.
+    loop_columns = list(
+        dict.fromkeys(
+            [
+                game_date_col,
+                season_year_col,
+                home_team_id_col,
+                away_team_id_col,
+                *home_player_cols,
+                *away_player_cols,
+            ]
+        )
+    )
     for i, row in enumerate(
         tqdm(
-            df.itertuples(index=False),
+            df[loop_columns].itertuples(index=False),
             total=len(df),
             desc="Computing availability effects",
         )

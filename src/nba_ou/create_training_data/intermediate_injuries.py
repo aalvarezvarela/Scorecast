@@ -13,8 +13,10 @@ from nba_ou.create_training_data.select_intermediate_columns import (
 )
 from nba_ou.data_processing.all_star_voting.attach_all_star_voting_features import (
     QUESTIONABLE_FEATURE_COLUMNS,
+    PreparedAllStarInputs,
     add_all_star_voting_features,
     all_star_season_year_for_game_date,
+    prepare_all_star_inputs,
 )
 from nba_ou.data_processing.injury_status.features import (
     add_injury_report_features,
@@ -29,7 +31,11 @@ from nba_ou.data_processing.injury_status.report_state import (
     report_questionable_sets,
     snapshot_report_states,
 )
-from nba_ou.data_processing.injury_status.status_history import load_player_box_history
+from nba_ou.data_processing.injury_status.status_history import (
+    PreparedBoxHistory,
+    load_player_box_history,
+    prepare_box_and_form,
+)
 from nba_ou.data_processing.merged_home_away_data.add_features_after_merging import (
     add_fresh_absence_sums,
 )
@@ -37,9 +43,10 @@ from nba_ou.data_processing.past_injuries.injury_effects import (
     add_top3_availability_effect_features_for_columns,
 )
 from nba_ou.data_processing.players.attach_player_features import (
+    PreparedPlayerHistory,
     add_player_history_features,
     is_player_identifier_column,
-    precompute_stat_players,
+    prepare_player_history,
 )
 from nba_ou.postgre_db.all_star_voting.fetch_data_from_db.fetch_all_star_voting_from_db import (
     load_all_star_voting_from_db,
@@ -92,7 +99,12 @@ def _wide_team_injury_features(
 
 
 def _add_availability_effects(
-    games: pd.DataFrame, injured_dict: dict, availability_dict: dict, *, book: str
+    games: pd.DataFrame,
+    injured_dict: dict,
+    availability_dict: dict,
+    *,
+    book: str,
+    effect_cache: RowCache | None = None,
 ) -> pd.DataFrame:
     families = (
         (
@@ -135,6 +147,7 @@ def _add_availability_effects(
             shrinkage_k=10.0,
             include_per_player_columns=False,
             include_detailed_sample_size_features=False,
+            effect_cache=effect_cache,
         )
         games = mask_uncovered_group_columns(games, prefix)
     return games
@@ -145,12 +158,14 @@ def _one_horizon(
     context: BaseInjuryContext,
     state: InjuryReportState,
     injuries: pd.DataFrame,
-    box: pd.DataFrame,
+    box: PreparedBoxHistory,
     voting: pd.DataFrame,
     snapshot_game_ids: set[str],
     player_rows: RowCache | None = None,
     all_star_rows: RowCache | None = None,
-    stat_players: pd.DataFrame | None = None,
+    prepared_players: PreparedPlayerHistory | None = None,
+    prepared_all_star: PreparedAllStarInputs | None = None,
+    effect_cache: RowCache | None = None,
 ) -> pd.DataFrame:
     overrides = report_out_overrides(state)
     questionable = report_questionable_sets(state)
@@ -175,7 +190,7 @@ def _one_horizon(
         snapshot_game_ids=snapshot_game_ids,
         snapshot_report_listed_players=report_listed,
         row_cache=player_rows,
-        stat_players=stat_players,
+        prepared_players=prepared_players,
     )
     team = add_injury_report_features(team, state, box)
     team = add_all_star_voting_features(
@@ -185,6 +200,7 @@ def _one_horizon(
         injured_dict=apply_report_out_overrides(injured_dict, overrides),
         questionable_dict=nested_status_dict(questionable),
         row_cache=all_star_rows,
+        prepared=prepared_all_star,
     )
     # When no team has filed at this horizon, the shared All-Star builder has
     # no questionable group to emit. Keep the snapshot schema stable anyway.
@@ -219,7 +235,11 @@ def _one_horizon(
 
     games = add_fresh_absence_sums(games)
     games = _add_availability_effects(
-        games, injured_dict, availability, book=get_main_book()
+        games,
+        injured_dict,
+        availability,
+        book=get_main_book(),
+        effect_cache=effect_cache,
     )
 
     # The closing merge derives these from player columns after the team merge.
@@ -283,7 +303,8 @@ def add_snapshot_injury_features(
     )
     states = _states_at_snapshots(cutoffs)
     injuries = get_injury_data_from_db(context.player_context_seasons)
-    box = load_player_box_history()
+    # Normalised and turned into player form once: the same for every horizon.
+    box = prepare_box_and_form(load_player_box_history())
     voting_years = sorted(
         {all_star_season_year_for_game_date(d) for d in context.team_games["GAME_DATE"]}
     )
@@ -296,9 +317,13 @@ def add_snapshot_injury_features(
     # Every horizon rebuilds the same team games; only rows whose game sees a
     # different report than at an earlier horizon need rebuilding.
     player_rows, all_star_rows = RowCache(), RowCache()
-    # The same for every horizon: the players' cumulative statistics do not
-    # depend on the report.
-    stat_players = precompute_stat_players(context.players.copy(), PLAYER_STATS)
+    # Raw availability effects, shared by the three families and every horizon:
+    # the game history they read is the same, only the availability changes.
+    effect_cache = RowCache()
+    # The same for every horizon: the players' cumulative statistics, sort
+    # and lookup indexes, and the All-Star votes, do not depend on the report.
+    prepared_players = prepare_player_history(context.players.copy(), PLAYER_STATS)
+    prepared_all_star = prepare_all_star_inputs(context.players, voting)
     parts = []
     for horizon, state in tqdm(
         states.items(),
@@ -318,7 +343,9 @@ def add_snapshot_injury_features(
             ids,
             player_rows,
             all_star_rows,
-            stat_players,
+            prepared_players,
+            prepared_all_star,
+            effect_cache,
         )
         features = features.loc[features.GAME_ID.isin(ids)].copy()
         features["TIME_TO_MATCH_MIN"] = horizon

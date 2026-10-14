@@ -42,6 +42,8 @@ section 2.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 import numpy as np
 import pandas as pd
 
@@ -231,6 +233,23 @@ def prepare_box_history(box: pd.DataFrame) -> pd.DataFrame:
 # --------------------------------------------------------------------------------
 # Form
 # --------------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class PreparedBoxHistory:
+    """A box history and its player form, for callers that reuse one box.
+
+    The snapshot builder calls :func:`add_status_features` once per horizon on
+    the same box; preparing it once is exactly what each call would compute.
+    """
+
+    box: pd.DataFrame
+    form: pd.DataFrame
+
+
+def prepare_box_and_form(box: pd.DataFrame) -> PreparedBoxHistory:
+    prepared = prepare_box_history(box)
+    return PreparedBoxHistory(box=prepared, form=build_player_form(prepared))
 
 
 def build_player_form(box: pd.DataFrame) -> pd.DataFrame:
@@ -590,7 +609,7 @@ def status_player_estimates(
 def add_status_features(
     team_games: pd.DataFrame,
     state: InjuryReportState,
-    box: pd.DataFrame,
+    box: pd.DataFrame | PreparedBoxHistory,
     *,
     top_n: dict[str, int] | None = None,
     game_id_col: str = "GAME_ID",
@@ -613,8 +632,9 @@ def add_status_features(
     cleaner drops any column above its NaN threshold (5% by default).
     """
     top_n = DEFAULT_TOP_N if top_n is None else top_n
-    box = prepare_box_history(box)
-    form = build_player_form(box)
+    if not isinstance(box, PreparedBoxHistory):
+        box = prepare_box_and_form(box)
+    box, form = box.box, box.form
     events = build_status_events(state, box, form)
 
     rows = pd.DataFrame(
