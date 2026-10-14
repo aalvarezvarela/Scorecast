@@ -1455,6 +1455,20 @@ of 2_5 and the PI block on 2019-25 is the single pre-registered pass of step
   the comparison; changing the protocol or the hyperparameters for hardware
   reasons needs a decision first.
 
+**Prepared, not run (2026-10-14).** Features for 2019-20 to 2025-26
+(`build_pi_features.py`, commit 138f0d0; 98.6-99.9% of each season's games
+covered) and the research file
+`closing_line_research_2_6_pi_v1_20261014.parquet` (`sha256:32fcdc51ef979b53`,
+with its provenance record). The campaign
+(`experiments/pi_block_v1_closing_2026_10/`: the two configs, the README with
+the pre-registration and the transfer instructions), the resumable runner
+(`run_pi_walk_forward.py`, monthly checkpoints), the pre-registered report
+(`report_pi_walk_forward.py`), the CPU / GPU benchmark (`benchmark_pi_fits.py`)
+and `experiments/runners/run_pi_block_v1.sh`. Smoke-tested on two game days and
+two seeds of each arm: arm A 1,239 features, arm B the same plus exactly the
+three primary columns, identical games. The closing dataset has no over /
+under prices, so the betting diagnostic settles at -110.
+
 **Feature block v1** (`player_graph/pi_features.py`,
 `build_pi_features.py`), from v1 graphs and the phase 3 book, scenario
 weighted: `PI_OFF_RATING_BEFORE_TEAM_{HOME,AWAY}` and
