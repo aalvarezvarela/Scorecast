@@ -142,25 +142,6 @@ def compute_referee_features(
         prev_season = df[df["SEASON_YEAR"] == current_season - 1].copy()
         return same_season, prev_season
 
-    def _select_games_for_ref(
-        past_same_season: pd.DataFrame,
-        past_prev_season: pd.DataFrame,
-        ref_name: str,
-    ) -> tuple[pd.DataFrame, pd.DataFrame]:
-        for past_games in (past_same_season, past_prev_season):
-            if past_games.empty:
-                continue
-            ref_participated = (
-                (past_games["REF_1"] == ref_name)
-                | (past_games["REF_2"] == ref_name)
-                | (past_games["REF_3"] == ref_name)
-            )
-            games_with_ref = past_games[ref_participated]
-            games_without_ref = past_games[~ref_participated]
-            if len(games_with_ref) > 0 and len(games_without_ref) > 0:
-                return games_with_ref, games_without_ref
-        return pd.DataFrame(), pd.DataFrame()
-
     def _select_games_for_trio(
         past_games: pd.DataFrame,
         trio_key: frozenset,
@@ -174,13 +155,61 @@ def compute_referee_features(
             return games_with_trio, games_without_trio
         return pd.DataFrame(), pd.DataFrame()
 
+    ref_columns = ["REF_1", "REF_2", "REF_3"]
+
+    def _crew_view(past_games: pd.DataFrame):
+        """A past-games frame as the per-referee selection reads it."""
+        crews = past_games[ref_columns].to_numpy()
+        try:
+            # A missing slot held as pd.NA has no truth value; numpy cannot
+            # compare it, so such a frame uses pandas' comparison instead.
+            comparable = (crews == "").dtype == bool
+        except TypeError:
+            comparable = False
+        return (
+            crews if comparable else None,
+            [past_games[ref] for ref in ref_columns],
+            {metric: past_games[metric] for metric in REFEREE_METRICS},
+        )
+
+    def _ref_participated(view, ref_name: str) -> np.ndarray:
+        """``REF_1 == ref | REF_2 == ref | REF_3 == ref`` over a ``_crew_view``."""
+        crews, slots, _ = view
+        if crews is not None:
+            return (crews == ref_name).any(axis=1)
+        # pandas' comparison, which reads a missing slot as not the referee.
+        return (
+            (slots[0] == ref_name) | (slots[1] == ref_name) | (slots[2] == ref_name)
+        ).to_numpy(dtype=bool)
+
+    def _ref_diffs_for(views, ref_name: str) -> dict[str, float | None]:
+        """Per metric, the referee's mean with minus mean without, or None.
+
+        The first of this season's and last season's past games in which the
+        referee has games both with and without is used. The referee's games
+        are located once for all metrics, and each mean is taken over the same
+        values, in the same order, as masking the frame would select.
+        """
+        for view in views:
+            if view is None:
+                continue
+            participated = _ref_participated(view, ref_name)
+            n_with = int(participated.sum())
+            if 0 < n_with < len(participated):
+                return {
+                    metric: values[participated].mean() - values[~participated].mean()
+                    for metric, values in view[2].items()
+                }
+        return dict.fromkeys(REFEREE_METRICS)
+
     # Games on the same date and season see exactly the same past games, and
     # none of the columns read from them (crews, metrics, date, season) are
     # written by this loop. Rows are in date order, so only the current
     # (date, season)'s split and per-referee deltas are kept.
     split_key = None
     split = None
-    ref_diffs: dict[tuple[str, str], float | None] = {}
+    split_views = None
+    ref_diffs: dict[str, dict[str, float | None]] = {}
 
     # Process each game
     for idx in tqdm(range(len(df)), desc="Computing referee features"):
@@ -191,6 +220,9 @@ def compute_referee_features(
         if split is None or split_key != (current_date, current_season):
             split_key = (current_date, current_season)
             split = _split_past_games_by_season(current_date, current_season)
+            split_views = tuple(
+                None if part.empty else _crew_view(part) for part in split
+            )
             ref_diffs = {}
         past_games_same_season, past_games_prev_season = split
         past_games = (
@@ -209,16 +241,9 @@ def compute_referee_features(
         for metric in REFEREE_METRICS:
             per_ref_diffs = []
             for ref_name in current_refs:
-                if (ref_name, metric) not in ref_diffs:
-                    games_with_ref, games_without_ref = _select_games_for_ref(
-                        past_games_same_season, past_games_prev_season, ref_name
-                    )
-                    ref_diffs[(ref_name, metric)] = (
-                        games_with_ref[metric].mean() - games_without_ref[metric].mean()
-                        if len(games_with_ref) > 0 and len(games_without_ref) > 0
-                        else None
-                    )
-                ref_diff = ref_diffs[(ref_name, metric)]
+                if ref_name not in ref_diffs:
+                    ref_diffs[ref_name] = _ref_diffs_for(split_views, ref_name)
+                ref_diff = ref_diffs[ref_name][metric]
                 if ref_diff is not None:
                     per_ref_diffs.append(ref_diff)
 
