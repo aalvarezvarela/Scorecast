@@ -287,8 +287,21 @@ def _linregress_slope(x: np.ndarray, y: np.ndarray) -> float:
     This is that same expression on the same arrays. ``x`` is always
     ``1..n`` with ``n >= 2`` here, so linregress's constant-``x`` error
     cannot occur.
+
+    ``np.cov`` itself is mostly argument handling at this size, so its own
+    steps are repeated here, operation for operation: the float64 ``(2, n)``
+    stack, the row means (``mean`` is ``add.reduce`` over ``n``), the centring,
+    ``dot(X, X.T.conj())`` and the scaling by ``1 / n``. Same primitives on the
+    same arrays, so the same bits, at about a quarter of the cost.
     """
-    ssxm, ssxym, _, _ = np.cov(x, y, bias=1).flat
+    n = x.shape[0]
+    X = np.empty((2, n), dtype=np.float64)
+    X[0] = x
+    X[1] = y
+    X -= (np.add.reduce(X, axis=1) / n)[:, None]
+    c = np.dot(X, X.T.conj())
+    c *= 1.0 / n
+    ssxm, ssxym = c[0, 0], c[0, 1]
     return ssxym / ssxm
 
 
@@ -334,14 +347,15 @@ def compute_trend_slope(
 
     def calculate_slope(series):
         """Applies linear regression to compute the trend slope."""
-        # Remove NaN and None values
-        clean_series = [x for x in series if x is not None and not np.isnan(x)]
+        # Remove NaN values. rolling.apply(raw=True) passes a float64 window,
+        # which holds no None, so this keeps the same values in the same order.
+        clean_series = series[~np.isnan(series)]
 
         if len(clean_series) < 2:
             return 0  # Not enough data for a trend
 
         X = np.arange(1, len(clean_series) + 1)  # Time index [1, 2, ..., N]
-        Y = np.array(clean_series)  # Convert to array for linregress
+        Y = clean_series
 
         return _linregress_slope(X, Y)
 
