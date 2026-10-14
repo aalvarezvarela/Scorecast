@@ -30,6 +30,7 @@ import psycopg
 from psycopg import sql
 
 from nba_ou.postgre_db.config.db_config import connect_line_history_db
+from nba_ou.postgre_db.input_cache import SeasonCache, code_key
 
 from .schema import SCHEMA
 
@@ -126,26 +127,33 @@ FETCH_ATTEMPTS = 3
 CLOSING_FETCH_GAME_CHUNK = 500
 
 
-def _fetch_with_retries(chunks: list[dict], fetch_one, label) -> pd.DataFrame:
-    """Run ``fetch_one(**chunk)`` per chunk on its own connection, retrying drops."""
-    frames = []
-    for chunk in chunks:
-        for attempt in range(1, FETCH_ATTEMPTS + 1):
-            try:
-                frames.append(fetch_one(**chunk))
-                break
-            except psycopg.OperationalError as exc:
-                if attempt == FETCH_ATTEMPTS:
-                    raise
-                print(
-                    f"! line-history fetch for {label(chunk)} dropped "
-                    f"({type(exc).__name__}); retrying ({attempt}/{FETCH_ATTEMPTS - 1})"
-                )
-                time.sleep(5 * attempt)
+def _fetch_one_with_retries(chunk: dict, fetch_one, label) -> pd.DataFrame:
+    """``fetch_one(**chunk)`` on its own connection, retrying a dropped one."""
+    for attempt in range(1, FETCH_ATTEMPTS + 1):
+        try:
+            return fetch_one(**chunk)
+        except psycopg.OperationalError as exc:
+            if attempt == FETCH_ATTEMPTS:
+                raise
+            print(
+                f"! line-history fetch for {label(chunk)} dropped "
+                f"({type(exc).__name__}); retrying ({attempt}/{FETCH_ATTEMPTS - 1})"
+            )
+            time.sleep(5 * attempt)
+
+
+def _concat_ticks(frames: list[pd.DataFrame]) -> pd.DataFrame:
     frames = [f for f in frames if not f.empty]
     if not frames:
         return pd.DataFrame(columns=TICK_COLUMNS)
     return pd.concat(frames, ignore_index=True)
+
+
+def _fetch_with_retries(chunks: list[dict], fetch_one, label) -> pd.DataFrame:
+    """Run ``fetch_one(**chunk)`` per chunk on its own connection, retrying drops."""
+    return _concat_ticks(
+        [_fetch_one_with_retries(chunk, fetch_one, label) for chunk in chunks]
+    )
 
 
 def fetch_pregame_ticks(
@@ -270,8 +278,14 @@ def fetch_closing_ticks(
     markets: tuple[str, ...] = ALL_MARKETS,
     min_minutes_before_tip: int = DEFAULT_MIN_MINUTES_BEFORE_TIP,
     conn: psycopg.Connection | None = None,
+    use_cache: bool = False,
 ) -> pd.DataFrame:
     """Priced pre-game ticks of finished games, for reconstructing the close.
+
+    ``use_cache`` reuses a season's ticks from the local input cache while its
+    server-side fingerprint (``closing_ticks_fingerprint``) is unchanged; see
+    ``nba_ou.postgre_db.input_cache``. It applies to season fetches without an
+    explicit ``conn``, and returns exactly what fetching would.
 
     Fetched one season (or 500 game ids) per query, each on a fresh connection
     and retried on a dropped one: a single all-seasons query moves ~725k rows
@@ -291,6 +305,8 @@ def fetch_closing_ticks(
     if season_years is None and game_ids is None:
         raise ValueError("Pass season_years or game_ids.")
 
+    if season_years is not None and use_cache:
+        return _cached_closing_ticks([int(s) for s in season_years], **kwargs)
     if season_years is not None:
         chunks = [{"season_years": [int(s)]} for s in season_years]
     else:
@@ -305,6 +321,76 @@ def fetch_closing_ticks(
         lambda **chunk: _fetch_closing_ticks_once(**chunk, **kwargs),
         _chunk_label,
     )
+
+
+#: Every input of ``_fetch_closing_ticks_once`` for one season, as one query:
+#: the season's lines, the games they join (matched by season and by id, so a
+#: game filed under another season is still covered), both dimensions, and how
+#: many of those games have tipped off -- the query keeps only those, so the
+#: clock is an input too. Row text renders NULLs by position, so moving a value
+#: between columns changes the hash.
+_CLOSING_TICKS_FINGERPRINT = """
+    WITH season_games AS (
+        SELECT g.* FROM {schema}.lh_game g
+        WHERE g.season_year = %(season)s
+           OR g.game_id IN (
+               SELECT l.game_id FROM {schema}.lh_line l
+               WHERE l.season_year = %(season)s
+           )
+    )
+    SELECT
+        (SELECT count(*) FROM {schema}.lh_line l WHERE l.season_year = %(season)s),
+        (SELECT sum(hashtextextended(l::text, 0)) FROM {schema}.lh_line l
+         WHERE l.season_year = %(season)s),
+        (SELECT count(*) FROM season_games),
+        (SELECT sum(hashtextextended(g::text, 0)) FROM season_games g),
+        (SELECT count(*) FROM season_games WHERE tipoff_utc < now()),
+        (SELECT sum(hashtextextended(m::text, 0)) FROM {schema}.lh_market m),
+        (SELECT sum(hashtextextended(b::text, 0)) FROM {schema}.lh_book b)
+"""
+
+
+def closing_ticks_fingerprint(conn: psycopg.Connection, season: int) -> list:
+    """Server-side fingerprint of everything one season's closing ticks read."""
+    query = sql.SQL(_CLOSING_TICKS_FINGERPRINT).format(schema=sql.Identifier(SCHEMA))
+    with conn.cursor() as cur:
+        cur.execute(query, {"season": int(season)})
+        return [None if value is None else str(value) for value in cur.fetchone()]
+
+
+def _cached_closing_ticks(seasons: list[int], **kwargs) -> pd.DataFrame:
+    """``fetch_closing_ticks(season_years=seasons, **kwargs)`` through the cache."""
+    cache = SeasonCache(
+        "closing_ticks",
+        code_key(
+            _fetch_closing_ticks_once,
+            _decode_ticks,
+            _rows_to_frame,
+            _decode_line,
+            closing_ticks_fingerprint,
+            fingerprint_sql=_CLOSING_TICKS_FINGERPRINT,
+            **kwargs,
+        ),
+    )
+    frames = []
+    with connect_line_history_db() as conn:
+        for season in seasons:
+            frames.append(
+                cache.get(
+                    season,
+                    lambda s: closing_ticks_fingerprint(conn, s),
+                    lambda s: _fetch_one_with_retries(
+                        {"season_years": [s]},
+                        lambda **chunk: _fetch_closing_ticks_once(**chunk, **kwargs),
+                        _chunk_label,
+                    ),
+                )
+            )
+    print(
+        f"  closing ticks: {cache.hits} season(s) from the input cache, "
+        f"{cache.misses} fetched"
+    )
+    return _concat_ticks(frames)
 
 
 def _chunk_label(chunk: dict) -> str:

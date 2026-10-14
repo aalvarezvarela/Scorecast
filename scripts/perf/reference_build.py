@@ -148,6 +148,10 @@ def main() -> int:
 
     guard = _HttpGuard(args.mode)
     guard.install()
+    if args.mode in ("record", "replay"):
+        # A tape holds the build's own queries. The input cache would add
+        # fingerprint queries and skip fetches, so taped builds bypass it.
+        os.environ["NBA_OU_INPUT_CACHE"] = "0"
     if args.mode == "record":
         context = db_tape.record(args.out / "tape")
     elif args.mode == "replay":
@@ -185,6 +189,8 @@ def main() -> int:
         "branch": _git("rev-parse", "--abbrev-ref", "HEAD"),
         "dirty_files": _git("status", "--porcelain", "--untracked-files=no").splitlines(),
         "pythonhashseed": os.environ.get("PYTHONHASHSEED"),
+        "input_cache": os.environ.get("NBA_OU_INPUT_CACHE", "1") != "0",
+        "input_cache_dir": os.environ.get("NBA_OU_INPUT_CACHE_DIR"),
         "build_seconds": round(build_seconds, 1),
         "shape": list(written.shape),
         "dataset_file_sha256": dataset_sha,

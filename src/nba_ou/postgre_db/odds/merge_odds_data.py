@@ -27,6 +27,7 @@ from nba_ou.data_processing.odds.normalize_total_lines import (
     normalize_total_lines_inplace,
 )
 from nba_ou.postgre_db.line_history_aiven.fetch import fetch_closing_ticks
+from nba_ou.postgre_db.input_cache import input_cache_enabled
 from nba_ou.postgre_db.odds_sportsbook.fetch_data_from_db.fetch_data_from_odds_sportsbook_db import (
     load_odds_sportsbook_from_db,
 )
@@ -383,7 +384,9 @@ def _repair_from_line_history(df_odds: pd.DataFrame) -> pd.DataFrame:
         .dropna()
         .unique()
     )
-    ticks = fetch_closing_ticks(season_years=seasons)
+    # Finished seasons rarely change, and each costs 10-30 s of server time;
+    # the input cache reuses them while their server fingerprint is unchanged.
+    ticks = fetch_closing_ticks(season_years=seasons, use_cache=input_cache_enabled())
     repaired, audit = repair_closing_lines(
         frame,
         ticks,
