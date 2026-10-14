@@ -5,13 +5,19 @@ One graph per game and **availability scenario**, plus the game's
 absence feature. Closing only for now: availability is the last injury report
 before tip.
 
-**Rosters, availability and minutes come from 2_6, unchanged**: tonight's
-roster and recent minutes from ``lineups.availability.build_player_nights``
-(strictly earlier dates), play probabilities from ``chance_out``, scenarios
-from ``game_projection.enumerate_scenarios`` and minutes from
-``allocate_minutes`` (each playing player's recent average rescaled to 240;
-inside a scenario nobody's minutes are scaled by a probability). A scenario in
-which a team has nobody to play is dropped, as 2_6 drops it.
+**Rosters, availability and minutes come from a minutes provider**
+(:class:`TeamMinutes` per team and game: the availability scenarios, their
+weights and minutes, and the full-health minutes). The default, ``v0``, is
+2_6 unchanged: tonight's roster and recent minutes from
+``lineups.availability.build_player_nights`` (strictly earlier dates), play
+probabilities from ``chance_out``, scenarios from
+``game_projection.enumerate_scenarios`` and minutes from ``allocate_minutes``
+(each playing player's recent average rescaled to 240; inside a scenario
+nobody's minutes are scaled by a probability). ``v1`` is phase 4A's provider
+(``minutes_provider.V1Minutes``): the same report scenarios over the
+expanded roster, with ``q * (b + C)`` reconciled minutes. A scenario in which
+a team has nobody to play is dropped, as 2_6 drops it. The provider's version
+is in the graphs' metadata (``minutes_provider``).
 
 **Coverage**: as in 2_6, a game is only projected when both teams had filed an
 injury report before the cutoff (``report_covered``, required). Otherwise
@@ -53,6 +59,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from itertools import combinations
+from typing import Protocol
 
 import numpy as np
 import pandas as pd
@@ -149,22 +156,63 @@ def _playing(minutes: dict[str, float]) -> dict[str, float]:
     return {player: played for player, played in minutes.items() if played > 0}
 
 
-def _scenarios(
-    home: list[PlayerNight], away: list[PlayerNight], max_enumerated: int
-) -> list[dict]:
+@dataclass(frozen=True)
+class TeamMinutes:
+    """One team's availability scenarios in one game: ``options`` are
+    ``(sitting, weight, minutes)`` in the provider's order (minutes of the
+    players who play, all positive), ``healthy`` the full-health minutes and
+    ``players`` everyone the provider may field (the pairs whose lifts and
+    guarding rates are computed)."""
+
+    options: list[tuple[frozenset, float, dict[str, float]]]
+    healthy: dict[str, float]
+    players: frozenset
+
+
+def v0_team_minutes(
+    nights: list[PlayerNight], max_enumerated: int = MAX_ENUMERATED_UNCERTAIN
+) -> TeamMinutes:
+    """2_6's scenarios and minutes (``enumerate_scenarios``,
+    ``allocate_minutes``)."""
+    return TeamMinutes(
+        options=[
+            (frozenset(sitting), weight, _playing(allocate_minutes(nights, sitting)))
+            for sitting, weight in enumerate_scenarios(nights, max_enumerated)
+        ],
+        healthy=_playing(allocate_minutes(nights)),
+        players=frozenset(p.player_id for p in nights),
+    )
+
+
+class MinutesProvider(Protocol):
+    """``provider(game_id, team_id, nights)`` -> :class:`TeamMinutes`, or None
+    when the team has no roster for that game (the game gets no graphs).
+    ``nights`` is the snapshot's 2_6 roster for the team (None if absent)."""
+
+    version: str
+
+    def __call__(
+        self, game_id: str, team_id: str, nights: list[PlayerNight] | None
+    ) -> TeamMinutes | None: ...
+
+
+@dataclass(frozen=True)
+class V0Minutes:
+    """2_6's minutes, from the snapshot's ``nights``."""
+
+    max_enumerated: int = MAX_ENUMERATED_UNCERTAIN
+    version: str = "v0"
+
+    def __call__(self, game_id, team_id, nights) -> TeamMinutes | None:
+        return v0_team_minutes(nights, self.max_enumerated) if nights else None
+
+
+def _scenarios(home: TeamMinutes, away: TeamMinutes) -> list[dict]:
     """Every scenario with both teams playing, then the full-health graph."""
     out = []
-    home_options = [
-        (sitting, weight, _playing(allocate_minutes(home, sitting)))
-        for sitting, weight in enumerate_scenarios(home, max_enumerated)
-    ]
-    away_options = [
-        (sitting, weight, _playing(allocate_minutes(away, sitting)))
-        for sitting, weight in enumerate_scenarios(away, max_enumerated)
-    ]
     scenario_id = 0
-    for home_sitting, home_weight, home_minutes in home_options:
-        for away_sitting, away_weight, away_minutes in away_options:
+    for home_sitting, home_weight, home_minutes in home.options:
+        for away_sitting, away_weight, away_minutes in away.options:
             if home_minutes and away_minutes:
                 out.append(
                     {
@@ -178,8 +226,7 @@ def _scenarios(
                     }
                 )
             scenario_id += 1
-    healthy_home = _playing(allocate_minutes(home))
-    healthy_away = _playing(allocate_minutes(away))
+    healthy_home, healthy_away = home.healthy, away.healthy
     if out and healthy_home and healthy_away:
         out.append(
             {
@@ -325,6 +372,7 @@ def build_snapshot_graphs(
     games: pd.DataFrame,
     snapshots: Mapping[object, tuple],
     params: GameGraphParams = DEFAULT_PARAMS,
+    minutes: Mapping[object, MinutesProvider] | None = None,
 ) -> dict[object, GameGraphs]:
     """Game graphs of several prediction times sharing the same history.
 
@@ -336,6 +384,9 @@ def build_snapshot_graphs(
     ids that snapshot covers (default: every game). Expected lifts and guarding
     rates depend only on the as-of date and the rosters, so they are computed
     once per date for every snapshot's rosters and reused.
+
+    ``minutes`` maps a snapshot key to its :class:`MinutesProvider` (default
+    for every key: :class:`V0Minutes`, from that snapshot's ``nights``).
     """
     games = _normalized_games(games)
     covered = {
@@ -349,6 +400,10 @@ def build_snapshot_graphs(
             else set(games["GAME_ID"])
         )
         for key, inputs in snapshots.items()
+    }
+    providers = {
+        key: (minutes or {}).get(key) or V0Minutes(params.max_enumerated)
+        for key in snapshots
     }
     skipped = {key: {"uncovered": 0, "no_roster": 0} for key in snapshots}
     rows = {key: ([], [], []) for key in snapshots}
@@ -367,14 +422,18 @@ def build_snapshot_graphs(
                 if not all(team in covered[key] for team in teams):
                     skipped[key]["uncovered"] += 1
                     continue
-                home, away = nights.get(teams[0]), nights.get(teams[1])
-                if not home or not away:
+                provider = providers[key]
+                home, away = (
+                    provider(game.GAME_ID, team, nights.get((game.GAME_ID, team)))
+                    for team in (game.HOME_TEAM_ID, game.AWAY_TEAM_ID)
+                )
+                if home is None or away is None:
                     skipped[key]["no_roster"] += 1
                     continue
                 rosters[key][game.GAME_ID] = (game.GAME_DATE, home, away)
                 players = roster_players.setdefault(game.GAME_ID, (set(), set()))
-                players[0].update(p.player_id for p in home)
-                players[1].update(p.player_id for p in away)
+                players[0].update(home.players)
+                players[1].update(away.players)
         if not roster_players:
             continue
         undirected, directed = [], []
@@ -411,7 +470,7 @@ def build_snapshot_graphs(
         for key, by_game in rosters.items():
             scenario_rows, node_frames, edge_frames = rows[key]
             for game_id, (game_date, home, away) in by_game.items():
-                for scenario in _scenarios(home, away, params.max_enumerated):
+                for scenario in _scenarios(home, away):
                     scenario_rows.append(
                         {
                             "game_id": game_id,
@@ -456,6 +515,7 @@ def build_snapshot_graphs(
             metadata={
                 "version": VERSION,
                 "matchup_history": data.matchup_history,
+                "minutes_provider": providers[key].version,
                 "snapshot": key,
                 "skipped_games": skipped[key],
                 "guard": params.guard.__dict__,
@@ -472,10 +532,12 @@ def build_game_graphs(
     *,
     report_covered: set[tuple[str, str]],
     params: GameGraphParams = DEFAULT_PARAMS,
+    minutes: MinutesProvider | None = None,
 ) -> GameGraphs:
     """Closing game graphs of ``games`` (``GAME_ID``, ``GAME_DATE``,
     ``HOME_TEAM_ID``, ``AWAY_TEAM_ID``), with rosters and availability from
-    ``nights`` (``lineups.features.game_nights``).
+    ``nights`` (``lineups.features.game_nights``) and minutes from
+    ``minutes`` (default :class:`V0Minutes`, 2_6's).
 
     ``report_covered`` holds the ``(game_id, team_id)`` that had filed an
     injury report before the cutoff (``InjuryReportState.covered``). A game
@@ -483,7 +545,11 @@ def build_game_graphs(
     graphs; ``metadata`` counts both.
     """
     graphs = build_snapshot_graphs(
-        data, games, {"closing": (nights, report_covered)}, params
+        data,
+        games,
+        {"closing": (nights, report_covered)},
+        params,
+        minutes={"closing": minutes} if minutes is not None else None,
     )["closing"]
     graphs.metadata.pop("snapshot")
     return graphs

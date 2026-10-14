@@ -256,3 +256,62 @@ def test_an_informative_prior_moves_the_ratings_toward_it():
             offdef_grid=[(50.0, 50.0, True, True)],
             pace_grid=[500.0],
         )
+
+
+def test_rating_book_reproduces_the_sweep_with_the_frozen_prior_shape():
+    # Phase 3's frozen shape: prior on offense and defense, zero prior on pace.
+    from nba_ou.data_processing.player_graph.rapm_sweep import sweep_predictions
+    from nba_ou.data_processing.player_graph.rating_book import (
+        BookSpec,
+        walk_forward_rating_book,
+    )
+
+    stints, efficiency, pace = _rows_for_prior_tests()
+
+    def informative(day, players):
+        rng = np.random.default_rng(int(players[0]))
+        return {name: rng.normal(0, 5, len(players)) for name in ("o", "d", "pace")}
+
+    eff, pac = sweep_predictions(
+        stints,
+        efficiency,
+        pace,
+        offdef_grid=[(50.0, 50.0, True, True)],
+        pace_grid=[(500.0, False)],
+        half_life_days=30.0,
+        prior=informative,
+    )
+    dates = sorted(stints["game_date"].unique())
+    spec = BookSpec(
+        lambda_offdef=50.0,
+        lambda_pace=500.0,
+        prior_offdef=True,
+        prior_pace=False,
+        half_life_days=30.0,
+    )
+    book = walk_forward_rating_book(stints, dates, spec=spec, prior=informative)
+    assert (book["fit_max_game_date"] < book["as_of_date"]).all()
+    assert book["as_of_date"].min() == dates[1]  # nothing to fit before day 1
+    rows, pace_rows = scored_rows(
+        stints,
+        book,
+        decayed_exposure(stints, dates, half_life_days=30.0),
+        lambda_offdef=50.0,
+        lambda_pace=500.0,
+    )
+    assert rows["game_id"].equals(efficiency["game_id"])
+    assert np.allclose(rows["predicted"], eff.iloc[:, 0], atol=1e-6)
+    assert np.allclose(pace_rows["predicted"], pac.iloc[:, 0], atol=1e-6)
+    # An unrated player keeps his prior exactly; pace is 0 while unrated.
+    players = sorted(
+        {p for lu in stints["home_lineup"] for p in lu}
+        | {p for lu in stints["away_lineup"] for p in lu},
+        key=int,
+    )
+    prior = informative(None, players)
+    unrated = book.loc[book["poss_weight"].eq(0)]
+    assert len(unrated)
+    position = {p: i for i, p in enumerate(players)}
+    expected = np.array([prior["o"][position[p]] for p in unrated["player_id"]])
+    assert np.allclose(unrated["o_rating"], expected, atol=1e-6)
+    assert (unrated["pace_rating"] == 0).all()

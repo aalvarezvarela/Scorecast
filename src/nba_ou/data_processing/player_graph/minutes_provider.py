@@ -157,7 +157,7 @@ class ScenarioProvider:
                 if baseline[x] >= params.rotation_minutes
                 else participation.get(x, 0.0)
             )
-            for x in sitting
+            for x in sorted(sitting)  # sorted: sums must not follow hash order
             if x in ctx["current"] and x in baseline
         }
         absences = {x: v for x, v in absences.items() if v >= params.min_vacated}
@@ -342,3 +342,127 @@ def expected_minutes(
         .sum()
         .rename(columns={"weighted": "expected"})
     )
+
+
+# --------------------------------------------------------------------------
+# v1 as a game-graph minutes provider
+# --------------------------------------------------------------------------
+
+
+class V1Minutes:
+    """Phase 4A's v1 minutes as a ``game_graph.MinutesProvider``, from the
+    team scenarios a :class:`ScenarioProvider` accumulated: per team-game the
+    report scenarios in ``enumerate_scenarios`` order with their weights and
+    reconciled minutes, and the full-health minutes. A team-game the provider
+    did not cover (no report, no q model for its month, nobody to play) has
+    no minutes, so its game gets no graphs."""
+
+    version = "v1"
+
+    def __init__(self, team_scenarios: list[dict], team_nodes: list[dict]) -> None:
+        from .game_graph import TeamMinutes, _playing
+
+        nodes: dict[tuple, dict[str, float]] = {}
+        for row in team_nodes:
+            key = (row["game_id"], row["team_id"], row["scenario_id"])
+            nodes.setdefault(key, {})[row["player_id"]] = row["minutes"]
+        teams: dict[tuple, list[dict]] = {}
+        for row in team_scenarios:
+            teams.setdefault((row["game_id"], row["team_id"]), []).append(row)
+        self.teams: dict[tuple, TeamMinutes] = {}
+        for (game_id, team), rows in teams.items():
+            options, healthy, players = [], {}, set()
+            for row in sorted(rows, key=lambda r: r["scenario_id"]):
+                minutes = nodes.get((game_id, team, row["scenario_id"]), {})
+                players.update(minutes)
+                if row["scenario_id"] == FULL_HEALTH:
+                    healthy = _playing(minutes)
+                else:
+                    options.append(
+                        (frozenset(row["sitting"]), row["weight"], _playing(minutes))
+                    )
+            self.teams[(game_id, team)] = TeamMinutes(
+                options, healthy, frozenset(players)
+            )
+
+    def __call__(self, game_id, team_id, nights=None):
+        return self.teams.get((game_id, team_id))
+
+
+def profile_positions(local_root, seasons):
+    """``positions(date, player)`` for the rotation engine: the soft position
+    of the player's node profile as of the date (uniform without one)."""
+    from pathlib import Path
+
+    from .positions import PROBABILITY_COLUMNS
+
+    profiles = pd.concat(
+        [
+            pd.read_parquet(
+                Path(local_root)
+                / "player_graph"
+                / "node_profiles"
+                / f"season={s}.parquet",
+                columns=["as_of_date", "player_id", *PROBABILITY_COLUMNS],
+            )
+            for s in seasons
+        ],
+        ignore_index=True,
+    )
+    lookup = {(d, p): np.array(v) for d, p, *v in profiles.itertuples(index=False)}
+
+    def positions(date, player):
+        return lookup.get((date, player), np.full(3, 1 / 3))
+
+    return positions
+
+
+@dataclass
+class ProviderRun:
+    """What :func:`run_scenario_provider` produces: the filled provider, the
+    engine's player rows (first pass), q's labelled rows and the report's
+    ``p_out``, exclusions and coverage it used."""
+
+    provider: ScenarioProvider
+    players: pd.DataFrame
+    rows: pd.DataFrame
+    p_out: dict
+    excluded: set
+    covered: set
+
+
+def run_scenario_provider(data, state, minutes, positions, seasons, params=None):
+    """The frozen v1 provider on ``seasons``, as phase 4A evaluated it.
+
+    Pass 1 runs the rotation engine (``rotation.walk_forward``) over all of
+    ``minutes`` (``rotation.team_game_minutes`` of the history) to label q's
+    rows; q's monthly models for the months of ``seasons`` are fitted on
+    earlier months only (``participation.monthly_models``). Pass 2 runs the
+    same engine with a :class:`ScenarioProvider` on the closing report
+    ``state`` (``InjuryReportState``): every team-game's scenarios and v1
+    minutes from strictly earlier games.
+    """
+    from nba_ou.data_processing.lineups.availability import (
+        player_out_probabilities,
+        roster_exclusions,
+    )
+
+    from .participation import labelled_rows, monthly_models
+    from .rotation import DEFAULT_PARAMS, walk_forward
+
+    params = params or DEFAULT_PARAMS
+    p_out = player_out_probabilities(state.statuses)
+    excluded = roster_exclusions(state.statuses)
+    covered = {(str(g).zfill(10), str(t)) for g, t in state.covered}
+    listed: dict[tuple[str, str], set[str]] = {}
+    for g, t, p in state.statuses[["game_id", "team_id", "player_id"]].itertuples(
+        index=False
+    ):
+        listed.setdefault((str(g).zfill(10), str(t)), set()).add(str(p))
+    players, _ = walk_forward(minutes, positions, listed, params)
+    rows = labelled_rows(players, p_out, covered)
+    season_minutes = minutes.loc[minutes["season"].isin(list(seasons))]
+    months = sorted(season_minutes["game_date"].dt.to_period("M").unique())
+    provider = ScenarioProvider(p_out, excluded, covered, monthly_models(rows, months))
+    walk_forward(minutes, positions, listed, params, on_team_game=provider)
+    return ProviderRun(provider, players, rows, p_out, excluded, covered)

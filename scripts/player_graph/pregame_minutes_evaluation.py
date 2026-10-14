@@ -42,10 +42,6 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
-from nba_ou.data_processing.lineups.availability import (
-    player_out_probabilities,
-    roster_exclusions,
-)
 from nba_ou.data_processing.lineups.features import (
     game_nights,
     game_phase,
@@ -57,22 +53,19 @@ from nba_ou.data_processing.player_graph.as_of import PointInTimeData
 from nba_ou.data_processing.player_graph.game_graph import readout_2_6
 from nba_ou.data_processing.player_graph.minutes_provider import (
     FULL_HEALTH,
-    ScenarioProvider,
     expected_minutes,
     joint_graphs,
+    profile_positions,
     reconcile,
+    run_scenario_provider,
     team_scenarios_v0,
 )
 from nba_ou.data_processing.player_graph.participation import (
-    labelled_rows,
-    monthly_models,
     walk_forward_q,
 )
-from nba_ou.data_processing.player_graph.positions import PROBABILITY_COLUMNS
 from nba_ou.data_processing.player_graph.rotation import (
     DEFAULT_PARAMS,
     team_game_minutes,
-    walk_forward,
 )
 
 SEASON = 2018
@@ -147,42 +140,13 @@ def main() -> None:
     started = time.time()
     data = PointInTimeData.load(range(FIRST, max(seasons) + 1), closing_injuries=True)
     state = data.injury_report("closing")
-    p_out = player_out_probabilities(state.statuses)
-    excluded = roster_exclusions(state.statuses)
-    covered = {(str(g).zfill(10), str(t)) for g, t in state.covered}
-    listed: dict[tuple[str, str], set[str]] = {}
-    for g, t, p in state.statuses[["game_id", "team_id", "player_id"]].itertuples(
-        index=False
-    ):
-        listed.setdefault((str(g).zfill(10), str(t)), set()).add(str(p))
     minutes = team_game_minutes(data.stints)
-    profiles = pd.concat(
-        [
-            pd.read_parquet(
-                args.local_root
-                / "player_graph"
-                / "node_profiles"
-                / f"season={s}.parquet",
-                columns=["as_of_date", "player_id", *PROBABILITY_COLUMNS],
-            )
-            for s in range(FIRST, max(seasons) + 1)
-        ],
-        ignore_index=True,
-    )
-    lookup = {(d, p): np.array(v) for d, p, *v in profiles.itertuples(index=False)}
-
-    def positions(d, p):
-        return lookup.get((d, p), np.full(3, 1 / 3))
-
-    # Pass 1: the engine's rows train q month by month.
-    players, _ = walk_forward(minutes, positions, listed, params)
-    rows = labelled_rows(players, p_out, covered)
+    positions = profile_positions(args.local_root, range(FIRST, max(seasons) + 1))
+    # Both engine passes (q's labels, then the scenario provider).
+    run = run_scenario_provider(data, state, minutes, positions, seasons, params)
+    provider, players, rows = run.provider, run.players, run.rows
+    p_out, excluded, covered = run.p_out, run.excluded, run.covered
     season_minutes = minutes.loc[minutes["season"].isin(seasons)]
-    months = sorted(season_minutes["game_date"].dt.to_period("M").unique())
-    models = monthly_models(rows, months)
-    # Pass 2: the same engine feeds the scenario provider.
-    provider = ScenarioProvider(p_out, excluded, covered, models)
-    walk_forward(minutes, positions, listed, params, on_team_game=provider)
     print(f"engine passes in {time.time() - started:.0f}s")
 
     first = data.stints.loc[data.stints["season_year"].isin(seasons)].drop_duplicates(
