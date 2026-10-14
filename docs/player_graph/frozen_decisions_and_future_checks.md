@@ -1164,6 +1164,113 @@ Reading (development seasons only):
   and totals beyond RAPM is the next question (the plan's own validation:
   future stints' points allowed, then R2 and the oracle rerun).
 
+## Phase 4B, step 2: the scalar matchup-adjusted rating against stint RAPM (2018-19)
+
+**Model** (`player_graph/matchup_rating.py`). One row per attacker and game:
+his points per partial possession against all his defenders, weighted by his
+partial possessions, explained by a walk-forward ridge
+`μ + h·home + a_i + t_T + Σ_j s_ij·d_j`. Here `a_i` is the attacker, `t_T` the
+defending team, `d_j` the defender entering with `s_ij`, his share of the
+attacker's partial possessions (time attribution, step 1). There are no
+defender × attacker-type terms. The ridge pulls each block toward 0 with its
+own penalty in partial possessions; the normal equations decay with a
+365-day half-life and each date is solved on earlier games. History comes
+from 2017-18 through `read_matchup_history`, with the 65 corrupt games out.
+In 2_6's units the rating is `d_rating = −100·(t_T + d_j)`: points per 100
+possessions, positive = good defense. It splits into `d_team` and
+`d_individual`.
+
+**Penalties** (`matchup_rating_sweep.py`): walk-forward weighted MSE of each
+2018-19 attacker-game's points per partial possession. The first grid's best
+set sat on its lower edge, and its tie-break (largest team penalty) let the
+defenders absorb team defense, so the grid was extended downward and the
+team tie-break reversed. Both changes were made on 2018-19 and are recorded
+in the script.
+
+- Second grid: interior optimum at attacker 100 and defender 300. The team
+  penalty barely moves the criterion: in an attacker-game a team shift is the
+  same as shifting all its defenders. Following the design (team defense
+  belongs to the team term), the smallest team penalty among ties: **100 / 100 /
+  300**.
+- At that point the between-team share of the defenders' `d_j` variance is
+  0.058, about chance level for 30 teams of ~13 defenders. With a team penalty
+  of 30,000 and a defender penalty of 1,000-3,000 it rises to 0.08-0.11.
+- Out of sample, the defender terms cut the attacker-game MSE by
+  1.30 ± 0.17 (of 119.9, about 1.1%). The ridge beats step 1's estimator on the
+  same attacker-games (119.87 vs 120.60).
+
+**Future stints** (`evaluate_matchup_rating.py`). Each book keeps the clean
+RAPM book's offense, pace and league level and changes only the defense.
+Scored on 76,434 stint-sides of 2018-19 (points per 100 possessions, weighted
+by possessions):
+
+| Defense | Gain over the league mean | Paired vs RAPM | Calibration slope of the shift |
+| --- | --- | --- | --- |
+| Clean stint RAPM `d` | +19.7 ± 2.5 | — | — |
+| Matchup `d_team + d_individual` | −1.4 ± 3.0 | **−21.1 ± 2.1** | 0.02 ± 0.05 |
+| Matchup `d_team` only | +8.0 ± 2.6 | −11.7 ± 1.9 | 0.11 ± 0.06 |
+| RAPM + matchup `d_individual` | −5.5 ± 3.6 | **−25.1 ± 2.2** | −0.06 ± 0.05 |
+| Step 1's simple estimator | −9.5 ± 3.5 | −29.1 ± 2.9 | 0.22 ± 0.06 |
+
+- Worse than RAPM in every band of the defense's lowest RAPM exposure,
+  including the thin ones (≤ 300 possessions: matchup −27.0 ± 6.4).
+- Joint regression of `actual − league − Σ off` on the defense's summed
+  components (a calibrated component has coefficient −1): RAPM `d`
+  −0.82 ± 0.07, matchup `d_team` +0.04 ± 0.08, matchup `d_individual`
+  +0.01 ± 0.05. This is no information, not a wrong scale: with that SE, even
+  a fifth of the nominal effect would show.
+
+**R2 / oracle rerun on 2018-19.** `oracle_ceiling.py build --seasons 2018
+--ratings NAME=PATH` builds the four graph versions once and reads them out
+with each book. Only 32 of 2018-19's graph games have a closing line, so
+`summarize --without-line` scores total MAE on all of them. 764 games have a
+calibrated level in every book; paired differences on the same games, slices
+defined by RAPM:
+
+| Defense book | R1 v0 | R2 v0 (expected guards) | R2 observed guards | Observed − expected guards | R2 observed guards − RAPM's R1 |
+| --- | --- | --- | --- | --- | --- |
+| Clean stint RAPM | 14.430 | 14.475 | 14.471 | −0.004 ± 0.021 | +0.04 ± 0.02 |
+| Matchup `d_team + d_individual` | 14.718 | 14.770 | 14.686 | **−0.084 ± 0.035** | +0.26 ± 0.13 |
+| Matchup `d_team` only | 14.727 | 14.727 | 14.727 | 0 (same rating for a whole team) | +0.30 ± 0.16 |
+| RAPM + matchup `d_individual` | 15.114 | 15.169 | 15.140 | −0.029 ± 0.040 | +0.71 ± 0.18 |
+
+With a key defender out (288 games): matchup observed − expected guards
+−0.137 ± 0.062; RAPM +0.007 ± 0.038.
+
+- With stint RAPM the observed assignments still add nothing, as in the
+  2019-25 oracle.
+- With the matchup rating they do add something (2.4 SE in one development
+  season). But they only win back what the expected guard weights lose with
+  that rating: R2 is worse than R1 with expected guards (+0.05), and observed
+  guards bring it to −0.03 ± 0.04 against the same book's R1.
+- Every matchup book stays clearly worse than plain RAPM (R1 +0.29 ± 0.12),
+  as the stint test predicts.
+
+**Reading.**
+
+- A defender's persistent effect on the attacker he guards does not move his
+  team's points. This fits step 1, where the individual part is volume
+  suppression: his man shoots less, and the shots go to teammates.
+- The matchup-adjusted rating predicts the matchup ledger (who scores), not
+  points allowed. As a replacement for stint RAPM `def_j`, or on top of it, it
+  adds nothing to future stints or to the total on 2018-19.
+- Guard assignments only matter in the readout when the defensive rating is
+  matchup-specific, which is weak support for guard edges as structure.
+  Their value would have to come from a model that also redistributes the
+  offense (who takes the shots the defender takes away): the FM / GNN of
+  phase 6, not a scalar readout.
+
+**Decision (2026-10-14): the scalar matchup-adjusted rating is closed as a
+negative development result.** Stint RAPM stays `def_j` in R1 / R2 and
+phase 5; the matchup rating does not enter the main pipeline;
+`expected_guard` stays the guard-edge structure for phase 6. The
+implementation and results stay as a documented experiment
+(`matchup_rating.py`, `matchup_rating_sweep.py`,
+`evaluate_matchup_rating.py`). No 2019-25 evaluation: the model is rejected
+on development data. That guarding interactions carry information a single
+additive defender rating cannot express (who takes the shots, the rest of
+the floor) is a phase 6 hypothesis, not a result.
+
 ## Future checks
 
 ### Guarding weights (`expected_guard`)
@@ -1223,6 +1330,9 @@ Reading (development seasons only):
 - [ ] Attacker-dependent defense (defender × attacker type) through shared parameters in the FM / GNN (phase 6), not per-cell estimates; revisit per-cell effects only if more seasons of history change their reliability.
 - [ ] Efficiency on shots the NBA credits to the defender (the one shot-credited measure consistent with RAPM) as a separate component of the matchup-adjusted rating, if the time-attributed rating proves useful.
 - [ ] Attacker norms: position prior and 365-day half-life were not tuned; the usage-tier type means did not transfer from 2017-18 to 2018-19.
+- [ ] The matchup rating's 365-day half-life was not tuned; its penalties were chosen on the matchup ledger (attacker-game MSE), not on points allowed.
+- [ ] A matchup model that also redistributes the offense: when a defender suppresses his man, whose shots replace them (attacker usage shares, the guarded attacker's teammates). That is the missing piece between a persistent matchup effect and team points, and the natural place for guard edges in phase 6.
+- [ ] Guard edges with a matchup-specific defensive signal: the 2018-19 oracle hint (observed − expected guards −0.084 ± 0.035 with the matchup rating) is one season; recheck in phase 6's ablations rather than with scalar readouts.
 
 ### Phase 3 (RAPM with a profile prior)
 
@@ -1269,5 +1379,6 @@ Audited 2026-10-08 (raw PBP V3 and GameRotation archive, rotations rebuilt from 
 - **k for v0** (2026-10-07): swept on 2018-19 only; 300 frozen (see table above).
 - **Phase 3 closed** (2026-10-08): profile prior for offense and defense, zero prior for pace (out-of-sample 2019-25 result above).
 - **Phase 4A closed** (2026-10-09): minutes provider v1 replaces v0 in the game graph; better minutes in all 7 out-of-sample seasons, R1 within noise (result above).
+- **Scalar matchup-adjusted defensive rating rejected** (2026-10-14): no information on future stints' points beyond RAPM on 2018-19; kept as a documented experiment (phase 4B, step 2).
 - **2016-17 stint store rebuilt** (2026-10-08): placeholder-score corruption removed; stint point validation and audit added; phase 3 steps 1 and 2a rerun on clean data (zero-prior control re-frozen at 3,000 / 10,000).
 - **Box-score backfill for 2016-17 and 2017-18** (2026-10-08): `as_of` falls back to the season CSVs for whole seasons the DB lacks; positions, node profiles and `expected_guard` rebuilt; game-graph rosters keep the DB rows only, and 2_6 is still reproduced exactly. k re-swept on 2018-19 only: 300 stays (see the frozen table and the benchmark).
