@@ -9,8 +9,10 @@ from nba_ou.data_processing.player_graph.expected_guard import (
     ExpectedGuardParams,
     expected_guard,
     position_rates,
+    provider_metadata,
     read_seasons,
     shrink,
+    stored_version,
     write_season,
 )
 
@@ -171,3 +173,41 @@ def test_metadata_is_stored_per_season_and_mixed_parameters_are_rejected(tmp_pat
     assert read_seasons(tmp_path, [2018])[1]["k"] == 300.0
     with pytest.raises(ValueError, match="different parameters"):
         read_seasons(tmp_path, [2018, 2019])
+
+
+def test_corrupt_matchup_games_leave_numerator_and_denominator_together():
+    clean_day = CUTOFF - pd.Timedelta(days=20)
+    doubled_day = CUTOFF - pd.Timedelta(days=10)
+    rows = [
+        # Game-level matched / co-floor seconds: 0.08, as in real games.
+        _row(clean_day, "g1", "g2", 150.0, 1000.0),
+        _row(clean_day, "g1", "c2", 10.0, 1000.0),
+        # A doubled game: every pair's matched seconds at twice the real value.
+        _row(doubled_day, "g1", "g2", 300.0, 1000.0),
+        _row(doubled_day, "g1", "c2", 20.0, 1000.0),
+    ]
+    original = _data(rows)
+    data, excluded = original.without_corrupt_matchups()
+    assert original.matchup_history == "original"
+    assert data.matchup_history == "without_corrupt_matchups"
+    assert excluded == {_row(doubled_day, "g1", "g2", 0, 0)["game_id"]}
+    params = ExpectedGuardParams(k=1e-9, half_life_days=1e9)
+    out = expected_guard(
+        data.as_of(CUTOFF), _pairs(("g1", "g2")), params=params, positions=POSITIONS
+    ).iloc[0]
+    assert out.r_hat == pytest.approx(150.0 / 1000.0)
+    assert out.n_games == 1
+    assert out.hist_cofloor_seconds_raw == pytest.approx(1000.0)
+
+
+def test_stored_versions_keep_the_two_matchup_histories_apart():
+    assert stored_version("original") == "v0"
+    assert stored_version("without_corrupt_matchups") == "v0_without_corrupt_matchups"
+    with pytest.raises(ValueError):
+        stored_version("other")
+    params = ExpectedGuardParams()
+    assert provider_metadata(params)["matchup_history"] == "original"
+    assert (
+        provider_metadata(params, "without_corrupt_matchups")["matchup_history"]
+        == "without_corrupt_matchups"
+    )

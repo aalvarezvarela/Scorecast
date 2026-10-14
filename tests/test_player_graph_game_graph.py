@@ -203,6 +203,7 @@ def test_games_without_both_injury_reports_get_no_graphs(covered):
     graphs = build_game_graphs(_empty_data(), GAMES, NIGHTS, report_covered=covered)
     assert graphs.scenarios.empty and graphs.edges.empty
     assert graphs.metadata["skipped_games"]["uncovered"] == 1
+    assert graphs.metadata["matchup_history"] == "original"
 
 
 def test_report_coverage_is_required():

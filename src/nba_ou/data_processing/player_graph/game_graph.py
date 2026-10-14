@@ -455,6 +455,7 @@ def build_snapshot_graphs(
             ),
             metadata={
                 "version": VERSION,
+                "matchup_history": data.matchup_history,
                 "snapshot": key,
                 "skipped_games": skipped[key],
                 "guard": params.guard.__dict__,

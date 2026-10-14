@@ -30,7 +30,7 @@ v0 keeps reproducing it.
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
@@ -50,6 +50,13 @@ BOX_SCORE_DATE = "GAME_DATE"
 #: seasons before 2016-17 have no matchup tracking and are a future extension
 #: (``docs/player_graph/frozen_decisions_and_future_checks.md``).
 FIRST_SEASON = 2016
+
+#: ``pair_game`` history as stored (phase 2, the oracle, the benchmarks and
+#: ``expected_guard`` v0), and without the 69 corrupt matchup games
+#: (``without_corrupt_matchups``): what phase 5 onward reads.
+ORIGINAL_MATCHUP_HISTORY = "original"
+CORRECTED_MATCHUP_HISTORY = "without_corrupt_matchups"
+MATCHUP_HISTORIES = (ORIGINAL_MATCHUP_HISTORY, CORRECTED_MATCHUP_HISTORY)
 
 #: Where a box-score row came from: ``"db"`` or ``"csv"``.
 BOX_SOURCE = "BOX_SOURCE"
@@ -255,6 +262,9 @@ class PointInTimeData:
     overlap_game: pd.DataFrame = field(
         default_factory=lambda: pd.DataFrame(columns=["game_id", PAIR_GAME_DATE])
     )
+    #: Which pair history ``pair_game`` holds (``MATCHUP_HISTORIES``): recorded
+    #: by every artifact built from it, so the two are never mixed.
+    matchup_history: str = ORIGINAL_MATCHUP_HISTORY
 
     @classmethod
     def from_frames(
@@ -304,6 +314,7 @@ class PointInTimeData:
         local_root: Path = Path("data"),
         injuries: Mapping[str | int, Any] | None = None,
         closing_injuries: bool = False,
+        exclude_corrupt_matchups: bool = False,
     ) -> PointInTimeData:
         """Read the local stint, matchup and ``pair_game`` stores and the DB.
 
@@ -315,6 +326,8 @@ class PointInTimeData:
         ``closing_injuries`` reads the closing ``InjuryReportState`` from the
         database; intermediate states need snapshot cutoffs and are passed in
         through ``injuries`` (``load_snapshot_report_states``).
+        ``exclude_corrupt_matchups`` applies :meth:`without_corrupt_matchups`
+        (off by default: v0 was built with the full history).
         """
         from nba_ou.create_training_data.schema_layers.inputs import (
             load_player_history,
@@ -370,8 +383,33 @@ class PointInTimeData:
             or [pd.DataFrame()],
             ignore_index=True,
         )
-        return cls.from_frames(
+        data = cls.from_frames(
             stints, matchups, box_scores, states, games, pairs, overlaps
+        )
+        return data.without_corrupt_matchups()[0] if exclude_corrupt_matchups else data
+
+    def without_corrupt_matchups(self) -> tuple[PointInTimeData, set[str]]:
+        """A copy whose ``pair_game`` history drops the games of
+        ``matchup_defense.doubled_exposure_games`` (matched seconds and partial
+        possessions doubled at the source, or no points), and those game ids.
+
+        Whole games go, so each one leaves the numerator (matched seconds) and
+        the denominator (co-floor seconds) of every pair-history estimate
+        (``expected_guard``: pair rates, game counts, position prior) together.
+        The raw ``matchups`` stay: positions read only their start-position
+        labels and node profiles only their players, neither the exposure.
+        """
+        from .matchup_defense import doubled_exposure_games
+
+        excluded = doubled_exposure_games(self.pair_game)
+        kept = self.pair_game.loc[~self.pair_game["game_id"].isin(excluded)]
+        return (
+            replace(
+                self,
+                pair_game=kept.reset_index(drop=True),
+                matchup_history=CORRECTED_MATCHUP_HISTORY,
+            ),
+            excluded,
         )
 
     @property
