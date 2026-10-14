@@ -243,6 +243,36 @@ reference build.
    `groupby().shift()` + `groupby().rolling()` forms where the lambda is a
    plain shifted mean/std.
 
+**Iteration 2 (36e707b, 21cb9a9, 8c4acb7; 2026-10-14): 2.1-2.3 done, all exact.**
+- 2.3 player loop: the roster lookup returns row positions in its season
+  bucket (columns cached per bucket), and the split, latest-state and ranking
+  steps run on arrays with the same stable sort keys and the same Python
+  scalars. The frame path is kept as the test reference (`ARRAY_ROSTER_STEPS`).
+- 2.2 legacy referees: the participation mask is computed once per referee
+  and date for all metrics, not once per metric. It is not prefix sums: pandas
+  means would sum in a different order and change the last bits.
+- 2.1 trend slope: `_linregress_slope` repeats `np.cov`'s own steps (same
+  `dot(X, X.T.conj())`, so the same BLAS path), 59 -> 16 us per window,
+  0 mismatches on 160k random windows.
+
+Acceptance (`run_candidate_suite.sh` at 8c4acb7): all four builds EQUAL,
+2,280 tests pass.
+
+| Build | Reference replay | Iteration 1 | Iteration 2 |
+|---|---:|---:|---:|
+| closing, 2 seasons | 280 s | 291 s | 159 s |
+| intermediate 2025-26 | 1,174 s | 745 s | 506 s |
+| closing, all seasons | 1,060 s | 904 s | 443 s |
+| intermediate, all store seasons | 4,295 s | 2,592 s | 1,818 s |
+
+What remains in a replayed closing build is mostly input handling: the
+closing-line repair fetch converting rows and connecting, the odds merge and
+the referee-history reload. In a live build that is database wait, so Phase 1
+is next. Decided 2026-10-14: the persistent cache stays local, and every build
+validates each cached (table, season) with a read-only server-side
+fingerprint (row count + content hash, 1.4-2.3 s for a line-history season
+against 15-29 s for the repair fetch).
+
 ### Phase 3 — Intermediate: stop recomputing per horizon
 
 The per-horizon injury stage is 53% of the intermediate build.
