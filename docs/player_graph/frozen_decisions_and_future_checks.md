@@ -1044,8 +1044,10 @@ Reading against the rules fixed in advance:
   minutes provider.** Better in every season on both primary criteria (player
   MAE -0.54 to -0.78, misallocated -4.0 to -5.6 per team-game), in every
   slice, under realized absences and under the report's scenarios. Larger
-  than on 2018-19 because v0 is worse in these seasons (5.42 vs 5.13) while v1
-  holds (4.73 vs 4.75).
+  than on 2018-19 (5.13 → 4.66) mostly because v0 is worse in these seasons
+  (5.42 vs 5.13) while v1 changes little (4.73 vs 4.66). (Corrected
+  2026-10-14: this line first compared with 4.75, the 2018-19 figure before
+  the roster rule of step 6.)
 - **Totals: R1 within noise → no claim on totals.** Pooled +0.027 ± 0.016
   (1.7 SE; 0.017 clustered by date), positive in 6 of 7 seasons but beyond 2
   SE in none. v1 is kept for its structure (graph weights for phases 5-6)
@@ -1343,7 +1345,141 @@ the corrected one). `read_seasons` refuses to mix seasons with different
 metadata, and `stored_version(matchup_history)` maps a history to its
 directory, so the phase 5 pipeline must name its history explicitly.
 
-## Future checks
+## Phase 5, steps 1-3: inputs, graphs and the feature block (2026-10-14)
+
+**Phase 3 rating book** (`player_graph/rating_book.py`,
+`build_rating_book.py`). The frozen pipeline (offense and defense toward the
+profile prior at 3,000, pace toward zero at 10,000, half-life 180 days, `f`
+refit monthly with the frozen alphas, the debut prior) emitted as a
+walk-forward book in 2_6's cache format:
+`data/player_graph/rating_book/phase3_profile_prior.parquet`, 1,829,400 rows
+on 1,656 dates (2018-10-16 to 2026-06-13), every fit ending before its date.
+A player without data carries exactly his prior; one without a prior and
+without exposure is omitted (a lookup reads 0, his exact value). On phase 3's
+2019-25 evaluation rows (513,152 stint-sides, 267,379 pace stints, same rows
+and order) the book reproduces the stored walk-forward predictions to
+3.2e-6 (solver tolerance; mean 4e-9).
+
+**Minutes-provider hook** (`game_graph.TeamMinutes`, `MinutesProvider`,
+`V0Minutes`; `minutes_provider.V1Minutes`, `run_scenario_provider`). The game
+graph takes each team's scenarios, weights and minutes from a provider and
+records `minutes_provider` next to `matchup_history`; v0 (2_6) stays the
+default. `check_v1_game_graphs.py` on 2018-19 (corrected history):
+
+- v0 graphs still reproduce the 2_6 closing file (870 games, max difference
+  1.1e-13);
+- v1 graphs' scenario-weighted minutes equal the 4A provider's expected
+  minutes to 7e-15 (868 games, 22,506 rows);
+- against the frozen provider's stored pre-game table
+  (`pregame_minutes_roster10_season=2018.parquet`) they agree to the
+  provider's run-to-run spread (below) and reproduce its printed figures
+  (player MAE 5.001 on its 23,152 rows; misallocated minutes 36.75 → 33.35 per
+  team-game). The step 6 "4.656" is on the union of the roster rules' rows
+  (24,867), not this table's;
+- every graph reads history strictly before its game date.
+
+**Determinism.** The 4A provider was not reproducible across processes:
+runs with different `PYTHONHASHSEED` differ by up to 0.003 minutes (97% of
+rows), because sums over absentee sets followed hash order and two iterative
+fits (C's structural share, q's logistic) amplify the float differences.
+Fixed by ordering only (`participation.ROW_ORDER`; absentees iterated
+sorted in `rotation` and `minutes_provider`), no modelling change: two runs
+with different hash seeds now give identical minutes (0 of 23,152 rows
+differ), within 5.2e-4 of the stored table, and every published 4A figure is
+unchanged at its printed precision.
+
+## Phase 5, step 4: evaluation protocol (decided 2026-10-14)
+
+Fixed before anything is run on the evaluation window; the first comparison
+of 2_5 and the PI block on 2019-25 is the single pre-registered pass of step
+5.
+
+- **Data.** A research file, `closing_line_research_2_6_pi_v1_<date>.parquet`:
+  the pinned 2_6 closing file (20261003) plus the `PI_*` columns joined by
+  `GAME_ID`, NaN where a game has no graphs (`build_pi_research_file.py`,
+  with a provenance record). Not a registered schema layer: a 2_7 layer would
+  become every dataset builder's default and run the 4A engine on every
+  build; it is registered only if the block earns it.
+- **Model.** The promoted 2_5 closing `LINE_ERROR` spec (d055949f99db), its
+  hyperparameters fixed (`n_estimators` 92, max depth 4, colsample 0.204, ...),
+  its cleaning, `season_year_floor` 2019, regular season and play-in,
+  playoffs out, no sample weights. No tuning per arm.
+- **Feature block (decided).** The primary block is the three mostly new
+  columns, `pi_features.PRIMARY_FEATURES`: `PI_LOW_SAMPLE_MIN_SHARE_BEFORE_TEAM_{HOME,AWAY}`
+  and `PI_ABSENCE_IMPACT_PRIOR_PTS_BEFORE`. The four rating levels stay in the
+  files (`ABLATION_FEATURES`) for future ablations, not in this experiment.
+- **Arms.** A: 2_5 (excludes `LU_`, `STARTER_`, `PI_`). B: 2_5 + the primary
+  block (excludes `LU_`, `STARTER_`, `PI_OFF_RATING`, `PI_DEF_RATING`); the
+  runner refuses an arm whose `PI_*` features after cleaning are not exactly
+  its expected set. Same file, same rows (8,298 after
+  cleaning in both, verified with the block entirely missing as the worst
+  case); the runner asserts identical training and evaluation games per day.
+- **Walk-forward.** Retrain on every game strictly before each refit date,
+  window capped at the spec's 6,200 most recent games. Warm-up: no
+  prediction until 1,250 earlier games exist (the spec's minimum), so the
+  first eligible game day is 2021-01-21 and 2019-20 and early 2020-21 only
+  train. Evaluation: 945 game days, 7,042 games, 2021-01-21 to 2026-04-17.
+- **Seeds.** Ten paired seeds (101, 202, ..., 1010), the same for both arms.
+- **Primary loss, fixed:** absolute error of the `LINE_ERROR` prediction.
+  Primary statistic: the mean paired difference per game,
+  `|error_A| − |error_B|` (positive = the block helps), each arm's
+  prediction being the mean of its ten seeds.
+- **Two kinds of uncertainty, reported separately.** Training randomness:
+  the ten per-seed paired differences (mean, SD, min-max) and the 2_5 seed
+  band, the spread of MAE across arm A's ten seeds and its 45 seed-pair
+  differences (measured first, before arm B runs). Statistical uncertainty
+  over games: the SE of the ensemble difference clustered by game date, and a
+  95% interval.
+- **Decision rule, fixed:** the block improves the 2_5 baseline if the
+  date-clustered 95% interval of the ensemble difference excludes 0 in its
+  favour and at least 8 of the 10 seed pairs agree in sign. Otherwise null.
+  One primary test.
+- **Secondary (no decisions):** squared error; the total implied by line +
+  predicted error; calibration (slope of the actual line error on the
+  prediction, per arm); per season; fixed slices: games with
+  |`LU_ABSENCE_IMPACT_PTS_BEFORE`| > 3, games without PI coverage (a placebo:
+  should be about 0), the first 30 days of each season, after each trade
+  deadline; betting at the spec's 0.1-point edge against the actual odds
+  (win rate with a Wilson interval, ROI) as an economic diagnostic only.
+- **Not an untouched holdout.** 2019-25 already served the phase 3 and 4A
+  out-of-sample evaluations and the 2_6 trial, and the 2_5 hyperparameters
+  were selected on folds inside it (a bias both arms share). The pass is the
+  first downstream comparison under this frozen specification, not a clean
+  holdout for every upstream component.
+- **Cadence (decided): daily**, as the promoted protocol: 945 refits x 20 runs
+  = 18,900 fits (about 42 h on this machine at 8 s per fit).
+- **Where it runs (decided).** Not on this machine: on the machine with the
+  6 GB GPU. The runner checkpoints every month of every seed, so the run can
+  stop and resume. The device (CPU or CUDA) is chosen with
+  `benchmark_pi_fits.py` on that machine and is the same for every run of
+  the comparison; changing the protocol or the hyperparameters for hardware
+  reasons needs a decision first.
+
+**Feature block v1** (`player_graph/pi_features.py`,
+`build_pi_features.py`), from v1 graphs and the phase 3 book, scenario
+weighted: `PI_OFF_RATING_BEFORE_TEAM_{HOME,AWAY}` and
+`PI_DEF_RATING_BEFORE_TEAM_{HOME,AWAY}` (sum of `min/48 × rating`, stint
+RAPM, not the rejected matchup rating), `PI_LOW_SAMPLE_MIN_SHARE_BEFORE_TEAM_{HOME,AWAY}`
+(share of the side's 240 minutes for players with ≤ 1,000 decayed offensive
+possessions in the book, phase 3's threshold), `PI_ABSENCE_IMPACT_PRIOR_PTS_BEFORE`
+(tonight − full health, 2_6's projection with these ratings and minutes). The
+matchup-weighted defensive family is excluded (phase 4B); guard-share
+dispersion stays a future structural ablation. 2018-19: 868 of 1,312 games
+(both teams' reports needed, as `LU_*`).
+
+**Redundancy audit, 2018-19** (`pi_feature_audit.py`; thresholds fixed before
+running: `|r| ≥ 0.9` with any 2_5 or 2_6 column, or 5-fold ridge R² from all
+1,803 2_5 columns ≥ 0.8):
+
+| Column | Strongest 2_5 correlate | R² from 2_5 (CV ridge) | Max \|r\| with 2_6 | Redundant |
+| --- | --- | --- | --- | --- |
+| Offense, home / away | team season `OFF_RATING` +0.82; `ACTIVE_WEIGHTED_OFF_RATING` +0.81 (away) | 0.91 / 0.91 | 0.50 / 0.53 (`LU_PROJ_MARGIN`) | **yes** |
+| Defense, home / away | team season `DEF_RATING` −0.72 / −0.78 | 0.86 / 0.84 | 0.52 / 0.53 | **yes** |
+| Low-sample share, home / away | injured players' minutes +0.60 / +0.64 | 0.51 / 0.54 | 0.24 / 0.28 | no |
+| Absence impact (prior, v1) | injured / first-game-out points −0.31 | 0.35 | 0.69 (`LU_ABSENCE_IMPACT_POSS`, `_PACE_PTS`) | no |
+
+The rating levels are mostly 2_5's team ratings again; the low-sample shares
+and the absence impact carry mostly new information.
 
 ## Future checks
 
@@ -1420,7 +1556,7 @@ directory, so the phase 5 pipeline must name its history explicitly.
 - [ ] Revisit PyTorch Geometric (`HeteroData`, batching of graphs with variable node counts) when the phase 6 architecture is defined, especially for game graphs and scenarios.
 - [ ] Node features currently join the stint graphs in `smoke_gnn.node_inputs`; move the join into the stint-graph loader when phase 6 fixes the inputs.
 - [ ] A CPU-only PyTorch wheel (or a separate source) if the CUDA build's size matters; the machine has no GPU.
-- [ ] **Hardware before buying it.** With the first representative phase 6 GNN, benchmark CPU and GPU training time and peak GPU memory over a few batch sizes before deciding what hardware is needed. Working assumption to test, not to provision on: 8 GB of VRAM may be enough and 12-16 GB comfortable.
+- [ ] **Hardware before buying it.** With the first representative phase 6 GNN, benchmark CPU and GPU training time, peak GPU memory and the largest workable batch size. Start on the GPU at hand (6 GB of VRAM, on another machine; this one has none) and consider other hardware only after measuring it with the actual architecture.
 
 ### Phase 6 / phase 8 (encoder and embeddings)
 

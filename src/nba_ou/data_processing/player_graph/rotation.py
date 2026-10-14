@@ -498,7 +498,7 @@ def walk_forward(
                 if baseline[x] >= params.rotation_minutes
                 else participation.get(x, 0.0)
             )
-            for x in current
+            for x in sorted(current)  # sorted: sums must not follow hash order
             if x not in played and x in baseline
         }
         absences = {x: v for x, v in absences.items() if v >= params.min_vacated}

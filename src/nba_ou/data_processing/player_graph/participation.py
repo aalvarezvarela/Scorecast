@@ -101,6 +101,17 @@ def feature_matrix(rows: pd.DataFrame) -> pd.DataFrame:
     return out[list(FEATURES)].astype(float)
 
 
+#: Row order of q's training set. The solver (lbfgs) stops at a tolerance,
+#: so its coefficients depend slightly on row order; the rotation engine's
+#: rows come out in set order, which changes with Python's hash seed. Sorting
+#: makes every fit reproducible across processes (it changes no input).
+ROW_ORDER = ("game_date", "game_id", "team_id", "player_id")
+
+
+def _ordered(rows: pd.DataFrame) -> pd.DataFrame:
+    return rows.sort_values(list(ROW_ORDER), kind="mergesort")
+
+
 def walk_forward_q(
     train_rows: pd.DataFrame,
     predict_rows: pd.DataFrame,
@@ -115,6 +126,7 @@ def walk_forward_q(
     from sklearn.pipeline import make_pipeline
     from sklearn.preprocessing import StandardScaler
 
+    train_rows = _ordered(train_rows)
     train_month = pd.to_datetime(train_rows["game_date"]).dt.to_period("M")
     target_month = pd.to_datetime(predict_rows["game_date"]).dt.to_period("M")
     train_x = feature_matrix(train_rows)
@@ -155,6 +167,7 @@ def monthly_models(
     from sklearn.pipeline import make_pipeline
     from sklearn.preprocessing import StandardScaler
 
+    train_rows = _ordered(train_rows)
     train_month = pd.to_datetime(train_rows["game_date"]).dt.to_period("M")
     features = feature_matrix(train_rows)
     models = {}

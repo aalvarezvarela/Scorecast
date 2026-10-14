@@ -106,6 +106,47 @@ def _fit(
     return beta, float(mean - equations.x_sum @ beta / weight)
 
 
+def _add_day(
+    stints: pd.DataFrame,
+    index: dict[str, int],
+    n: int,
+    offdef: _NormalEquations,
+    pace: _NormalEquations,
+    exposure: np.ndarray,
+) -> None:
+    """Add one day's stints to the offense/defense and pace equations (2_6's
+    rows: points per 100 possessions per side, possessions per 48 per stint)
+    and the offensive possessions to ``exposure``."""
+    off_rows, off_y, off_w = [], [], []
+    pace_rows, pace_y, pace_w = [], [], []
+    for row in stints.to_dict("records"):
+        home, away = row["home_lineup"], row["away_lineup"]
+        seconds = (row["end_ds"] - row["start_ds"]) / 10
+        home_poss, away_poss = _poss(row, "home"), _poss(row, "away")
+        for attacking, defending, poss, points in (
+            (home, away, home_poss, row["home_pts"]),
+            (away, home, away_poss, row["away_pts"]),
+        ):
+            if poss > 0:
+                off_rows.append(
+                    {
+                        **{index[pid]: 1.0 for pid in attacking},
+                        **{n + index[pid]: -1.0 for pid in defending},
+                    }
+                )
+                off_y.append(100 * float(points) / poss)
+                off_w.append(poss)
+                for pid in attacking:
+                    exposure[index[pid]] += poss
+        game_poss = (home_poss + away_poss) / 2
+        if game_poss > 0 and seconds > 0:
+            pace_rows.append({index[pid]: 1.0 for pid in home + away})
+            pace_y.append(game_poss * 2880 / seconds)
+            pace_w.append(seconds)
+    offdef.add(_matrix(off_rows, 2 * n), np.asarray(off_y), np.asarray(off_w))
+    pace.add(_matrix(pace_rows, n), np.asarray(pace_y), np.asarray(pace_w))
+
+
 def sweep_predictions(
     history: pd.DataFrame,
     efficiency_rows: pd.DataFrame,
@@ -213,36 +254,8 @@ def sweep_predictions(
                     pace_previous[k] = beta
                 values = beta if with_prior else beta * rated
                 pace_out[rows, k] = intercept + values[pace_idx[rows]].sum(1)
-        if day not in grouped:
-            continue
-        off_rows, off_y, off_w = [], [], []
-        pace_rows_, pace_y, pace_w = [], [], []
-        for row in grouped[day].to_dict("records"):
-            home, away = row["home_lineup"], row["away_lineup"]
-            seconds = (row["end_ds"] - row["start_ds"]) / 10
-            home_poss, away_poss = _poss(row, "home"), _poss(row, "away")
-            for attacking, defending, poss, points in (
-                (home, away, home_poss, row["home_pts"]),
-                (away, home, away_poss, row["away_pts"]),
-            ):
-                if poss > 0:
-                    off_rows.append(
-                        {
-                            **{index[pid]: 1.0 for pid in attacking},
-                            **{n + index[pid]: -1.0 for pid in defending},
-                        }
-                    )
-                    off_y.append(100 * float(points) / poss)
-                    off_w.append(poss)
-                    for pid in attacking:
-                        exposure[index[pid]] += poss
-            game_poss = (home_poss + away_poss) / 2
-            if game_poss > 0 and seconds > 0:
-                pace_rows_.append({index[pid]: 1.0 for pid in home + away})
-                pace_y.append(game_poss * 2880 / seconds)
-                pace_w.append(seconds)
-        offdef.add(_matrix(off_rows, 2 * n), np.asarray(off_y), np.asarray(off_w))
-        pace.add(_matrix(pace_rows_, n), np.asarray(pace_y), np.asarray(pace_w))
+        if day in grouped:
+            _add_day(grouped[day], index, n, offdef, pace, exposure)
 
     has_prior = any(po or pd_ for *_, po, pd_ in offdef_grid) or any(
         p for _, p in pace_grid

@@ -209,3 +209,76 @@ def test_games_without_both_injury_reports_get_no_graphs(covered):
 def test_report_coverage_is_required():
     with pytest.raises(TypeError):
         build_game_graphs(_empty_data(), GAMES, NIGHTS)  # type: ignore[call-arg]
+
+
+def test_a_minutes_provider_replaces_v0_minutes_and_is_recorded():
+    from nba_ou.data_processing.player_graph.minutes_provider import (
+        FULL_HEALTH as PROVIDER_FULL_HEALTH,
+    )
+    from nba_ou.data_processing.player_graph.minutes_provider import V1Minutes
+
+    def minutes(players, scale):
+        return {p: 240.0 * scale[k] / sum(scale) for k, p in enumerate(players)}
+
+    home_players = [f"h{k}" for k in range(6)]
+    away_players = [f"a{k}" for k in range(6)]
+    scenarios, nodes = [], []
+    # Home: h0 sits in scenario 1 (weight 0.3); away: one scenario.
+    for team, sid, weight, sitting, players in (
+        (HOME_TEAM, PROVIDER_FULL_HEALTH, 1.0, (), home_players),
+        (HOME_TEAM, 0, 0.7, (), home_players),
+        (HOME_TEAM, 1, 0.3, ("h0",), home_players[1:]),
+        (AWAY_TEAM, PROVIDER_FULL_HEALTH, 1.0, (), away_players),
+        (AWAY_TEAM, 0, 1.0, (), away_players),
+    ):
+        scenarios.append(
+            {
+                "game_id": GAME,
+                "team_id": team,
+                "scenario_id": sid,
+                "weight": weight,
+                "sitting": frozenset(sitting),
+            }
+        )
+        for player, value in minutes(players, list(range(len(players), 0, -1))).items():
+            nodes.append(
+                {
+                    "game_id": GAME,
+                    "team_id": team,
+                    "scenario_id": sid,
+                    "player_id": player,
+                    "minutes": value,
+                }
+            )
+    data = PointInTimeData.from_frames(
+        pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), pair_game=_pair_history()
+    )
+    provider = V1Minutes(scenarios, nodes)
+    graphs = build_game_graphs(
+        data, GAMES, NIGHTS, report_covered=COVERED, minutes=provider
+    )
+    assert graphs.metadata["minutes_provider"] == "v1"
+    tonight = graphs.scenarios.loc[~graphs.scenarios["is_full_health"]]
+    assert sorted(tonight["weight"]) == pytest.approx([0.3, 0.7])
+    sat = tonight.loc[
+        tonight["home_sitting"].map(lambda sitting: sitting == ("h0",)), "scenario_id"
+    ].item()
+    got = graphs.nodes.loc[graphs.nodes["scenario_id"].eq(sat)]
+    expected = minutes(home_players[1:], [5, 4, 3, 2, 1])
+    home = got.loc[got["side"].eq("home")].set_index("player_id")["minutes"]
+    assert home.to_dict() == pytest.approx(expected)
+    # Guard edges cover the provider's players, h0 included (full health).
+    guards = graphs.edges.loc[graphs.edges["relation"].eq("guards")]
+    assert "h0" in set(guards["dst"]) and len(guards)
+    # v0 stays the default and is recorded as such.
+    assert _graphs().metadata["minutes_provider"] == "v0"
+    # A team the provider does not cover leaves its game without graphs.
+    partial = V1Minutes(
+        [s for s in scenarios if s["team_id"] == HOME_TEAM],
+        [n for n in nodes if n["team_id"] == HOME_TEAM],
+    )
+    empty = build_game_graphs(
+        data, GAMES, NIGHTS, report_covered=COVERED, minutes=partial
+    )
+    assert empty.scenarios.empty
+    assert empty.metadata["skipped_games"]["no_roster"] == 1
