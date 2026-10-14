@@ -7,6 +7,7 @@ from nba_ou.data_processing.player_graph.matchup_defense import (
     doubled_exposure_games,
     row_halves,
     shrunk_as_of,
+    shrunk_on_dates,
     split_half,
 )
 
@@ -115,3 +116,11 @@ def test_doubled_exposure_games_flags_games_at_twice_the_guard_rate():
         }
     )
     assert doubled_exposure_games(pairs) == {"doubled"}
+
+
+def test_shrunk_on_dates_matches_shrunk_as_of_on_the_rows_dates():
+    frame = _synthetic(effect_sd=0.05, n_keys=5, games=10)
+    expected = shrunk_as_of(frame, ["key"], shrinkage=20.0)
+    queries = frame[["game_date", "key"]]
+    got = shrunk_on_dates(frame, "key", queries, shrinkage=20.0)
+    assert np.allclose(got, expected.to_numpy())

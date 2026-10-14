@@ -20,6 +20,17 @@ absence slices. All versions are compared on the same games.
 
 (2018-19 is built only to warm up the level calibration of 2019-20.)
 
+``--ratings NAME=PATH`` (repeatable) reads the same graphs out with other
+rating books (rating-cache format) into ``data/player_graph/oracle/NAME/``,
+and ``summarize --ratings NAME`` reports one of them; without it, 2_6's stored
+cache and ``data/player_graph/oracle/`` as before. Phase 4B uses it on 2018-19
+to swap in the matchup-adjusted defense:
+
+    python scripts/player_graph/oracle_ceiling.py build --seasons 2018 \
+        --ratings rapm=data/player_graph/matchup_rating/books/rapm.parquet \
+        --ratings matchup=data/player_graph/matchup_rating/books/matchup.parquet
+    python scripts/player_graph/oracle_ceiling.py summarize --seasons 2018 --ratings matchup
+
 ``build`` needs the database and writes ``data/player_graph/oracle/season=Y.parquet``
 (skipping seasons already there unless ``--force``).
 """
@@ -103,17 +114,32 @@ def season_games(season: int) -> pd.DataFrame:
     ).drop_duplicates("GAME_ID")
 
 
-def _per_game_inputs(
-    data: PointInTimeData, book, graphs: list[GameGraphs], dates: pd.Series
-) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """As-of ratings and usage for every (game, player) in any version."""
-    players = (
+def _players(graphs: list[GameGraphs], dates: pd.Series) -> pd.DataFrame:
+    return (
         pd.concat([g.nodes[["game_id", "player_id"]] for g in graphs])
         .drop_duplicates()
         .assign(game_date=lambda f: f["game_id"].map(dates))
     )
-    ratings, usage = [], []
-    for date, part in players.groupby("game_date", sort=True):
+
+
+def _per_game_usage(
+    data: PointInTimeData, graphs: list[GameGraphs], dates: pd.Series
+) -> pd.DataFrame:
+    """As-of usage for every (game, player) in any version."""
+    usage = []
+    for date, part in _players(graphs, dates).groupby("game_date", sort=True):
+        usage.append(
+            part.assign(
+                usage=usage_lookup(usage_as_of(data.as_of(date)), part["player_id"])
+            )
+        )
+    return pd.concat(usage, ignore_index=True)[["game_id", "player_id", "usage"]]
+
+
+def _per_game_ratings(book, graphs: list[GameGraphs], dates: pd.Series) -> pd.DataFrame:
+    """As-of ratings for every (game, player) in any version."""
+    ratings = []
+    for date, part in _players(graphs, dates).groupby("game_date", sort=True):
         rated = book.for_date(date)
         if rated is not None:
             team, ortg, pace = rated
@@ -126,15 +152,11 @@ def _per_game_inputs(
                     league_pace=pace,
                 )
             )
-        usage.append(
-            part.assign(
-                usage=usage_lookup(usage_as_of(data.as_of(date)), part["player_id"])
-            )
-        )
-    return (
-        pd.concat(ratings, ignore_index=True).drop(columns="game_date"),
-        pd.concat(usage, ignore_index=True)[["game_id", "player_id", "usage"]],
-    )
+    return pd.concat(ratings, ignore_index=True).drop(columns="game_date")
+
+
+def _out_dir(name: str) -> Path:
+    return OUT_DIR / name if name else OUT_DIR
 
 
 def _expected_rates(data: PointInTimeData, stints: pd.DataFrame) -> pd.DataFrame:
@@ -198,10 +220,14 @@ def _slices(v0: GameGraphs, ratings: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
-def build(seasons: list[int], force: bool) -> None:
-    OUT_DIR.mkdir(parents=True, exist_ok=True)
+def build(seasons: list[int], force: bool, books: dict[str, Path | None]) -> None:
+    for name in books:
+        _out_dir(name).mkdir(parents=True, exist_ok=True)
     todo = [
-        s for s in seasons if force or not (OUT_DIR / f"season={s}.parquet").exists()
+        s
+        for s in seasons
+        if force
+        or not all((_out_dir(n) / f"season={s}.parquet").exists() for n in books)
     ]
     if not todo:
         print("nothing to build")
@@ -213,7 +239,7 @@ def build(seasons: list[int], force: bool) -> None:
     state = data.injury_report(CLOSING)
     p_out = player_out_probabilities(state.statuses)
     excluded = roster_exclusions(state.statuses)
-    book = load_rating_book()
+    rating_books = {name: load_rating_book(path) for name, path in books.items()}
     print(f"loaded in {time.time() - started:.0f}s", flush=True)
 
     for season in todo:
@@ -247,61 +273,82 @@ def build(seasons: list[int], force: bool) -> None:
                 dates,
             ),
         }
-        ratings, usage = _per_game_inputs(data, book, list(graphs.values()), dates)
-        results = []
-        for version, graph in graphs.items():
-            frame = readouts(graph, ratings, usage).set_index("game_id")
-            results.append(frame[["r1_total", "r2_total"]].add_prefix(f"{version}__"))
-            if version in ("v0", "oracle_guards"):
-                results.append(
-                    frame[["r1_total_healthy", "r2_total_healthy"]].add_prefix(
-                        f"{version}__"
-                    )
+        usage = _per_game_usage(data, list(graphs.values()), dates)
+        for name, book in rating_books.items():
+            ratings = _per_game_ratings(book, list(graphs.values()), dates)
+            _write_readouts(
+                graphs, ratings, usage, v0, games, both_rates, season, _out_dir(name)
+            )
+        print(f"{season}: {time.time() - started:.0f}s", flush=True)
+
+
+def _write_readouts(
+    graphs: dict[str, GameGraphs],
+    ratings: pd.DataFrame,
+    usage: pd.DataFrame,
+    v0: GameGraphs,
+    games: pd.DataFrame,
+    both_rates: pd.DataFrame,
+    season: int,
+    out_dir: Path,
+) -> None:
+    results = []
+    for version, graph in graphs.items():
+        frame = readouts(graph, ratings, usage).set_index("game_id")
+        results.append(frame[["r1_total", "r2_total"]].add_prefix(f"{version}__"))
+        if version in ("v0", "oracle_guards"):
+            results.append(
+                frame[["r1_total_healthy", "r2_total_healthy"]].add_prefix(
+                    f"{version}__"
                 )
-        table = pd.concat(results, axis=1)
-        # The rotation oracles have no actual full-health graph. The counterfactual
-        # keeps projected minutes and changes only the rates its oracle changes:
-        # v0's for the rotation oracle, the guard oracle's for both oracles.
-        for version, source in (
-            ("oracle_rotation", "v0"),
-            ("oracle_both", "oracle_guards"),
-        ):
-            for readout in ("r1", "r2"):
-                table[f"{version}__{readout}_total_healthy"] = table[
-                    f"{source}__{readout}_total_healthy"
-                ]
-        table = table.join(_slices(v0, ratings).set_index("game_id"))
-        table = table.join(
-            games.set_index("GAME_ID")[["GAME_DATE", "TOTAL_POINTS", "LINE"]]
-        )
-        table["season"] = season
-        table["observed_rate_share"] = (
-            both_rates["guard_rate"].notna().groupby(both_rates["game_id"]).mean()
-        )
-        table.index.name = "game_id"
-        table.reset_index().to_parquet(
-            OUT_DIR / f"season={season}.parquet", index=False
-        )
-        complete = table.filter(like="__r1_total").notna().all(axis=1).sum()
-        print(
-            f"{season}: {len(table):,} games ({complete:,} with all four versions), "
-            f"max minutes > 48 in {(table['max_minutes'] > 48).mean():.1%}, "
-            f"{time.time() - started:.0f}s",
-            flush=True,
-        )
+            )
+    table = pd.concat(results, axis=1)
+    # The rotation oracles have no actual full-health graph. The counterfactual
+    # keeps projected minutes and changes only the rates its oracle changes:
+    # v0's for the rotation oracle, the guard oracle's for both oracles.
+    for version, source in (
+        ("oracle_rotation", "v0"),
+        ("oracle_both", "oracle_guards"),
+    ):
+        for readout in ("r1", "r2"):
+            table[f"{version}__{readout}_total_healthy"] = table[
+                f"{source}__{readout}_total_healthy"
+            ]
+    table = table.join(_slices(v0, ratings).set_index("game_id"))
+    table = table.join(
+        games.set_index("GAME_ID")[["GAME_DATE", "TOTAL_POINTS", "LINE"]]
+    )
+    table["season"] = season
+    table["observed_rate_share"] = (
+        both_rates["guard_rate"].notna().groupby(both_rates["game_id"]).mean()
+    )
+    table.index.name = "game_id"
+    table.reset_index().to_parquet(out_dir / f"season={season}.parquet", index=False)
+    complete = table.filter(like="__r1_total").notna().all(axis=1).sum()
+    print(
+        f"  {out_dir}: {len(table):,} games ({complete:,} with all four versions), "
+        f"max minutes > 48 in {(table['max_minutes'] > 48).mean():.1%}",
+        flush=True,
+    )
 
 
 def _metrics(frame: pd.DataFrame, total: str, impact: str) -> dict:
+    mae = float((frame[total] - frame["TOTAL_POINTS"]).abs().mean())
+    games = len(frame)
+    frame = frame.dropna(subset=["LINE"])
+    if len(frame) < 3:
+        return {"games": games, "mae": mae, "games_with_line": len(frame)}
     error = frame["TOTAL_POINTS"] - frame["LINE"]
     edge = frame[total] - frame["LINE"]
     decided = (error != 0) & (edge != 0)
-    slope = np.polyfit(edge, error, 1)[0] if len(frame) > 2 else np.nan
+    slope = np.polyfit(edge, error, 1)[0]
     impact_slope = (
         np.polyfit(frame[impact], error, 1)[0] if frame[impact].std() > 0 else np.nan
     )
     return {
-        "games": len(frame),
-        "mae": float((frame[total] - frame["TOTAL_POINTS"]).abs().mean()),
+        "games": games,
+        "mae": mae,
+        "games_with_line": len(frame),
         "edge_corr": float(np.corrcoef(edge, error)[0, 1]),
         "edge_slope": float(slope),
         "hit_rate": float((np.sign(edge) == np.sign(error))[decided].mean()),
@@ -314,19 +361,21 @@ def _metrics(frame: pd.DataFrame, total: str, impact: str) -> dict:
     }
 
 
-def summarize(seasons: list[int]) -> None:
+def summarize(seasons: list[int], name: str = "", without_line: bool = False) -> None:
     # The season before the first, when built, only warms up the level
     # calibration (50 earlier games of the same phase); it is not reported.
-    warmup = OUT_DIR / f"season={seasons[0] - 1}.parquet"
+    out_dir = _out_dir(name)
+    warmup = out_dir / f"season={seasons[0] - 1}.parquet"
     paths = [warmup] if warmup.exists() else []
-    paths += [OUT_DIR / f"season={s}.parquet" for s in seasons]
+    paths += [out_dir / f"season={s}.parquet" for s in seasons]
     table = pd.concat(
         [pd.read_parquet(path) for path in paths], ignore_index=True
     ).sort_values(["GAME_DATE", "game_id"], kind="mergesort")
     totals = [f"{v}__{r}_total" for v in VERSIONS for r in ("r1", "r2")]
-    table = table.dropna(subset=[*totals, "TOTAL_POINTS", "LINE"]).reset_index(
-        drop=True
-    )
+    # By default only games with a closing line (the published 2019-25 run);
+    # ``without_line`` keeps the rest for total MAE (2018-19 has few lines).
+    needed = [*totals, "TOTAL_POINTS"] + ([] if without_line else ["LINE"])
+    table = table.dropna(subset=needed).reset_index(drop=True)
     phases = game_phase(table["game_id"])
     for column in totals:
         offset = walk_forward_offset(
@@ -364,6 +413,7 @@ def summarize(seasons: list[int]) -> None:
     paired = {}
     for name, mask in slices.items():
         part = table.loc[mask]
+        lined = part["LINE"].notna()
         error = part["TOTAL_POINTS"] - part["LINE"]
         for readout in ("r1", "r2"):
             base = f"v0__{readout}_total_cal"
@@ -372,9 +422,12 @@ def summarize(seasons: list[int]) -> None:
             for version in VERSIONS[1:]:
                 column = f"{version}__{readout}_total_cal"
                 diff = (part[column] - part["TOTAL_POINTS"]).abs() - base_abs
-                hit = (np.sign(part[column] - part["LINE"]) == np.sign(error)).astype(
-                    float
-                ) - base_hit.astype(float)
+                hit = (
+                    (np.sign(part[column] - part["LINE"]) == np.sign(error)).astype(
+                        float
+                    )
+                    - base_hit.astype(float)
+                )[lined]
                 paired[(name, readout.upper(), version)] = {
                     "abs_error": f"{diff.mean():+.3f} ± {diff.std() / np.sqrt(len(diff)):.3f}",
                     "hit_rate": f"{hit.mean():+.4f} ± {hit.std() / np.sqrt(len(hit)):.4f}",
@@ -407,11 +460,36 @@ def main() -> None:
     parser.add_argument("command", choices=["build", "summarize"])
     parser.add_argument("--seasons", type=season_range, required=True)
     parser.add_argument("--force", action="store_true")
+    parser.add_argument(
+        "--without-line",
+        action="store_true",
+        help="summarize: keep games without a closing line (total MAE only there)",
+    )
+    parser.add_argument(
+        "--ratings",
+        action="append",
+        default=[],
+        help="build: NAME=PATH of a rating book (repeatable); summarize: NAME",
+    )
     args = parser.parse_args()
     if args.command == "build":
-        build(args.seasons, args.force)
+        books: dict[str, Path | None] = {"": None}
+        if args.ratings:
+            books = {}
+            for item in args.ratings:
+                name, _, path = item.partition("=")
+                if not name or not path:
+                    raise SystemExit("--ratings takes NAME=PATH when building")
+                books[name] = Path(path)
+        build(args.seasons, args.force, books)
     else:
-        summarize(args.seasons)
+        if len(args.ratings) > 1:
+            raise SystemExit("summarize takes one --ratings NAME")
+        summarize(
+            args.seasons,
+            args.ratings[0] if args.ratings else "",
+            without_line=args.without_line,
+        )
 
 
 if __name__ == "__main__":

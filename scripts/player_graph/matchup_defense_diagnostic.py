@@ -48,7 +48,7 @@ import pandas as pd
 from nba_ou.data_processing.player_graph.matchup_defense import (
     TARGETS,
     as_of_sums,
-    attacker_norms,
+    matchup_residuals,
     read_matchup_history,
     row_halves,
     shrunk_as_of,
@@ -146,32 +146,15 @@ def load(root: Path) -> pd.DataFrame:
 def residuals(
     pairs: pd.DataFrame, y: str, w: str, attribution: str
 ) -> tuple[pd.DataFrame, float]:
-    """Rows with ``w``/``r`` for one target and attribution, and the attacker
-    prior weight."""
-    frame = pairs.assign(w=pairs[w], y=pairs[y])
-    # Attacker prior weight by empirical Bayes on 2017-18: split-half of the
-    # attackers' rates around their position's as-of rate.
-    position = as_of_sums(frame, ["position"], ["y", "w"])
-    overall = as_of_sums(frame, [], ["y", "w"])
-    base = (position["y"] / position["w"]).fillna(overall["y"] / overall["w"])
-    frame["r"] = frame["y"] - frame["w"] * base
-    dev = frame.loc[frame["season_year"].eq(FIRST) & frame["r"].notna()].copy()
-    dev["half"] = row_halves(dev, ["off_player_id"])
-    typical = dev.groupby(["off_player_id", "game_id"])["w"].sum().median()
-    attacker = split_half(dev, ["off_player_id"], min_exposure=MIN_GAMES * typical)
-    prior_weight = attacker.shrinkage
-    frame["norm"] = attacker_norms(frame, "y", "w", prior_weight=prior_weight)
-    frame["r"] = frame["y"] - frame["w"] * frame["norm"]
-    frame = frame.loc[frame["norm"].notna() & (frame["game_date"] >= BURN_IN)].copy()
-    if attribution == "time":
-        basis = "matchup_seconds" if w == "matchup_minutes" else "partial_possessions"
-        attacker_game = frame.groupby(["game_id", "off_player_id"])
-        share = frame[basis] / attacker_game[basis].transform("sum")
-        frame["r"] = attacker_game["r"].transform("sum") * share
-        frame["w"] = attacker_game["w"].transform("sum") * share
-    team_game = frame.groupby(["game_id", "def_team_id"])[["r", "w"]].transform("sum")
-    frame["r_within"] = frame["r"] - frame["w"] * team_game["r"] / team_game["w"]
-    return frame, prior_weight
+    return matchup_residuals(
+        pairs,
+        y,
+        w,
+        attribution,
+        development_season=FIRST,
+        burn_in=BURN_IN,
+        min_games=MIN_GAMES,
+    )
 
 
 def signal_rows(frame: pd.DataFrame, season: int) -> dict:
