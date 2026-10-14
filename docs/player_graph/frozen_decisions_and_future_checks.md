@@ -1604,6 +1604,98 @@ in the playoffs (May 0.406 vs 0.354).
   switches blur the attribution, and one game's reliability is about 0.03
   (phase 4B).
 
+## Phase 6, step 2: monthly out-of-fold harness, baselines, FM, hardware benchmark (2026-10-14)
+
+**Folds** (`player_graph/pretraining_oof.py`). Checkpoint `C_k` is the first
+of each month from 2016-12-01, the first checkpoint of phase 3's prior. Fold
+`k` trains on everything dated before `C_k` and predicts `[C_k, C_(k+1))`.
+
+- There are 88 folds with games, 25 of them before 2019-07.
+- `check_fold` refuses a training date at or after the checkpoint.
+- Predictions are stored per model and fold (`pretraining/v1/oof/<model>/`),
+  written atomically. A stint predicted by two folds is refused.
+
+**Baselines at the same cadence** (`pretraining_baselines.py`, all 88 folds
+stored):
+
+- **constant:** each target's exposure-weighted mean, decayed with the
+  180-day half-life.
+- **RAPM:** the frozen phase 3 ratings as of each checkpoint, for points per
+  possession and pace; its other four targets take the constant.
+
+Development folds (2016-12 → 2019-06, 110,147 stints), RAPM over constant:
+
+| Target | Gain in MSE | t |
+| --- | --- | --- |
+| Points per possession | +0.57% | 13.1 |
+| Pace | +1.72% | 20.9 |
+
+Each of 2016-17, 2017-18 and 2018-19 gives 0.54-0.58% for points and
+1.3-2.2% for pace. Stint noise dominates, so gains on future stints are small
+in MSE terms by construction.
+
+**Evaluation** (`player_graph/pretraining_eval.py`). Per target, the gain is
+the exposure-weighted drop in squared error, with the SE clustered by game
+date and expressed as a share of the reference's MSE. Every comparison is
+paired: rows any model leaves unpredicted are dropped for all.
+`ladder(...)` runs the plan's ladder, overall and by slice.
+
+**Factorization machine, step 6a** (`player_graph/fm.py`, plain PyTorch;
+`fm_oof.py` runs it on the folds with warm starts):
+
+- **Interaction terms:**
+  - offensive and defensive chemistry: pair means over the five;
+  - team style: `Σu · Σv / 25`;
+  - matchups: `Σ m_ij a_i·b_j / 5` over the **expected** guard shares.
+- **Per-player blocks:** every block is `A·x + δ`. `x` holds the as-of node
+  features. `δ` is penalized (300 pseudo-stints) and is zero for a player
+  unseen at the checkpoint.
+- **Targets and embeddings:** each target reads a per-target diagonal
+  readout over embeddings shared by all targets. The dimension is 16.
+- **Edge head:** `Σ_j s_ij f(i, j)` with the same `a`, `b` vectors.
+- **Ladder variants:** `additive`, `no_matchup`, `matchup`, `matchup_edges`.
+- **Hyperparameters** (penalties, learning rate 3e-3, 3 epochs, batch 1,024)
+  are untuned starting values.
+- **Synthetic tests:**
+  - the output does not depend on the order within a side;
+  - the pair-sum identity holds;
+  - a planted additive effect is recovered (r > 0.8);
+  - a planted attacker × defender interaction acting only through guard
+    edges is learned by the matchup term (R² > 0.5) and not by the additive
+    model (R² < 0.1);
+  - the edge head equals the hand-computed `Σ s f`;
+  - warm starts move `δ` to the grown vocabulary;
+  - checkpoints round-trip.
+- **CPU smoke runs** (no claim about signal):
+  - 2016-12 → 2017-02, 3 folds, 2 epochs, 20,000-stint cap: about 1 s per
+    fold. The edge loss is 0, since 2016-17 has no edge labels.
+  - 2017-11 → 2017-12, with edges: the standardized edge loss is 0.65 → 0.57.
+  - Rerunning skips the stored folds.
+
+**Hardware benchmark** (`benchmark_pretraining.py`). It uses random tensors
+with the dataset's shapes, so it runs on the GPU machine with no data. It
+measures training throughput and peak GPU memory for the FM (dimension
+8/16/32) and a relational GNN (`SmokeGNN`, dimension × layers 32×2 → 128×3;
+the phase 6b architecture is still open) at batches of 1,024-16,384, and
+projects 3 epochs over all 88 folds (17.4 M stint passes per epoch). A
+configuration that runs out of GPU memory is recorded. This machine, CPU only
+(10 threads):
+
+| Model | Throughput (stints/s) | 3 epochs over all folds |
+| --- | --- | --- |
+| FM, dimension 16 | 69k-93k | 0.16-0.21 h |
+| GNN 32×2 | about 13k-15k | about 1.0-1.1 h |
+| GNN 64×3 | about 4k-5k | about 2.9-3.7 h |
+| GNN 128×3 | about 1.6k-2k | about 7-9 h |
+
+The FM needs no GPU; the GNN is where the 6 GB card matters. On the GPU
+machine:
+
+```bash
+poetry install --with graph
+poetry run python scripts/player_graph/benchmark_pretraining.py --out artifacts/experiments/pretraining_benchmark_gpu.json
+```
+
 ## Future checks
 
 ### Guarding weights (`expected_guard`)
@@ -1679,7 +1771,7 @@ in the playoffs (May 0.406 vs 0.354).
 - [ ] Revisit PyTorch Geometric (`HeteroData`, batching of graphs with variable node counts) when the phase 6 architecture is defined, especially for game graphs and scenarios.
 - [ ] Node features currently join the stint graphs in `smoke_gnn.node_inputs`; move the join into the stint-graph loader when phase 6 fixes the inputs.
 - [ ] A CPU-only PyTorch wheel (or a separate source) if the CUDA build's size matters; the machine has no GPU.
-- [ ] **Hardware before buying it.** With the first representative phase 6 GNN, benchmark CPU and GPU training time, peak GPU memory and the largest workable batch size. Start on the GPU at hand (6 GB of VRAM, on another machine; this one has none) and consider other hardware only after measuring it with the actual architecture.
+- [ ] **Hardware before buying it** (`benchmark_pretraining.py` ready; CPU measured, GPU pending on the 6 GB machine). With the first representative phase 6 GNN, benchmark CPU and GPU training time, peak GPU memory and the largest workable batch size. Start on the GPU at hand (6 GB of VRAM, on another machine; this one has none) and consider other hardware only after measuring it with the actual architecture.
 
 ### Phase 6 / phase 8 (encoder and embeddings)
 
