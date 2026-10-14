@@ -127,6 +127,16 @@ def get_injured_players_dict(df_injuries, df_players=None):
     return injured_dict
 
 
+def bucket_column_values(df: pd.DataFrame, column: str) -> np.ndarray:
+    """One column of a player frame as an array; see ``PlayerLookupIndex.bucket_column``."""
+    if column == "PLAYER_ID_STR":
+        return df["PLAYER_ID"].astype(str).to_numpy()
+    if column == "PLAYER_ORDER":
+        codes, _ = pd.factorize(df["PLAYER_ID"], sort=True)
+        return codes
+    return df[column].to_numpy()
+
+
 def create_player_lookup(df_players, injured_dict=None):
     """Precompute indexes for player roster and statistic lookups.
 
@@ -303,15 +313,39 @@ class PlayerLookupIndex:
         self.empty_df = empty_df
         self._player_positions = _player_positions
         self._bucket_arrays = _bucket_arrays
+        self._bucket_columns: dict[tuple[int, str], np.ndarray] = {}
 
-    def lookup_for(self, injured_dict=None, *, ids_only=False):
+    def bucket_column(self, df_bucket, column):
+        """``df_bucket[column].to_numpy()``, computed once per bucket.
+
+        ``df_bucket`` is a bucket a rows-mode lookup returned. Two derived
+        columns are offered as well: ``PLAYER_ID_STR``
+        (``PLAYER_ID.astype(str)``) and ``PLAYER_ORDER``, each row's rank in
+        a ``sort_values("PLAYER_ID")`` of the bucket, so that a stable sort on
+        it orders any subset of rows as sorting their ``PLAYER_ID`` would.
+        """
+        key = (id(df_bucket), column)
+        values = self._bucket_columns.get(key)
+        if values is None:
+            values = bucket_column_values(df_bucket, column)
+            self._bucket_columns[key] = values
+        return values
+
+    def lookup_for(self, injured_dict=None, *, ids_only=False, rows_only=False):
         """The lookup ``create_player_lookup(df_players, injured_dict)`` returns.
 
         ``ids_only=True`` returns a lookup of
         ``set(lookup(...)["PLAYER_ID"].astype(str))`` instead, built from the
         same rows in the same order (so even the set's iteration order is the
         same), without materialising the frame.
+
+        ``rows_only=True`` returns ``(df_bucket, rows)`` instead, where
+        ``df_bucket.iloc[rows]`` is exactly the frame the lookup returns, or
+        ``None`` where that frame is empty. Read its columns through
+        :meth:`bucket_column`.
         """
+        if ids_only and rows_only:
+            raise ValueError("ids_only and rows_only are exclusive")
         season_groups = self.season_groups
         season_year_groups = self.season_year_groups
         player_timeline = self.player_timeline
@@ -322,7 +356,7 @@ class PlayerLookupIndex:
         }
         players_by_season_team = self.players_by_season_team
         players_by_season_year_team = self.players_by_season_year_team
-        empty_df = set() if ids_only else self.empty_df
+        empty_df = set() if ids_only else None if rows_only else self.empty_df
         _player_positions = self._player_positions
         _bucket_arrays = self._bucket_arrays
 
@@ -442,6 +476,10 @@ class PlayerLookupIndex:
                     bucket_groups, bucket_key, df_bucket
                 )
                 return set(bucket_ids[rows[bucket_dates[rows] <= date_to_filter]])
+            if rows_only:
+                _, bucket_dates = _bucket_arrays(bucket_groups, bucket_key, df_bucket)
+                rows = rows[bucket_dates[rows] <= date_to_filter]
+                return (df_bucket, rows) if rows.size else None
             candidates = df_bucket.iloc[rows]
             result = candidates[(candidates["GAME_DATE"] <= date_to_filter).to_numpy()]
 
@@ -460,7 +498,13 @@ class PlayerLookupIndex:
                 player_timeline,
                 season_groups,
             )
-            if (len(result) > 0) if ids_only else not result.empty:
+            if rows_only:
+                found = result is not None
+            elif ids_only:
+                found = len(result) > 0
+            else:
+                found = not result.empty
+            if found:
                 return result
 
             season_year = _season_year_from_season_id(season_id)

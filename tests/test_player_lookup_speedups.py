@@ -134,6 +134,8 @@ def _use_previous_player_code(monkeypatch):
     monkeypatch.setattr(
         attach_player_features, "PlayerLookupIndex", _PreviousPlayerLookupIndex
     )
+    # The per-group steps on frames, through the functions patched above.
+    monkeypatch.setattr(attach_player_features, "ARRAY_ROSTER_STEPS", False)
 
 
 class _PreviousPlayerLookupIndex:
@@ -142,8 +144,23 @@ class _PreviousPlayerLookupIndex:
     def __init__(self, df_players):
         self._players = df_players
 
-    def lookup_for(self, injured_dict=None):
-        return create_player_lookup_before(self._players, injured_dict=injured_dict)
+    def bucket_column(self, df_bucket, column):
+        from nba_ou.data_processing.past_injuries.past_injuries import (
+            bucket_column_values,
+        )
+
+        return bucket_column_values(df_bucket, column)
+
+    def lookup_for(self, injured_dict=None, *, rows_only=False):
+        lookup = create_player_lookup_before(self._players, injured_dict=injured_dict)
+        if not rows_only:
+            return lookup
+
+        def rows_lookup(*args, **kwargs):
+            frame = lookup(*args, **kwargs)
+            return None if frame.empty else (frame, np.arange(len(frame)))
+
+        return rows_lookup
 
 
 def test_player_history_features_match_the_previous_code_path(monkeypatch):

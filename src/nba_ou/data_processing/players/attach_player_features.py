@@ -2,6 +2,7 @@ import re
 from collections.abc import Callable
 from dataclasses import dataclass
 
+import numpy as np
 import pandas as pd
 from tqdm import tqdm
 
@@ -15,6 +16,7 @@ from nba_ou.data_processing.past_injuries.past_injuries import (
     N_TOP_PLAYERS_NON_INJURED,
     N_TOP_PLAYERS_QUESTIONABLE,
     PlayerLookupIndex,
+    bucket_column_values,
     create_injury_streak_lookup,
     get_injured_players_dict,
 )
@@ -237,6 +239,126 @@ def _build_prior_roster_lookup(df_players):
         ]
 
     return prior_roster_lookup
+
+
+#: Run the row loop's per-group steps on arrays (``_Roster``) rather than on a
+#: frame per group. The frame path is what the arrays must reproduce exactly;
+#: the tests switch this off to compare the two.
+ARRAY_ROSTER_STEPS = True
+
+
+class _Roster:
+    """One team-game's roster rows, as the row loop reads them.
+
+    Either rows of a lookup bucket (a rows-mode lookup's ``(df_bucket, rows)``,
+    whose columns the lookup index caches) or a frame (the prior-roster
+    fallback). Groups of rows are integer positions into the roster, in roster
+    order. ``frame(positions)`` is the frame the frame path builds for them:
+    the same rows, order, index and values as masking the roster frame.
+    """
+
+    def __init__(self, column, frame, size):
+        self._column = column
+        self._columns = {}
+        self.frame = frame
+        self.size = size
+
+    @classmethod
+    def from_lookup(cls, index, df_bucket, rows):
+        return cls(
+            lambda name: index.bucket_column(df_bucket, name)[rows],
+            lambda positions: df_bucket.iloc[rows[positions]],
+            rows.size,
+        )
+
+    @classmethod
+    def from_frame(cls, df):
+        return cls(
+            lambda name: bucket_column_values(df, name),
+            lambda positions: df.iloc[positions],
+            len(df),
+        )
+
+    def column(self, name):
+        values = self._columns.get(name)
+        if values is None:
+            values = self._column(name)
+            self._columns[name] = values
+        return values
+
+    def n_players(self, positions):
+        """``frame(positions)["PLAYER_ID"].nunique()``."""
+        unique = pd.unique(self.column("PLAYER_ID")[positions])
+        return int(pd.notna(unique).sum())
+
+
+def _array_steps_supported(df_players, stat_cols) -> bool:
+    """Whether the array steps reproduce the frame path for these players.
+
+    They cover the dtypes the pipelines use: float statistics, datetime dates,
+    and ``MIN`` among the statistics, so the minutes threshold reads
+    ``MIN_CUM_AVG`` rather than a per-row groupby mean.
+    """
+    columns = [f"{stat}_CUM_AVG" for stat in stat_cols]
+    return (
+        ARRAY_ROSTER_STEPS
+        and "MIN_CUM_AVG" in columns
+        and "PLAYER_NAME" in df_players.columns
+        and all(df_players[c].dtype == "float64" for c in columns)
+        and df_players["GAME_DATE"].dtype == "datetime64[ns]"
+    )
+
+
+def _latest_states_on_roster(roster, group, game_date, *, injured, min_minutes=15):
+    """``latest_player_states(roster.frame(group), game_date, injured=...)``.
+
+    Returns ``(positions, meets)``: one roster position per player, in the
+    order the frame version leaves its rows (by ``PLAYER_ID``), and its
+    ``MEETS_MIN_THRESHOLD``. ``None`` where the frame version returns None.
+    """
+    if injured:
+        min_minutes = min_minutes * 0.8
+    if group.size == 0:
+        return None
+    dates = roster.column("GAME_DATE")[group]
+    group = group[dates < game_date if injured else dates <= game_date]
+    if group.size == 0:
+        return None
+    # sort_values(["PLAYER_ID", "GAME_DATE"]) is a stable sort on both keys;
+    # np.lexsort is stable too, and PLAYER_ORDER ranks ids as that sort does.
+    player_order = roster.column("PLAYER_ORDER")
+    order = np.lexsort(
+        (roster.column("GAME_DATE")[group].view("int64"), player_order[group])
+    )
+    ordered = group[order]
+    codes = player_order[ordered]
+    # groupby("PLAYER_ID").tail(1): the last row of each player.
+    states = ordered[np.append(codes[1:] != codes[:-1], True)]
+    minutes = roster.column("MIN_CUM_AVG")[states]
+    meets = (np.where(np.isnan(minutes), 0.0, minutes) >= min_minutes).astype(int)
+    return states, meets
+
+
+def _rank_states_on_roster(roster, states, stat_col, *, lowest=False, n_players=3):
+    """``rank_player_states`` on ``_latest_states_on_roster`` output."""
+    if stat_col == "DEF_RATING":
+        lowest = True
+    if states is None:
+        return []
+    positions, meets = states
+    cum_col = f"{stat_col}_CUM_AVG"
+    values = roster.column(cum_col)[positions]
+    order = np.lexsort((values if lowest else -values, -meets.astype("int64")))
+    chosen = positions[order[:n_players]]
+    # tolist() yields the Python scalars iterating the frame's columns did.
+    return list(
+        zip(
+            roster.column("PLAYER_ID")[chosen].tolist(),
+            roster.column("PLAYER_NAME")[chosen].tolist(),
+            roster.column(cum_col)[chosen].tolist(),
+            strict=True,
+        )
+    )
 
 
 def _restrict_snapshot_membership(
@@ -606,8 +728,11 @@ def add_player_history_features(
     df_team = pd.concat([df_team, new_cols_df], axis=1)
 
     df_players = prepared_players.players
-    # Create optimized lookup function (the players' indexes are precomputed)
-    player_lookup = prepared_players.lookup_index.lookup_for(membership_dict)
+    # Create optimized lookup function (the players' indexes are precomputed).
+    # It returns the roster's rows within their bucket rather than a frame.
+    lookup_index = prepared_players.lookup_index
+    roster_lookup = lookup_index.lookup_for(membership_dict, rows_only=True)
+    array_steps = _array_steps_supported(df_players, stat_cols)
     injury_streak_lookup = create_injury_streak_lookup(
         df_team,
         injured_dict,
@@ -690,15 +815,18 @@ def add_player_history_features(
 
         # Resolve the roster without consulting who logged minutes in this game.
         # Availability is defined below solely as roster minus injured/inactive.
-        df_roster = player_lookup(season_id, team_id, game_date, game_id=game_id)
-        if df_roster.empty:
+        found = roster_lookup(season_id, team_id, game_date, game_id=game_id)
+        roster = (
+            _Roster.from_lookup(lookup_index, *found) if found is not None else None
+        )
+        if roster is None:
             # At a season opener, fall back to the latest assignments from the
             # prior season without consulting the opener's box-score membership.
             fallback_roster = prior_roster_lookup(team_id, game_date)
-            if fallback_roster is not None:
-                df_roster = fallback_roster
+            if fallback_roster is not None and not fallback_roster.empty:
+                roster = _Roster.from_frame(fallback_roster)
 
-        if df_roster.empty:
+        if roster is None:
             updates_list.append({})
             if row_cache is not None:
                 row_cache.rows[cache_key] = ({}, None)
@@ -722,13 +850,17 @@ def add_player_history_features(
         questionable_players = questionable_index.get(str(game_id), {}).get(
             str(team_id), set()
         ) - set(injured_players)
-        player_ids = df_roster["PLAYER_ID"].astype(str)
-
-        df_non_inj = df_roster[
-            ~player_ids.isin(injured_players) & ~player_ids.isin(questionable_players)
-        ]
-        df_inj = df_roster[player_ids.isin(injured_players)]
-        df_questionable = df_roster[player_ids.isin(questionable_players)]
+        player_ids = roster.column("PLAYER_ID_STR")
+        is_injured = np.fromiter(
+            (p in injured_players for p in player_ids), bool, roster.size
+        )
+        is_questionable = np.fromiter(
+            (p in questionable_players for p in player_ids), bool, roster.size
+        )
+        # Roster positions of each group, in roster order.
+        non_inj_rows = np.flatnonzero(~is_injured & ~is_questionable)
+        inj_rows = np.flatnonzero(is_injured)
+        questionable_rows = np.flatnonzero(is_questionable)
 
         # The history map records what actually happened, for later games'
         # present/absent comparisons -- never the pre-game report.
@@ -742,21 +874,22 @@ def add_player_history_features(
         row_update = {}
 
         if include_available_roster_count:
-            recent = df_non_inj[
-                (df_non_inj["GAME_DATE"] < game_date)
-                & (
-                    df_non_inj["GAME_DATE"]
-                    >= game_date - pd.Timedelta(days=AVAILABLE_ROSTER_RECENT_DAYS)
-                )
-                & (pd.to_numeric(df_non_inj["MIN"], errors="coerce").fillna(0) > 0)
+            dates = roster.column("GAME_DATE")[non_inj_rows]
+            minutes = pd.to_numeric(
+                roster.column("MIN")[non_inj_rows], errors="coerce"
+            )
+            recent = non_inj_rows[
+                (dates < game_date)
+                & (dates >= game_date - pd.Timedelta(days=AVAILABLE_ROSTER_RECENT_DAYS))
+                & (np.where(pd.isna(minutes), 0, minutes) > 0)
             ]
-            row_update[_with_before_suffix(N_AVAILABLE_ROSTER_PLAYERS_COL)] = recent[
-                "PLAYER_ID"
-            ].nunique()
+            row_update[_with_before_suffix(N_AVAILABLE_ROSTER_PLAYERS_COL)] = (
+                roster.n_players(recent)
+            )
 
         # Bench player stats (available non-starters with 7-21 avg MIN)
         bench_players = []
-        for pid in df_non_inj["PLAYER_ID"].unique():
+        for pid in pd.unique(roster.column("PLAYER_ID")[non_inj_rows]):
             stats = bench_lookup(pid, game_date)
             if stats is not None:
                 avg_min, pts_per_min, pace = stats
@@ -786,10 +919,31 @@ def add_player_history_features(
         # Each group's latest per-player states do not depend on the statistic
         # being ranked, so they are resolved once per row rather than once per
         # statistic; ``get_top_n_averages_with_names`` is exactly these two steps.
-        non_inj_states = latest_player_states(df_non_inj, game_date, injured=False)
-        n_non_inj = df_non_inj["PLAYER_ID"].nunique()
-        inj_states = latest_player_states(df_inj, game_date, injured=True)
-        n_inj = df_inj["PLAYER_ID"].nunique()
+        if array_steps:
+
+            def states_of(rows, injured):
+                return _latest_states_on_roster(
+                    roster, rows, game_date, injured=injured
+                )
+
+            def rank(states, stat_col, *, n_players):
+                return _rank_states_on_roster(
+                    roster, states, stat_col, n_players=n_players
+                )
+
+        else:
+
+            def states_of(rows, injured):
+                return latest_player_states(
+                    roster.frame(rows), game_date, injured=injured
+                )
+
+            rank = rank_player_states
+
+        non_inj_states = states_of(non_inj_rows, False)
+        n_non_inj = roster.n_players(non_inj_rows)
+        inj_states = states_of(inj_rows, True)
+        n_inj = roster.n_players(inj_rows)
         # The questionable group, resolved exactly like the injured one:
         # ``injured=True`` reads each player's last game strictly BEFORE this
         # one, so membership and values are both independent of tonight's box
@@ -797,24 +951,22 @@ def add_player_history_features(
         # that exists only if the player ended up playing.
         rank_questionable = build_questionable_group and questionable_covered
         if rank_questionable:
-            questionable_states = latest_player_states(
-                df_questionable, game_date, injured=True
-            )
-            n_questionable = df_questionable["PLAYER_ID"].nunique()
+            questionable_states = states_of(questionable_rows, True)
+            n_questionable = roster.n_players(questionable_rows)
 
         for stat_col in stat_cols:
             n_players_noninj = N_TOP_PLAYERS_NON_INJURED
             n_players_inj = N_TOP_PLAYERS_INJURED
 
             # Get ALL non-injured players for aggregation
-            all_non_inj = rank_player_states(
+            all_non_inj = rank(
                 non_inj_states, stat_col, n_players=n_non_inj
             )
             # Get ALL injured players for aggregation
-            all_inj = rank_player_states(inj_states, stat_col, n_players=n_inj)
+            all_inj = rank(inj_states, stat_col, n_players=n_inj)
 
             all_questionable = (
-                rank_player_states(
+                rank(
                     questionable_states, stat_col, n_players=n_questionable
                 )
                 if rank_questionable
