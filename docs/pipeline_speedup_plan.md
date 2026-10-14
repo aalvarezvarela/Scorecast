@@ -274,6 +274,16 @@ The same commit also makes four exact per-call changes, used by closing as well:
   set's insertion order, because float sums over it depend on that order;
 - player timelines are binary-searched.
 
+Acceptance (`run_candidate_suite.sh`, every reference tape replayed with
+4d5b496): all four builds are EQUAL, scoring files included.
+
+| Build | Reference replay | Iteration 1 replay |
+|---|---:|---:|
+| closing, 2 seasons | 280 s | 291 s |
+| intermediate 2025-26 | 1,174 s | 745 s |
+| closing, all seasons | 1,060 s | 904 s |
+| intermediate, all store seasons | 4,295 s | 2,592 s |
+
 Harness result, season 2025, under py-spy with another build running:
 885 s -> 374 s, bit-identical (frame digest equal). What remains is mostly
 the first horizon's player loop, where every row is a RowCache miss. That
