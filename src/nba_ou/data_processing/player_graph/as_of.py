@@ -401,7 +401,9 @@ class PointInTimeData:
         """
         from .matchup_defense import doubled_exposure_games
 
-        excluded = doubled_exposure_games(self.pair_game)
+        excluded = (
+            doubled_exposure_games(self.pair_game) if len(self.pair_game) else set()
+        )
         kept = self.pair_game.loc[~self.pair_game["game_id"].isin(excluded)]
         return (
             replace(

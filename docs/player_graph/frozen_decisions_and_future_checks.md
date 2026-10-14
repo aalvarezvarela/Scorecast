@@ -1495,6 +1495,115 @@ running: `|r| ≥ 0.9` with any 2_5 or 2_6 column, or 5-fold ridge R² from all
 The rating levels are mostly 2_5's team ratings again; the low-sample shares
 and the absence impact carry mostly new information.
 
+## Phase 6, step 1: the stint-graph pretraining dataset and edge targets (2026-10-14)
+
+**Decisions (2026-10-14).**
+
+- Pretraining starts in 2016-17.
+- 2016-17 is used for stint targets and teammate / opponent interactions. Its guard edges are position-based estimates, never observations, and they carry their provenance.
+- Edge-level supervision uses real matchups from 2017-18.
+- Edge targets are time-attributed attacker volume: FGA and 3PA per partial possession. Credited-shot efficiency is a diagnostic only.
+- Embedding dimension is 16, with 8 as a possible predeclared capacity ablation.
+- The phase 5 protocol stays as frozen.
+
+**Dataset** (`player_graph/pretraining_data.py`, `build_pretraining_dataset.py`;
+`data/player_graph/pretraining/v1/`, with a `manifest.json` that records
+inputs, parameters, exclusions and checks). It holds 389,095 stints in 10
+seasons (2016-17 → 2025-26), stored as three tables per season:
+
+- **`stints`:** the ten players in node order, the counts, the targets and their exposures.
+- **`nodes`:** one row per `(as_of_date, player_id)`.
+- **`guard`:** one row per `(game, attacker, defender)` with the expected rate and its source.
+
+The encoder's loader (`to_arrays` / `load_stints`) reads only these tables. Every input table passes `check_encoder_inputs`: no same-game observed column and no betting column.
+
+- **Node features:** the stored v0 node profiles with positions recomputed
+  from box-score starts as well (`positions_as_of(..., box_starts=True)`),
+  plus `position_starts`.
+  - v0 positions read starts only from the matchups, so all of 2016-17 was
+    1/3 G/F/C.
+  - The box scores' `START_POSITION` agrees with the matchups' on every
+    2018-19 start both hold (13,050). It also adds the 2016-17 starts and 70
+    regular-season starts missing from the matchups.
+  - The option is off by default: `expected_guard` v0 and the stored node
+    profiles keep the positions they were built with.
+  - In 2016-17 the mean top-position probability goes from 0.43 (October) to
+    0.85 (January) as starts accumulate.
+- **Guard edges**, by source:
+  - `pair_history` / `position_prior` (2017-18 on): `expected_guard` v0 on the
+    corrected history (`v0_without_corrupt_matchups`, frozen k / half-life /
+    window). 2016-17 and 2017-18 were built for it and are identical to v0
+    (no corrupt game is in their window). Every season's JSON now lists the
+    69 games found over the whole stored history, so the ten seasons read
+    together.
+  - `structural`: where `expected_guard` has no rate at all (all of 2016-17,
+    the first date of 2017-18), the same-position rule
+    `r = Σ_x p_i(x) p_j(x)` on the as-of positions. It has no parameter and
+    reads nothing after the date.
+  - `uniform`: the remaining fallback.
+- **Targets:** each is weighted by its own exposure, the denominator of the rate.
+  - Points and turnovers per possession: possessions.
+  - Pace: the stint's seconds.
+  - 3PA/FGA and FTA/FGA: FGA.
+  - OREB rate: rebound chances.
+
+  Pace is the stint's own (mean of both sides' possessions per 48, phase 3's
+  pace rows), stored in both side slots with half the seconds each. This
+  carries out the "pace by exposure seconds" check below.
+- **Exclusions:**
+  - The two stint-rejected games are absent (checked).
+  - The 69 corrupt matchup games keep their stint graphs, since their stints
+    are sound, but are out of the guard history and of every observed label.
+- **Checks per season** (all passed):
+  - ten distinct players;
+  - a node row as of every stint date;
+  - a guard row for every pair on the floor;
+  - structural rates only on dates without any matchup history;
+  - stored targets equal to the counts;
+  - no stint-rejected game.
+
+  As of the date, on three dates per season, the node features (rebuilt
+  from scratch by `node_profiles`) and the expected guarding rates (rebuilt
+  by `expected_guard` from the as-of view) equal the stored rows to 1e-9.
+  A unit test changes box scores on and after the date and gets identical
+  rows.
+
+**The structural rule against observed shares** (`structural_guard_check.py`;
+weighted TVD, lower is better; development seasons, nothing tuned):
+
+| Guard rate | 2017-18 | 2018-19 |
+| --- | --- | --- |
+| Constant (uniform, the fallback it replaces) | 0.424 | 0.410 |
+| **Structural rule** (2016-17's edges) | **0.383** | **0.373** |
+| Learned position prior | 0.361 | 0.335 |
+| `expected_guard` v0 (k = 300) | 0.310 | 0.275 |
+
+In October 2017, with a few days of matchup history, the rule (0.379) beats
+both the learned prior (0.431) and v0 (0.423). It is worse than uniform only
+in the playoffs (May 0.406 vs 0.354).
+
+**Edge targets** (`player_graph/edge_targets.py`, `build_edge_targets.py`;
+`pretraining/v1/edges/`, labels only, never read by the input loader):
+
+- **Time attribution.** For each attacker-game, the targets are the whole
+  game's FGA and 3PA per partial possession: `y_ig = Σ_j count_ij / Σ_j pp_ij`.
+  - A model predicts `f(i, j)` per defender and is scored on
+    `Σ_j s_ij f(i, j)`, weighted by `pp_ig`.
+  - `s_ij` is the defender's share of the attacker's partial possessions. The
+    observed shares enter only as these exposure weights.
+- **Other columns.** Credited efficiency (points per credited attempt) is
+  kept per pair as a diagnostic. The observed guarding share is kept as a
+  possible auxiliary label.
+- **Size.** 2017-18 → 2025-26: 241,673 attacker-games. Mean FGA per partial
+  possession is about 0.20, 3PA 0.061 → 0.073.
+- **Excluded games.** 71 games have no rows: the 69 corrupt games and the 2
+  stint-rejected ones. 145 attacker-games (0.06%) are dropped because a
+  player lacks node features on that date.
+- **Limitation.** These are noisy observational proxies, not causal
+  defensive effects. Assignments react to the game, help defense and
+  switches blur the attribution, and one game's reliability is about 0.03
+  (phase 4B).
+
 ## Future checks
 
 ### Guarding weights (`expected_guard`)
@@ -1529,13 +1638,13 @@ and the absence impact carry mostly new information.
 
 ### Stint graph
 
-- [ ] Add node features (as-of profile, soft position, games played) once the node table exists.
+- [x] Add node features (as-of profile, soft position, games played) once the node table exists: the phase 6 pretraining dataset joins them per stint date.
 - [ ] Add a teammate familiarity attribute (historical shared minutes) once the co-play table exists.
-- [ ] 2016-17 stints have uniform guard shares (no matchup history): start pretraining in 2017-18, or keep them (plan phase 6 decision).
-- [ ] Observed guarding labels from `pair_game` (matched seconds, guard rates, shares) must skip the 69 corrupt matchup games when phase 6 uses them as targets: read them through `read_matchup_history` or `PointInTimeData.without_corrupt_matchups`.
+- [x] 2016-17 stints have uniform guard shares (no matchup history): decided to keep 2016-17 with structural (position-based) shares from box-score starts, flagged by source (phase 6, step 1).
+- [x] Observed guarding labels from `pair_game` (matched seconds, guard rates, shares) must skip the 69 corrupt matchup games when phase 6 uses them as targets: `edge_targets` drops them (and the two stint-rejected games).
 - [ ] Very short stints (median ~73 s) give noisy labels; check whether to drop stints under some possession count or rely on possession weights.
 - [ ] Possession estimate at stint boundaries: an offensive rebound credited to a stint whose miss was in the previous one. Check whether attributing it to the miss's stint fixes the negative estimates.
-- [ ] **Pace targets: stint duration as exposure (decided for phase 6).** `poss_per_48` is weighted by possessions like the other labels, so sub-second stints (free throws around a substitution: the clock is stopped, possessions are credited) dominate it: possession-weighted SD 136 around a mean of 112 (2018-10-16 → 2019-01-31), max 28,800; the smoke test's held-out loss / constant is 1.000. Keep those stints, but weight pace targets by the stint's **seconds** (exposure), so a sub-second stint counts next to nothing against one of several minutes and the weighted mean becomes Σ poss / Σ time (equivalently, model possessions with log-duration as an offset). Per-possession targets keep possession weights. Duration stays out of the encoder's inputs.
+- [x] **Pace targets: stint duration as exposure (decided for phase 6; done in the pretraining dataset).** `poss_per_48` is weighted by possessions like the other labels, so sub-second stints (free throws around a substitution: the clock is stopped, possessions are credited) dominate it: possession-weighted SD 136 around a mean of 112 (2018-10-16 → 2019-01-31), max 28,800; the smoke test's held-out loss / constant is 1.000. Keep those stints, but weight pace targets by the stint's **seconds** (exposure), so a sub-second stint counts next to nothing against one of several minutes and the weighted mean becomes Σ poss / Σ time (equivalently, model possessions with log-duration as an offset). Per-possession targets keep possession weights. Duration stays out of the encoder's inputs.
 
 ### Phase 4A (minutes)
 

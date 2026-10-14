@@ -99,14 +99,27 @@ def counted_box_scores(box: pd.DataFrame) -> pd.DataFrame:
     return box
 
 
+def profile_positions(positions: pd.DataFrame, players: pd.Index) -> pd.DataFrame:
+    """The profile's ``p_G``, ``p_F``, ``p_C`` of ``players``: their row of
+    ``positions``, or the mean over ``positions`` for a player it lacks."""
+    columns = list(PROBABILITY_COLUMNS)
+    league = (
+        positions[columns].mean() if len(positions) else pd.Series(1 / 3, index=columns)
+    )
+    return positions[columns].reindex(players).fillna(league)
+
+
 def node_profiles(
     view: AsOfView,
     players: pd.Index | list[str] | None = None,
     params: ProfileParams = DEFAULT_PARAMS,
+    positions: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
     """Profiles of ``players`` (default: everyone in the window) as of the cutoff.
 
-    Indexed by ``player_id`` with ``PROFILE_COLUMNS``.
+    Indexed by ``player_id`` with ``PROFILE_COLUMNS``. ``positions`` defaults
+    to ``positions_as_of(view)`` (v0); pass others built as of the same cutoff
+    (e.g. with ``box_starts``).
     """
     since = view.cutoff - pd.Timedelta(days=params.window_days)
     box = counted_box_scores(view.box_scores(since=since))
@@ -165,14 +178,9 @@ def node_profiles(
     out["start_share"] = (
         starts.groupby(played["PLAYER_ID"]).mean().reindex(wanted).fillna(0.0)
     )
-    positions = positions_as_of(view)
-    league_position = (
-        positions[list(PROBABILITY_COLUMNS)].mean()
-        if len(positions)
-        else pd.Series(1 / 3, index=list(PROBABILITY_COLUMNS))
-    )
-    for column in PROBABILITY_COLUMNS:
-        out[column] = positions[column].reindex(wanted).fillna(league_position[column])
+    if positions is None:
+        positions = positions_as_of(view)
+    out[list(PROBABILITY_COLUMNS)] = profile_positions(positions, wanted)
 
     # Sample size and confidence.
     out["minutes_window"] = (

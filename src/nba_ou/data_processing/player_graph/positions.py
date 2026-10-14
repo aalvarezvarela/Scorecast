@@ -6,7 +6,12 @@ bench players have none. Each player gets a probability per position, from
 two sources, both strictly before the cutoff:
 
 (a) **Starts**: his starting positions in the window, read from the matchups
-    (they cover 2017-18, where the player box scores are missing).
+    (they cover 2017-18, where the player box scores are missing). With
+    ``box_starts`` the box scores' ``START_POSITION`` counts too, one start
+    per game and player whichever source has it (the two agree on every
+    2018-19 start both hold): the only as-of source of positions in 2016-17,
+    which has no matchups. Off by default, so v0 (``expected_guard``, the
+    node profiles) keeps the positions it was built with.
 (b) **Profile**: a multinomial logistic regression on per-36 box-score rates,
     trained on players with enough starts. Its prediction ``q`` is used for
     everyone, so a regular starter is still described by his starts.
@@ -56,6 +61,43 @@ def start_counts(matchups: pd.DataFrame) -> pd.DataFrame:
     counts = pd.crosstab(starts["off_player_id"].astype(str), starts["off_position"])
     counts.index.name = "player_id"
     return counts.reindex(columns=list(POSITIONS), fill_value=0)
+
+
+def _box_starts(box_scores: pd.DataFrame) -> pd.DataFrame:
+    """Box-score starts in the matchups' layout (``game_id``, ``off_player_id``,
+    ``off_position``)."""
+    game = box_scores["GAME_ID"].astype(str).str.zfill(10)
+    position = box_scores["START_POSITION"].fillna("").astype(str).str.strip()
+    keep = game.str[:3].isin(_COUNTED_GAME_PREFIXES) & position.isin(POSITIONS)
+    return pd.DataFrame(
+        {
+            "game_id": game[keep].to_numpy(),
+            "off_player_id": box_scores.loc[keep, "PLAYER_ID"].astype(str).to_numpy(),
+            "off_position": position[keep].to_numpy(),
+        }
+    )
+
+
+def _all_starts(matchups: pd.DataFrame, box_scores: pd.DataFrame) -> pd.DataFrame:
+    """Matchup and box-score starts, one per game and player (matchups first)."""
+    parts = []
+    if not matchups.empty and "off_position" in matchups.columns:
+        held = matchups.loc[
+            matchups["off_position"].isin(POSITIONS),
+            ["game_id", "off_player_id", "off_position"],
+        ]
+        parts.append(
+            held.assign(
+                game_id=held["game_id"].astype(str).str.zfill(10),
+                off_player_id=held["off_player_id"].astype(str),
+            )
+        )
+    if not box_scores.empty and "START_POSITION" in box_scores.columns:
+        parts.append(_box_starts(box_scores))
+    if not parts:
+        return pd.DataFrame(columns=["game_id", "off_player_id", "off_position"])
+    starts = pd.concat(parts, ignore_index=True)
+    return starts.drop_duplicates(["game_id", "off_player_id"], keep="first")
 
 
 def profile_rates(
@@ -120,17 +162,22 @@ def positions_as_of(
     min_label_starts: int = 10,
     prior_minutes: float = 200.0,
     since: Any | None = None,
+    box_starts: bool = False,
 ) -> pd.DataFrame:
     """Soft positions of every player seen in the window before ``view.cutoff``:
     in the matchups (attacking or defending) or the box scores.
+
+    ``box_starts`` also counts the box scores' starting positions (module
+    docstring).
 
     Returns, indexed by ``player_id``: ``p_G``, ``p_F``, ``p_C`` (summing to 1),
     ``n_starts``, ``box_minutes`` and ``has_profile``.
     """
     start = since if since is not None else view.cutoff - pd.Timedelta(days=window_days)
     matchups = view.matchups(since=start)
-    counts = start_counts(matchups)
-    rates = profile_rates(view.box_scores(since=start), prior_minutes=prior_minutes)
+    box_scores = view.box_scores(since=start)
+    counts = start_counts(_all_starts(matchups, box_scores) if box_starts else matchups)
+    rates = profile_rates(box_scores, prior_minutes=prior_minutes)
     # Bench players with no box scores (all of 2017-18) appear only here.
     seen = pd.Index(
         pd.concat(
