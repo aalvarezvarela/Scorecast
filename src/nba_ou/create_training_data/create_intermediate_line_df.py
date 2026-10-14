@@ -111,6 +111,7 @@ from nba_ou.postgre_db.line_history_aiven.fetch import (
     fetch_games,
     fetch_pregame_ticks,
 )
+from nba_ou.postgre_db.input_cache import input_cache_enabled
 from nba_ou.postgre_db.line_history_aiven.live import LiveLineHistory
 
 MARKET_SHORT = {MARKET_TOTALS: "TOT", MARKET_SPREAD: "SPR", MARKET_MONEYLINE: "ML"}
@@ -621,7 +622,9 @@ def create_intermediate_line_df(
 
     # ---- snapshot side -------------------------------------------------
     stage(f"Fetching pre-game ticks for {len(season_years)} season(s) ...")
-    ticks = fetch_pregame_ticks(season_years, exclude_books=excluded_books)
+    ticks = fetch_pregame_ticks(
+        season_years, exclude_books=excluded_books, use_cache=input_cache_enabled()
+    )
     lh_games = fetch_games(season_years)
     if live is not None:
         ticks, lh_games = append_live_line_history(

@@ -163,6 +163,7 @@ def fetch_pregame_ticks(
     exclude_books: tuple[str, ...] = (),
     min_minutes_before_tip: int = DEFAULT_MIN_MINUTES_BEFORE_TIP,
     conn: psycopg.Connection | None = None,
+    use_cache: bool = False,
 ) -> pd.DataFrame:
     """Return every pre-game tick for ``season_years``, decoded.
 
@@ -170,6 +171,9 @@ def fetch_pregame_ticks(
     it: all seasons at once is ~2.5M rows, and on 2026-09-17 that single
     transfer was cut ("AdminShutdown"). With an explicit ``conn`` the query runs
     once, as given.
+
+    ``use_cache`` reuses a season from the local input cache while its
+    server-side fingerprint is unchanged, as ``fetch_closing_ticks`` does.
     """
     kwargs = {
         "markets": markets,
@@ -178,6 +182,14 @@ def fetch_pregame_ticks(
     }
     if conn is not None:
         return _fetch_pregame_ticks_once(season_years, conn=conn, **kwargs)
+    if use_cache:
+        return _cached_season_ticks(
+            "pregame_ticks",
+            [int(s) for s in season_years],
+            lambda **chunk: _fetch_pregame_ticks_once(chunk["season_years"], **kwargs),
+            (_fetch_pregame_ticks_once,),
+            kwargs,
+        )
     return _fetch_with_retries(
         [{"season_years": [int(s)]} for s in season_years],
         lambda season_years: _fetch_pregame_ticks_once(season_years, **kwargs),
@@ -283,7 +295,7 @@ def fetch_closing_ticks(
     """Priced pre-game ticks of finished games, for reconstructing the close.
 
     ``use_cache`` reuses a season's ticks from the local input cache while its
-    server-side fingerprint (``closing_ticks_fingerprint``) is unchanged; see
+    server-side fingerprint (``line_history_season_fingerprint``) is unchanged; see
     ``nba_ou.postgre_db.input_cache``. It applies to season fetches without an
     explicit ``conn``, and returns exactly what fetching would.
 
@@ -306,7 +318,13 @@ def fetch_closing_ticks(
         raise ValueError("Pass season_years or game_ids.")
 
     if season_years is not None and use_cache:
-        return _cached_closing_ticks([int(s) for s in season_years], **kwargs)
+        return _cached_season_ticks(
+            "closing_ticks",
+            [int(s) for s in season_years],
+            lambda **chunk: _fetch_closing_ticks_once(**chunk, **kwargs),
+            (_fetch_closing_ticks_once,),
+            kwargs,
+        )
     if season_years is not None:
         chunks = [{"season_years": [int(s)]} for s in season_years]
     else:
@@ -323,7 +341,9 @@ def fetch_closing_ticks(
     )
 
 
-#: Every input of ``_fetch_closing_ticks_once`` for one season, as one query:
+#: Every input of a season's tick query, as one query. Written for
+#: ``_fetch_closing_ticks_once``, the widest reader; ``_fetch_pregame_ticks_once``
+#: reads a subset (no games, no clock), so it is covered too, if conservatively:
 #: the season's lines, the games they join (matched by season and by id, so a
 #: game filed under another season is still covered), both dimensions, and how
 #: many of those games have tipped off -- the query keeps only those, so the
@@ -350,24 +370,26 @@ _CLOSING_TICKS_FINGERPRINT = """
 """
 
 
-def closing_ticks_fingerprint(conn: psycopg.Connection, season: int) -> list:
-    """Server-side fingerprint of everything one season's closing ticks read."""
+def line_history_season_fingerprint(conn: psycopg.Connection, season: int) -> list:
+    """Server-side fingerprint of everything one season's tick queries read."""
     query = sql.SQL(_CLOSING_TICKS_FINGERPRINT).format(schema=sql.Identifier(SCHEMA))
     with conn.cursor() as cur:
         cur.execute(query, {"season": int(season)})
         return [None if value is None else str(value) for value in cur.fetchone()]
 
 
-def _cached_closing_ticks(seasons: list[int], **kwargs) -> pd.DataFrame:
-    """``fetch_closing_ticks(season_years=seasons, **kwargs)`` through the cache."""
+def _cached_season_ticks(
+    name: str, seasons: list[int], fetch_one, loaders: tuple, kwargs: dict
+) -> pd.DataFrame:
+    """One season per query, as ``_fetch_with_retries`` runs it, through the cache."""
     cache = SeasonCache(
-        "closing_ticks",
+        name,
         code_key(
-            _fetch_closing_ticks_once,
+            *loaders,
             _decode_ticks,
             _rows_to_frame,
             _decode_line,
-            closing_ticks_fingerprint,
+            line_history_season_fingerprint,
             fingerprint_sql=_CLOSING_TICKS_FINGERPRINT,
             **kwargs,
         ),
@@ -378,16 +400,15 @@ def _cached_closing_ticks(seasons: list[int], **kwargs) -> pd.DataFrame:
             frames.append(
                 cache.get(
                     season,
-                    lambda s: closing_ticks_fingerprint(conn, s),
+                    lambda s: line_history_season_fingerprint(conn, s),
                     lambda s: _fetch_one_with_retries(
-                        {"season_years": [s]},
-                        lambda **chunk: _fetch_closing_ticks_once(**chunk, **kwargs),
-                        _chunk_label,
+                        {"season_years": [s]}, fetch_one, _chunk_label
                     ),
                 )
             )
+    label = name.replace("_", " ")
     print(
-        f"  closing ticks: {cache.hits} season(s) from the input cache, "
+        f"  {label}: {cache.hits} season(s) from the input cache, "
         f"{cache.misses} fetched"
     )
     return _concat_ticks(frames)

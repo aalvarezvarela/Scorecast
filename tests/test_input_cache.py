@@ -137,7 +137,7 @@ def test_cached_closing_ticks_equal_the_fetched_ones(tmp_path, monkeypatch):
     # One function throughout: the cache key covers the fingerprint's code.
     monkeypatch.setattr(
         fetch,
-        "closing_ticks_fingerprint",
+        "line_history_season_fingerprint",
         lambda conn, season: [season, versions[season]],
     )
 
