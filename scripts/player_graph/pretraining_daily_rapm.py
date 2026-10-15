@@ -30,6 +30,7 @@ from nba_ou.data_processing.player_graph.pretraining_data import (
     ROOT,
     VERSION,
     load_stints,
+    seasons_before,
 )
 from nba_ou.data_processing.player_graph.pretraining_oof import (
     FROZEN,
@@ -49,9 +50,7 @@ def main() -> None:
     args = parser.parse_args()
     until = pd.Timestamp(args.until)
     root = args.local_root / ROOT / VERSION
-    last = until - pd.Timedelta(days=1)
-    # Seasons start in the autumn: April 2026 belongs to 2025-26.
-    seasons = range(2016, (last.year if last.month >= 9 else last.year - 1) + 1)
+    seasons = seasons_before(until)
     data = load_stints(root, seasons, until=until)
     history = read_stints(list(seasons), local_root=args.local_root)
     history = history.loc[pd.to_datetime(history["game_date"]) < until]

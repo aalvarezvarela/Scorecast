@@ -84,6 +84,7 @@ from nba_ou.data_processing.player_graph.pretraining_data import (
     VERSION,
     load_stints,
     season_path,
+    seasons_before,
 )
 from nba_ou.data_processing.player_graph.pretraining_oof import (
     PredictionStore,
@@ -198,7 +199,7 @@ def main() -> None:
     if args.dim is not None:
         config = replace(config, dim=args.dim)
     root = args.local_root / ROOT / VERSION
-    seasons = range(2016, until.year + 1)
+    seasons = seasons_before(until)
     torch.manual_seed(args.seed)
 
     stints = load_stints(root, seasons, until=until)

@@ -127,6 +127,14 @@ GUARD_COLUMNS = (
 )
 
 
+def seasons_before(until) -> range:
+    """Seasons (start years) holding any date before ``until``: from
+    ``FIRST_SEASON`` to the season of the day before (seasons start in the
+    autumn, so April 2026 is 2025-26)."""
+    last = pd.Timestamp(until) - pd.Timedelta(days=1)
+    return range(FIRST_SEASON, (last.year if last.month >= 9 else last.year - 1) + 1)
+
+
 def season_path(root: Path, table: str, season: int) -> Path:
     return root / table / f"season={season}.parquet"
 
