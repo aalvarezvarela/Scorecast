@@ -49,7 +49,20 @@ def main() -> int:
     parser.add_argument("out", type=Path)
     parser.add_argument("--dates", nargs="*", default=list(DEFAULT_DATES))
     parser.add_argument("--code-root", type=Path, default=ROOT)
+    parser.add_argument(
+        "--kind", choices=["closing", "intermediate"], default="closing"
+    )
+    parser.add_argument(
+        "--seasons", default=None, help="intermediate: comma-separated season years"
+    )
+    parser.add_argument(
+        "--targets",
+        action="store_true",
+        help="intermediate: build D's games alone (target_game_ids); closing "
+        "builds always do",
+    )
     args = parser.parse_args()
+    use_targets = args.kind == "closing" or args.targets
 
     reference = pd.read_parquet(args.reference / "dataset.parquet")
     dates = pd.to_datetime(reference["GAME_DATE"]).dt.normalize()
@@ -62,7 +75,8 @@ def main() -> int:
             continue
         day = args.out / date
         day.mkdir(exist_ok=True)
-        (day / "targets.txt").write_text("\n".join(rows["GAME_ID"].astype(str)) + "\n")
+        game_ids = list(dict.fromkeys(rows["GAME_ID"].astype(str)))
+        (day / "targets.txt").write_text("\n".join(game_ids) + "\n")
         rows.to_parquet(day / "reference.parquet")
         build = day / "build"
         log = day / "build.log"
@@ -71,22 +85,25 @@ def main() -> int:
             # the build goes on without it: never compare such a build.
             shutil.rmtree(build, ignore_errors=True)
         if not (build / "dataset.parquet").exists():
+            command = [
+                PY,
+                str(ROOT / "scripts/perf/reference_build.py"),
+                args.kind,
+                "--limit",
+                date,
+                "--mode",
+                "live",
+                "--out",
+                str(build),
+                "--code-root",
+                str(args.code_root),
+            ]
+            if args.seasons:
+                command += ["--seasons", args.seasons]
+            if use_targets:
+                command += ["--targets", str(day / "targets.txt")]
             subprocess.run(
-                [
-                    PY,
-                    str(ROOT / "scripts/perf/reference_build.py"),
-                    "closing",
-                    "--limit",
-                    date,
-                    "--mode",
-                    "live",
-                    "--targets",
-                    str(day / "targets.txt"),
-                    "--out",
-                    str(build),
-                    "--code-root",
-                    str(args.code_root),
-                ],
+                command,
                 stdout=open(log, "w"),
                 stderr=subprocess.STDOUT,
                 check=False,
@@ -95,28 +112,55 @@ def main() -> int:
             failures += 1
             print(f"{date}: BUILD HIT A NETWORK ERROR, rerun it", flush=True)
             continue
-        compare = subprocess.run(
-            [
-                PY,
-                str(ROOT / "scripts/perf/compare_builds.py"),
-                str(day / "reference.parquet"),
-                str(build / "dataset.parquet"),
-                "--exact",
-                # A build that stops early creates some columns (Yahoo's
-                # percentages, absent before 2020) at another point; the
-                # models select columns by name.
-                "--ignore-column-order",
-            ],
-            capture_output=True,
-            text=True,
-        )
-        (day / "compare.log").write_text(compare.stdout + compare.stderr)
-        verdict = [
-            line for line in compare.stdout.splitlines() if line.startswith("RESULT:")
-        ]
-        verdict = verdict[-1] if verdict else "RESULT: no verdict"
-        failures += verdict != "RESULT: EQUAL"
-        print(f"{date}: {len(rows)} games, {verdict}", flush=True)
+        verdicts = []
+        for name in ("dataset", "scoring"):
+            built = build / f"{name}.parquet"
+            if name == "scoring" and not (args.reference / "scoring.parquet").exists():
+                continue
+            if name == "scoring":
+                scoring = pd.read_parquet(args.reference / "scoring.parquet")
+                scoring[scoring["GAME_ID"].astype(str).isin(set(game_ids))].to_parquet(
+                    day / "reference_scoring.parquet"
+                )
+            if built.exists() and not use_targets:
+                # A whole build: keep D's rows, in the build's own order.
+                frame = pd.read_parquet(built)
+                frame = frame[frame["GAME_ID"].astype(str).isin(set(game_ids))]
+                built = day / f"build_{name}_rows.parquet"
+                frame.to_parquet(built)
+            compare = subprocess.run(
+                [
+                    PY,
+                    str(ROOT / "scripts/perf/compare_builds.py"),
+                    str(
+                        day
+                        / (
+                            "reference.parquet"
+                            if name == "dataset"
+                            else "reference_scoring.parquet"
+                        )
+                    ),
+                    str(built),
+                    "--exact",
+                    # A build that stops early creates some columns (Yahoo's
+                    # percentages, absent before 2020) at another point; the
+                    # models select columns by name.
+                    "--ignore-column-order",
+                ],
+                capture_output=True,
+                text=True,
+            )
+            (day / f"compare_{name}.log").write_text(compare.stdout + compare.stderr)
+            verdict = [
+                line
+                for line in compare.stdout.splitlines()
+                if line.startswith("RESULT:")
+            ]
+            verdicts.append(
+                f"{name} " + (verdict[-1] if verdict else "RESULT: no verdict")
+            )
+        failures += any(not v.endswith("RESULT: EQUAL") for v in verdicts)
+        print(f"{date}: {len(set(game_ids))} games, {'; '.join(verdicts)}", flush=True)
     print("RESULT:", "EQUAL" if not failures else f"DIFFERENT ({failures} dates)")
     return 1 if failures else 0
 
