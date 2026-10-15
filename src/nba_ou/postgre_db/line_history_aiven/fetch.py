@@ -390,42 +390,158 @@ def line_history_season_fingerprint(conn: psycopg.Connection, season: int) -> li
         raise
 
 
+def _season_ticks_key(loaders: tuple, kwargs: dict) -> str:
+    return code_key(
+        *loaders,
+        _decode_ticks,
+        _rows_to_frame,
+        _decode_line,
+        line_history_season_fingerprint,
+        fingerprint_sql=_CLOSING_TICKS_FINGERPRINT,
+        **kwargs,
+    )
+
+
+def _ticks_dataset(name: str) -> str:
+    return f"line_history_aiven.{name}"
+
+
+def _s3_season_ticks(name: str, key: str, seasons: list[int]) -> dict:
+    """Finished seasons the S3 input cache holds, validated recently enough.
+
+    The refresher (``refresh_season_ticks``) re-checks each finished season's
+    server fingerprint daily and uploads it when it changed; a season it has
+    not validated within ``season_tables.MAX_VALIDATION_AGE`` is not served
+    from here. Any failure means "not in S3": the caller fetches it.
+    """
+    from concurrent.futures import ThreadPoolExecutor
+
+    from nba_ou.postgre_db import season_tables
+
+    if not season_tables.s3_seasons_enabled():
+        return {}
+    try:
+        store = season_tables._shared_store()
+        if store is None:
+            return {}
+        current = season_tables.current_season_year()
+        now = pd.Timestamp.now(tz="UTC")
+        dataset = _ticks_dataset(name)
+
+        def one(season):
+            entry = store.entry(dataset, key, season)
+            if (
+                entry is None
+                or now - entry.validated_at > season_tables.MAX_VALIDATION_AGE
+            ):
+                return None
+            return store.read(dataset, key, season, entry)
+
+        past = [s for s in seasons if s < current]
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            found = dict(zip(past, pool.map(one, past), strict=True))
+        return {s: frame for s, frame in found.items() if frame is not None}
+    except Exception as exc:  # noqa: BLE001 -- S3 is only a shortcut
+        print(f"! {name}: S3 input cache unavailable ({type(exc).__name__}: {exc})")
+        return {}
+
+
 def _cached_season_ticks(
     name: str, seasons: list[int], fetch_one, loaders: tuple, kwargs: dict
 ) -> pd.DataFrame:
-    """One season per query, as ``_fetch_with_retries`` runs it, through the cache."""
-    cache = SeasonCache(
-        name,
-        code_key(
-            *loaders,
-            _decode_ticks,
-            _rows_to_frame,
-            _decode_line,
-            line_history_season_fingerprint,
-            fingerprint_sql=_CLOSING_TICKS_FINGERPRINT,
-            **kwargs,
-        ),
-    )
+    """One season per query, as ``_fetch_with_retries`` runs it, through the caches.
+
+    Finished seasons come from the S3 input cache when it holds them (see
+    ``_s3_season_ticks``); the rest from the local input cache while their
+    server fingerprint is unchanged, or from the server.
+    """
+    key = _season_ticks_key(loaders, kwargs)
+    from_s3 = _s3_season_ticks(name, key, seasons)
+    cache = SeasonCache(name, key)
     frames = []
-    with connect_line_history_db() as conn:
-        with conn.cursor() as cur:
-            cur.execute(f"SET statement_timeout = '{FINGERPRINT_TIMEOUT}'")
-        for season in seasons:
-            frames.append(
-                cache.get(
+    missing = [s for s in seasons if s not in from_s3]
+    if missing:
+        with connect_line_history_db() as conn:
+            with conn.cursor() as cur:
+                cur.execute(f"SET statement_timeout = '{FINGERPRINT_TIMEOUT}'")
+            fetched = {
+                season: cache.get(
                     season,
                     lambda s: line_history_season_fingerprint(conn, s),
                     lambda s: _fetch_one_with_retries(
                         {"season_years": [s]}, fetch_one, _chunk_label
                     ),
                 )
-            )
+                for season in missing
+            }
+    else:
+        fetched = {}
+    frames = [from_s3[s] if s in from_s3 else fetched[s] for s in seasons]
     label = name.replace("_", " ")
     print(
-        f"  {label}: {cache.hits} season(s) from the input cache, "
-        f"{cache.misses} fetched"
+        f"  {label}: {len(from_s3)} season(s) from S3, {cache.hits} from the "
+        f"local input cache, {cache.misses} fetched"
     )
     return _concat_ticks(frames)
+
+
+def _closing_ticks_spec() -> tuple:
+    """Name, loaders, arguments and fetcher of ``fetch_closing_ticks``' season
+    fetches with its default arguments, as the odds repair calls it."""
+    import inspect
+
+    defaults = {
+        name: parameter.default
+        for name, parameter in inspect.signature(fetch_closing_ticks).parameters.items()
+    }
+    kwargs = {
+        "last_n": defaults["last_n"],
+        "markets": defaults["markets"],
+        "min_minutes_before_tip": defaults["min_minutes_before_tip"],
+    }
+    return (
+        "closing_ticks",
+        (_fetch_closing_ticks_once,),
+        kwargs,
+        lambda **chunk: _fetch_closing_ticks_once(**chunk, **kwargs),
+    )
+
+
+def refresh_season_ticks(
+    store, seasons: list[int], *, force: bool = False, now=None
+) -> dict[int, str]:
+    """Validate finished seasons of closing ticks in S3, uploading changed ones.
+
+    The fingerprint is taken before the fetch, so ticks changing mid-fetch
+    leave an entry the next refresh replaces. The current season is skipped.
+    """
+    from nba_ou.postgre_db import season_tables
+
+    name, loaders, kwargs, fetch_one = _closing_ticks_spec()
+    key = _season_ticks_key(loaders, kwargs)
+    dataset = _ticks_dataset(name)
+    now = pd.Timestamp.now(tz="UTC") if now is None else pd.Timestamp(now)
+    current = season_tables.current_season_year()
+    outcome = {}
+    with connect_line_history_db() as conn:
+        with conn.cursor() as cur:
+            cur.execute(f"SET statement_timeout = '{FINGERPRINT_TIMEOUT}'")
+        for season in seasons:
+            if season >= current:
+                outcome[season] = "current season, not stored"
+                continue
+            fingerprint = line_history_season_fingerprint(conn, season)
+            entry = store.entry(dataset, key, season)
+            if entry is not None and entry.fingerprint == fingerprint and not force:
+                store.touch(dataset, key, season, entry, now)
+                outcome[season] = "unchanged"
+                continue
+            frame = _fetch_one_with_retries(
+                {"season_years": [season]}, fetch_one, _chunk_label
+            )
+            written = store.write(dataset, key, season, frame, fingerprint, now)
+            outcome[season] = f"uploaded {written.rows:,} rows"
+    return outcome
 
 
 def _chunk_label(chunk: dict) -> str:
