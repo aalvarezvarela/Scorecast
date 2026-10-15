@@ -71,8 +71,12 @@ s3://<bucket>/input_cache/v1/<loader>/<key>/
   that doesn't round-trip exactly (mixed object columns, tz-aware datetimes) is
   stored as pickle. The runner uses `requirements.txt`, so library versions
   match the refresher's or the key differs.
-- The local cache from Phase 1 becomes a read-through layer in front of S3:
-  local disk first, then S3, then the database. Credentials: the existing
+- **S3 is the store; local disk is optional.** Decided 2026-10-15: nothing
+  may depend on a machine's disk, because runners may move to cloud services.
+  The refresher writes to S3. The consumer reads S3, and a local copy is only
+  a speed-up that may be absent, as on a fresh cloud runner. The Phase 1 local
+  line-history cache (`data/cache/inputs`) moves into the same S3 layer; its
+  local directory stays as the optional speed-up. Credentials: the existing
   `S3` settings and `s3_models` client; the prediction workflow already
   assumes an AWS role.
 
