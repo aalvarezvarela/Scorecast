@@ -64,6 +64,8 @@ class SeasonCache:
         self.directory = (root or cache_dir()) / name / key
         self.hits = 0
         self.misses = 0
+        #: The fingerprint each season was served under, when one was taken.
+        self.fingerprints: dict[int, list] = {}
 
     def _paths(self, season: int) -> tuple[Path, Path]:
         stem = self.directory / f"season={int(season)}"
@@ -127,6 +129,7 @@ class SeasonCache:
             )
             self.misses += 1
             return fetch(season)
+        self.fingerprints[int(season)] = current
         frame = self.load(season, current)
         if frame is not None:
             self.hits += 1

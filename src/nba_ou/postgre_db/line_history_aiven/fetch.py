@@ -435,12 +435,13 @@ def _s3_season_ticks(name: str, key: str, seasons: list[int]) -> dict:
                 or now - entry.validated_at > season_tables.MAX_VALIDATION_AGE
             ):
                 return None
-            return store.read(dataset, key, season, entry)
+            frame = store.read(dataset, key, season, entry)
+            return None if frame is None else (frame, entry.fingerprint)
 
         past = [s for s in seasons if s < current]
         with ThreadPoolExecutor(max_workers=8) as pool:
             found = dict(zip(past, pool.map(one, past), strict=True))
-        return {s: frame for s, frame in found.items() if frame is not None}
+        return {s: found_s for s, found_s in found.items() if found_s is not None}
     except Exception as exc:  # noqa: BLE001 -- S3 is only a shortcut
         print(f"! {name}: S3 input cache unavailable ({type(exc).__name__}: {exc})")
         return {}
@@ -476,13 +477,20 @@ def _cached_season_ticks(
             }
     else:
         fetched = {}
-    frames = [from_s3[s] if s in from_s3 else fetched[s] for s in seasons]
+    frames = [from_s3[s][0] if s in from_s3 else fetched[s] for s in seasons]
     label = name.replace("_", " ")
     print(
         f"  {label}: {len(from_s3)} season(s) from S3, {cache.hits} from the "
         f"local input cache, {cache.misses} fetched"
     )
-    return _concat_ticks(frames)
+    ticks = _concat_ticks(frames)
+    # The server fingerprint each season's ticks were validated under, for
+    # callers that key derived results on the line history (the odds repair).
+    ticks.attrs["season_fingerprints"] = {
+        **cache.fingerprints,
+        **{s: fingerprint for s, (_, fingerprint) in from_s3.items()},
+    }
+    return ticks
 
 
 def _closing_ticks_spec() -> tuple:

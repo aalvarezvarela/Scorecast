@@ -26,8 +26,8 @@ from nba_ou.data_processing.odds.normalize_spread_lines import (
 from nba_ou.data_processing.odds.normalize_total_lines import (
     normalize_total_lines_inplace,
 )
-from nba_ou.postgre_db.line_history_aiven.fetch import fetch_closing_ticks
 from nba_ou.postgre_db.input_cache import input_cache_enabled
+from nba_ou.postgre_db.line_history_aiven.fetch import fetch_closing_ticks
 from nba_ou.postgre_db.odds_sportsbook.fetch_data_from_db.fetch_data_from_odds_sportsbook_db import (
     load_odds_sportsbook_from_db,
 )
@@ -387,16 +387,99 @@ def _repair_from_line_history(df_odds: pd.DataFrame) -> pd.DataFrame:
     # Finished seasons rarely change, and each costs 10-30 s of server time;
     # the input cache reuses them while their server fingerprint is unchanged.
     ticks = fetch_closing_ticks(season_years=seasons, use_cache=input_cache_enabled())
-    repaired, audit = repair_closing_lines(
-        frame,
-        ticks,
-        game_tick_loader=lambda game_ids: fetch_closing_ticks(
-            game_ids=game_ids, last_n=None
-        ),
+
+    def repair(rows: pd.DataFrame):
+        # The whole ticks frame either way: a cell only ever matches its own
+        # game's ticks, so another season's ticks change nothing.
+        return repair_closing_lines(
+            rows,
+            ticks,
+            game_tick_loader=lambda game_ids: fetch_closing_ticks(
+                game_ids=game_ids, last_n=None
+            ),
+        )
+
+    repaired, audit = _repair_by_season(
+        frame, seasons, ticks.attrs.get("season_fingerprints", {}), repair
     )
     audit_repaired_closes(repaired, audit)
     print_repair_summary(audit)
     return repaired
+
+
+#: History-memo entry of one finished season's repaired rows and audit.
+REPAIR_MEMO_NAME = "closing_line_repair"
+
+
+def _repair_by_season(frame, seasons, fingerprints, repair):
+    """``repair(frame)``, reusing finished seasons' repairs from the history memo.
+
+    The repair is per game: a game's repaired cells read only its own rows,
+    its own ticks and, for outlier candidates, every tick of that game. So a
+    finished season's repaired rows are a function of its rows here and of
+    its line history, which ``fingerprints`` (the season's server fingerprint,
+    as the S3 input cache validated it) covers entirely. A season is reused
+    only when both match; the others are repaired here, together, and stored.
+
+    The pieces are put back in the frame's row order. If any piece's dtypes
+    differ from the frame's, nothing is reused and the whole frame is repaired
+    at once, as without a memo.
+    """
+    from nba_ou.create_training_data import history_memo as memo_module
+    from nba_ou.postgre_db import season_tables
+
+    backend = memo_module.default_backend()
+    current = season_tables.current_season_year()
+    season_of_rows = pd.to_numeric(frame["season_year"], errors="coerce")
+    memoisable = [s for s in seasons if s < current and s in fingerprints]
+    if backend is None or not memoisable:
+        return repair(frame)
+
+    digests = {}
+    for season in memoisable:
+        digest = memo_module.hashlib.sha256(memo_module.package_code_key().encode())
+        digest.update(memo_module._frame_digest(frame[season_of_rows == season]))
+        digest.update(repr(fingerprints[season]).encode())
+        digests[season] = digest.hexdigest()
+    memo = memo_module.HistoryMemo(backend, digests, max_season=current - 1)
+    tables = {s: memo.table(REPAIR_MEMO_NAME, s) for s in memoisable}
+    reused = [s for s in memoisable if "season" in tables[s]]
+    rest = ~season_of_rows.isin(reused)
+
+    pieces, audits = [], []
+    if rest.any():
+        repaired_rest, audit_rest = repair(frame[rest])
+        pieces.append(repaired_rest)
+        audits.append(audit_rest)
+    for season in reused:
+        stored_rows, stored_audit = tables[season]["season"]
+        pieces.append(stored_rows.set_axis(frame.index[season_of_rows == season]))
+        audits.append(stored_audit)
+    if any(not piece.dtypes.equals(frame.dtypes) for piece in pieces):
+        print("Closing-line repair: piece dtypes differ, repairing every season")
+        return repair(frame)
+
+    repaired = pd.concat(pieces).sort_index() if len(pieces) > 1 else pieces[0]
+    if not repaired.index.equals(frame.index):
+        raise AssertionError("closing-line repair pieces do not cover the frame")
+    # The frame's own index object (a RangeIndex here), as a whole repair keeps it.
+    repaired.index = frame.index
+    audit = pd.concat(audits, ignore_index=True) if len(audits) > 1 else audits[0]
+    if rest.any():
+        repaired_rest_seasons = pd.to_numeric(
+            repaired_rest["season_year"], errors="coerce"
+        )
+        audit_seasons = pd.to_numeric(audit_rest["season_year"], errors="coerce")
+        for season in memoisable:
+            if season in reused or not (repaired_rest_seasons == season).any():
+                continue
+            tables[season]["season"] = (
+                repaired_rest[repaired_rest_seasons == season].reset_index(drop=True),
+                audit_rest[audit_seasons == season].reset_index(drop=True),
+            )
+        memo.flush()
+    print(f"Closing-line repair: {len(reused)} season(s) from the history memo")
+    return repaired, audit
 
 
 if __name__ == "__main__":
