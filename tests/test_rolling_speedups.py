@@ -289,3 +289,55 @@ def test_weighted_moving_average_matches_the_series_version(param, group_by_seas
         df, param, window=5, group_by_season=group_by_season
     )
     assert_identical(actual, expected)
+
+
+def _transform_before(series, keys, window, how="mean", ddof=1):
+    def op(s):
+        shifted = s.shift(1)
+        w = (
+            shifted.expanding(min_periods=1)
+            if window is None
+            else shifted.rolling(window, min_periods=1)
+        )
+        return w.mean() if how == "mean" else w.std(ddof=ddof)
+
+    return series.groupby(keys).transform(op)
+
+
+@pytest.mark.parametrize("seed", [0, 1, 7])
+@pytest.mark.parametrize(
+    "window,how,ddof",
+    [
+        (1, "mean", 1),
+        (5, "mean", 1),
+        (10, "mean", 1),
+        (None, "mean", 1),
+        (None, "std", 0),
+    ],
+)
+@pytest.mark.parametrize("by", ["team", "team_home", "team_season_home"])
+def test_grouped_windows_match_the_per_group_lambda(seed, window, how, ddof, by):
+    df = team_frame(seed).sort_values(["TEAM_ID", "GAME_DATE", "GAME_ID"])
+    keys = {
+        "team": [df["TEAM_ID"]],
+        "team_home": [df["TEAM_ID"], df["HOME"]],
+        "team_season_home": [df["TEAM_ID"], df["SEASON_YEAR"], df["HOME"]],
+    }[by]
+    for column in ("PTS", "PF", MAIN_TOTAL_LINE_COL):
+        series = pd.to_numeric(df[column], errors="coerce")
+        expected = _transform_before(series, keys, window, how, ddof)
+        actual = statistics._shifted_group_window(
+            series, keys, window=window, how=how, ddof=ddof
+        )
+        assert_identical(actual, expected)
+
+
+def test_grouped_windows_with_missing_keys():
+    df = team_frame(8).sort_values(["TEAM_ID", "GAME_DATE", "GAME_ID"])
+    team = df["TEAM_ID"].astype(float)
+    team.iloc[::17] = np.nan
+    series = pd.to_numeric(df["PTS"], errors="coerce")
+    assert_identical(
+        statistics._shifted_group_window(series, [team], window=5),
+        _transform_before(series, [team], 5),
+    )
