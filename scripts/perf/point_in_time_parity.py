@@ -61,6 +61,12 @@ def main() -> int:
         help="intermediate: build D's games alone (target_game_ids); closing "
         "builds always do",
     )
+    parser.add_argument(
+        "--limit",
+        default=None,
+        help="build every date with this limit instead of the date itself: "
+        "target parity against a reference with the same limit",
+    )
     args = parser.parse_args()
     use_targets = args.kind == "closing" or args.targets
 
@@ -90,7 +96,7 @@ def main() -> int:
                 str(ROOT / "scripts/perf/reference_build.py"),
                 args.kind,
                 "--limit",
-                date,
+                args.limit or date,
                 "--mode",
                 "live",
                 "--out",
