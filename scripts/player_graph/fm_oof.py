@@ -24,6 +24,13 @@ interaction vectors centered on their running mean, so no interaction term
 can act as a hidden rating; ``int_control`` keeps only the global intercept
 and home term for them.
 
+``gnn_*`` (step 6b, decided 2026-10-15): the relational GNN (``gnn.py``,
+width 32, two layers) as an interaction-only residual over the same base, with
+the additive absorber (trained, dropped at prediction): ``gnn_control``
+(intercept / home only), ``gnn_node`` (no message passing),
+``gnn_no_guard`` (teammate and opponent edges), ``gnn_full`` (+ guard edges);
+the last three have identical parameters.
+
 ``edge_*`` (the edge-head ablation): edge-only models, no stint loss,
 predicting the attacker-game targets from the attacker alone
 (``edge_attacker``), plus the defenders' terms (``edge_defender``), plus the
@@ -68,6 +75,7 @@ from nba_ou.data_processing.player_graph.fm import (
     train,
     warm_start,
 )
+from nba_ou.data_processing.player_graph.gnn import GNN, GNNConfig
 from nba_ou.data_processing.player_graph.pretraining_data import (
     FIRST_MATCHUP_SEASON,
     NODE_COLUMNS,
@@ -122,7 +130,16 @@ VARIANTS |= {
     ),
     "edge_capacity_matchup": replace(_EDGE_ONLY, edge_capacity=True),
 }
-RESIDUAL_PREFIXES = ("res_", "int_")
+# GNN ladder (decided 2026-10-15): B control, C node-only, D teammate /
+# opponent, E full; C-E capacity-matched; all with the additive absorber.
+_GNN = GNNConfig(no_additive=_NO_ADDITIVE, absorb_additive=True)
+VARIANTS |= {
+    "gnn_control": replace(_GNN, relations=(), readout=False),
+    "gnn_node": replace(_GNN, relations=()),
+    "gnn_no_guard": replace(_GNN, relations=("teammate", "opponent")),
+    "gnn_full": _GNN,
+}
+RESIDUAL_PREFIXES = ("res_", "int_", "gnn_")
 EVALUATION_START = pd.Timestamp("2019-07-01")
 
 
@@ -157,7 +174,9 @@ def main() -> None:
     parser.add_argument("--local-root", type=Path, default=Path("data"))
     parser.add_argument("--variant", choices=list(VARIANTS), required=True)
     parser.add_argument("--name", help="Output name (default: fm_<variant>)")
-    parser.add_argument("--dim", type=int, default=16)
+    parser.add_argument(
+        "--dim", type=int, help="Embedding width (default: the variant's own)"
+    )
     parser.add_argument("--from", dest="start", default="2016-12-01")
     parser.add_argument("--until", default=str(EVALUATION_START.date()))
     parser.add_argument("--epochs", type=int, default=3)
@@ -174,7 +193,9 @@ def main() -> None:
     if until > EVALUATION_START and not args.allow_evaluation_seasons:
         raise SystemExit(f"Design runs stop before {EVALUATION_START.date()}")
     name = args.name or f"fm_{args.variant}"
-    config = replace(VARIANTS[args.variant], dim=args.dim)
+    config = VARIANTS[args.variant]
+    if args.dim is not None:
+        config = replace(config, dim=args.dim)
     root = args.local_root / ROOT / VERSION
     seasons = range(2016, until.year + 1)
     torch.manual_seed(args.seed)
@@ -236,11 +257,15 @@ def main() -> None:
         # Seeded per fold, so a resumed run equals an uninterrupted one.
         fold_seed = args.seed * 10_000 + int(fold.checkpoint.strftime("%y%m"))
         torch.manual_seed(fold_seed)
-        new_model = FactorizationMachine(config, len(new_vocab))
+        model_class = GNN if isinstance(config, GNNConfig) else FactorizationMachine
+        new_model = model_class(config, len(new_vocab))
         if model is not None:
             warm_start(new_model, model, new_vocab, vocab)
         model, vocab = new_model, new_vocab
-        tensors = None if edge_only else stint_tensors(train_stints, vocab, std)
+        graph = isinstance(config, GNNConfig)
+        tensors = (
+            None if edge_only else stint_tensors(train_stints, vocab, std, guard=graph)
+        )
         edge_t = (
             edge_tensors(train_edges, vocab, std) if train_edges is not None else None
         )
@@ -259,7 +284,10 @@ def main() -> None:
         uncorrected: list[str] = []
         if not edge_only:
             predictions = predict(
-                model, stint_tensors(target, vocab, std), std, device=args.device
+                model,
+                stint_tensors(target, vocab, std, guard=graph),
+                std,
+                device=args.device,
             )
             if residual:  # base + learned residual
                 for t in RESIDUAL_TARGETS:

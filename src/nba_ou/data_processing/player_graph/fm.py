@@ -237,6 +237,9 @@ class FactorizationMachine(nn.Module):
             if name in sizes:
                 self.register_buffer(f"mean_{name}", torch.zeros(d))
 
+    def forward_batch(self, batch: StintTensors) -> torch.Tensor:
+        return self(batch.x, batch.ids, batch.share)
+
     # Per-player blocks ---------------------------------------------------
 
     def blocks(self, x: torch.Tensor, ids: torch.Tensor) -> dict[str, torch.Tensor]:
@@ -360,13 +363,18 @@ class StintTensors:
     share: torch.Tensor  # (n, 50)
     y: torch.Tensor  # (n, 2, T) standardized, 0 where missing
     w: torch.Tensor  # (n, 2, T) exposures, 0 where missing
+    #: (n, 50, A) guard-edge attributes, for models that read them (GNN).
+    guard: torch.Tensor | None = None
 
     def __len__(self) -> int:
         return self.x.shape[0]
 
     def take(self, index) -> StintTensors:
         return StintTensors(
-            *(getattr(self, k)[index] for k in self.__dataclass_fields__)
+            *(
+                None if (v := getattr(self, k)) is None else v[index]
+                for k in self.__dataclass_fields__
+            )
         )
 
 
@@ -450,7 +458,10 @@ def _tensor(values, dtype=torch.float32) -> torch.Tensor:
     return torch.as_tensor(np.ascontiguousarray(values), dtype=dtype)
 
 
-def stint_tensors(stints, vocab: PlayerVocab, std: Standardization) -> StintTensors:
+def stint_tensors(
+    stints, vocab: PlayerVocab, std: Standardization, guard: bool = False
+) -> StintTensors:
+    """``guard`` adds the guard-edge attributes (``gnn.guard_features``)."""
     x = std.features.apply(node_features(stints.nodes))
     mask = np.isfinite(stints.labels) & (stints.label_weight > 0)
     y = np.where(mask, std.targets.apply(np.nan_to_num(stints.labels)), 0.0)
@@ -460,7 +471,14 @@ def stint_tensors(stints, vocab: PlayerVocab, std: Standardization) -> StintTens
         share=_tensor(stints.guard_share),
         y=_tensor(y),
         w=_tensor(np.where(mask, stints.label_weight, 0.0)),
+        guard=_tensor(_guard_features(stints)) if guard else None,
     )
+
+
+def _guard_features(stints) -> np.ndarray:
+    from .gnn import guard_features
+
+    return guard_features(stints)
 
 
 def edge_tensors(edges, vocab: PlayerVocab, std: Standardization) -> EdgeTensors:
@@ -496,8 +514,8 @@ def weighted_mse(
     return ((prediction - y) ** 2 * w).sum(dims) / w.sum(dims).clamp_min(1e-9)
 
 
-def stint_loss(model: FactorizationMachine, batch: StintTensors) -> torch.Tensor:
-    return weighted_mse(model(batch.x, batch.ids, batch.share), batch.y, batch.w)
+def stint_loss(model: nn.Module, batch: StintTensors) -> torch.Tensor:
+    return weighted_mse(model.forward_batch(batch), batch.y, batch.w)
 
 
 def edge_loss(model: FactorizationMachine, batch: EdgeTensors) -> torch.Tensor:
@@ -622,7 +640,7 @@ def predict(
     with torch.no_grad():
         for start in range(0, len(stints), batch_size):
             b = _to(stints.take(slice(start, start + batch_size)), device)
-            parts.append(model(b.x, b.ids, b.share).cpu().numpy())
+            parts.append(model.forward_batch(b).cpu().numpy())
     return std.targets.invert(np.concatenate(parts).astype(np.float64))
 
 
@@ -678,6 +696,7 @@ def save_checkpoint(
     torch.save(
         {
             "version": CHECKPOINT_VERSION,
+            "kind": getattr(model, "KIND", "fm"),
             "config": asdict(model.config),
             "state_dict": model.state_dict(),
             "vocab": list(vocab.ids),
@@ -700,7 +719,12 @@ def load_checkpoint(
     vocab = PlayerVocab()
     vocab.ids = list(payload["vocab"])
     vocab.index = {pid: k + 1 for k, pid in enumerate(vocab.ids)}
-    model = FactorizationMachine(FMConfig(**payload["config"]), len(vocab))
+    if payload.get("kind", "fm") == "gnn":
+        from .gnn import GNN, GNNConfig
+
+        model = GNN(GNNConfig(**payload["config"]), len(vocab))
+    else:
+        model = FactorizationMachine(FMConfig(**payload["config"]), len(vocab))
     model.load_state_dict(payload["state_dict"])
     model.eval()
     return (
