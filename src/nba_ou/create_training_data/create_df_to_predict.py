@@ -73,11 +73,13 @@ from nba_ou.data_processing.odds.merge_scheduled_odds import (
 from nba_ou.data_processing.odds.yahoo_features import select_yahoo_features
 from nba_ou.data_processing.past_injuries.injury_effects import (
     add_top3_availability_effect_features_for_columns,
+    availability_memo_name,
 )
 from nba_ou.data_processing.players.attach_player_features import (
     add_player_history_features,
     clear_player_statistics,
     drop_player_identifier_columns,
+    player_history_memo_name,
 )
 from nba_ou.data_processing.players.roster_continuity import (
     add_roster_continuity_feature,
@@ -137,6 +139,16 @@ from nba_ou.utils.general_utils import get_season_year_from_date
 from nba_ou.utils.seasons import get_seasons_between_dates
 
 warnings.simplefilter(action="ignore", category=FutureWarning)
+
+#: Statistics the player step ranks and averages, in its column order.
+PLAYER_HISTORY_STATS = (
+    "PTS",
+    "PACE_PER40",
+    "DEF_RATING",
+    "OFF_RATING",
+    "TS_PCT",
+    "MIN",
+)
 
 DEFAULT_SPREAD_ML_BOOK = get_main_book()
 DEFAULT_TOTAL_LINE_BOOK = get_main_book()
@@ -289,7 +301,14 @@ def _history_memo_for(targets, *, games, players, odds, injuries, report_state):
             inputs[f"report_{name}"] = (frame, game_id_column(frame))
     max_season = min(target_seasons) - 1
     digests = memo.season_input_digests(inputs, range(2000, max_season + 1))
-    return memo.HistoryMemo(backend, digests, max_season)
+    history_memo = memo.HistoryMemo(backend, digests, max_season)
+    history_memo.prefetch(
+        [
+            player_history_memo_name(list(PLAYER_HISTORY_STATS)),
+            availability_memo_name(True),
+        ]
+    )
+    return history_memo
 
 
 def process_team_statistics_for_training(
@@ -448,8 +467,7 @@ def process_player_statistics_for_training(
             )
             df_players = df_players.drop_duplicates(keep="first")
 
-    # Define statistics to compute for top players
-    stats = ["PTS", "PACE_PER40", "DEF_RATING", "OFF_RATING", "TS_PCT", "MIN"]
+    stats = list(PLAYER_HISTORY_STATS)
 
     # Attach top player statistics including injury data
     df, injured_dict, player_availability_dict = add_player_history_features(

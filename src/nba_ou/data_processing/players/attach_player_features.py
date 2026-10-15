@@ -455,6 +455,11 @@ def prepare_player_history(
     )
 
 
+def player_history_memo_name(stat_cols) -> str:
+    """The history-memo name of the player step's history rows."""
+    return f"player_history_rows/{'-'.join(stat_cols)}"
+
+
 def _history_identifiers(
     states_of, rank, roster, stat_cols, non_inj_rows, inj_rows, questionable_rows
 ) -> dict:
@@ -853,7 +858,7 @@ def add_player_history_features(
         s for s in stat_cols if ACTIVE_PROFILE.id_slots_by_stat.get(s, 0) > 0
     ]
     # Finished seasons' history rows: (row update, availability) per team-game.
-    memo_name = f"player_history_rows/{'-'.join(stat_cols)}"
+    memo_name = player_history_memo_name(stat_cols)
     if history_memo is not None and target_game_ids is None:
         raise ValueError("history_memo needs target_game_ids")
 

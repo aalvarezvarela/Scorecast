@@ -442,6 +442,7 @@ def _repair_by_season(frame, seasons, fingerprints, repair):
         digest.update(repr(fingerprints[season]).encode())
         digests[season] = digest.hexdigest()
     memo = memo_module.HistoryMemo(backend, digests, max_season=current - 1)
+    memo.prefetch([REPAIR_MEMO_NAME])
     tables = {s: memo.table(REPAIR_MEMO_NAME, s) for s in memoisable}
     reused = [s for s in memoisable if "season" in tables[s]]
     rest = ~season_of_rows.isin(reused)

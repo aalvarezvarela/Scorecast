@@ -400,6 +400,39 @@ loading the cache plus the vectorised stages, likely 1-2 min after phases 1-2
 (estimate). Intermediate live predictions become feasible at full scope, which
 today's code cannot do in a usable time.
 
+**Progress, 2026-10-15 (closing side, branch `perf/pipeline-speedup`).**
+Every step below is checked with `scripts/perf/target_parity.py`: a replayed
+all-season build with `--targets` must equal the full reference build's rows
+for those games (`compare_builds --exact`). It does, after every commit: 321
+games on 48 dates across all seasons, and 108 games on 18 dates of 2025-26
+with the history memo cold, warm and off.
+
+- 4.1 `create_df_to_predict(target_game_ids=...)` (b39bc4a). The player step
+  keeps each history row's availability and the top-player ids the effects
+  rank by; all-star, roster continuity and the legacy referees compute only
+  target rows; trend slopes only the windows target rows read (103852b).
+- Exact speed-ups that help every build: head-to-head per pairing (cadfa1b),
+  rolling helpers on narrow views (103852b), grouped rolling/expanding windows
+  (1049b5e), global market day windows by binary search (093552d), grouped EWM
+  player averages (dab92fe).
+- C, stored history (4f84f59, aee954b): `history_memo.HistoryMemo` keeps, per
+  finished season, the player step's history rows, the raw availability
+  effects and the closing-line repair, in S3 (`train_data/input_cache/v1/memo`).
+  Keyed on all `nba_ou` source and a chained digest of the loaded inputs.
+- S3 closing ticks (935eff2): finished seasons from S3, validated daily by
+  `scripts/refresh_input_cache.py`; live 97.6 s -> 2.9 s, identical.
+- Found: `*_CROSSBOOK_TOTAL_STD*` mix every `ODDS_TOTAL_LINE_*` column,
+  including the lines' rolling statistics (mean 81.6 points); not fixed, it
+  changes data. Because of it, total-line trends stay complete in target mode.
+
+| All-season build, one target date | Time |
+|---|---:|
+| full build, replayed | 441 s |
+| target mode, replayed, first version | 323 s |
+| plus the speed-ups, replayed | 236 s |
+| plus a warm history memo, replayed | 201 s |
+| live on this machine, cold memo (empty local caches, as on a runner) | 257 s |
+
 ### Phase 5 — Incremental daily datasets (both pipelines)
 
 With 0.4 passing, a game's row depends only on data before it. Then:

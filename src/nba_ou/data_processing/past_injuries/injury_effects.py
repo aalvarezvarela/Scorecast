@@ -10,9 +10,8 @@ from nba_ou.config.odds_columns import (
     spread_line_home_col,
     total_line_col,
 )
-from tqdm import tqdm
-
 from nba_ou.utils.row_cache import RowCache
+from tqdm import tqdm
 
 #: Minimum games per group before a standard error is reported. The mean
 #: difference itself needs one game per side; a spread around it needs two.
@@ -373,6 +372,13 @@ class _TeamHistoryIndex:
         return result
 
 
+def availability_memo_name(uses_availability: bool) -> str:
+    """The history-memo name of the raw availability effects."""
+    return "availability_effects/" + (
+        "availability" if uses_availability else "injured"
+    )
+
+
 def _expanding_empirical_bayes_weights(
     date_ordinals: np.ndarray,
     raw: np.ndarray,
@@ -664,9 +670,7 @@ def add_top3_availability_effect_features_for_columns(
             player_key=player_id,
         )
 
-    memo_name = "availability_effects/" + (
-        "injured" if availability_index is None else "availability"
-    )
+    memo_name = availability_memo_name(availability_index is not None)
 
     def _effect(team_id: int, season_year: int, date_ordinal: int, player_id: int):
         table = (

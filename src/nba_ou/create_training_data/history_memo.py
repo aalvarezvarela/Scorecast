@@ -34,7 +34,9 @@ import hashlib
 import json
 import os
 import pickle
+import zlib
 from collections.abc import Iterable
+from concurrent.futures import Future, ThreadPoolExecutor
 from functools import cache
 from pathlib import Path
 
@@ -172,6 +174,27 @@ class HistoryMemo:
         self.report: list[str] = []
         self._tables: dict[tuple[str, int], dict] = {}
         self._sizes: dict[tuple[str, int], int] = {}
+        self._pending: dict[tuple[str, int], Future] = {}
+
+    def prefetch(self, names: Iterable[str]) -> None:
+        """Start downloading every usable season of ``names`` in the background.
+
+        Entries are a few MB each and mostly transfer time, so they come down
+        in parallel while the build works on other stages; ``table`` waits
+        for its own entry only.
+        """
+        keys = [
+            (name, season)
+            for name in names
+            for season in sorted(self.digests)
+            if self.usable(season) and (name, season) not in self._tables
+        ]
+        if not keys:
+            return
+        pool = ThreadPoolExecutor(max_workers=8, thread_name_prefix="history-memo")
+        for key in keys:
+            self._pending[key] = pool.submit(self.load, *key)
+        pool.shutdown(wait=False)
 
     def table(self, name: str, season) -> dict | None:
         """The season's entries as a dict to read and add to; None if unusable.
@@ -183,7 +206,8 @@ class HistoryMemo:
             return None
         key = (name, int(season))
         if key not in self._tables:
-            loaded = self.load(name, int(season))
+            pending = self._pending.pop(key, None)
+            loaded = pending.result() if pending is not None else self.load(*key)
             self._tables[key] = loaded if isinstance(loaded, dict) else {}
             self._sizes[key] = len(self._tables[key])
         return self._tables[key]
@@ -224,6 +248,8 @@ class HistoryMemo:
             if payload is None or hashlib.sha256(payload).hexdigest() != meta["sha256"]:
                 self.report.append(f"{name} {season}: payload missing or corrupt")
                 return None
+            if meta.get("compression") == "zlib":
+                payload = zlib.decompress(payload)
             return pickle.loads(payload)
         except Exception as exc:  # noqa: BLE001 -- a broken store is a miss
             self.report.append(f"{name} {season}: read failed ({exc})")
@@ -233,10 +259,14 @@ class HistoryMemo:
         if not self.usable(season):
             return
         try:
-            payload = pickle.dumps(value, protocol=pickle.HIGHEST_PROTOCOL)
+            # zlib: the pickled tables shrink ~6x, and they are read over S3.
+            payload = zlib.compress(
+                pickle.dumps(value, protocol=pickle.HIGHEST_PROTOCOL), 6
+            )
             meta = {
                 "digest": self.digests[season],
                 "sha256": hashlib.sha256(payload).hexdigest(),
+                "compression": "zlib",
             }
             self.backend.put(self._key(name, season, "pkl"), payload)
             self.backend.put(self._key(name, season, "json"), json.dumps(meta).encode())

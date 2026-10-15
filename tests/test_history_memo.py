@@ -83,3 +83,21 @@ def test_season_of_game_ids():
     assert memo.season_of_game_ids(ids).tolist() == [2024, 2023, 2020, -1]
     assert memo.season_of_game_id("0022400001") == 2024
     assert memo.season_of_game_id("bad") is None
+
+
+def test_prefetched_tables_equal_loaded_ones(tmp_path):
+    backend = memo._LocalBackend(tmp_path)
+    digests = memo.season_input_digests(_inputs(), [2021, 2022, 2023])
+    writer = memo.HistoryMemo(backend, digests, max_season=2023)
+    for season in (2021, 2022):
+        writer.table("rows", season)[season] = {"value": float(season) / 3}
+    writer.flush()
+    meta = next(tmp_path.rglob("season=2021.json")).read_text()
+    assert '"compression": "zlib"' in meta
+
+    reader = memo.HistoryMemo(backend, digests, max_season=2023)
+    reader.prefetch(["rows", "other"])
+    assert reader.table("rows", 2021) == {2021: {"value": 2021 / 3}}
+    assert reader.table("rows", 2022) == {2022: {"value": 2022 / 3}}
+    assert reader.table("rows", 2023) == {}
+    assert reader.table("other", 2021) == {}
