@@ -319,3 +319,118 @@ def test_edge_ablation_attacker_only_ignores_the_defenders():
     # Edge-only training needs no stints.
     history = train(attacker_only, None, tensors, epochs=2, batch_size=16)
     assert history[-1]["edge"] > 0 and history[-1]["stint"] == 0.0
+
+
+def _additive_labels(rng, data, n):
+    skill = rng.normal(0, 1, 40)
+    ids = data.players.astype(int)
+    labels = np.zeros((n, 2, T))
+    labels[:, 0, 0] = skill[ids[:, :5]].sum(1) - skill[ids[:, 5:]].sum(1)
+    labels[:, 1, 0] = skill[ids[:, 5:]].sum(1) - skill[ids[:, :5]].sum(1)
+    return labels + rng.normal(0, 0.5, labels.shape)
+
+
+def _r2(predicted, labels, k):
+    e = labels[:, :, k] - predicted[:, :, k]
+    return 1 - e.var() / labels[:, :, k].var()
+
+
+def test_switched_off_additive_targets_ignore_the_players():
+    model = _model(
+        FMConfig(
+            chemistry=False, style=False, matchup=False, edges=False, no_additive=(0,)
+        )
+    )
+    with torch.no_grad():
+        model.delta.weight[1:] = torch.randn_like(model.delta.weight[1:])
+    x = torch.randn(4, 10, F)
+    ids = torch.randint(1, 40, (4, 10))
+    out = model(x, ids, torch.full((4, 50), 0.2))
+    assert torch.allclose(out[:, :, 0], torch.zeros(4, 2))  # mu = hca = 0
+    assert not torch.allclose(out[:, :, 1], torch.zeros(4, 2))
+
+
+def test_centered_interactions_cannot_rebuild_an_additive_rating():
+    rng = np.random.default_rng(6)
+    n = 3000
+    data = _stints(rng, n)
+    labels = _additive_labels(rng, data, n)
+    base = dict(matchup=False, edges=False, no_additive=(0,), delta_penalty=1.0)
+    loose, *_ = _fit(_model(FMConfig(**base)), data, labels)
+    centered, *_ = _fit(
+        _model(FMConfig(**base, center_interactions=True)), data, labels
+    )
+    # Without centering the products' mean components act as a rating (R2
+    # 0.93-0.96 per term). Centered, what is left comes from the small roster:
+    # with 40 players a player's teammates average -1/39 of his own vector, a
+    # w_i^2 term (about 12x smaller with the ~500 players of a real season).
+    assert _r2(loose, labels, 0) > 0.8
+    assert _r2(centered, labels, 0) < 0.3
+
+
+def test_centered_matchup_term_still_learns_who_guards_whom():
+    rng = np.random.default_rng(2)
+    n = 4000
+    share = np.zeros((n, 2, 5, 5))
+    share[:, :, np.arange(5), np.arange(5)] = 1.0
+    data = _stints(rng, n, share=share.reshape(n, 50))
+    kind = rng.integers(0, 2, 40) * 2 - 1
+    ids = data.players.astype(int)
+    labels = np.zeros((n, 2, T))
+    labels[:, 0, 2] = (kind[ids[:, :5]] * kind[ids[:, 5:]]).sum(1)
+    labels[:, 1, 2] = (kind[ids[:, 5:]] * kind[ids[:, :5]]).sum(1)
+    labels += rng.normal(0, 0.3, labels.shape)
+    config = FMConfig(
+        chemistry=False,
+        style=False,
+        edges=False,
+        no_additive=(2,),
+        center_interactions=True,
+        delta_penalty=1.0,
+    )
+    predicted, *_ = _fit(_model(config), data, labels)
+    assert _r2(predicted, labels, 2) > 0.5
+
+
+def test_capacity_control_never_reads_the_defenders():
+    rng = np.random.default_rng(7)
+    stints = _stints(rng, 20)
+    edges = _edges(rng)
+    std = fit_standardization(stints, edges)
+    vocab = PlayerVocab([*stints.players.reshape(-1), *edges.attacker, *edges.defender])
+    t = edge_tensors(edges, vocab, std)
+    model = _model(
+        FMConfig(
+            edge_defender=False,
+            edge_matchup=False,
+            edge_capacity=True,
+            stint_loss=False,
+        )
+    )
+    with torch.no_grad():
+        model.capacity.normal_()
+    a = model.forward_edges(
+        t.attacker_x,
+        t.attacker_ids,
+        t.home,
+        t.defender_x,
+        t.defender_ids,
+        t.share,
+        t.pair_index,
+    )
+    b = model.forward_edges(
+        t.attacker_x,
+        t.attacker_ids,
+        t.home,
+        torch.randn_like(t.defender_x),
+        t.defender_ids * 0,
+        t.share,
+        t.pair_index,
+    )
+    assert torch.equal(a, b)
+    attacker_only = _model(
+        FMConfig(edge_defender=False, edge_matchup=False, stint_loss=False)
+    )
+    assert sum(p.numel() for p in model.parameters()) > sum(
+        p.numel() for p in attacker_only.parameters()
+    )

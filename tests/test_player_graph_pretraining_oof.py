@@ -211,3 +211,40 @@ def test_residual_stints_subtract_the_base_where_it_exists():
     assert np.isnan(out.labels[0, 0, PACE]) and out.label_weight[0, 0, PACE] == 0.0
     other = LABELS.index("fg3a_per_fga")
     assert (out.labels[:, :, other] == 1.0).all()
+
+
+def test_calibration_shrinks_with_earlier_folds_only():
+    from nba_ou.data_processing.player_graph.pretraining_oof import (
+        calibrated_residuals,
+    )
+
+    rng = np.random.default_rng(0)
+    dates = pd.to_datetime(
+        np.repeat(
+            pd.date_range("2017-01-05", periods=3, freq="MS") + pd.Timedelta(days=4),
+            2000,
+        )
+    ).to_numpy()
+    n = len(dates)
+    signal = rng.normal(0, 1, n)
+    labels = np.zeros((n, 2, len(LABELS)))
+    labels[:, :, PTS] = (signal + rng.normal(0, 1, n))[:, None]
+    base = np.zeros_like(labels)
+    predictions = base.copy()
+    predictions[:, :, PTS] = 3 * signal[:, None]  # right direction, 3x too big
+    weights = np.ones_like(labels)
+    folds = monthly_folds(dates, first="2017-01-01")
+    out, table = calibrated_residuals(
+        predictions, base, labels, weights, dates, folds, ["pts_per_poss"]
+    )
+    assert table["pts_per_poss"].iloc[0] == 0.0  # nothing earlier
+    assert table["pts_per_poss"].iloc[1] == pytest.approx(1 / 3, abs=0.03)
+    first = dates < folds[1].checkpoint.to_datetime64()
+    assert np.all(out[first, :, PTS] == 0.0)
+    # Later labels never reach an earlier fold's shrinkage.
+    changed = labels.copy()
+    changed[~first] = 100.0
+    _, again = calibrated_residuals(
+        predictions, base, changed, weights, dates, folds, ["pts_per_poss"]
+    )
+    assert again["pts_per_poss"].iloc[1] == table["pts_per_poss"].iloc[1]

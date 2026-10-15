@@ -18,11 +18,19 @@ possession and pace, ``y - base`` with the base of each stint's own date
 four targets keep their own heads. Stints without a base (before 2016-12-01)
 give those two targets no weight.
 
+``int_*`` (decided 2026-10-15): interaction-only residuals over the same
+base: no per-player additive term for points and pace (RAPM holds them) and
+interaction vectors centered on their running mean, so no interaction term
+can act as a hidden rating; ``int_control`` keeps only the global intercept
+and home term for them.
+
 ``edge_*`` (the edge-head ablation): edge-only models, no stint loss,
 predicting the attacker-game targets from the attacker alone
 (``edge_attacker``), plus the defenders' terms (``edge_defender``), plus the
-matchup product (``edge_matchup``). Their folds start where training edges
-exist (2017-11).
+matchup product (``edge_matchup``); the capacity control ``edge_capacity``
+(attacker x a learned defender-independent vector) and the defenders' terms
+on top of it (``edge_capacity_defender``, ``edge_capacity_matchup``). Their
+folds start where training edges exist (2017-11).
 
 Hyperparameters are the untuned defaults of ``FMConfig`` (dimension 16).
 Design runs stay before 2019-07-01 (``--until``): 2_7's evaluation starts in
@@ -93,6 +101,28 @@ VARIANTS |= {
 }
 RESIDUAL_TARGETS = ("pts_per_poss", "poss_per_48")
 BASE = "rapm_daily"
+# Interaction-only residuals (decided 2026-10-15): no per-player additive
+# term for the residual targets, interaction vectors centered.
+_NO_ADDITIVE = tuple(LABELS.index(t) for t in RESIDUAL_TARGETS)
+VARIANTS |= {
+    "int_control": replace(_ADDITIVE, no_additive=_NO_ADDITIVE),
+    "int_chemistry_style": FMConfig(
+        matchup=False, edges=False, no_additive=_NO_ADDITIVE, center_interactions=True
+    ),
+    "int_matchup": FMConfig(
+        edges=False, no_additive=_NO_ADDITIVE, center_interactions=True
+    ),
+    # Edge-head capacity control: the attacker x learned-vector product
+    # without the defenders, then the defenders' terms on top of it.
+    "edge_capacity": replace(
+        _EDGE_ONLY, edge_defender=False, edge_matchup=False, edge_capacity=True
+    ),
+    "edge_capacity_defender": replace(
+        _EDGE_ONLY, edge_matchup=False, edge_capacity=True
+    ),
+    "edge_capacity_matchup": replace(_EDGE_ONLY, edge_capacity=True),
+}
+RESIDUAL_PREFIXES = ("res_", "int_")
 EVALUATION_START = pd.Timestamp("2019-07-01")
 
 
@@ -150,7 +180,7 @@ def main() -> None:
     torch.manual_seed(args.seed)
 
     stints = load_stints(root, seasons, until=until)
-    residual = args.variant.startswith("res_")
+    residual = args.variant.startswith(RESIDUAL_PREFIXES)
     edge_only = not config.stint_loss
     base = None
     if residual:
