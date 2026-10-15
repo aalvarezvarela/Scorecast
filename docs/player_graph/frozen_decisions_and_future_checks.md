@@ -2002,6 +2002,125 @@ report `fm_ladder_report.py --ladder interaction`, in
 4. The edge head shows defender and attacker × defender structure in shot
    volume. It is not yet tied to team scoring.
 
+## Phase 6, step 6: the GNN (step 6b), implemented and benchmarked, not yet run (2026-10-15)
+
+**Decisions (2026-10-15).**
+
+- The GNN is an interaction-only residual over the strictly as-of daily RAPM
+  for points and pace, with separate heads for the four auxiliary targets.
+- Two message-passing layers of width 32, chosen in advance.
+- The same monthly folds, three paired seeds and walk-forward calibration;
+  raw and calibrated results kept apart.
+- Centered interaction representations, with tests for additive leakage.
+- Edge supervision is a separate later experiment.
+- The ladder:
+  - A: RAPM;
+  - B: + intercept / home;
+  - C: + capacity-matched node-only neural model;
+  - D: + GNN with teammate / opponent edges;
+  - E: + full GNN with guard edges.
+- Benchmark on this CPU and prepare the 6 GB GPU benchmark. No long training
+  yet, and no architecture tuning on 2019-25.
+- Afterwards, assess the representations as pregame embeddings for XGBoost
+  rather than optimizing stint accuracy.
+
+**Model** (`player_graph/gnn.py`). Nodes start from `MLP(x_i) + e_i`: the
+standardized as-of profile plus a penalized ID embedding, zero when unseen.
+Each layer is
+`h ← LayerNorm(h + ReLU(W_self h + B_tm(teammates' mean) + B_opp(opponents' mean) + B_g(Σ_l m_kl [h_l, e_kl]) + B_gb(defender's share-weighted attackers)))`:
+
+- `m` is the **expected** guard share;
+- `e_kl` holds the guard edge's attributes (expected rate, prior weight,
+  history, provenance one-hot).
+
+Observed guarding never enters.
+
+**Capacity matching.** A relation switched off keeps its branch and
+parameters but receives the node's own state instead of messages. C, D and E
+therefore have **identical parameter counts**, inputs, heads, penalties and
+training budget; only the information flowing between players differs
+(tested). B is the same code with the interaction readout off.
+
+**Readout.** As the FM's, over the centered final embeddings: offensive and
+defensive pair means and the cross-side product, with per-target readouts.
+Per-player additive scalars serve the four auxiliary targets.
+
+**Leakage found and fixed: the additive absorber.** Centering does not stop
+message passing from rebuilding an additive rating.
+
+| Synthetic test (planted additive rating, 400 players) | R² of the interaction-only output |
+| --- | --- |
+| Node-only, not centered | 0.95 |
+| Node-only, centered | 0.05 |
+| Full GNN, centered | **0.87** |
+| Full GNN, centered, with absorber | 0.00 |
+
+- **Why:** each node sees its lineup's and the opponents' totals through
+  messages, and the product readout can form functions of those totals that
+  track a linear rating.
+- **Fix:** the residual targets keep per-player additive terms **while
+  training** and drop them **at prediction** (`absorb_additive`). This
+  partials the individual effects out (including the RAPM base's drift)
+  instead of leaving the interaction part an incentive to rebuild them.
+- **Cost:** the absorber slows learning of an interaction whose player types
+  exist only in IDs. With the type visible in a profile feature, as in real
+  data, the full GNN still learns a planted who-guards-whom signal well above
+  the guard-blind model (tested).
+- **Ladder:** every rung B-E uses the absorber.
+
+**Tests** (`tests/test_player_graph_gnn.py`, 11):
+
+- C, D and E have equal parameter counts.
+- Guard features are expected quantities only.
+- Node-only embeddings cannot see other players or edges.
+- The teammate / opponent model reads neighbours, not guard edges.
+- The full model changes when who guards whom changes.
+- The output does not depend on the order within a side.
+- Centered leakage stays bounded, and the absorber stops the
+  message-passing leak.
+- Guard edges carry a planted matchup signal.
+- Gradients reach every parameter block.
+- A stint's prediction depends only on its own graph, not on other stints in
+  the batch; nothing crosses dates.
+- Checkpoints round-trip, and warm starts move IDs to the grown vocabulary.
+
+The fold-level temporal checks are the harness's (`check_fold`).
+
+**Pipeline.** `fm_oof.py` variants `gnn_control`, `gnn_node`,
+`gnn_no_guard` and `gnn_full`, with guard tensors built from the
+pretraining dataset. The full GNN was smoke-fitted on 3 real folds (2017-11
+→ 2018-01, full training data, 3 epochs): 14-25 s per fold, and rerunning
+skipped them. Calibration: `calibrate_residuals.py`. Report:
+`fm_ladder_report.py --ladder gnn`. Runner:
+`experiments/runners/run_gnn_ladder.sh [cpu|cuda]` (declared, **not run**).
+
+**CPU benchmark** (`benchmark_pretraining.py`, random tensors with the
+dataset's shapes; this machine, 10 threads; 3 epochs):
+
+| Model | Throughput (stints/s) | One run, 25 development folds | Development ladder (12 runs) | One run, all 88 folds |
+| --- | --- | --- | --- | --- |
+| FM 16 (closed) | 57k-89k | about 1 min | 0.2 h | 0.2 h |
+| GNN 32×2 node-only / no guard | 13k-44k | 2-6 min | 0.4-1.2 h | 0.3-1.1 h |
+| **GNN 32×2 full** | **14k-22k** | **4-6 min** | **0.7-1.2 h** | **0.7-1.1 h** |
+| GNN 64×2 full | 8k-10k | about 10 min | about 2 h | about 1.8 h |
+| GNN 128×3 full | 2k-4k | 22-40 min | 4-8 h | 4-7 h |
+
+On real data a fold also prepares tensors and writes checkpoints. The smoke
+fit ran at an effective 5k-12k stints/s, so the development GNN ladder is
+about 1-2 h on this CPU.
+
+On the 6 GB GPU machine (no data needed):
+
+```bash
+poetry install --with graph
+poetry run python -c "import torch; print(torch.__version__, torch.cuda.is_available())"
+poetry run python scripts/player_graph/benchmark_pretraining.py --out artifacts/experiments/pretraining_benchmark_gpu.json
+```
+
+It reports throughput and peak VRAM per model and batch (1,024-32,768),
+records out-of-memory configurations instead of failing, and projects the
+same run and ladder times.
+
 ## Future checks
 
 ### Guarding weights (`expected_guard`)
@@ -2077,7 +2196,7 @@ report `fm_ladder_report.py --ladder interaction`, in
 - [ ] Revisit PyTorch Geometric (`HeteroData`, batching of graphs with variable node counts) when the phase 6 architecture is defined, especially for game graphs and scenarios.
 - [ ] Node features currently join the stint graphs in `smoke_gnn.node_inputs`; move the join into the stint-graph loader when phase 6 fixes the inputs.
 - [ ] A CPU-only PyTorch wheel (or a separate source) if the CUDA build's size matters; the machine has no GPU.
-- [ ] **Hardware before buying it** (`benchmark_pretraining.py` ready; CPU measured, GPU pending on the 6 GB machine). With the first representative phase 6 GNN, benchmark CPU and GPU training time, peak GPU memory and the largest workable batch size. Start on the GPU at hand (6 GB of VRAM, on another machine; this one has none) and consider other hardware only after measuring it with the actual architecture.
+- [ ] **Hardware before buying it** (`benchmark_pretraining.py` ready with the step 6b GNN; CPU measured 2026-10-15, GPU pending on the 6 GB machine). With the first representative phase 6 GNN, benchmark CPU and GPU training time, peak GPU memory and the largest workable batch size. Start on the GPU at hand (6 GB of VRAM, on another machine; this one has none) and consider other hardware only after measuring it with the actual architecture.
 
 ### Phase 6 / phase 8 (encoder and embeddings)
 

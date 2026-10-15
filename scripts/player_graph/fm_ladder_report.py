@@ -197,6 +197,52 @@ LADDERS = {
             ("defenders + matchup (no control)", "capacity + defenders + matchup"),
         ),
     ),
+    "gnn": Ladder(
+        title="Phase 6 GNN ladder: interaction-only residuals over daily RAPM "
+        "(raw and calibrated), development folds 2016-12 -> 2019-06",
+        out="artifacts/experiments/gnn_ladder_dev",
+        variants=(
+            "gnn_control",
+            "gnn_node",
+            "gnn_no_guard",
+            "gnn_full",
+            "gnn_control_cal",
+            "gnn_node_cal",
+            "gnn_no_guard_cal",
+            "gnn_full_cal",
+        ),
+        baselines={"constant": ("constant", False), "rapm": ("rapm_daily", True)},
+        references=("int_matchup_cal",),
+        comparisons=(
+            ("rapm", "constant", "A. RAPM (daily) over constant"),
+            ("gnn_control", "rapm", "B. + intercept / home, raw, over RAPM"),
+            ("gnn_node", "rapm", "C. + node-only neural, raw, over RAPM"),
+            ("gnn_no_guard", "rapm", "D. + GNN teammate/opponent, raw, over RAPM"),
+            ("gnn_full", "rapm", "E. + full GNN, raw, over RAPM"),
+            ("gnn_control_cal", "rapm", "Bc. calibrated, over RAPM"),
+            ("gnn_node_cal", "rapm", "Cc. calibrated, over RAPM"),
+            ("gnn_no_guard_cal", "rapm", "Dc. calibrated, over RAPM"),
+            ("gnn_full_cal", "rapm", "Ec. calibrated, over RAPM"),
+            ("gnn_node", "gnn_control", "neural capacity (C vs B), raw"),
+            ("gnn_no_guard", "gnn_node", "teammate/opponent messages (D vs C), raw"),
+            ("gnn_full", "gnn_no_guard", "guard edges (E vs D), raw"),
+            ("gnn_node_cal", "gnn_control_cal", "neural capacity (C vs B), calibrated"),
+            (
+                "gnn_no_guard_cal",
+                "gnn_node_cal",
+                "teammate/opponent messages (D vs C), calibrated",
+            ),
+            ("gnn_full_cal", "gnn_no_guard_cal", "guard edges (E vs D), calibrated"),
+            (
+                "gnn_full_cal",
+                "gnn_node_cal",
+                "all message passing (E vs C), calibrated",
+            ),
+            ("gnn_full_cal", "int_matchup_cal", "full GNN vs FM matchup, calibrated"),
+        ),
+        edge_models={},
+        edge_comparisons=(),
+    ),
 }
 
 
@@ -641,7 +687,8 @@ def main() -> None:
     }
     lines = [f"# {ladder.title}\n"]
     stint_section(ladder, root, out, lines)
-    edge_report(ladder, root, out, lines, fm_oof.load_edges)
+    if ladder.edge_models:
+        edge_report(ladder, root, out, lines, fm_oof.load_edges)
     training_section(ladder, root, out, lines)
     overfit_section(ladder, root, out, lines)
     args.out.mkdir(parents=True, exist_ok=True)
