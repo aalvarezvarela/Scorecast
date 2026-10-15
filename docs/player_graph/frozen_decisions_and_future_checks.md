@@ -1787,6 +1787,107 @@ interaction terms.
    gives −0.03% on points and −0.07% on FTA/FGA, within or near noise. The
    edge head itself learns real structure: +3.5-4.3% over the attacker norm.
 
+## Phase 6, step 4: residual FM over daily RAPM and the edge-head ablation (2026-10-15)
+
+**Decisions (2026-10-15).**
+
+- Points per possession and pace are learned as a **residual over a frozen,
+  as-of RAPM base**; the other four targets keep their own heads.
+- The ladder distinguishes:
+  1. RAPM alone;
+  2. + additive residual;
+  3. + chemistry / style;
+  4. + matchup;
+  5. + edge supervision (optional).
+- An edge-head ablation (attacker; + defenders; + matchup product) comes
+  before any edge loss in the GNN objective.
+- At least three paired seeds per comparison.
+- No betting line in stint pretraining: it enters downstream in XGBoost, with
+  the market-conditioned encoder kept as a future ablation.
+- Edge-loss weights are not tuned on post-2019 results.
+
+**Base** (`pretraining_daily_rapm.py`,
+`pretraining_oof.daily_rapm_predictions`).
+
+- The frozen phase 3 ratings are refitted on every game date (592 fits,
+  2016-12-01 → 2019-06). Each stint gets the ratings fitted on stints before
+  its own date: never itself, its day or later. A test checks that a collapse
+  on day D is invisible on D and seen on D+1.
+- Training residuals and evaluation use the same base.
+- Stints before 2016-12-01 have no base (no prior), so their points and pace
+  carry no residual weight. In the first fold no residual has been trained,
+  so its prediction is the base alone; this is logged per fold.
+- Daily RAPM is a stronger rung 1 than the monthly one: over the constant,
+  +0.64% on points and +2.11% on pace (monthly: +0.57%, +1.72%).
+
+**Design** (declared in `experiments/runners/run_fm_residual_ladder.sh`).
+
+- Training as before: `FMConfig` defaults, 3 epochs, the 25 monthly folds,
+  seeds 0-2 paired; nothing tuned.
+- Edge-only models train on the edge loss alone, over the 17 folds with
+  training edges (2017-11 on).
+- Report: `fm_ladder_report.py --ladder residual`
+  (`artifacts/experiments/fm_residual_ladder_dev/`). The refactored report
+  reproduces step 3's report byte for byte.
+
+**Stint targets** (110,147 stints; gain in % of the reference's MSE, t):
+
+| Comparison | Points / poss. | Pace | 3PA/FGA | OREB | FTA/FGA | Turnovers |
+| --- | --- | --- | --- | --- | --- | --- |
+| 1. RAPM (daily) over constant | +0.64 (14.8) | +2.11 (24.6) | — | — | — | — |
+| 2. + additive residual, over RAPM | **−0.18 (−6.0)** | **−0.24 (−7.2)** | +5.35 | +1.45 | +0.84 | +0.65 |
+| 3. + chemistry / style, over RAPM | −0.22 | −0.28 | +5.39 | +1.41 | +0.82 | +0.65 |
+| 4. + matchup, over RAPM | −0.24 | −0.29 | +5.42 | +1.40 | +0.80 | +0.65 |
+| 5. + edges, over RAPM | −0.25 | −0.31 | +5.43 | +1.39 | +0.75 | +0.67 |
+| All interactions (4 vs 2) | −0.05 (−4.0) | −0.05 (−3.8) | +0.07 (3.2) | −0.05 | −0.05 | 0.00 |
+| Residual vs from scratch, additive | −0.13 (−4.5) | +0.66 (10.9) | 0 | 0 | 0 | 0 |
+
+- **Residuals hurt.** The residual corrections make points and pace worse
+  than RAPM alone in every season and in 21-23 of 25 folds. Interactions
+  make it slightly worse again: points −0.06 to −0.17 seed by seed.
+- **Why: over-dispersed corrections.** Regressing the actual residual on the
+  model's correction gives a slope of +0.31 for points (+0.28 with matchups)
+  and +0.09 for pace. The corrections point the right way for points but are
+  about 3× too large; for pace they are almost noise.
+- **Not overfitting by the interaction terms.** The train / out-of-fold gap
+  is 0.014-0.016 (from-scratch FMs 0.012-0.013).
+- **A plausible source: base drift.** A training stint's residual is taken
+  against the base as it was on its date. A player's per-player correction
+  `δ` therefore learns past errors of RAPM, which RAPM has corrected by the
+  time it is served. This is the cost of a strictly as-of base.
+- **The four targets RAPM lacks** keep the FM's additive gains (3PA/FGA +5.4%).
+
+**Edge-head ablation** (51,345 attacker-games, 2017-11 → 2019-06, edge-only
+models; gain %, every seed positive unless noted):
+
+| Comparison | FGA / pp | 3PA / pp |
+| --- | --- | --- |
+| Edge-only attacker over attacker norm | −0.3 (2017-18 −3.8, 2018-19 +2.8) | −5.2 (−14.9, +3.3) |
+| + defenders (`Σ s_ij de_j`) over attacker only | **+0.47 ± 0.06** | **+0.87 ± 0.12** |
+| + matchup product over + defenders | +1.09 ± 0.21 | +3.93 ± 0.32 |
+| Joint (residual stint model + edges) over edge-only matchup | +2.3 (2018-19 −0.1) | +4.6 (2018-19 +0.2) |
+
+- **The defenders' additive term is a real defender contribution.** It holds
+  in both seasons and all seeds, and matches phase 4B's time-attributed
+  defender effects on attempts and 3PA.
+- **The matchup product is not yet shown to be an interaction.** The
+  attacker-only FM loses to the simple attacker norm in 2017-18, a sign its
+  attacker effects are over-shrunk there. `a_i · Σ s_ij b_j` with
+  near-constant defender vectors adds attacker capacity, so part of its gain
+  can be less shrinkage, not who-guards-whom. A capacity control (the product
+  with a learned defender-independent vector) is needed to tell them apart.
+- **Joint stint pretraining helps the edge head only in 2017-18**, when edge
+  history is short; in 2018-19 it changes nothing.
+
+**Reading (development only).** On the stint targets, interactions add
+nothing beyond RAPM in either formulation:
+
+- from scratch they were at noise level;
+- as residuals over RAPM they cost 0.05%.
+
+The residual heads themselves are over-dispersed (slopes 0.3 and 0.1). The
+next design step is their regularization, not more model capacity.
+
 ## Future checks
 
 ### Guarding weights (`expected_guard`)

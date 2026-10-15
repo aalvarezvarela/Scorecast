@@ -1,5 +1,7 @@
 """Phase 6 out-of-fold folds, baselines, prediction store and evaluation."""
 
+from dataclasses import dataclass
+
 import numpy as np
 import pandas as pd
 import pytest
@@ -159,3 +161,53 @@ def test_paired_comparison_needs_the_same_rows():
         y, w, {"ref": np.zeros_like(y), "m": better}, np.arange(4), ["t"], "ref"
     )
     assert table.loc[0, "rows"] == 6 and table.loc[0, "gain"] == 1.0
+
+
+def test_daily_rapm_never_reads_the_stints_own_day():
+    from nba_ou.data_processing.player_graph.pretraining_oof import (
+        daily_rapm_predictions,
+    )
+
+    good = [str(k) for k in range(1, 6)]
+    bad = [str(k) for k in range(6, 11)]
+    stints = [_stint(day, good, bad, 14, 8) for day in range(40)]
+    # Day 50: the good five collapse. Their own day must not see it.
+    collapse = _stint(50, good, bad, 0, 40)
+    history = pd.DataFrame([*stints, collapse])
+    later = pd.DataFrame([*stints, collapse, _stint(51, good, bad, 14, 8)])
+    players = np.array([good + bad] * 2)
+    dates = pd.to_datetime(
+        [collapse["game_date"], collapse["game_date"] + pd.Timedelta(days=1)]
+    ).to_numpy()
+    spec = BookSpec(lambda_offdef=10.0, lambda_pace=10.0, prior_offdef=False)
+    out, _ = daily_rapm_predictions(
+        players, dates, history, prior=None, first="2016-11-01", spec=spec
+    )
+    out_more, _ = daily_rapm_predictions(
+        players, dates, later, prior=None, first="2016-11-01", spec=spec
+    )
+    # The collapse day is predicted as before it; the next day has seen it.
+    assert out[0, 0, PTS] > out[0, 1, PTS]
+    assert out[1, 0, PTS] < out[0, 0, PTS]
+    assert out[0, 0, PTS] == out_more[0, 0, PTS]
+
+
+def test_residual_stints_subtract_the_base_where_it_exists():
+    from nba_ou.data_processing.player_graph.pretraining_oof import residual_stints
+
+    @dataclass(frozen=True)
+    class Stints:
+        labels: np.ndarray
+        label_weight: np.ndarray
+
+    labels, weights = _labels(2, 1.0)
+    base = np.full(labels.shape, np.nan)
+    base[0, :, PTS] = 0.25
+    out = residual_stints(
+        Stints(labels, weights), base, ["pts_per_poss", "poss_per_48"]
+    )
+    assert out.labels[0, 0, PTS] == 0.75 and out.label_weight[0, 0, PTS] == 1.0
+    assert np.isnan(out.labels[1, 0, PTS]) and out.label_weight[1, 0, PTS] == 0.0
+    assert np.isnan(out.labels[0, 0, PACE]) and out.label_weight[0, 0, PACE] == 0.0
+    other = LABELS.index("fg3a_per_fga")
+    assert (out.labels[:, :, other] == 1.0).all()

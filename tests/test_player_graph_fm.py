@@ -263,3 +263,59 @@ def test_node_features_are_finite():
     raw[1, 0] = np.inf
     with pytest.raises(ValueError):
         node_features(raw)
+
+
+def test_edge_ablation_attacker_only_ignores_the_defenders():
+    rng = np.random.default_rng(5)
+    stints = _stints(rng, 20)
+    edges = _edges(rng)
+    std = fit_standardization(stints, edges)
+    vocab = PlayerVocab([*stints.players.reshape(-1), *edges.attacker, *edges.defender])
+    tensors = edge_tensors(edges, vocab, std)
+    attacker_only = _model(
+        FMConfig(edge_defender=False, edge_matchup=False, stint_loss=False)
+    )
+    base = attacker_only.forward_edges(
+        tensors.attacker_x,
+        tensors.attacker_ids,
+        tensors.home,
+        tensors.defender_x,
+        tensors.defender_ids,
+        tensors.share,
+        tensors.pair_index,
+    )
+    other = attacker_only.forward_edges(
+        tensors.attacker_x,
+        tensors.attacker_ids,
+        tensors.home,
+        torch.randn_like(tensors.defender_x),
+        tensors.defender_ids * 0,
+        tensors.share,
+        tensors.pair_index,
+    )
+    assert torch.equal(base, other)
+    with_defender = _model(FMConfig(edge_matchup=False, stint_loss=False))
+    changed = with_defender.forward_edges(
+        tensors.attacker_x,
+        tensors.attacker_ids,
+        tensors.home,
+        torch.randn_like(tensors.defender_x),
+        tensors.defender_ids,
+        tensors.share,
+        tensors.pair_index,
+    )
+    assert not torch.equal(
+        changed,
+        with_defender.forward_edges(
+            tensors.attacker_x,
+            tensors.attacker_ids,
+            tensors.home,
+            tensors.defender_x,
+            tensors.defender_ids,
+            tensors.share,
+            tensors.pair_index,
+        ),
+    )
+    # Edge-only training needs no stints.
+    history = train(attacker_only, None, tensors, epochs=2, batch_size=16)
+    assert history[-1]["edge"] > 0 and history[-1]["stint"] == 0.0

@@ -122,8 +122,12 @@ class Scaler:
             w = np.where(np.isfinite(flat), w, 0.0)
             v = np.nan_to_num(flat)
             total = w.sum(axis=0)
-            mean = (w * v).sum(axis=0) / total
-            std = np.sqrt((w * (v - mean) ** 2).sum(axis=0) / total)
+            safe = np.where(total > 0, total, 1.0)
+            # A column with no weight (no data yet): identity scaling.
+            mean = np.where(total > 0, (w * v).sum(axis=0) / safe, 0.0)
+            std = np.where(
+                total > 0, np.sqrt((w * (v - mean) ** 2).sum(axis=0) / safe), 1.0
+            )
         return cls(mean.tolist(), np.where(std > 1e-9, std, 1.0).tolist())
 
     def apply(self, values: np.ndarray) -> np.ndarray:
@@ -152,6 +156,13 @@ class FMConfig:
     matchup: bool = True
     edges: bool = True
     edge_task_weight: float = 1.0
+    #: Edge head terms beyond the attacker's own ``oe`` (the edge-head
+    #: ablation): defenders' ``sum_j s_ij de_j``, and the matchup product.
+    edge_defender: bool = True
+    edge_matchup: bool = True
+    #: False trains on the edge loss alone (edge-only models of the ablation;
+    #: ``delta_penalty`` is then in attacker-games).
+    stint_loss: bool = True
     #: ``delta`` shrinkage, in training stints: sum ||delta||^2 * this / n.
     delta_penalty: float = 300.0
     #: L2 on the shared prior map ``A``.
@@ -172,7 +183,7 @@ class FactorizationMachine(nn.Module):
             sizes |= {"w": d, "w2": d}
         if config.style:
             sizes |= {"u": d, "v": d}
-        if config.matchup or config.edges:
+        if config.matchup or (config.edges and config.edge_matchup):
             sizes |= {"a": d, "b": d}
         if config.edges:
             sizes |= {"oe": te, "de": te}
@@ -255,22 +266,21 @@ class FactorizationMachine(nn.Module):
         if not self.config.edges:
             raise ValueError("This model has no edge head")
         a = self.blocks(attacker_x, attacker_ids)
-        b = self.blocks(defender_x, defender_ids)
         n = attacker_x.shape[0]
         s = share.unsqueeze(-1)
-        de = torch.zeros(n, self.config.n_edge_targets, device=s.device)
-        de = de.index_add(0, pair_index, s * b["de"])
-        bv = torch.zeros(n, self.config.dim, device=s.device)
-        bv = bv.index_add(0, pair_index, s * b["b"])
         # Shares sum to 1 per attacker-game, so the constant terms pass through.
         h = (home.float() * 2 - 1).unsqueeze(-1)
-        return (
-            self.mu_edge
-            + h * self.hca_edge
-            + a["oe"]
-            + de
-            + (a["a"] * bv) @ self.readout_edge.T
-        )
+        out = self.mu_edge + h * self.hca_edge + a["oe"]
+        if self.config.edge_defender or self.config.edge_matchup:
+            b = self.blocks(defender_x, defender_ids)
+        if self.config.edge_defender:
+            de = torch.zeros(n, self.config.n_edge_targets, device=s.device)
+            out = out + de.index_add(0, pair_index, s * b["de"])
+        if self.config.edge_matchup:
+            bv = torch.zeros(n, self.config.dim, device=s.device)
+            bv = bv.index_add(0, pair_index, s * b["b"])
+            out = out + (a["a"] * bv) @ self.readout_edge.T
+        return out
 
     # Penalty -------------------------------------------------------------
 
@@ -456,7 +466,7 @@ def edge_loss(model: FactorizationMachine, batch: EdgeTensors) -> torch.Tensor:
 
 def train(
     model: FactorizationMachine,
-    stints: StintTensors,
+    stints: StintTensors | None,
     edges: EdgeTensors | None = None,
     *,
     epochs: int,
@@ -466,10 +476,17 @@ def train(
     device: str = "cpu",
 ) -> list[dict]:
     """Adam over shuffled stint batches, each paired with an edge batch of the
-    same share of the attacker-games. Returns per-epoch mean losses."""
+    same share of the attacker-games. Returns per-epoch mean losses.
+
+    A model without the stint loss (``stint_loss=False``) trains on edge
+    batches of ``batch_size`` attacker-games alone."""
     model.to(device)
     generator = torch.Generator().manual_seed(seed)
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
+    if not model.config.stint_loss:
+        return _train_edges_only(
+            model, edges, epochs, batch_size, optimizer, generator, device
+        )
     use_edges = model.config.edges and edges is not None and len(edges) > 0
     n = len(stints)
     history = []
@@ -500,6 +517,31 @@ def train(
             loss.backward()
             optimizer.step()
             totals["stint"] += stint.item() / steps
+            totals["penalty"] += model.penalty(n).item() / steps
+        history.append(totals)
+    return history
+
+
+def _train_edges_only(
+    model, edges, epochs, batch_size, optimizer, generator, device
+) -> list[dict]:
+    if edges is None or len(edges) == 0:
+        raise ValueError("An edge-only model needs edges")
+    n = len(edges)
+    history = []
+    for _ in range(epochs):
+        model.train()
+        order = torch.randperm(n, generator=generator).numpy()
+        steps = max(1, -(-n // batch_size))
+        totals = {"stint": 0.0, "edge": 0.0, "penalty": 0.0}
+        for step in range(steps):
+            games = order[step * batch_size : (step + 1) * batch_size]
+            edge = edge_loss(model, _to(edges.take(games), device)).mean()
+            loss = edge + model.penalty(n)
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
+            totals["edge"] += edge.item() / steps
             totals["penalty"] += model.penalty(n).item() / steps
         history.append(totals)
     return history

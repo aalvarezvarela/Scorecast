@@ -1,9 +1,15 @@
-"""Report of the phase 6 FM ladder (development folds 2016-12 -> 2019-06 only).
+"""Reports of the phase 6 FM ladders (development folds 2016-12 -> 2019-06 only).
 
-Reads the out-of-fold predictions of ``run_fm_ladder.sh`` (four variants x
-three seeds), the constant and RAPM baselines (``pretraining_baselines.py``)
-and the pretraining labels, and writes
-``artifacts/experiments/fm_ladder_dev/{report.md,metrics.json,folds.csv}``.
+``--ladder v1`` (``run_fm_ladder.sh``): the four FM variants trained from
+scratch against the constant and the monthly RAPM baselines.
+``--ladder residual`` (``run_fm_residual_ladder.sh``, decided 2026-10-15): the
+same variants learning residuals over the daily as-of RAPM, against RAPM
+alone, and the edge-head ablation (edge-only models: attacker; + defenders;
++ matchup product). Each ladder is declared in ``LADDERS``.
+
+Reads the out-of-fold predictions (three seeds per variant), the baselines
+(``pretraining_baselines.py``, ``pretraining_daily_rapm.py``) and the
+pretraining labels; writes ``<out>/{report.md,metrics.json,folds.csv}``.
 
 Declared before the runs:
 
@@ -27,6 +33,7 @@ from __future__ import annotations
 
 import argparse
 import json
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import numpy as np
@@ -49,22 +56,89 @@ from nba_ou.data_processing.player_graph.pretraining_oof import (
 from nba_ou.data_processing.player_graph.stint_graph import LABELS
 
 UNTIL = pd.Timestamp("2019-07-01")
-VARIANTS = ("additive", "no_matchup", "matchup", "matchup_edges")
 SEEDS = (0, 1, 2)
 EDGE_HALF_LIFE = 365.0
 ATTACKER_PRIOR_PP = 100.0
-COMPARISONS = (
-    ("rapm", "constant", "RAPM over constant"),
-    ("additive", "constant", "additive FM over constant"),
-    ("additive", "rapm", "additive FM over RAPM"),
-    ("no_matchup", "rapm", "chemistry/style FM over RAPM"),
-    ("matchup", "rapm", "matchup FM over RAPM"),
-    ("matchup_edges", "rapm", "matchup + edges FM over RAPM"),
-    ("no_matchup", "additive", "chemistry/style increment"),
-    ("matchup", "no_matchup", "matchup increment"),
-    ("matchup_edges", "matchup", "edge supervision increment"),
-)
 KEY_TARGETS = ("pts_per_poss", "poss_per_48")
+
+
+@dataclass(frozen=True)
+class Ladder:
+    """Variants (run ``fm_<variant>_s<seed>``), baselines (label -> stored
+    model, and whether its NaN targets take the constant), seed-averaged
+    references from other ladders, comparisons ``(better, worse, label)``,
+    and the edge models (label -> run prefix) with their comparisons."""
+
+    title: str
+    out: str
+    variants: tuple[str, ...]
+    baselines: dict[str, tuple[str, bool]]
+    comparisons: tuple[tuple[str, str, str], ...]
+    edge_models: dict[str, str]
+    edge_comparisons: tuple[tuple[str, str], ...]
+    references: tuple[str, ...] = field(default=())
+
+
+LADDERS = {
+    "v1": Ladder(
+        title="Phase 6 FM ladder, development folds 2016-12 -> 2019-06",
+        out="artifacts/experiments/fm_ladder_dev",
+        variants=("additive", "no_matchup", "matchup", "matchup_edges"),
+        baselines={"constant": ("constant", False), "rapm": ("rapm", False)},
+        comparisons=(
+            ("rapm", "constant", "RAPM over constant"),
+            ("additive", "constant", "additive FM over constant"),
+            ("additive", "rapm", "additive FM over RAPM"),
+            ("no_matchup", "rapm", "chemistry/style FM over RAPM"),
+            ("matchup", "rapm", "matchup FM over RAPM"),
+            ("matchup_edges", "rapm", "matchup + edges FM over RAPM"),
+            ("no_matchup", "additive", "chemistry/style increment"),
+            ("matchup", "no_matchup", "matchup increment"),
+            ("matchup_edges", "matchup", "edge supervision increment"),
+        ),
+        edge_models={"FM matchup + edges": "fm_matchup_edges"},
+        edge_comparisons=(
+            ("attacker norm", "constant"),
+            ("FM matchup + edges", "constant"),
+            ("FM matchup + edges", "attacker norm"),
+        ),
+    ),
+    "residual": Ladder(
+        title="Phase 6 FM residual ladder over daily RAPM, development folds "
+        "2016-12 -> 2019-06",
+        out="artifacts/experiments/fm_residual_ladder_dev",
+        variants=("res_additive", "res_no_matchup", "res_matchup", "res_matchup_edges"),
+        baselines={"constant": ("constant", False), "rapm": ("rapm_daily", True)},
+        references=("additive", "matchup"),
+        comparisons=(
+            ("rapm", "constant", "1. RAPM (daily) over constant"),
+            ("res_additive", "rapm", "2. RAPM + additive residual over RAPM"),
+            ("res_no_matchup", "rapm", "3. RAPM + chemistry/style over RAPM"),
+            ("res_matchup", "rapm", "4. RAPM + matchup over RAPM"),
+            ("res_matchup_edges", "rapm", "5. RAPM + matchup + edges over RAPM"),
+            ("res_no_matchup", "res_additive", "chemistry/style increment (3 vs 2)"),
+            ("res_matchup", "res_no_matchup", "matchup increment (4 vs 3)"),
+            ("res_matchup", "res_additive", "all interactions (4 vs 2)"),
+            ("res_matchup_edges", "res_matchup", "edge supervision increment (5 vs 4)"),
+            ("res_additive", "additive", "residual vs from scratch, additive"),
+            ("res_matchup", "matchup", "residual vs from scratch, matchup"),
+        ),
+        edge_models={
+            "edge-only: attacker": "fm_edge_attacker",
+            "edge-only: + defenders": "fm_edge_defender",
+            "edge-only: + matchup": "fm_edge_matchup",
+            "joint: residual matchup + edges": "fm_res_matchup_edges",
+        },
+        edge_comparisons=(
+            ("attacker norm", "constant"),
+            ("edge-only: attacker", "attacker norm"),
+            ("edge-only: + defenders", "edge-only: attacker"),
+            ("edge-only: + matchup", "edge-only: + defenders"),
+            ("edge-only: + matchup", "edge-only: attacker"),
+            ("joint: residual matchup + edges", "edge-only: + matchup"),
+        ),
+    ),
+}
 
 
 def gains(labels, weights, dates, better, worse, mask=None) -> pd.DataFrame:
@@ -74,13 +148,22 @@ def gains(labels, weights, dates, better, worse, mask=None) -> pd.DataFrame:
     return paired_gain(labels, weights, better, worse, dates, LABELS)
 
 
-def stint_section(root: Path, out: dict, lines: list[str]) -> None:
+def stint_section(ladder: Ladder, root: Path, out: dict, lines: list[str]) -> None:
+    VARIANTS, COMPARISONS = ladder.variants, ladder.comparisons  # noqa: N806
     data = load_stints(root, range(2016, 2019), until=UNTIL)
     store = PredictionStore(root / "oof")
     read = lambda name: store.read(name, data.game_id, data.seg_idx)  # noqa: E731
     per_seed = {v: [read(f"fm_{v}_s{s}") for s in SEEDS] for v in VARIANTS}
-    models = {"constant": read("constant"), "rapm": read("rapm")}
+    constant = read("constant")
+    models = {}
+    for label, (stored, fill) in ladder.baselines.items():
+        values = read(stored)
+        models[label] = np.where(np.isnan(values), constant, values) if fill else values
     models |= {v: np.mean(per_seed[v], axis=0) for v in VARIANTS}
+    models |= {
+        r: np.mean([read(f"fm_{r}_s{s}") for s in SEEDS], axis=0)
+        for r in ladder.references
+    }
     common = np.ones(data.labels.shape, bool)
     for values in [*models.values(), *(p for ps in per_seed.values() for p in ps)]:
         common &= np.isfinite(values)
@@ -224,7 +307,9 @@ def _decayed(frame, cutoff, keys, columns):
     return parts.groupby([frame[k] for k in keys]).sum() if keys else parts.sum()
 
 
-def edge_report(root: Path, out: dict, lines: list[str], load_edges) -> None:
+def edge_report(
+    ladder: Ladder, root: Path, out: dict, lines: list[str], load_edges
+) -> None:
     edges = load_edges(root, (2017, 2018))
     frame = pd.DataFrame(
         {
@@ -268,17 +353,20 @@ def edge_report(root: Path, out: dict, lines: list[str], load_edges) -> None:
         )
         for name, values in predictions.items()
     }
-    seeds = []
-    for s in SEEDS:
-        files = sorted(
-            (root / "edges_oof" / f"fm_matchup_edges_s{s}").glob("fold=*.parquet")
-        )
-        fm = pd.concat([pd.read_parquet(f) for f in files], ignore_index=True)
-        merged = frame[["game_id", "off_player_id"]].merge(
-            fm, on=["game_id", "off_player_id"], how="left", validate="one_to_one"
-        )
-        seeds.append(merged[list(EDGE_TARGETS)].to_numpy(float))
-    models["FM matchup + edges"] = np.mean(seeds, axis=0)
+    per_seed = {}
+    for label, prefix in ladder.edge_models.items():
+        per_seed[label] = []
+        for s in SEEDS:
+            files = sorted(
+                (root / "edges_oof" / f"{prefix}_s{s}").glob("fold=*.parquet")
+            )
+            fm = pd.concat([pd.read_parquet(f) for f in files], ignore_index=True)
+            merged = frame[["game_id", "off_player_id"]].merge(
+                fm, on=["game_id", "off_player_id"], how="left", validate="one_to_one"
+            )
+            per_seed[label].append(merged[list(EDGE_TARGETS)].to_numpy(float))
+        models[label] = np.mean(per_seed[label], axis=0)
+    seeds = [v for values in per_seed.values() for v in values]
     common = np.ones(len(frame), bool)
     for values in [*models.values(), *seeds]:
         common &= np.isfinite(values).all(axis=1)
@@ -300,11 +388,7 @@ def edge_report(root: Path, out: dict, lines: list[str], load_edges) -> None:
     out["edge_mse"] = mse.to_dict()
     lines.append(mse.to_markdown(floatfmt=".6g") + "\n")
     rows = []
-    for better, worse in (
-        ("attacker norm", "constant"),
-        ("FM matchup + edges", "constant"),
-        ("FM matchup + edges", "attacker norm"),
-    ):
+    for better, worse in ladder.edge_comparisons:
         for scope, mask in [("all", np.ones(len(y), bool))] + [
             (f"{s}-{(s + 1) % 100:02d}", seasons == s) for s in (2017, 2018)
         ]:
@@ -330,9 +414,37 @@ def edge_report(root: Path, out: dict, lines: list[str], load_edges) -> None:
     edge_table = pd.DataFrame(rows)
     out["edge_gains"] = edge_table.to_dict(orient="records")
     lines.append(edge_table.to_markdown(index=False, floatfmt="+.3f") + "\n")
+    paired = []
+    for better, worse in ladder.edge_comparisons:
+        if better not in per_seed or worse not in per_seed:
+            continue
+        for s in SEEDS:
+            g = paired_gain(
+                y,
+                w,
+                per_seed[better][s][common][:, None, :],
+                per_seed[worse][s][common][:, None, :],
+                dates,
+                EDGE_TARGETS,
+            )
+            paired.append(
+                {"comparison": f"{better} over {worse}", "seed": s}
+                | g["gain_pct"].to_dict()
+            )
+    if paired:
+        out["edge_per_seed"] = paired
+        lines.append("Edge increments seed by seed (gain %, paired seeds):\n")
+        lines.append(
+            pd.DataFrame(paired).to_markdown(index=False, floatfmt="+.3f") + "\n"
+        )
 
 
-def training_section(root: Path, out: dict, lines: list[str]) -> None:
+def training_section(ladder: Ladder, root: Path, out: dict, lines: list[str]) -> None:
+    VARIANTS = (  # noqa: N806
+        *ladder.variants,
+        *(p.removeprefix("fm_") for p in ladder.edge_models.values()),
+    )
+    VARIANTS = tuple(dict.fromkeys(VARIANTS))  # noqa: N806
     rows, path_rows = [], []
     for v in VARIANTS:
         for s in SEEDS:
@@ -340,7 +452,7 @@ def training_section(root: Path, out: dict, lines: list[str]) -> None:
             for path in logs:
                 log = json.loads(path.read_text())
                 hist = log["history"]
-                stint = [h["stint"] for h in hist]
+                stint = [h["stint"] or h["edge"] for h in hist]
                 rows.append(
                     {
                         "variant": v,
@@ -384,9 +496,10 @@ def training_section(root: Path, out: dict, lines: list[str]) -> None:
     lines.append(path_rows.to_markdown(floatfmt=".4f") + "\n")
 
 
-def overfit_section(root: Path, out: dict, lines: list[str]) -> None:
+def overfit_section(ladder: Ladder, root: Path, out: dict, lines: list[str]) -> None:
     """Training loss vs the same fold's out-of-fold loss, both standardized
     with the fold's own training scaler (seed 0)."""
+    VARIANTS = ladder.variants  # noqa: N806
     data = load_stints(root, range(2016, 2019), until=UNTIL)
     store = PredictionStore(root / "oof")
     rows = []
@@ -396,6 +509,10 @@ def overfit_section(root: Path, out: dict, lines: list[str]) -> None:
         for path in sorted((root / "fm" / name).glob("fold=*.pt")):
             payload = torch.load(path, weights_only=True)
             label = payload["extra"]["fold"]
+            if payload["extra"].get("uncorrected_residual_targets"):
+                # No training residual yet: its scaler is the identity, so the
+                # standardized loss is not comparable.
+                continue
             fold = next(f for f in monthly_folds(data.game_date) if f.label == label)
             _, mask = fold.masks(data.game_date)
             std = np.asarray(payload["standardization"]["targets"]["std"])
@@ -417,6 +534,10 @@ def overfit_section(root: Path, out: dict, lines: list[str]) -> None:
         "## Training vs out-of-fold loss (standardized, mean over targets, seed 0)\n"
     )
     lines.append(
+        "Folds whose residual targets had no training data (the first) are left "
+        "out.\n"
+    )
+    lines.append(
         table.groupby("variant")[["train", "out_of_fold", "gap"]]
         .mean()
         .reindex(list(VARIANTS))
@@ -436,10 +557,11 @@ def main() -> None:
 
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--local-root", type=Path, default=Path("data"))
-    parser.add_argument(
-        "--out", type=Path, default=Path("artifacts/experiments/fm_ladder_dev")
-    )
+    parser.add_argument("--ladder", choices=list(LADDERS), default="v1")
+    parser.add_argument("--out", type=Path)
     args = parser.parse_args()
+    ladder = LADDERS[args.ladder]
+    args.out = args.out or Path(ladder.out)
     root = args.local_root / ROOT / VERSION
     spec = importlib.util.spec_from_file_location(
         "fm_oof", Path(__file__).with_name("fm_oof.py")
@@ -448,15 +570,17 @@ def main() -> None:
     spec.loader.exec_module(fm_oof)
     out: dict = {
         "until": str(UNTIL.date()),
-        "variants": VARIANTS,
+        "ladder": args.ladder,
+        "variants": ladder.variants,
+        "edge_models": ladder.edge_models,
         "seeds": SEEDS,
         "attacker_prior_pp": ATTACKER_PRIOR_PP,
     }
-    lines = ["# Phase 6 FM ladder, development folds 2016-12 -> 2019-06\n"]
-    stint_section(root, out, lines)
-    edge_report(root, out, lines, fm_oof.load_edges)
-    training_section(root, out, lines)
-    overfit_section(root, out, lines)
+    lines = [f"# {ladder.title}\n"]
+    stint_section(ladder, root, out, lines)
+    edge_report(ladder, root, out, lines, fm_oof.load_edges)
+    training_section(ladder, root, out, lines)
+    overfit_section(ladder, root, out, lines)
     args.out.mkdir(parents=True, exist_ok=True)
     (args.out / "report.md").write_text("\n".join(lines))
     (args.out / "metrics.json").write_text(
