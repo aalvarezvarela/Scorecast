@@ -170,6 +170,26 @@ Handled in two steps:
 
 Next: step 4, wiring the loaders.
 
+### Done: step 4 and T3, the loaders read from S3 (a9918c9, 2026-10-15)
+
+- The seven loaders call `season_tables.read_through` first and fall back to
+  their own query when S3 is off (`NBA_OU_S3_SEASONS=0`), not configured,
+  unreachable, or the request isn't a plain season list (all rows, extra
+  games only, All-Star player filters). Taped builds turn it off.
+- Seasons a table has no rows for (Yahoo before 2020, sportsbook 2017) are
+  never stored, so they stay in the database query; they return nothing.
+- Acceptance (`artifacts/perf/s3_accept_a9918c9/SUMMARY.txt`):
+  - live A/B on the same day, with one warm line-history cache shared by both
+    sides, so S3 is the only difference:
+
+    | Build | S3 off | S3 on | Dataset | Scoring |
+    |---|---:|---:|---|---|
+    | closing, 2 seasons | 211 s | 183 s | EQUAL | n/a |
+    | intermediate, 2025 | 564 s | 493 s | EQUAL | EQUAL |
+
+  - the four taped replays against `ref_e0f8bb0` (database path, S3 off):
+    all EQUAL, dataset and scoring.
+
 ## Tests
 
 None of them need tonight's games.
@@ -197,8 +217,8 @@ built once for both.
 1. ~~T0: measure row-order sensitivity.~~ Done: it was sensitive at rounding level.
 2. ~~S3 store, read-through layer and refresher script, plus T1.~~ Done (9bece99).
 3. ~~Deterministic loader order, new references.~~ Done (e0f8bb0, `ref_e0f8bb0`).
-4. Wire the loaders, one commit each, with T2 per loader.
-5. T3, then the past-date `scheduled_data` builder and T4.
+4. ~~Wire the loaders, with T2 per loader.~~ Done (a9918c9).
+5. ~~T3.~~ Done. Next: the past-date `scheduled_data` builder and T4.
 6. The refresher in the daily job; the consumer in the prediction workflow; T5,
    T6 and T7.
 
