@@ -273,6 +273,32 @@ validates each cached (table, season) with a read-only server-side
 fingerprint (row count + content hash, 1.4-2.3 s for a line-history season
 against 15-29 s for the repair fetch).
 
+**Phase 1, iteration 3 (c3e37f2, 66414c2, 69a2445; 2026-10-15): line-history
+cache, stopped there.**
+- `nba_ou/postgre_db/input_cache.py`: `SeasonCache` keeps one loader result per
+  season under `data/cache/inputs/<name>/<key>/`. It is pickled, so a hit is
+  the fetched frame exactly. The key covers the loaders' source, the arguments,
+  the fingerprint SQL and the pandas/numpy versions.
+- An entry is reused only while `line_history_season_fingerprint` is
+  unchanged: counts and row hashes of the season's `lh_line`, its games (a
+  UNION; an `OR ... IN` version took 10+ min a season), `lh_market`,
+  `lh_book`, and how many of its games have tipped off (the closing query reads
+  `now()`). The fingerprint runs before the fetch, has a 120 s timeout, and if
+  it fails the season is fetched without storing.
+- Used by the closing-line repair (`fetch_closing_ticks`) and the intermediate
+  pre-game ticks (`fetch_pregame_ticks`). The DB repair scripts read the
+  server directly; taped reference builds bypass it; `NBA_OU_INPUT_CACHE=0`
+  disables it.
+- Live closing 2-season check at 69a2445
+  (`artifacts/perf/cache_live_69a2445`): no cache 292 s, cold 309 s, warm
+  216 s; cold and warm both bit-identical to no cache. The live intermediate
+  check of the same commit runs detached into
+  `artifacts/perf/cache_live_inter_69a2445/SUMMARY.txt`.
+- Not done, by decision (2026-10-15): the Supabase tables (players, box
+  history, games, odds, referees, injuries) stay uncached. Some of those
+  queries have no `ORDER BY`, so splitting them by season could also change
+  row order.
+
 ### Phase 3 — Intermediate: stop recomputing per horizon
 
 The per-horizon injury stage is 53% of the intermediate build.
