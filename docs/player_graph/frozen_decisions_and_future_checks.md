@@ -1696,6 +1696,97 @@ poetry install --with graph
 poetry run python scripts/player_graph/benchmark_pretraining.py --out artifacts/experiments/pretraining_benchmark_gpu.json
 ```
 
+## Phase 6, step 3: the FM ladder on the development folds (2026-10-15)
+
+**Design, declared before the runs** (`experiments/runners/run_fm_ladder.sh`,
+report `fm_ladder_report.py`; outputs in `artifacts/experiments/fm_ladder_dev/`,
+predictions and per-fold checkpoints and logs under `pretraining/v1/{oof,fm,edges_oof}/`):
+
+- **Variants:** `additive`, `no_matchup` (chemistry and style), `matchup`, and
+  `matchup_edges` (time-attributed edge loss, weight 1.0: provisional, not
+  optimized).
+- **Training:** `FMConfig` defaults (dimension 16, `δ` penalty 300), 3 epochs,
+  batch 1,024, learning rate 3e-3, no subsampling, CPU.
+- **Folds:** the same 25 monthly folds (2016-12 → 2019-06) for every variant;
+  each trains on every earlier stint.
+- **Losses:** the stint loss is the mean over targets of the exposure-weighted
+  MSE. The edge loss is the same per attacker-game, weighted by partial
+  possessions only.
+- **Seeds:** 0, 1 and 2 per variant, each fold seeded from (seed, fold), so
+  reruns are bit-identical and a resumed run equals an uninterrupted one. The
+  primary predictions are each variant's mean over its seeds.
+- **Scoring:** every model is scored on the same 110,147 stints. Gains are
+  paired, with SEs clustered by date.
+- **Edge baselines:** a constant (365-day half-life) and an attacker norm,
+  his decayed rate shrunk toward the constant with a fixed 100 partial
+  possessions (a reference value, not tuned).
+- Nothing was tuned or changed after the runs started.
+
+**Stint targets, gain in % of the reference's MSE (t):**
+
+| Comparison | Points / poss. | Turnovers | Pace | 3PA/FGA | FTA/FGA | OREB rate |
+| --- | --- | --- | --- | --- | --- | --- |
+| RAPM over constant | +0.57 (13.1) | — | +1.72 (20.9) | — | — | — |
+| Additive FM over constant | +0.59 (12.8) | +0.65 (13.3) | +1.22 (17.5) | +5.35 (36.7) | +0.84 (16.4) | +1.45 (18.4) |
+| Additive FM over RAPM | +0.02 (0.7) | +0.65 | **−0.51 (−9.0)** | +5.35 | +0.84 | +1.45 |
+| Matchup FM over RAPM | +0.03 (1.0) | +0.64 | −0.26 (−4.6) | +5.39 | +0.86 | +1.44 |
+| Chemistry / style increment | +0.004 (0.2) | −0.001 | **+0.23 (8.0)** | +0.05 (2.3) | +0.01 | −0.05 (−2.1) |
+| Matchup increment | +0.009 (1.2) | −0.013 | +0.021 (1.8) | −0.008 | +0.006 | +0.037 (3.0) |
+| Edge-supervision increment | −0.028 (−1.3) | +0.004 | +0.008 | +0.012 | −0.066 (−2.6) | −0.017 |
+
+**By season.**
+
+- The additive FM's pace deficit against RAPM is there in every season
+  (−0.75, −0.47, −0.38).
+- The chemistry / style pace increment is positive in every season (+0.28,
+  +0.10, +0.33) and in 18 of 25 folds. Seed by seed it is +0.21, +0.20 and
+  +0.05.
+- The matchup increment on points is positive in 18 of 25 folds but tiny
+  (+0.009 ± 0.007).
+- Per seed, the matchup and edge increments change sign.
+
+**Training noise.** The spread of MSE across the three seeds of a variant is
+0.04-0.22% of the constant's MSE, larger than the matchup and edge
+increments.
+
+**Edge targets** (51,345 attacker-games, 2017-11 → 2019-06, gain in % of the reference's MSE):
+
+| Comparison | FGA / pp | 3PA / pp |
+| --- | --- | --- |
+| Attacker norm over constant | +35.8 ± 0.6 | +47.7 ± 0.6 |
+| FM (matchup + edges) over constant | +38.1 ± 0.6 | +49.9 ± 0.6 |
+| FM over attacker norm | **+3.5 ± 0.2** | **+4.3 ± 0.3** |
+
+The FM's edge gain over the attacker norm is the same in both seasons. It
+mixes attacker profile, defender terms and the matchup product; this run
+cannot attribute it.
+
+**Training.** 0.8 (additive) to 1.8 (edges) minutes per seed for all 25
+folds. No non-finite loss. The training loss rose over the epochs in at most
+2 folds per variant, by under 0.001. The gap between training and
+out-of-fold standardized loss is 0.012-0.014 for every variant. Its fold
+pattern (largest for May-June and October, negative in mid-season) is the
+same across variants, so it reflects the months, not overfitting by the
+interaction terms.
+
+**Reading (development only).**
+
+1. **Learned interactions add nothing measurable on points per possession
+   beyond additive RAPM.** No variant beats RAPM: +0.005 to +0.033%, t ≤ 1.0.
+   The matchup term's increment is +0.009 ± 0.007, below the seed band.
+2. **The FM's large gains are additive, not interactions.** They come from
+   the four targets RAPM does not model (3PA/FGA +5.4%, OREB +1.4%, FTA/FGA
+   +0.8%, turnovers +0.65%). Even 3PA/FGA, where a non-additive lineup effect
+   had been measured, gains only +0.05% from interactions.
+3. **Pace:** chemistry / style interactions add a small, consistent amount
+   (+0.23%). The FM's additive backbone still predicts pace worse than RAPM
+   (−0.5%). RAPM's pace model is a separate symmetric sum over all ten
+   players, fitted with seconds weights by ridge to convergence; the FM's
+   pace comes from the side-specific `off − def` structure with 3 epochs.
+4. **Edge supervision with weight 1.0 does not help the stint targets.** It
+   gives −0.03% on points and −0.07% on FTA/FGA, within or near noise. The
+   edge head itself learns real structure: +3.5-4.3% over the attacker norm.
+
 ## Future checks
 
 ### Guarding weights (`expected_guard`)

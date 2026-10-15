@@ -164,6 +164,9 @@ def main() -> None:
             grown = PlayerVocab(vocab.ids)
             grown.extend(new_vocab.ids)
             new_vocab = grown
+        # Seeded per fold, so a resumed run equals an uninterrupted one.
+        fold_seed = args.seed * 10_000 + int(fold.checkpoint.strftime("%y%m"))
+        torch.manual_seed(fold_seed)
         new_model = FactorizationMachine(config, len(new_vocab))
         if model is not None:
             warm_start(new_model, model, new_vocab, vocab)
@@ -179,7 +182,7 @@ def main() -> None:
             epochs=args.epochs,
             batch_size=args.batch_size,
             lr=args.lr,
-            seed=args.seed,
+            seed=fold_seed,
             device=args.device,
         )
         target = stints.subset(predict_mask)
@@ -197,10 +200,8 @@ def main() -> None:
             "max_train": args.max_train,
             "dataset": str(root),
         }
-        save_checkpoint(
-            ckpt, model, vocab, std, {**meta, "fold": fold.label, "history": history}
-        )
-        store.write(name, fold, target.game_id, target.seg_idx, predictions, meta)
+        # The prediction store's fold file is written last: it marks the fold
+        # done, so an interrupted fold is redone whole on the next run.
         if predict_edges_batch is not None and train_edges is not None:
             values = predict_edges(
                 model, edge_tensors(predict_edges_batch, vocab, std), std
@@ -215,6 +216,21 @@ def main() -> None:
                 frame[t] = values[:, k]
             edge_dir.mkdir(parents=True, exist_ok=True)
             frame.to_parquet(edge_dir / f"fold={fold.label}.parquet", index=False)
+        log = {
+            **meta,
+            "fold": fold.label,
+            "history": history,
+            "seconds": time.time() - started,
+            "train_stints": len(train_stints),
+            "train_attacker_games": len(train_edges) if train_edges is not None else 0,
+            "players": len(vocab),
+            "predicted_stints": len(target),
+        }
+        save_checkpoint(ckpt, model, vocab, std, log)
+        (ckpt_dir / f"fold={fold.label}.json").write_text(
+            json.dumps(log, indent=2, default=str) + "\n"
+        )
+        store.write(name, fold, target.game_id, target.seg_idx, predictions, meta)
         last = history[-1]
         print(
             f"{fold.label}: train {len(train_stints):,} stints"
