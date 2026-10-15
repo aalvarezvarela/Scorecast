@@ -48,6 +48,7 @@ import numpy as np
 import pandas as pd
 
 from .report_state import UNCOUNTED_REASON_CATEGORIES, InjuryReportState
+from nba_ou.postgre_db.row_order import read_sql_canonical
 
 #: Statuses whose listings get a play probability, an effect and a league rate.
 HISTORY_STATUSES: tuple[str, ...] = ("questionable", "probable")
@@ -205,7 +206,7 @@ def load_player_box_history(season_years: list[int] | None = None) -> pd.DataFra
           AND p.season_year >= 2017
     """
     with connect_nba_db("supabase") as conn:
-        box = pd.read_sql_query(
+        box = read_sql_canonical(
             query,
             conn,
             params={

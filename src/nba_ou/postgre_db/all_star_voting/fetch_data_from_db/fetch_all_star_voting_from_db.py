@@ -7,6 +7,7 @@ from nba_ou.postgre_db.config.db_config import (
     connect_all_star_voting_db,
     get_schema_name_all_star_voting,
 )
+from nba_ou.postgre_db.row_order import read_sql_canonical
 
 
 def _normalize_optional_list(values) -> list:
@@ -89,8 +90,8 @@ def load_all_star_voting_from_db(
 
         query = query_obj.as_string(conn)
         if query_params:
-            return pd.read_sql_query(query, conn, params=tuple(query_params))
-        return pd.read_sql_query(query, conn)
+            return read_sql_canonical(query, conn, params=tuple(query_params))
+        return read_sql_canonical(query, conn)
 
     except Exception as e:
         print(f"Error loading all-star voting data from database: {e}")

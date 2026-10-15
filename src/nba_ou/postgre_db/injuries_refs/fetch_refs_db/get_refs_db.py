@@ -1,6 +1,7 @@
 import pandas as pd
 from nba_ou.postgre_db.config.db_config import connect_nba_db, get_schema_name_refs
 from psycopg import sql
+from nba_ou.postgre_db.row_order import read_sql_canonical
 
 
 def _normalize_game_ids(game_ids) -> list[str]:
@@ -71,9 +72,9 @@ def get_refs_data_from_db(seasons=None, extra_game_ids=None):
 
         query = query_obj.as_string(conn)
         if query_params:
-            df_refs = pd.read_sql_query(query, conn, params=tuple(query_params))
+            df_refs = read_sql_canonical(query, conn, params=tuple(query_params))
         else:
-            df_refs = pd.read_sql_query(query, conn)
+            df_refs = read_sql_canonical(query, conn)
 
         # Convert column names to uppercase to match expected format
         df_refs.columns = df_refs.columns.str.upper()

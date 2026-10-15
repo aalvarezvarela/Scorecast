@@ -4,6 +4,7 @@ from nba_ou.postgre_db.config.db_config import (
     get_schema_name_odds_yahoo,
 )
 from psycopg import sql
+from nba_ou.postgre_db.row_order import read_sql_canonical
 
 
 def _normalize_game_ids(game_ids) -> list[str]:
@@ -73,9 +74,9 @@ def load_odds_yahoo_from_db(seasons=None, extra_game_ids=None) -> pd.DataFrame |
 
         query = query_obj.as_string(conn)
         if query_params:
-            df = pd.read_sql_query(query, conn, params=tuple(query_params))
+            df = read_sql_canonical(query, conn, params=tuple(query_params))
         else:
-            df = pd.read_sql_query(query, conn)
+            df = read_sql_canonical(query, conn)
 
         print(f"Loaded {len(df)} Yahoo odds records from database")
         return df

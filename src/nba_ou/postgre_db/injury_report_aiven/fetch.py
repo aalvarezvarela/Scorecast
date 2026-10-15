@@ -31,6 +31,7 @@ import pandas as pd
 import psycopg
 
 from .schema import SCHEMA
+from nba_ou.postgre_db.row_order import read_sql_canonical
 
 _STATUS_AS_OF = f"""
     SELECT s.game_id,
@@ -85,7 +86,7 @@ def status_as_of(
     by up to an hour.
     """
     _require_aware(as_of)
-    return pd.read_sql_query(
+    return read_sql_canonical(
         _STATUS_AS_OF, conn, params={"game_ids": list(game_ids), "as_of": as_of}
     )
 
@@ -102,10 +103,10 @@ def coverage_at(
     favourable known.
     """
     _require_aware(as_of)
-    filings = pd.read_sql_query(
+    filings = read_sql_canonical(
         _COVERAGE, conn, params={"game_ids": list(game_ids), "as_of": as_of}
     )
-    last = pd.read_sql_query(_LAST_REPORT, conn, params={"as_of": as_of})
+    last = read_sql_canonical(_LAST_REPORT, conn, params={"as_of": as_of})
     filings.attrs["last_report"] = None if last.empty else last["last_report"].iloc[0]
     return filings
 
@@ -204,9 +205,9 @@ def report_state_at_snapshots(
         "as_of": [value.to_pydatetime() for value in timestamps],
     }
     return (
-        pd.read_sql_query(_STATUS_AT_SNAPSHOTS, conn, params=params),
-        pd.read_sql_query(_FILING_AT_SNAPSHOTS, conn, params=params),
-        pd.read_sql_query(_REPORT_AGE_AT_SNAPSHOTS, conn, params=params),
+        read_sql_canonical(_STATUS_AT_SNAPSHOTS, conn, params=params),
+        read_sql_canonical(_FILING_AT_SNAPSHOTS, conn, params=params),
+        read_sql_canonical(_REPORT_AGE_AT_SNAPSHOTS, conn, params=params),
     )
 
 
@@ -301,7 +302,7 @@ def last_status_before_tip(
     conn: psycopg.Connection, season_years: list[int] | None = None
 ) -> pd.DataFrame:
     """Each listed player's status on the last report published before tipoff."""
-    return pd.read_sql_query(
+    return read_sql_canonical(
         _LAST_STATUS_BEFORE_TIP, conn, params=_season_params(season_years)
     )
 
@@ -313,14 +314,14 @@ def filing_at_tip(
 
     A team-game with no row had no report listing its game before tip.
     """
-    return pd.read_sql_query(_FILING_AT_TIP, conn, params=_season_params(season_years))
+    return read_sql_canonical(_FILING_AT_TIP, conn, params=_season_params(season_years))
 
 
 def report_age_at_tip(
     conn: psycopg.Connection, season_years: list[int] | None = None
 ) -> pd.DataFrame:
     """Minutes between the last parsed report and each game's tipoff."""
-    return pd.read_sql_query(
+    return read_sql_canonical(
         _REPORT_AGE_AT_TIP, conn, params=_season_params(season_years)
     )
 
@@ -332,14 +333,14 @@ def listed_status_events(
 ) -> pd.DataFrame:
     """Every game a player held one of ``statuses`` at any point before tip."""
     params = _season_params(season_years) | {"statuses": list(statuses)}
-    return pd.read_sql_query(_LISTED_STATUS_EVENTS, conn, params=params)
+    return read_sql_canonical(_LISTED_STATUS_EVENTS, conn, params=params)
 
 
 def listed_pairs(
     conn: psycopg.Connection, season_years: list[int] | None = None
 ) -> pd.DataFrame:
     """Every (game, player) with any pre-tip designation, of any status."""
-    return pd.read_sql_query(_LISTED_PAIRS, conn, params=_season_params(season_years))
+    return read_sql_canonical(_LISTED_PAIRS, conn, params=_season_params(season_years))
 
 
 # --------------------------------------------------------------------------------
@@ -415,21 +416,21 @@ def status_spans(
     A NULL status means the player left the report; it is a change, so it is
     kept rather than filtered out as the as-of reads do.
     """
-    return pd.read_sql_query(_STATUS_SPANS, conn, params=_season_params(season_years))
+    return read_sql_canonical(_STATUS_SPANS, conn, params=_season_params(season_years))
 
 
 def filing_spans(
     conn: psycopg.Connection, season_years: list[int] | None = None
 ) -> pd.DataFrame:
     """Every pre-tip filing span per team-game, with its ``submitted`` flag."""
-    return pd.read_sql_query(_FILING_SPANS, conn, params=_season_params(season_years))
+    return read_sql_canonical(_FILING_SPANS, conn, params=_season_params(season_years))
 
 
 def team_game_schedule(
     conn: psycopg.Connection, season_years: list[int] | None = None
 ) -> pd.DataFrame:
     """One row per (game, team), with the team's previous game by tip-off."""
-    return pd.read_sql_query(
+    return read_sql_canonical(
         _TEAM_GAME_SCHEDULE, conn, params=_season_params(season_years)
     )
 

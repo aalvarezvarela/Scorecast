@@ -4,6 +4,7 @@ from nba_ou.postgre_db.config.db_config import (
     get_schema_name_injuries,
 )
 from psycopg import sql
+from nba_ou.postgre_db.row_order import read_sql_canonical
 
 
 def _normalize_game_ids(game_ids) -> list[str]:
@@ -74,9 +75,9 @@ def get_injury_data_from_db(seasons=None, extra_game_ids=None):
 
         query = query_obj.as_string(conn)
         if query_params:
-            df_injuries = pd.read_sql_query(query, conn, params=tuple(query_params))
+            df_injuries = read_sql_canonical(query, conn, params=tuple(query_params))
         else:
-            df_injuries = pd.read_sql_query(query, conn)
+            df_injuries = read_sql_canonical(query, conn)
 
         # Convert column names to uppercase to match expected format
         df_injuries.columns = df_injuries.columns.str.upper()
