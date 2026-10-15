@@ -117,6 +117,25 @@ Handled in two steps:
    reference build. It may only change rounding-level bits, never a value
    beyond floating-point noise, and the comparison must show that.
 
+### Done: T0 and step 3 (2026-10-15)
+
+- **T0** (`scripts/perf/row_order.py`, `reference_build.py --shuffle-seed`):
+  replays with every result reordered as its ORDER BY permits. The builds
+  did depend on the server's row order, at rounding level only: 23-30
+  closing and 46-49 intermediate columns per seed, up to 1.4e-14
+  (injury-status questionable/probable effects, form and expected sums,
+  intermediate `*_SNAP_NEWS_*`). The scoring file never changed.
+- **Step 3** (e0f8bb0): `nba_ou/postgre_db/row_order.read_sql_canonical` in
+  every Supabase and injury-report loader. It keeps the runs the ORDER BY
+  fixes, exactly as the server sent them, and sorts the rest by the other
+  columns (text by `str`, never by collation).
+- **Acceptance** (`artifacts/perf/order_accept_e0f8bb0`): all four builds
+  EQUAL at `--rtol 1e-12` against `ref_7bd96a9`; the exact differences are only
+  those columns (max 2.8e-14); the scoring files are bit-identical; shuffled
+  replays are bit-identical to the unshuffled one.
+- **New references**: `artifacts/perf/ref_e0f8bb0/` (the 7bd96a9 tapes, outputs
+  replayed at e0f8bb0). Every later change is gated on these with `--exact`.
+
 ## Tests
 
 None of them need tonight's games.
@@ -141,10 +160,9 @@ built once for both.
 
 ## Order of work
 
-1. T0: measure row-order sensitivity. It decides whether step 3 exists.
+1. ~~T0: measure row-order sensitivity.~~ Done: it was sensitive at rounding level.
 2. S3 store, read-through layer and refresher script, plus T1.
-3. Only if T0 failed: deterministic loader order, new references, exact
-   comparison.
+3. ~~Deterministic loader order, new references.~~ Done (e0f8bb0, `ref_e0f8bb0`).
 4. Wire the loaders, one commit each, with T2 per loader.
 5. T3, then the past-date `scheduled_data` builder and T4.
 6. The refresher in the daily job; the consumer in the prediction workflow; T5,
