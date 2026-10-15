@@ -136,6 +136,40 @@ Handled in two steps:
 - **New references**: `artifacts/perf/ref_e0f8bb0/` (the 7bd96a9 tapes, outputs
   replayed at e0f8bb0). Every later change is gated on these with `--exact`.
 
+### Done: step 2, the S3 store (9bece99, 2026-10-15)
+
+- `nba_ou/postgre_db/season_store.py`: Parquet pieces under
+  `s3://adrian-nba-model-registry-eu-west-1/train_data/input_cache/v1/<schema.table>/<key>/season=YYYY.{parquet,json}`.
+  It is under `train_data/` because `adrian-personal-cli` can write only
+  `models/`, `train_data/` and `backups/`, so a root `input_cache/` was
+  refused.
+  - A piece is stored only if Parquet gives it back exactly.
+  - The key covers the season query, the row order, pandas' conversion and
+    the library versions; changing the reading side keeps the store valid.
+- `nba_ou/postgre_db/season_tables.py`: the seven `SELECT *` loaders
+  (players, games, both odds tables, injuries, referees, All-Star).
+  - `read_season_table`: stored past seasons validated within 36 h, plus one
+    query for the rest, assembled exactly.
+  - `refresh_season_table`: the fingerprint comes first; unchanged seasons
+    are only touched, changed ones are uploaded.
+- `scripts/refresh_input_cache.py`: the refresher; about 30 s when nothing
+  changed, about 2.5 min for a full upload.
+- Exactness:
+  - every `SELECT *` result on the four tapes reassembles exactly
+    (`scripts/perf/check_season_assembly.py`);
+  - live, all seven tables are identical to the single query
+    (`scripts/perf/check_season_tables_live.py`).
+  - Found on the way: `NUMERIC` NaN (`Decimal('NaN')`) in old odds seasons,
+    which is why float columns keep NaN when reassembled.
+- Speed, live from this machine:
+
+  | Scope | Supabase | S3 past seasons + Supabase current |
+  |---|---:|---:|
+  | 3 seasons + current (today's prediction) | ~23 s | ~7 s (`nba_players` 17 -> 4-5 s) |
+  | all seasons (Phase 4 scope) | ~58 s | ~17 s (`nba_players` 43 -> 12 s) |
+
+Next: step 4, wiring the loaders.
+
 ## Tests
 
 None of them need tonight's games.
@@ -161,7 +195,7 @@ built once for both.
 ## Order of work
 
 1. ~~T0: measure row-order sensitivity.~~ Done: it was sensitive at rounding level.
-2. S3 store, read-through layer and refresher script, plus T1.
+2. ~~S3 store, read-through layer and refresher script, plus T1.~~ Done (9bece99).
 3. ~~Deterministic loader order, new references.~~ Done (e0f8bb0, `ref_e0f8bb0`).
 4. Wire the loaders, one commit each, with T2 per loader.
 5. T3, then the past-date `scheduled_data` builder and T4.
