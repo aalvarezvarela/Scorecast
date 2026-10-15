@@ -49,7 +49,9 @@ def main() -> None:
     args = parser.parse_args()
     until = pd.Timestamp(args.until)
     root = args.local_root / ROOT / VERSION
-    seasons = range(2016, until.year + 1)
+    last = until - pd.Timedelta(days=1)
+    # Seasons start in the autumn: April 2026 belongs to 2025-26.
+    seasons = range(2016, (last.year if last.month >= 9 else last.year - 1) + 1)
     data = load_stints(root, seasons, until=until)
     history = read_stints(list(seasons), local_root=args.local_root)
     history = history.loc[pd.to_datetime(history["game_date"]) < until]

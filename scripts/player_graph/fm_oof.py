@@ -207,6 +207,17 @@ def main() -> None:
     base = None
     if residual:
         base = PredictionStore(root / "oof").read(BASE, stints.game_id, stints.seg_idx)
+        # Every stint from the base's first date must have it, or its points
+        # and pace would silently get no weight (pretraining_daily_rapm.py
+        # --until must cover the run).
+        covered = pd.to_datetime(stints.game_date) >= pd.Timestamp("2016-12-01")
+        targets = [LABELS.index(t) for t in RESIDUAL_TARGETS]
+        lacking = covered & ~np.isfinite(base[:, 0, targets]).all(axis=1)
+        if lacking.any():
+            last = pd.to_datetime(stints.game_date[lacking]).max().date()
+            raise SystemExit(
+                f"{int(lacking.sum())} stints lack the {BASE} base (up to {last})"
+            )
         stints = residual_stints(stints, base, RESIDUAL_TARGETS)
     edges = load_edges(root, seasons) if config.edges else None
     folds = [
