@@ -97,6 +97,8 @@ class _Tape:
     lock: threading.Lock = field(default_factory=threading.Lock)
     n_files: int = 0
     misses: list[str] = field(default_factory=list)
+    #: Replay only: ``perturb(query, description, rows) -> rows``.
+    perturb: object = None
 
     def save_index(self) -> None:
         index = {
@@ -152,6 +154,8 @@ def _execute(self, query, params=None, *, prepare=None, binary=None):
             return self
         with open(tape.directory / entry["file"], "rb") as handle:
             description, rows = pickle.load(handle)
+        if tape.perturb is not None:
+            rows = tape.perturb(text, description, rows)
         _served[self] = _Served(description=description, rows=rows)
         return self
 
@@ -265,14 +269,21 @@ def record(directory: str | Path):
 
 
 @contextlib.contextmanager
-def replay(directory: str | Path):
-    """Run the block with every query answered from the tape."""
+def replay(directory: str | Path, *, perturb=None):
+    """Run the block with every query answered from the tape.
+
+    ``perturb(query, description, rows)`` may rewrite each result before it is
+    served, e.g. ``row_order.shuffle_within_order`` to test order sensitivity.
+    """
     tape = _Tape.load(Path(directory))
+    tape.perturb = perturb
     with _patched(tape):
         yield tape
     if tape.misses:
         raise TapeMiss(f"{len(tape.misses)} query(ies) were not on the tape.")
-    unused = [key for key, recorded in tape.entries.items() if key not in tape.replay_counts]
+    unused = [
+        key for key, recorded in tape.entries.items() if key not in tape.replay_counts
+    ]
     if unused:
         print(f"[db_tape] {len(unused)} recorded query key(s) were not replayed.")
 

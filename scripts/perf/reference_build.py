@@ -80,7 +80,9 @@ class _HttpGuard:
         def request(session, method, url, *args, **kwargs):
             guard.urls.append(f"{method} {url}")
             if guard.mode == "replay":
-                raise RuntimeError(f"HTTP request during a replayed build: {method} {url}")
+                raise RuntimeError(
+                    f"HTTP request during a replayed build: {method} {url}"
+                )
             return original(session, method, url, *args, **kwargs)
 
         requests.sessions.Session.request = request
@@ -123,7 +125,15 @@ def main() -> int:
         "--seasons", default=None, help="intermediate: comma-separated season years"
     )
     parser.add_argument("--mode", choices=["record", "replay", "live"], required=True)
-    parser.add_argument("--tape", type=Path, default=None, help="replay: tape directory")
+    parser.add_argument(
+        "--tape", type=Path, default=None, help="replay: tape directory"
+    )
+    parser.add_argument(
+        "--shuffle-seed",
+        type=int,
+        default=None,
+        help="replay: serve each result in another order its ORDER BY permits",
+    )
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument(
         "--code-root",
@@ -144,7 +154,9 @@ def main() -> int:
 
     for module in (nba_ou, training_pipeline):
         if not Path(module.__file__).resolve().is_relative_to(CODE_ROOT):
-            raise SystemExit(f"{module.__name__} imported from {module.__file__}, not {CODE_ROOT}")
+            raise SystemExit(
+                f"{module.__name__} imported from {module.__file__}, not {CODE_ROOT}"
+            )
 
     guard = _HttpGuard(args.mode)
     guard.install()
@@ -155,7 +167,19 @@ def main() -> int:
     if args.mode == "record":
         context = db_tape.record(args.out / "tape")
     elif args.mode == "replay":
-        context = db_tape.replay(args.tape)
+        perturb = None
+        if args.shuffle_seed is not None:
+            import random
+
+            from row_order import shuffle_within_order
+
+            rng = random.Random(args.shuffle_seed)
+            perturb = (
+                lambda query, description, rows: shuffle_within_order(  # noqa: E731
+                    query, description, rows, rng
+                )
+            )
+        context = db_tape.replay(args.tape, perturb=perturb)
     else:
         import contextlib
 
@@ -187,8 +211,11 @@ def main() -> int:
         "code_root": str(CODE_ROOT),
         "commit": _git("rev-parse", "HEAD"),
         "branch": _git("rev-parse", "--abbrev-ref", "HEAD"),
-        "dirty_files": _git("status", "--porcelain", "--untracked-files=no").splitlines(),
+        "dirty_files": _git(
+            "status", "--porcelain", "--untracked-files=no"
+        ).splitlines(),
         "pythonhashseed": os.environ.get("PYTHONHASHSEED"),
+        "shuffle_seed": args.shuffle_seed,
         "input_cache": os.environ.get("NBA_OU_INPUT_CACHE", "1") != "0",
         "input_cache_dir": os.environ.get("NBA_OU_INPUT_CACHE_DIR"),
         "build_seconds": round(build_seconds, 1),
@@ -202,7 +229,9 @@ def main() -> int:
     if args.mode == "record":
         manifest["tape_summary"] = db_tape.tape_summary(args.out / "tape")
     (args.out / "manifest.json").write_text(json.dumps(manifest, indent=1))
-    print(json.dumps({k: v for k, v in manifest.items() if k != "dirty_files"}, indent=1))
+    print(
+        json.dumps({k: v for k, v in manifest.items() if k != "dirty_files"}, indent=1)
+    )
     return 0
 
 
