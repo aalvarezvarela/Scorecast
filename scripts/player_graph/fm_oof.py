@@ -11,6 +11,19 @@ Variants (the plan's ladder): ``additive`` (no interaction term), ``no_matchup``
 (chemistry and style), ``matchup`` (all stint terms), ``matchup_edges`` (plus
 the time-attributed edge targets).
 
+``res_*`` (decided 2026-10-15): the same models learning the **residual over
+the daily as-of RAPM** (``pretraining_daily_rapm.py``) for points per
+possession and pace, ``y - base`` with the base of each stint's own date
+(training and prediction alike), predicting ``base + residual``; the other
+four targets keep their own heads. Stints without a base (before 2016-12-01)
+give those two targets no weight.
+
+``edge_*`` (the edge-head ablation): edge-only models, no stint loss,
+predicting the attacker-game targets from the attacker alone
+(``edge_attacker``), plus the defenders' terms (``edge_defender``), plus the
+matchup product (``edge_matchup``). Their folds start where training edges
+exist (2017-11).
+
 Hyperparameters are the untuned defaults of ``FMConfig`` (dimension 16).
 Design runs stay before 2019-07-01 (``--until``): 2_7's evaluation starts in
 2019-20. This script trains small models; it is not a long run unless asked
@@ -59,14 +72,27 @@ from nba_ou.data_processing.player_graph.pretraining_oof import (
     PredictionStore,
     check_fold,
     monthly_folds,
+    residual_stints,
 )
+from nba_ou.data_processing.player_graph.stint_graph import LABELS
 
+_ADDITIVE = FMConfig(chemistry=False, style=False, matchup=False, edges=False)
+_EDGE_ONLY = replace(_ADDITIVE, edges=True, stint_loss=False)
 VARIANTS = {
-    "additive": FMConfig(chemistry=False, style=False, matchup=False, edges=False),
+    "additive": _ADDITIVE,
     "no_matchup": FMConfig(matchup=False, edges=False),
     "matchup": FMConfig(edges=False),
     "matchup_edges": FMConfig(),
+    "edge_attacker": replace(_EDGE_ONLY, edge_defender=False, edge_matchup=False),
+    "edge_defender": replace(_EDGE_ONLY, edge_matchup=False),
+    "edge_matchup": _EDGE_ONLY,
 }
+VARIANTS |= {
+    f"res_{k}": VARIANTS[k]
+    for k in ("additive", "no_matchup", "matchup", "matchup_edges")
+}
+RESIDUAL_TARGETS = ("pts_per_poss", "poss_per_48")
+BASE = "rapm_daily"
 EVALUATION_START = pd.Timestamp("2019-07-01")
 
 
@@ -124,6 +150,12 @@ def main() -> None:
     torch.manual_seed(args.seed)
 
     stints = load_stints(root, seasons, until=until)
+    residual = args.variant.startswith("res_")
+    edge_only = not config.stint_loss
+    base = None
+    if residual:
+        base = PredictionStore(root / "oof").read(BASE, stints.game_id, stints.seg_idx)
+        stints = residual_stints(stints, base, RESIDUAL_TARGETS)
     edges = load_edges(root, seasons) if config.edges else None
     folds = [
         f for f in monthly_folds(stints.game_date, first=args.start) if f.until <= until
@@ -139,7 +171,12 @@ def main() -> None:
     )
     for fold in folds:
         ckpt = ckpt_dir / f"fold={fold.label}.pt"
-        if store.has(name, fold) and ckpt.exists():
+        done = (
+            (edge_dir / f"fold={fold.label}.parquet").exists()
+            if edge_only
+            else store.has(name, fold)
+        )
+        if done and ckpt.exists():
             model, vocab, _, _ = load_checkpoint(ckpt)
             continue
         started = time.time()
@@ -156,6 +193,8 @@ def main() -> None:
             predict_edges_batch = (
                 edges.subset(edge_predict) if edge_predict.any() else None
             )
+        if edge_only and (train_edges is None or predict_edges_batch is None):
+            continue
         std = fit_standardization(train_stints, train_edges)
         new_vocab = PlayerVocab(train_stints.players.reshape(-1))
         if train_edges is not None:
@@ -171,7 +210,7 @@ def main() -> None:
         if model is not None:
             warm_start(new_model, model, new_vocab, vocab)
         model, vocab = new_model, new_vocab
-        tensors = stint_tensors(train_stints, vocab, std)
+        tensors = None if edge_only else stint_tensors(train_stints, vocab, std)
         edge_t = (
             edge_tensors(train_edges, vocab, std) if train_edges is not None else None
         )
@@ -186,12 +225,26 @@ def main() -> None:
             device=args.device,
         )
         target = stints.subset(predict_mask)
-        predictions = predict(
-            model, stint_tensors(target, vocab, std), std, device=args.device
-        )
+        predictions = None
+        uncorrected: list[str] = []
+        if not edge_only:
+            predictions = predict(
+                model, stint_tensors(target, vocab, std), std, device=args.device
+            )
+            if residual:  # base + learned residual
+                for t in RESIDUAL_TARGETS:
+                    k = LABELS.index(t)
+                    if train_stints.label_weight[:, :, k].sum() == 0:
+                        # No training residual yet (the first fold): no
+                        # correction, the base alone.
+                        predictions[:, :, k] = 0.0
+                        uncorrected.append(t)
+                    predictions[:, :, k] += base[predict_mask][:, :, k]
         model.to("cpu")
         meta = {
             "variant": args.variant,
+            "residual_over": BASE if residual else None,
+            "residual_targets": list(RESIDUAL_TARGETS) if residual else [],
             "config": asdict(config),
             "epochs": args.epochs,
             "batch_size": args.batch_size,
@@ -200,8 +253,24 @@ def main() -> None:
             "max_train": args.max_train,
             "dataset": str(root),
         }
-        # The prediction store's fold file is written last: it marks the fold
-        # done, so an interrupted fold is redone whole on the next run.
+        # The fold's marker (the prediction store's fold file, or the edge file
+        # of an edge-only model) is written last, so an interrupted fold is
+        # redone whole on the next run.
+        log = {
+            **meta,
+            "fold": fold.label,
+            "history": history,
+            "seconds": time.time() - started,
+            "train_stints": 0 if edge_only else len(train_stints),
+            "train_attacker_games": len(train_edges) if train_edges is not None else 0,
+            "players": len(vocab),
+            "predicted_stints": 0 if edge_only else len(target),
+            "uncorrected_residual_targets": uncorrected,
+        }
+        save_checkpoint(ckpt, model, vocab, std, log)
+        (ckpt_dir / f"fold={fold.label}.json").write_text(
+            json.dumps(log, indent=2, default=str) + "\n"
+        )
         if predict_edges_batch is not None and train_edges is not None:
             values = predict_edges(
                 model, edge_tensors(predict_edges_batch, vocab, std), std
@@ -215,25 +284,17 @@ def main() -> None:
             for k, t in enumerate(TARGETS):
                 frame[t] = values[:, k]
             edge_dir.mkdir(parents=True, exist_ok=True)
-            frame.to_parquet(edge_dir / f"fold={fold.label}.parquet", index=False)
-        log = {
-            **meta,
-            "fold": fold.label,
-            "history": history,
-            "seconds": time.time() - started,
-            "train_stints": len(train_stints),
-            "train_attacker_games": len(train_edges) if train_edges is not None else 0,
-            "players": len(vocab),
-            "predicted_stints": len(target),
-        }
-        save_checkpoint(ckpt, model, vocab, std, log)
-        (ckpt_dir / f"fold={fold.label}.json").write_text(
-            json.dumps(log, indent=2, default=str) + "\n"
-        )
-        store.write(name, fold, target.game_id, target.seg_idx, predictions, meta)
+            tmp = edge_dir / f"fold={fold.label}.tmp"
+            frame.to_parquet(tmp, index=False)
+            if not edge_only:
+                tmp.replace(edge_dir / f"fold={fold.label}.parquet")
+        if not edge_only:
+            store.write(name, fold, target.game_id, target.seg_idx, predictions, meta)
+        else:
+            tmp.replace(edge_dir / f"fold={fold.label}.parquet")
         last = history[-1]
         print(
-            f"{fold.label}: train {len(train_stints):,} stints"
+            f"{fold.label}: train {0 if edge_only else len(train_stints):,} stints"
             + (
                 f" + {len(train_edges):,} attacker-games"
                 if train_edges is not None

@@ -21,6 +21,15 @@ Baselines, at the same monthly cadence:
   ``league_pace + sum pace`` over the ten. It has no rating for the other
   four targets, which take the constant baseline.
 
+**Daily RAPM, the residual models' base** (:func:`daily_rapm_predictions`):
+the same frozen ratings refitted on every game date, each stint predicted by
+the ratings fitted on stints strictly before its own date (never itself, its
+day or anything later). It is the base of both the residual training targets
+and the evaluation, so a model trained at ``C_k`` learns ``y - base`` with the
+same base it is served. There is no prior before ``FIRST_CHECKPOINT``, so
+stints before it have no base (:func:`residual_stints` gives their points and
+pace no weight).
+
 Predictions are stored per model and fold (:class:`PredictionStore`) with the
 fold's training cutoff, so a run resumes and nothing is mixed.
 """
@@ -178,6 +187,42 @@ def _lookup(ratings: pd.Series, ids: np.ndarray) -> np.ndarray:
     """``ratings`` of ``ids`` in their shape; a player without a row has 0."""
     values = ratings.reindex(ids.reshape(-1)).fillna(0.0)
     return values.to_numpy(float).reshape(ids.shape)
+
+
+def daily_rapm_predictions(
+    players: np.ndarray,
+    dates: np.ndarray,
+    history: pd.DataFrame,
+    prior: Callable,
+    *,
+    first=FIRST_CHECKPOINT,
+    until=None,
+    spec: BookSpec = FROZEN,
+) -> tuple[np.ndarray, pd.DataFrame]:
+    """:func:`rapm_predictions` with one fold per game date: every stint dated
+    in ``[first, until)`` gets the ratings fitted on stints before its date."""
+    days = pd.DatetimeIndex(pd.to_datetime(dates)).normalize().unique().sort_values()
+    days = days[days >= pd.Timestamp(first)]
+    if until is not None:
+        days = days[days < pd.Timestamp(until)]
+    folds = [Fold(day, day + pd.Timedelta(days=1)) for day in days]
+    return rapm_predictions(players, dates, folds, history, prior, spec=spec)
+
+
+def residual_stints(stints, base: np.ndarray, targets: Sequence[str]):
+    """``stints`` whose ``targets`` become ``y - base`` (a weight of 0 where
+    the base is missing); other targets unchanged. ``stints`` is a
+    ``PretrainingStints``; ``base`` is ``(n, 2, L)``."""
+    from dataclasses import replace
+
+    labels = stints.labels.copy()
+    weights = stints.label_weight.copy()
+    for name in targets:
+        k = LABELS.index(name)
+        known = np.isfinite(base[:, :, k])
+        labels[:, :, k] = np.where(known, labels[:, :, k] - base[:, :, k], np.nan)
+        weights[:, :, k] = np.where(known, weights[:, :, k], 0.0)
+    return replace(stints, labels=labels, label_weight=weights)
 
 
 def with_constant(predictions: np.ndarray, constant: np.ndarray) -> np.ndarray:
