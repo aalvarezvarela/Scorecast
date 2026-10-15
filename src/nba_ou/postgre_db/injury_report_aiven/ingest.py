@@ -27,6 +27,7 @@ because the report expresses them by omission:
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import date
 
 import pandas as pd
 import psycopg
@@ -361,8 +362,21 @@ def ingest_season(
     dry_run: bool = False,
     quiet: bool = False,
     replace: bool = False,
+    write_game_dates: tuple[date, date] | None = None,
+    collect: dict | None = None,
 ) -> IngestSummary:
     """Run all four phases for one season.
+
+    ``write_game_dates`` (first, last) writes only the games played in that
+    range, replacing their spans and filing spans, and nothing of any other
+    game: the daily ingest of the days just finished (never tonight's games,
+    which the store holds only once played). ``manifest`` must then hold
+    every report that lists them, which starts the day before each game.
+
+    ``collect``, a dict, receives the frames built -- ``reports``, ``spans``,
+    ``filing_spans``, ``teams``, ``games`` -- also in a dry run, where ids are
+    stand-ins: a reason is ``"<category code>|<detail>"``, a report its
+    ``observed_at``.
 
     ``replace`` deletes the season's existing spans, filing spans, reports and
     unresolved-name counts before writing. It is required whenever reports are
@@ -438,6 +452,19 @@ def ingest_season(
         not_filed = R.resolve_games(not_submitted, games, R.ResolutionReport())
         not_filed["team_id"] = not_filed["raw_team"].map(team_map)
 
+    written_games = None
+    if write_game_dates is not None:
+        first, last = write_game_dates
+        game_dates = pd.to_datetime(games["game_date"]).dt.date
+        written_games = set(
+            games.loc[(game_dates >= first) & (game_dates <= last), "game_id"].astype(
+                str
+            )
+        )
+        listed = listed[listed["game_id"].astype(str).isin(written_games)]
+        if not not_filed.empty:
+            not_filed = not_filed[not_filed["game_id"].astype(str).isin(written_games)]
+
     # --- player observations --------------------------------------------------
     observations = pd.DataFrame()
     if not players.empty:
@@ -448,6 +475,10 @@ def ingest_season(
             right_on="report_name",
         )
         observations = R.resolve_games(players, games, summary.resolution)
+        if written_games is not None:
+            observations = observations[
+                observations["game_id"].astype(str).isin(written_games)
+            ]
         observations = R.resolve_players(observations, rosters, summary.resolution)
     summary.observations = len(observations)
 
@@ -460,7 +491,9 @@ def ingest_season(
         observations = pd.concat([observations, removals], ignore_index=True)
 
     # --- reports, reasons, ids ------------------------------------------------
-    if replace and not dry_run:
+    if written_games is not None and not dry_run:
+        summary.replaced = loader.clear_games(aiven, sorted(written_games))
+    elif replace and not dry_run:
         # Only the season being reloaded. Listings can reach into a neighbouring
         # season, whose rows this run does not rebuild and must not delete.
         summary.replaced = loader.clear_season(aiven, int(season.split("-")[0]))
@@ -506,6 +539,14 @@ def ingest_season(
     filing_spans = build_filing_spans(filings)
     summary.filing_spans = len(filing_spans)
 
+    if collect is not None:
+        collect.update(
+            reports=reports,
+            spans=spans,
+            filing_spans=filing_spans,
+            teams=teams,
+            games=games,
+        )
     if not dry_run:
         loader.insert_spans(aiven, spans)
         loader.insert_filing_spans(aiven, filing_spans)
