@@ -493,12 +493,19 @@ def add_top3_availability_effect_features_for_columns(
     include_detailed_sample_size_features: bool = False,
     emit_max_abs_effects: bool = False,
     effect_cache: RowCache | None = None,
+    history_memo=None,
 ) -> pd.DataFrame:
     """
     Compute player availability impact features from past games only (< current game date).
 
     ``effect_cache`` shares raw per-player effects between calls on the same
     game history (see ``_TeamHistoryIndex``); it changes no value.
+
+    ``history_memo`` (``create_training_data.history_memo.HistoryMemo``) keeps
+    the raw effects of finished seasons' rows across builds. A raw effect is a
+    function of the team's history before the row's date and the player's
+    availability in it, all inside the seasons the memo's digests cover; it
+    changes no value either.
 
     Changes vs previous version:
       - DIFF_FROM_LINE is always computed against TOTAL_LINE_<main book> selected by
@@ -657,6 +664,25 @@ def add_top3_availability_effect_features_for_columns(
             player_key=player_id,
         )
 
+    memo_name = "availability_effects/" + (
+        "injured" if availability_index is None else "availability"
+    )
+
+    def _effect(team_id: int, season_year: int, date_ordinal: int, player_id: int):
+        table = (
+            history_memo.table(memo_name, season_year)
+            if history_memo is not None
+            else None
+        )
+        if table is None:
+            return _cached_effect(team_id, season_year, date_ordinal, player_id)
+        key = (team_id, season_year, date_ordinal, player_id)
+        value = table.get(key)
+        if value is None:
+            value = _cached_effect(team_id, season_year, date_ordinal, player_id)
+            table[key] = value
+        return value
+
     def _out_col(side: str, i: int, metric: str) -> str:
         return f"{out_prefix}_{side}_P{i}_{metric}"
 
@@ -778,7 +804,7 @@ def add_top3_availability_effect_features_for_columns(
                 n_inj,
                 n_present,
                 n_total,
-            ) = _cached_effect(home_team_int, season_year_int, date_ord, pid_int)
+            ) = _effect(home_team_int, season_year_int, date_ord, pid_int)
             for metric, raw_effect, standard_error, injured_count, present_count in zip(
                 EFFECT_METRICS,
                 raw_effects,
@@ -817,7 +843,7 @@ def add_top3_availability_effect_features_for_columns(
                 n_inj,
                 n_present,
                 n_total,
-            ) = _cached_effect(away_team_int, season_year_int, date_ord, pid_int)
+            ) = _effect(away_team_int, season_year_int, date_ord, pid_int)
             for metric, raw_effect, standard_error, injured_count, present_count in zip(
                 EFFECT_METRICS,
                 raw_effects,

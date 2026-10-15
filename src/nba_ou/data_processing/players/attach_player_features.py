@@ -6,6 +6,7 @@ import numpy as np
 import pandas as pd
 from tqdm import tqdm
 
+from nba_ou.create_training_data.history_memo import season_of_game_id
 from nba_ou.data_processing.injury_status.report_state import (
     apply_report_out_overrides,
     nested_status_dict,
@@ -380,7 +381,9 @@ def _restrict_snapshot_membership(
         for game, teams in membership_dict.items()
         if str(game) not in ids
     }
-    out.update({str(game): teams for game, teams in reported.items() if str(game) in ids})
+    out.update(
+        {str(game): teams for game, teams in reported.items() if str(game) in ids}
+    )
     return out
 
 
@@ -504,6 +507,7 @@ def add_player_history_features(
     stat_players: pd.DataFrame | None = None,
     prepared_players: PreparedPlayerHistory | None = None,
     target_game_ids: set[str] | None = None,
+    history_memo=None,
 ):
     """
     Main function to attach top player statistics and injured player stats to team data.
@@ -561,6 +565,10 @@ def add_player_history_features(
             and the player identifier columns (which later rows' availability
             effects read), and its other columns are left empty. Each target
             row gets exactly the values a build of every row gives it.
+        history_memo (HistoryMemo, optional): With ``target_game_ids``, the
+            history rows of finished seasons are read from it when their
+            season's inputs are unchanged, and written to it otherwise
+            (``create_training_data.history_memo``).
 
     Returns:
         pd.DataFrame: Updated df_team with extra columns for top players and injured players
@@ -844,6 +852,10 @@ def add_player_history_features(
     history_id_stats = [
         s for s in stat_cols if ACTIVE_PROFILE.id_slots_by_stat.get(s, 0) > 0
     ]
+    # Finished seasons' history rows: (row update, availability) per team-game.
+    memo_name = f"player_history_rows/{'-'.join(stat_cols)}"
+    if history_memo is not None and target_game_ids is None:
+        raise ValueError("history_memo needs target_game_ids")
 
     for _, (game_id, team_id, season_id, game_date) in enumerate(
         tqdm(
@@ -882,6 +894,20 @@ def add_player_history_features(
                 continue
             row_cache.misses += 1
 
+        memo_rows = None
+        if history_memo is not None and str(game_id) not in target_game_ids:
+            memo_rows = history_memo.table(memo_name, season_of_game_id(game_id))
+        if memo_rows is not None:
+            entry = memo_rows.get((str(game_id), str(team_id)))
+            if entry is not None:
+                stored_update, stored_availability = entry
+                updates_list.append(stored_update)
+                if stored_availability is not None:
+                    availability_dict.setdefault(str(game_id), {})[str(team_id)] = (
+                        stored_availability
+                    )
+                continue
+
         # Resolve the roster without consulting who logged minutes in this game.
         # Availability is defined below solely as roster minus injured/inactive.
         found = roster_lookup(season_id, team_id, game_date, game_id=game_id)
@@ -899,6 +925,8 @@ def add_player_history_features(
             updates_list.append({})
             if row_cache is not None:
                 row_cache.rows[cache_key] = ({}, None)
+            if memo_rows is not None:
+                memo_rows[(str(game_id), str(team_id))] = ({}, None)
             continue
 
         # Who is injured for this game/team? The injury sources already encode
@@ -945,26 +973,28 @@ def add_player_history_features(
         if target_game_ids is not None and str(game_id) not in target_game_ids:
             # A history row: later rows read only its availability (above) and
             # the player ids the availability effects rank by.
-            updates_list.append(
-                _history_identifiers(
-                    states_of,
-                    rank,
-                    roster,
-                    history_id_stats,
-                    non_inj_rows,
-                    inj_rows,
-                    questionable_rows
-                    if build_questionable_group and questionable_covered
-                    else None,
-                )
+            history_update = _history_identifiers(
+                states_of,
+                rank,
+                roster,
+                history_id_stats,
+                non_inj_rows,
+                inj_rows,
+                questionable_rows
+                if build_questionable_group and questionable_covered
+                else None,
             )
+            updates_list.append(history_update)
+            if memo_rows is not None:
+                memo_rows[(str(game_id), str(team_id))] = (
+                    history_update,
+                    availability_dict[str(game_id)][str(team_id)],
+                )
             continue
 
         if include_available_roster_count:
             dates = roster.column("GAME_DATE")[non_inj_rows]
-            minutes = pd.to_numeric(
-                roster.column("MIN")[non_inj_rows], errors="coerce"
-            )
+            minutes = pd.to_numeric(roster.column("MIN")[non_inj_rows], errors="coerce")
             recent = non_inj_rows[
                 (dates < game_date)
                 & (dates >= game_date - pd.Timedelta(days=AVAILABLE_ROSTER_RECENT_DAYS))
@@ -1022,16 +1052,12 @@ def add_player_history_features(
             n_players_inj = N_TOP_PLAYERS_INJURED
 
             # Get ALL non-injured players for aggregation
-            all_non_inj = rank(
-                non_inj_states, stat_col, n_players=n_non_inj
-            )
+            all_non_inj = rank(non_inj_states, stat_col, n_players=n_non_inj)
             # Get ALL injured players for aggregation
             all_inj = rank(inj_states, stat_col, n_players=n_inj)
 
             all_questionable = (
-                rank(
-                    questionable_states, stat_col, n_players=n_questionable
-                )
+                rank(questionable_states, stat_col, n_players=n_questionable)
                 if rank_questionable
                 else []
             )

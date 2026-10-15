@@ -248,6 +248,50 @@ def _infer_recent_limit_for_scheduled_games(
     ).tz_localize(None)
 
 
+def _history_memo_for(targets, *, games, players, odds, injuries, report_state):
+    """A ``HistoryMemo`` for a target build, or None when there is no store.
+
+    Seasons before the targets' first season are memoised, each keyed on the
+    chained digest of the inputs this build loaded (see ``history_memo``).
+    """
+    from nba_ou.create_training_data import history_memo as memo
+
+    backend = memo.default_backend()
+    if backend is None:
+        return None
+    target_seasons = [memo.season_of_game_id(g) for g in targets]
+    target_seasons = [s for s in target_seasons if s is not None]
+    if not target_seasons:
+        return None
+
+    def game_id_column(frame):
+        return "GAME_ID" if "GAME_ID" in frame.columns else "game_id"
+
+    inputs = {
+        name: (frame, game_id_column(frame))
+        for name, frame in (
+            ("games", games),
+            ("players", players),
+            ("odds", odds),
+            ("injuries", injuries),
+        )
+        if frame is not None
+    }
+    if report_state is not None:
+        for name in (
+            "statuses",
+            "filings",
+            "report_age",
+            "status_events",
+            "listed_pairs",
+        ):
+            frame = getattr(report_state, name)
+            inputs[f"report_{name}"] = (frame, game_id_column(frame))
+    max_season = min(target_seasons) - 1
+    digests = memo.season_input_digests(inputs, range(2000, max_season + 1))
+    return memo.HistoryMemo(backend, digests, max_season)
+
+
 def process_team_statistics_for_training(
     df,
     df_odds,
@@ -339,6 +383,7 @@ def process_player_statistics_for_training(
     report_questionable_sets=None,
     include_available_roster_count: bool = False,
     target_game_ids=None,
+    history_memo=None,
 ):
     """
     Process player statistics and prepare for training.
@@ -374,6 +419,8 @@ def process_player_statistics_for_training(
             ``N_AVAILABLE_ROSTER_PLAYERS`` when report features are enabled.
         target_game_ids (set, optional): Games whose rows are built in full;
             see ``add_player_history_features``.
+        history_memo (HistoryMemo, optional): Finished seasons' history rows,
+            with ``target_game_ids``; see ``add_player_history_features``.
 
     Returns:
         tuple: Team features and injury dictionary, plus cleaned player rows and
@@ -416,6 +463,7 @@ def process_player_statistics_for_training(
         report_questionable_sets=report_questionable_sets,
         include_available_roster_count=include_available_roster_count,
         target_game_ids=target_game_ids,
+        history_memo=history_memo,
     )
 
     if return_players:
@@ -688,6 +736,19 @@ def create_df_to_predict(
         questionable_sets = report_questionable_sets(injury_report_state)
         print(f"✓ {len(injury_report_state.covered):,} team-games covered by a report")
 
+    history_memo = (
+        _history_memo_for(
+            targets,
+            games=df_games_for_referee_history,
+            players=df_players,
+            odds=df_odds,
+            injuries=df_injuries,
+            report_state=injury_report_state if injury_report_features else None,
+        )
+        if targets
+        else None
+    )
+
     # Add Players Statistics
     print("Processing player statistics...")
     df, injured_dict, df_players, player_availability_dict = (
@@ -707,6 +768,7 @@ def create_df_to_predict(
             report_questionable_sets=questionable_sets,
             include_available_roster_count=injury_report_features,
             target_game_ids=targets,
+            history_memo=history_memo,
         )
     )
     df = add_roster_continuity_feature(
@@ -865,6 +927,7 @@ def create_df_to_predict(
         shrinkage_k=10.0,
         include_per_player_columns=False,
         include_detailed_sample_size_features=False,
+        history_memo=history_memo,
     )
 
     df_training = add_top3_availability_effect_features_for_columns(
@@ -889,6 +952,7 @@ def create_df_to_predict(
         shrinkage_k=10.0,
         include_per_player_columns=False,
         include_detailed_sample_size_features=False,
+        history_memo=history_memo,
     )
 
     # The third availability group. Same estimator, same history (each player's
@@ -916,6 +980,7 @@ def create_df_to_predict(
             shrinkage_k=10.0,
             include_per_player_columns=False,
             include_detailed_sample_size_features=False,
+            history_memo=history_memo,
         )
         # The builder is coverage-blind and fills "no players" with the shrunk
         # limit, 0. That reading is only true where the report says nobody is
@@ -923,6 +988,8 @@ def create_df_to_predict(
         df_training = mask_uncovered_group_columns(
             df_training, "TOP2_QUESTIONABLE_AVAILABILITY_EFFECT"
         )
+    if history_memo is not None:
+        history_memo.flush()
     print("✓ Injury availability effects computed")
 
     print("Adding travel and temporal features...")

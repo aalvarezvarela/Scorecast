@@ -175,6 +175,9 @@ def main() -> int:
         # fingerprint queries and skip fetches, so taped builds bypass it.
         os.environ["NBA_OU_INPUT_CACHE"] = "0"
         os.environ["NBA_OU_S3_SEASONS"] = "0"
+        # The history memo only from a local directory, never from S3.
+        if not os.environ.get("NBA_OU_HISTORY_MEMO_DIR"):
+            os.environ["NBA_OU_HISTORY_MEMO"] = "0"
     if args.mode == "record":
         context = db_tape.record(args.out / "tape")
     elif args.mode == "replay":
@@ -231,6 +234,8 @@ def main() -> int:
         "input_cache": os.environ.get("NBA_OU_INPUT_CACHE", "1") != "0",
         "s3_seasons": os.environ.get("NBA_OU_S3_SEASONS", "1") != "0",
         "input_cache_dir": os.environ.get("NBA_OU_INPUT_CACHE_DIR"),
+        "history_memo": os.environ.get("NBA_OU_HISTORY_MEMO", "1") != "0",
+        "history_memo_dir": os.environ.get("NBA_OU_HISTORY_MEMO_DIR"),
         "build_seconds": round(build_seconds, 1),
         "shape": list(written.shape),
         "dataset_file_sha256": dataset_sha,
