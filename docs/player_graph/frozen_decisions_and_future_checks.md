@@ -2121,6 +2121,131 @@ It reports throughput and peak VRAM per model and batch (1,024-32,768),
 records out-of-memory configurations instead of failing, and projects the
 same run and ladder times.
 
+## Phase 6, step 7: the GNN ladder A-E on the development folds (2026-10-15)
+
+**Run** (`experiments/runners/run_gnn_ladder.sh cpu`, as declared in step 6, nothing changed).
+
+- Variants: B `gnn_control`, C `gnn_node`, D `gnn_no_guard`, E `gnn_full`.
+- Seeds 0-2; the 25 folds 2016-12 → 2019-06; width 32, 2 layers, 3 epochs.
+- The process was pinned to 11 of the 12 logical CPUs (`taskset -c 0-10`,
+  10 threads), leaving one core free.
+- Training per seed for all 25 folds: B 2.3 min, C 3.7, D 2.6, E 5.2. The
+  whole ladder took about 45 minutes, including calibration and the report.
+- No non-finite loss; the training loss rose over the epochs in 3 of 25 folds
+  per variant, by under 0.001.
+- Report: `artifacts/experiments/gnn_ladder_dev/`.
+- Diagnostics: `gnn_ladder_diagnostics.py` (`diagnostics.json` there).
+- Checkpoints, per-fold logs and predictions: under `pretraining/v1/{fm,oof}/fm_gnn_*`.
+
+**Confirmed.**
+
+- **Absorber on in training, off at prediction.** `absorb_additive` is set
+  in every variant. Re-predicting fold 2018-12 from its checkpoint
+  reproduces the stored predictions exactly with the absorbed terms dropped.
+  Including them would have moved points by SD 0.037 and pace by SD 1.18.
+- **Calibration from earlier folds only.** Every calibration factor (4
+  variants × 3 seeds × 25 folds × 2 targets) recomputes exactly from the
+  rows dated before its fold's checkpoint; the first fold's are all 0.
+
+**A defect: the centering mean lags in the first fold.** The running mean
+that centers the embeddings starts at 0. Fold 2016-12 trains for about 27
+steps (8.5k stints), after which the mean has covered about 75% of the way.
+The stale centering offsets every product of the interaction readout, so in
+that fold C, D and E over-predict 3PA/FGA by 0.14-0.16 (the control by
+0.01).
+
+- Points and pace are protected: their first-fold calibration factor is 0.
+- The four auxiliary targets are not calibrated, so over all folds they look
+  1.4-2.8% worse than B, with a seed spread of 1-4% of the constant's MSE.
+- Smaller lags of the same kind at the end of later folds add seed noise.
+- The fix for any rerun: center with the exact mean of the training
+  embeddings, computed after each fold's training. That is an implementation
+  correction, not a tuning choice; it was not applied to this frozen run.
+- Below, "excl. 2016-12" re-scores the same stored predictions without that
+  fold.
+
+**Points per possession and pace** (gain % over the reference, t; mean of three seeds):
+
+| Comparison | Points raw | Points calibrated | Pace raw | Pace calibrated |
+| --- | --- | --- | --- | --- |
+| A. RAPM over constant | +0.641 (14.8) | | +2.110 (24.6) | |
+| B over A | +0.038 (4.3) | +0.033 (5.2) | −0.018 (−2.8) | −0.003 (−3.5) |
+| **C vs B** (neural capacity) | −0.085 (−6.0) | −0.020 (−4.6) | −0.062 (−4.4) | +0.001 (0.9) |
+| **D vs C** (teammate / opponent messages) | −0.120 (−6.2) | −0.007 (−3.8) | −0.179 (−5.6) | +0.001 (0.9) |
+| **E vs D** (guard edges) | +0.090 (4.5) | +0.003 (1.9) | +0.081 (2.3) | −0.002 (−1.4) |
+| E vs C (all message passing), calibrated | | −0.004 (−2.4) | | −0.001 (−1.3) |
+| E calibrated over A | | +0.009 (1.6) | | −0.003 (−1.8) |
+| E calibrated vs the FM's calibrated matchup residual | | −0.018 (−2.2) | | −0.017 (−2.0) |
+
+- Excluding 2016-12, the raw increments are similar: C vs B −0.091 / −0.066,
+  D vs C −0.128 / −0.192, E vs D +0.096 / +0.086.
+- **Seeds:** calibrated, C vs B on points is negative for all three seeds
+  (−0.016 to −0.034), D vs C for all three (−0.004 to −0.012), and E vs D
+  is −0.002 to +0.009.
+- **Folds:** E vs D calibrated on points is positive in 18 of 25 folds, the
+  others in 6-12.
+
+**Size and calibration of the raw corrections** (seed mean, folds after the first):
+
+| Variant | Points SD | Slope of realized on correction | Pace SD | Slope |
+| --- | --- | --- | --- | --- |
+| B control | 0.013 | 0.91 | 0.19 | −0.49 |
+| C node-only | 0.021 | 0.39 | 0.64 | −0.19 |
+| D teammate / opponent | 0.029 | 0.25 | 1.48 | 0.09 |
+| E full | 0.022 | 0.36 | 0.96 | −0.12 |
+| FM matchup (step 5) | 0.028 | 0.40 | 0.98 | 0.37 |
+
+Mean walk-forward factors: points 0.69 (B), 0.23 / 0.15 / 0.21 (C / D / E);
+pace 0.06 and 0.01-0.03. Calibration keeps a quarter of the GNN's points
+corrections and switches its pace corrections off, which is why the
+calibrated rungs sit within ±0.02% of each other.
+
+**Auxiliary targets**, gain % over the constant (B and A: RAPM has none, so
+B's are the additive heads):
+
+| Variant | Turnovers | 3PA/FGA | FTA/FGA | OREB |
+| --- | --- | --- | --- | --- |
+| B | +0.65 | +5.35 | +0.84 | +1.45 |
+| E, all folds | −1.70 | +3.03 | −1.42 | −0.32 |
+| E over A, excl. 2016-12 | +0.62 | +5.37 | +0.91 | +1.47 |
+| E vs D raw, excl. 2016-12 | −0.02 | +0.04 | **+0.14 (8.4)** | **+0.09 (4.3)** |
+
+Excluding the defective fold, the GNN's auxiliary heads match the additive
+ones. Message passing changes them by under ±0.15%. Guard edges help FTA/FGA
+and OREB against the teammate / opponent model, but only by about what that
+model lost against node-only (E vs C ≈ +0.03 / +0.02).
+
+**How to read it.**
+
+- **What the absorber means.** This ladder measures interactions **beyond
+  the best additive fit**. The absorber removes everything a per-player
+  additive term can explain, including signal that is correlated with player
+  identity but would be produced by interactions. If a player's
+  "interaction" value is consistent across partners, it counts as additive
+  here.
+- **On that definition, the GNN finds nothing for team scoring.**
+  - Neural capacity, teammate / opponent context and guard edges each move
+    calibrated points and pace by at most ±0.02%.
+  - Uncalibrated corrections are mostly noise (slopes 0.25-0.39 on points,
+    about 0 on pace), and calibration shrinks them to near zero.
+  - Guard edges consistently undo part of what the teammate / opponent
+    model loses: raw E vs D is positive in 17 of 25 folds. They do not beat
+    the node-only model.
+  - The full GNN is not better than the FM matchup residual; both are worth
+    about +0.01-0.03% over RAPM after calibration, and all of that is the
+    intercept / home control's.
+- **Stint level, together with the FM:**
+  - additive player effects carry the signal (RAPM, and the auxiliary
+    additive heads);
+  - learned interactions, from FM or GNN, add nothing measurable for
+    points or pace;
+  - who guards whom matters for an individual's shot volume (step 5), not
+    for team efficiency in these models.
+- **Not an end-to-end test.** Representations may still carry game-level
+  information (style, shot distribution, absences) that XGBoost can use
+  against the line. That has to be tested in XGBoost, not inferred from
+  stint MSE.
+
 ## Future checks
 
 ### Guarding weights (`expected_guard`)
