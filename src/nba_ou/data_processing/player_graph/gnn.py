@@ -269,6 +269,13 @@ class GNN(nn.Module):
     def forward_batch(self, batch: StintTensors) -> torch.Tensor:
         return self(batch.x, batch.ids, batch.share, batch.guard)
 
+    def uncentered(self, batch: StintTensors) -> dict[str, torch.Tensor]:
+        """Final node embeddings before centering (``fm.finalize_centering``)."""
+        return {"embedding": self.embed(batch.x, batch.ids, batch.share, batch.guard)}
+
+    def centering_buffer(self, name: str) -> torch.Tensor:
+        return self.embedding_mean
+
     def _centered(self, h: torch.Tensor) -> torch.Tensor:
         if self.training:
             mean = h.reshape(-1, h.shape[-1]).mean(0)

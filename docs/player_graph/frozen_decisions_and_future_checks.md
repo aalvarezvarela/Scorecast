@@ -2246,6 +2246,127 @@ model lost against node-only (E vs C ≈ +0.03 / +0.02).
   against the line. That has to be tested in XGBoost, not inferred from
   stint MSE.
 
+## Phase 7 preparation: the centering fix, the pregame adapter, out-of-fold outputs, campaign v1 (2026-10-15)
+
+**Decisions (2026-10-15).**
+
+- Stop optimizing stint-level points and pace.
+- Fix the centering defect.
+- Build pregame outputs: style rates per side, their absence shifts, and one
+  16-dimensional game embedding.
+- Define a stint-to-game adapter instead of feeding whole rotations to the
+  encoder.
+- Keep a node-only representation control.
+- Prepare the monthly out-of-fold generation and a separate pre-registered
+  XGBoost follow-up with arms A-E.
+- Launch nothing large.
+
+**Centering fix** (`fm.finalize_centering`). After each fold's training, the
+centering means are set to the **exact** mean of the fold's training-stint
+embeddings (FM blocks or GNN embeddings). `fm_oof.py` applies it to every
+centered model, and fold logs record `"centering": "exact training mean"`.
+
+- Tests: after a 27-step "first fold" the running mean leaves the training
+  embeddings' mean off by more than 0.05, and the exact mean brings it under
+  1e-5.
+- The mean reads only the given training stints; prediction never moves it.
+- The temporal-isolation tests still pass.
+- The step 7 ladder stays as run and documented (running-mean centering).
+
+**Stint-to-game adapter** (`player_graph/pregame_encoder.py`). The encoders
+saw only 10-node stints: means over 4 teammates and 5 opponents, guard shares
+over 5 defenders. A pregame graph has 20-26 players with fractional minutes,
+so it is not fed directly.
+
+- **Lineups.** Each scenario and team becomes **48 one-minute lineups** by
+  systematic (Madow) sampling on the expected minutes. Players are ordered by
+  minutes, then id; inclusion probability is `minutes / 48`, summing to 5;
+  grid points are `(k + ½) / 48`. Every slot has five distinct players, the
+  team gets exactly 240 minutes, and each player gets his expected minutes
+  within one minute. Deterministic and untuned.
+- **Graphs.** Home slot k plays away slot k: 48 ordinary stint graphs. Guard
+  shares are recomputed over the five defenders on the floor from the
+  expected rates (as in training); node features are the as-of profiles on
+  the game date.
+- **Aggregation.** Outputs are averaged over slots, then probability-weighted
+  over the availability scenarios (the v1 provider's, questionable /
+  doubtful included). The full-health graph is the counterfactual.
+- **Tests** (`test_player_graph_pregame_encoder.py`, 8):
+  - five a slot, 240 minutes, each player within one minute;
+  - deterministic and independent of input order;
+  - impossible minutes are refused, and a 48-minute player is in every slot;
+  - sides stay in place and guard shares are normalized;
+  - swapping home and away swaps every output;
+  - scenario weights and the absence shift are right;
+  - the projection is orthonormal and Procrustes undoes a rotation.
+
+**Outputs** (`generate_pregame_outputs.py`).
+
+- **Style, `GE_STYLE_*` (16):** turnovers per possession, 3PA/FGA, FTA/FGA
+  and offensive rebound rate per offensive side, tonight and the absence
+  shift.
+- **Embedding (16):** each side's pooled centered embedding on 8 principal
+  directions. These are fitted per fold on its last 20,000 training stints
+  and Procrustes-aligned to the previous fold, so the coordinates keep their
+  meaning across checkpoints.
+- **Out of fold.** Each game uses **its own month's checkpoint**, trained on
+  earlier stints only, for training and predicted rows alike. A checkpoint
+  not dated at the game's month start stops the run.
+- **Bookkeeping.** Every row records its fold and checkpoint date. The
+  manifest records coverage, missing checkpoints, missingness, the encoder's
+  configuration and seed, the adapter and the projection. Seasons resume.
+- **Two encoders keep the control.**
+  - `gnn_node` gives the style outputs (C) and the node-only embedding (D).
+  - `gnn_full` gives the graph embedding (E).
+  - So E vs D isolates graph relations from neural capacity, and the style
+    block does not depend on the graph question.
+
+**Pregame store** (`build_pregame_graph_store.py`). Phase 5's v1 closing game
+graphs (v1 minutes, corrected expected-guard history) plus node features as of
+each game date, written per season with a manifest.
+
+- Checked: 240 minutes per team and scenario, nobody above 48, features for
+  every node, a guard row for every opposing pair, no observed or betting
+  column.
+- 2018-19 built in 11 minutes: 868 of 1,312 games (both teams' reports, as
+  phase 5), 2.02 scenarios per game, 13.4 players per team.
+
+**Smoke test** (2018-19, the development checkpoints of step 7 with
+running-mean centering, so their values are not used for anything).
+
+- 40 games with `gnn_full` and 20 with `gnn_node`, in 0.1 s per game after
+  the projections (25 folds, 30-50 s).
+- Every checkpoint is on or before its game's date; no missing values.
+- Style rates are plausible: turnovers 0.138, 3PA/FGA 0.345, FTA/FGA
+  0.22-0.24, offensive rebounds 0.21-0.23. Absence shifts are small and
+  centered.
+- A rerun skips the season and reuses the cached projections.
+
+**Campaign v1** (`experiments/pregame_graph_v1_closing/README.md`,
+pre-registered; `prepare_pregame_campaign.py`;
+`report_pregame_walk_forward.py`; staged runner
+`experiments/runners/run_pregame_graph_v1.sh`, **not run**).
+
+- **Arms:**
+  - A: 2_5;
+  - B: + PI primary;
+  - C: + `GE_STYLE_`;
+  - D: C + `GE_NODE_EMB_`;
+  - E: C + `GE_GRAPH_EMB_`.
+- **Protocol:** phase 5's exactly (spec, fixed hyperparameters, daily refits,
+  window, ten paired seeds, decision rule).
+- **Comparisons:** B vs A, C vs B, D vs C, **E vs D**, and E vs C, read as a
+  family; each pair must differ by exactly its column family.
+- **Research file:** phase 5's pinned file plus the `GE_` columns, with
+  provenance and a temporal check of every encoder checkpoint.
+- **Phase 5 untouched:** its runner is reused unchanged.
+- **Cost:** stages up to `prepare` take a few hours on this CPU (encoders
+  about 40 + 55 min; the store needs the database). The campaign is about
+  2.5× phase 5's run.
+- **Known limits:** one encoder seed (training noise of the representation
+  is not averaged); the 2019-25 window is not untouched; the encoder never
+  sees the market (the market-conditioned encoder stays a future ablation).
+
 ## Future checks
 
 ### Guarding weights (`expected_guard`)
