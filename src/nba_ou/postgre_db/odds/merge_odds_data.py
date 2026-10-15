@@ -442,8 +442,15 @@ def _repair_by_season(frame, seasons, fingerprints, repair):
         digest.update(repr(fingerprints[season]).encode())
         digests[season] = digest.hexdigest()
     memo = memo_module.HistoryMemo(backend, digests, max_season=current - 1)
-    memo.prefetch([REPAIR_MEMO_NAME])
-    tables = {s: memo.table(REPAIR_MEMO_NAME, s) for s in memoisable}
+    # One table per frame layout: the closing builder and the intermediate base
+    # repair differently shaped odds frames (books combined or not), and under
+    # one name each would invalidate the other's entries on every build.
+    layout = memo_module.hashlib.sha256(
+        repr([(str(c), str(t)) for c, t in frame.dtypes.items()]).encode()
+    ).hexdigest()[:12]
+    name = f"{REPAIR_MEMO_NAME}/{layout}"
+    memo.prefetch([name])
+    tables = {s: memo.table(name, s) for s in memoisable}
     reused = [s for s in memoisable if "season" in tables[s]]
     rest = ~season_of_rows.isin(reused)
 

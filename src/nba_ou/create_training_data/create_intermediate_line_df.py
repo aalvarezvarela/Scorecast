@@ -1401,10 +1401,18 @@ def create_intermediate_line_df(
     # reconstructs the current line exactly -- the same additive-pair shape the
     # totals audit was built to catch.
     stage("Auditing closing-line reconstruction ...")
-    for market_name, anchor_column in (
-        ("total", main_line_column),
-        ("spread", main_spread_column),
-    ):
+    # A guard over the dataset's columns, not a value: a tonight-only build's
+    # rows carry the same columns as the full build that audited them (and
+    # live, no closing line yet), so it is not repeated here.
+    audited = (
+        ()
+        if targets is not None
+        else (
+            ("total", main_line_column),
+            ("spread", main_spread_column),
+        )
+    )
+    for market_name, anchor_column in audited:
         closing_reference = merged.get(
             f"ODDS_CLOSING_{anchor_column.removeprefix('ODDS_')}"
         )
