@@ -1279,11 +1279,17 @@ def create_intermediate_line_df(
         progress=progress("Injuries"),
         target_game_ids=targets,
         history_cutoffs=history_rows,
+        live_reports=live.injury_reports if live is not None else None,
     )
     if include_market_dynamics:
         stage("Market dynamics (injury news, cross-market, news betas) ...")
         merged = add_intermediate_market_dynamics(
-            merged, ticks=ticks, anchor=anchor, verbose=verbose, history=history_rows
+            merged,
+            ticks=ticks,
+            anchor=anchor,
+            verbose=verbose,
+            history=history_rows,
+            live_reports=live.injury_reports if live is not None else None,
         )
     row_order = merged.pop(ORDER_COLUMN) if ORDER_COLUMN in merged else None
     # ---- targets -------------------------------------------------------

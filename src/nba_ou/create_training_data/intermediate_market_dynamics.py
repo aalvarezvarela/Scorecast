@@ -41,7 +41,8 @@ from nba_ou.data_processing.line_history.market_dynamics import (
     tick_levels,
 )
 from nba_ou.postgre_db.config.db_config import connect_nba_db
-from nba_ou.postgre_db.injury_report_aiven import fetch
+from nba_ou.postgre_db.injury_report_aiven import fetch, live
+from nba_ou.postgre_db.injury_report_aiven.live import LiveInjuryReports
 
 REQUIRED_COLUMNS: tuple[str, ...] = (
     "GAME_ID",
@@ -56,7 +57,10 @@ REQUIRED_COLUMNS: tuple[str, ...] = (
 
 
 def load_injury_news_timeline(
-    season_years: list[int], *, verbose: bool = True
+    season_years: list[int],
+    *,
+    verbose: bool = True,
+    live_reports: LiveInjuryReports | None = None,
 ) -> InjuryNewsTimeline:
     """Read the report spans and 2_5 estimators needed for the news timeline.
 
@@ -66,9 +70,10 @@ def load_injury_news_timeline(
     requested = {int(s) for s in season_years}
     seasons = sorted(requested | {min(requested) - 1})
     with connect_nba_db("aiven") as conn:
-        spans = fetch.status_spans(conn, seasons)
-        filings = fetch.filing_spans(conn, seasons)
-        schedule = fetch.team_game_schedule(conn, seasons)
+        # Tonight's games, which the store does not hold, from live_reports.
+        spans = live.status_spans(conn, seasons, live_reports)
+        filings = live.filing_spans(conn, seasons, live_reports)
+        schedule = live.team_game_schedule(conn, seasons, live_reports)
         # History for P_PLAY: every season, dates strictly before each target.
         status_events = fetch.listed_status_events(conn)
         listed_pairs = fetch.listed_pairs(conn)
@@ -109,6 +114,7 @@ def add_intermediate_market_dynamics(
     timeline: InjuryNewsTimeline | None = None,
     verbose: bool = True,
     history: pd.DataFrame | None = None,
+    live_reports: LiveInjuryReports | None = None,
 ) -> pd.DataFrame:
     """Return ``snapshots`` with the G1, G2 and G3 columns appended.
 
@@ -139,7 +145,9 @@ def add_intermediate_market_dynamics(
         seasons = set(pd.to_numeric(snapshots["SEASON_YEAR"]).astype(int).unique())
         if beta_history is not None:
             seasons |= set(pd.to_numeric(beta_history["SEASON_YEAR"]).astype(int))
-        timeline = load_injury_news_timeline(sorted(seasons), verbose=verbose)
+        timeline = load_injury_news_timeline(
+            sorted(seasons), verbose=verbose, live_reports=live_reports
+        )
 
     rows = pd.DataFrame(
         {

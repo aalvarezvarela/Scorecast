@@ -65,7 +65,8 @@ from nba_ou.postgre_db.config.db_config import connect_nba_db
 from nba_ou.postgre_db.injuries_refs.fetch_injury_db.get_injury_data_from_db import (
     get_injury_data_from_db,
 )
-from nba_ou.postgre_db.injury_report_aiven import fetch
+from nba_ou.postgre_db.injury_report_aiven import fetch, live
+from nba_ou.postgre_db.injury_report_aiven.live import LiveInjuryReports
 from nba_ou.utils.row_cache import RowCache
 
 KEYS = ["GAME_ID", "TIME_TO_MATCH_MIN"]
@@ -77,10 +78,17 @@ INJURED_ALL_STAR_COLUMNS = (
 )
 
 
-def _states_at_snapshots(cutoffs: pd.DataFrame) -> dict[int, InjuryReportState]:
-    """Bulk-read report spans at the exact timestamps used by market snapshots."""
+def _states_at_snapshots(
+    cutoffs: pd.DataFrame, live_reports: LiveInjuryReports | None = None
+) -> dict[int, InjuryReportState]:
+    """Bulk-read report spans at the exact timestamps used by market snapshots.
+
+    Tonight's games, which the store does not hold, read ``live_reports``.
+    """
     with connect_nba_db("aiven") as conn:
-        statuses, filings, ages = fetch.report_state_at_snapshots(conn, cutoffs)
+        statuses, filings, ages = live.report_state_at_snapshots(
+            conn, cutoffs, live_reports
+        )
         # These two frames serve history estimators. They use earlier game dates
         # only, so the current game's later report cannot enter its own features.
         events = fetch.listed_status_events(conn)
@@ -369,6 +377,7 @@ def add_snapshot_injury_features(
     progress: str | None = None,
     target_game_ids: set[str] | None = None,
     history_cutoffs: pd.DataFrame | None = None,
+    live_reports: LiveInjuryReports | None = None,
 ) -> pd.DataFrame:
     """Attach 2_5 injury features using the latest report before each snapshot.
 
@@ -408,7 +417,7 @@ def add_snapshot_injury_features(
             "SNAPSHOT_TS_UTC": "as_of",
         }
     )
-    states = _states_at_snapshots(cutoffs)
+    states = _states_at_snapshots(cutoffs, live_reports)
     injuries = get_injury_data_from_db(context.player_context_seasons)
     # Normalised and turned into player form once: the same for every horizon.
     box = prepare_box_and_form(load_player_box_history())
