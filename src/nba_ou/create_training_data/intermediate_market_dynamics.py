@@ -33,6 +33,8 @@ from nba_ou.data_processing.injury_status.status_history import (
     load_player_box_history,
 )
 from nba_ou.data_processing.line_history.market_dynamics import (
+    GAP_COLUMN,
+    ORDER_COLUMN,
     LevelReader,
     cross_market_features,
     news_reaction_features,
@@ -94,6 +96,11 @@ def _team_id(values: pd.Series) -> np.ndarray:
     return numeric.astype(str).to_numpy()
 
 
+def _fit_seasons(seasons) -> set[int]:
+    """The seasons the walk-forward fits of ``seasons``' rows read."""
+    return {int(s) for s in seasons} | {int(s) - 1 for s in seasons}
+
+
 def add_intermediate_market_dynamics(
     snapshots: pd.DataFrame,
     *,
@@ -101,20 +108,38 @@ def add_intermediate_market_dynamics(
     anchor: str,
     timeline: InjuryNewsTimeline | None = None,
     verbose: bool = True,
+    history: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
     """Return ``snapshots`` with the G1, G2 and G3 columns appended.
 
     ``snapshots`` is the merged (game, snapshot) frame; ``ticks`` the same
     pre-game ticks its snapshot panel was built from.
+
+    ``history`` holds the other rows a full build would hold, as a
+    tonight-only build keeps them (``intermediate_history``): ``REQUIRED_COLUMNS``
+    as ``rows`` below names them, ``ORDER_COLUMN`` (``snapshots`` need it too)
+    and ``snapshot_history_inputs``' columns. They join the two values that
+    read other games, the league reference and the news beta; ``ticks`` then
+    need cover ``snapshots``' games only. The beta reads the current and
+    previous season, so only those history rows join it, and the news
+    timeline is loaded for those seasons.
     """
     missing = [c for c in REQUIRED_COLUMNS if c not in snapshots]
     if missing:
         raise KeyError(f"Market dynamics need snapshot columns: {missing}")
     if snapshots.duplicated(["GAME_ID", "TIME_TO_MATCH_MIN"]).any():
         raise ValueError("Market dynamics need one row per game and snapshot")
+    beta_history = None
+    if history is not None:
+        fit_seasons = _fit_seasons(pd.to_numeric(snapshots["SEASON_YEAR"]).unique())
+        beta_history = history[
+            pd.to_numeric(history["SEASON_YEAR"]).astype(int).isin(fit_seasons)
+        ].reset_index(drop=True)
     if timeline is None:
-        seasons = sorted(pd.to_numeric(snapshots["SEASON_YEAR"]).astype(int).unique())
-        timeline = load_injury_news_timeline(seasons, verbose=verbose)
+        seasons = set(pd.to_numeric(snapshots["SEASON_YEAR"]).astype(int).unique())
+        if beta_history is not None:
+            seasons |= set(pd.to_numeric(beta_history["SEASON_YEAR"]).astype(int))
+        timeline = load_injury_news_timeline(sorted(seasons), verbose=verbose)
 
     rows = pd.DataFrame(
         {
@@ -132,6 +157,12 @@ def add_intermediate_market_dynamics(
             "AWAY_TEAM_ID": _team_id(snapshots["TEAM_ID_TEAM_AWAY"]),
         }
     )
+    if history is not None:
+        rows[ORDER_COLUMN] = snapshots[ORDER_COLUMN].to_numpy()
+        beta_history = beta_history.assign(
+            HOME_TEAM_ID=_team_id(beta_history["TEAM_ID_TEAM_HOME"]),
+            AWAY_TEAM_ID=_team_id(beta_history["TEAM_ID_TEAM_AWAY"]),
+        )
     snapshot_ns = (
         pd.to_datetime(rows["SNAPSHOT_TS_UTC"], utc=True).astype("int64").to_numpy()
     )
@@ -148,9 +179,20 @@ def add_intermediate_market_dynamics(
         )
 
     reader = LevelReader(tick_levels(ticks))
-    parts.append(cross_market_features(reader, rows, anchor=anchor))
+    league_history = (
+        None
+        if history is None
+        else history[["GAME_ID", "GAME_DATE", GAP_COLUMN]].assign(
+            GAME_DATE=lambda frame: pd.to_datetime(frame["GAME_DATE"])
+        )
+    )
     parts.append(
-        news_reaction_features(reader, rows, timeline, anchor=anchor, verbose=verbose)
+        cross_market_features(reader, rows, anchor=anchor, history=league_history)
+    )
+    parts.append(
+        news_reaction_features(
+            reader, rows, timeline, anchor=anchor, verbose=verbose, history=beta_history
+        )
     )
     added = pd.concat(parts, axis=1)
     added.index = snapshots.index

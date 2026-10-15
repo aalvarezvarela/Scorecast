@@ -272,3 +272,78 @@ class HistoryMemo:
             self.backend.put(self._key(name, season, "json"), json.dumps(meta).encode())
         except Exception as exc:  # noqa: BLE001
             self.report.append(f"{name} {season}: write failed ({exc})")
+
+
+class _SeasonRows:
+    """``RowCache.rows`` over a memo's season tables, plus the build's own rows.
+
+    A key whose season the memo covers, and that ``persist`` admits, is read
+    from and written to that season's table; any other key lives only in this
+    build, as in a plain ``RowCache``.
+    """
+
+    def __init__(self, memo: HistoryMemo, name: str, season_of, persist) -> None:
+        self.memo, self.name = memo, name
+        self.season_of, self.persist = season_of, persist
+        self.local: dict = {}
+
+    def _table(self, key):
+        if not self.persist(key):
+            return None
+        return self.memo.table(self.name, self.season_of(key))
+
+    def get(self, key, default=None):
+        if key in self.local:
+            return self.local[key]
+        table = self._table(key)
+        if table is None:
+            return default
+        return table.get(key, default)
+
+    def __setitem__(self, key, value) -> None:
+        table = self._table(key)
+        (self.local if table is None else table)[key] = value
+
+
+class PersistentRowCache:
+    """A ``RowCache`` whose rows of earlier games outlive the build.
+
+    The row builders key each row on everything it reads that can differ
+    between their calls (``RowCache``); what stays the same within a build --
+    the game history, the players, the injuries -- the memo's season digests
+    cover across builds. So a row cached under its key in a season table is
+    the row any later build with the same digests computes. ``persist`` keeps
+    tonight's rows out: their inputs can still change before tip-off.
+
+    ``bind`` checks the configuration within a build only; a build's sizes,
+    which ``RowCache`` signatures include, differ from build to build.
+    """
+
+    def __init__(
+        self,
+        memo: HistoryMemo,
+        name: str,
+        *,
+        season_of,
+        persist=lambda key: True,
+        size_positions: tuple[int, ...] = (),
+    ) -> None:
+        self.rows = _SeasonRows(memo, name, season_of, persist)
+        self.hits = 0
+        self.misses = 0
+        self._size_positions = size_positions
+        self._signature = None
+
+    def bind(self, signature: tuple) -> None:
+        kept = tuple(
+            value
+            for position, value in enumerate(signature)
+            if position not in self._size_positions
+        )
+        if self._signature is None:
+            self._signature = kept
+        elif self._signature != kept:
+            raise ValueError(
+                f"PersistentRowCache reused with different inputs: "
+                f"{self._signature} != {kept}"
+            )

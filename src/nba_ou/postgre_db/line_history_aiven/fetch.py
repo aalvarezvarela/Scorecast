@@ -494,6 +494,60 @@ def _cached_season_ticks(
     return ticks
 
 
+def pregame_tick_fingerprints(
+    season_years: list[int],
+    *,
+    exclude_books: tuple[str, ...] = (),
+    markets: tuple[str, ...] = ALL_MARKETS,
+    min_minutes_before_tip: int = DEFAULT_MIN_MINUTES_BEFORE_TIP,
+) -> dict[int, list]:
+    """Each season's server fingerprint, as ``fetch_pregame_ticks`` would
+    validate it, without reading the ticks.
+
+    A finished season the S3 input cache validated recently gives its stored
+    fingerprint -- the refresher re-checks it against the server daily --
+    and any other the server's (``line_history_season_fingerprint``).
+    """
+    kwargs = {
+        "markets": markets,
+        "exclude_books": tuple(exclude_books),
+        "min_minutes_before_tip": min_minutes_before_tip,
+    }
+    key = _season_ticks_key((_fetch_pregame_ticks_once,), kwargs)
+    out = {}
+    try:
+        from nba_ou.postgre_db import season_tables
+
+        store = (
+            season_tables._shared_store()
+            if season_tables.s3_seasons_enabled()
+            else None
+        )
+        current = season_tables.current_season_year()
+        now = pd.Timestamp.now(tz="UTC")
+        for season in season_years:
+            if store is None or season >= current:
+                continue
+            entry = store.entry(_ticks_dataset("pregame_ticks"), key, season)
+            if (
+                entry is not None
+                and now - entry.validated_at <= season_tables.MAX_VALIDATION_AGE
+            ):
+                out[int(season)] = entry.fingerprint
+    except Exception as exc:  # noqa: BLE001 -- S3 is only a shortcut
+        print(
+            f"! pregame ticks: S3 fingerprints unavailable ({type(exc).__name__}: {exc})"
+        )
+    missing = [int(s) for s in season_years if int(s) not in out]
+    if missing:
+        with connect_line_history_db() as conn:
+            with conn.cursor() as cur:
+                cur.execute(f"SET statement_timeout = '{FINGERPRINT_TIMEOUT}'")
+            for season in missing:
+                out[season] = line_history_season_fingerprint(conn, season)
+    return {season: out[int(season)] for season in season_years}
+
+
 def _closing_ticks_spec() -> tuple:
     """Name, loaders, arguments and fetcher of ``fetch_closing_ticks``' season
     fetches with its default arguments, as the odds repair calls it."""
@@ -540,7 +594,10 @@ def _pregame_ticks_spec(exclude_books: tuple[str, ...] = HISTORY_ONLY_BOOKS) -> 
 
 #: What ``refresh_season_ticks`` can store: the odds repair's closing ticks and
 #: the intermediate builder's pre-game ticks.
-TICK_SPECS = {"closing_ticks": _closing_ticks_spec, "pregame_ticks": _pregame_ticks_spec}
+TICK_SPECS = {
+    "closing_ticks": _closing_ticks_spec,
+    "pregame_ticks": _pregame_ticks_spec,
+}
 
 
 def refresh_season_ticks(

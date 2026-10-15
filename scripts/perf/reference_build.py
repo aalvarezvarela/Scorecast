@@ -119,6 +119,9 @@ def _build(args: argparse.Namespace):
         recent_limit_to_include=args.limit,
         season_years=seasons,
         return_scoring=True,
+        target_game_ids=(
+            args.targets.read_text().split() if args.targets is not None else None
+        ),
         verbose=True,
     )
 
@@ -148,7 +151,7 @@ def main() -> int:
         "--targets",
         type=Path,
         default=None,
-        help="closing: file of GAME_IDs to build alone (target_game_ids)",
+        help="file of GAME_IDs to build alone (target_game_ids)",
     )
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument(

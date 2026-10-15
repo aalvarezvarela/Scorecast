@@ -2,11 +2,19 @@
 
 from __future__ import annotations
 
+import hashlib
+
 import numpy as np
 import pandas as pd
 from tqdm import tqdm
 
-from nba_ou.config.odds_columns import get_main_book
+from nba_ou.config.market_columns import HOME_MARGIN_COL
+from nba_ou.config.odds_columns import (
+    get_main_book,
+    spread_line_home_col,
+    total_line_col,
+)
+from nba_ou.create_training_data import history_memo
 from nba_ou.create_training_data.create_base_game_features import BaseInjuryContext
 from nba_ou.create_training_data.select_intermediate_columns import (
     SNAPSHOT_INJURY_EFFECT_PREFIXES,
@@ -27,12 +35,14 @@ from nba_ou.data_processing.injury_status.report_state import (
     InjuryReportState,
     apply_report_out_overrides,
     nested_status_dict,
+    report_counter_features,
     report_out_overrides,
     report_questionable_sets,
     snapshot_report_states,
 )
 from nba_ou.data_processing.injury_status.status_history import (
     PreparedBoxHistory,
+    add_status_features,
     load_player_box_history,
     prepare_box_and_form,
 )
@@ -166,6 +176,7 @@ def _one_horizon(
     prepared_players: PreparedPlayerHistory | None = None,
     prepared_all_star: PreparedAllStarInputs | None = None,
     effect_cache: RowCache | None = None,
+    target_game_ids: set[str] | None = None,
 ) -> pd.DataFrame:
     overrides = report_out_overrides(state)
     questionable = report_questionable_sets(state)
@@ -192,7 +203,24 @@ def _one_horizon(
         row_cache=player_rows,
         prepared_players=prepared_players,
     )
-    team = add_injury_report_features(team, state, box)
+    if target_game_ids is None:
+        team = add_injury_report_features(team, state, box)
+    else:
+        # add_injury_report_features, with its per-player statuses for the
+        # targets only. Every row keeps its coverage flag: an uncovered
+        # earlier game's players are blanked below, which keeps it out of the
+        # availability effects' history, exactly as in a full build.
+        positional = team.reset_index(drop=True)
+        is_target = positional["GAME_ID"].astype(str).isin(target_game_ids)
+        counters = report_counter_features(positional, state)
+        target_rows = positional[is_target]
+        statuses = add_status_features(
+            target_rows.reset_index(drop=True), state, box
+        ).set_axis(target_rows.index)
+        added = pd.concat([counters, statuses.reindex(positional.index)], axis=1)
+        added.index = team.index
+        overlap = [c for c in added.columns if c in team.columns]
+        team = pd.concat([team.drop(columns=overlap), added], axis=1)
     team = add_all_star_voting_features(
         team,
         context.players,
@@ -201,6 +229,7 @@ def _one_horizon(
         questionable_dict=nested_status_dict(questionable),
         row_cache=all_star_rows,
         prepared=prepared_all_star,
+        target_game_ids=target_game_ids,
     )
     # When no team has filed at this horizon, the shared All-Star builder has
     # no questionable group to emit. Keep the snapshot schema stable anyway.
@@ -266,12 +295,80 @@ def _one_horizon(
     return games[["GAME_ID", *generated]]
 
 
+#: Memo tables of the tonight-only mode (``add_snapshot_injury_features``).
+PLAYER_ROWS_MEMO = "intermediate_injury_player_rows/" + "-".join(PLAYER_STATS)
+EFFECTS_MEMO = "intermediate_injury_effects"
+
+
+def _effects_history_columns(book: str) -> list[str]:
+    """The base columns ``_add_availability_effects``' game history reads."""
+    return [
+        "GAME_ID",
+        "GAME_DATE",
+        "SEASON_YEAR",
+        "TEAM_ID_TEAM_HOME",
+        "TEAM_ID_TEAM_AWAY",
+        "TOTAL_POINTS",
+        total_line_col(book),
+        spread_line_home_col(book),
+        HOME_MARGIN_COL,
+    ]
+
+
+def _injury_history_memo(
+    targets: set[str],
+    *,
+    base: pd.DataFrame,
+    context: BaseInjuryContext,
+    injuries: pd.DataFrame,
+    voting: pd.DataFrame,
+) -> history_memo.HistoryMemo | None:
+    """The memo the per-row caches persist earlier games' rows in.
+
+    Each season's digest chains every input those rows read up to it: the
+    team games and players the player step reads, the injuries, the game
+    history the effects read, and the All-Star votes (season-less, so they
+    enter every season). What varies by horizon is in each row's own key.
+    """
+    backend = history_memo.default_backend()
+    seasons = [history_memo.season_of_game_id(g) for g in targets]
+    seasons = [s for s in seasons if s is not None]
+    if backend is None or not seasons:
+        return None
+
+    def game_id_column(frame):
+        return "GAME_ID" if "GAME_ID" in frame.columns else "game_id"
+
+    book = get_main_book()
+    history_columns = [c for c in _effects_history_columns(book) if c in base]
+    inputs = {
+        "team_games": context.team_games,
+        "players": context.players,
+        "injuries": injuries,
+        "effects_history": base[history_columns],
+    }
+    digests = history_memo.season_input_digests(
+        {name: (frame, game_id_column(frame)) for name, frame in inputs.items()},
+        range(2000, max(seasons) + 1),
+    )
+    votes = hashlib.sha256(history_memo._frame_digest(voting)).hexdigest()
+    digests = {
+        season: hashlib.sha256(f"{digest}|{votes}".encode()).hexdigest()
+        for season, digest in digests.items()
+    }
+    memo = history_memo.HistoryMemo(backend, digests, max(seasons))
+    memo.prefetch([PLAYER_ROWS_MEMO, EFFECTS_MEMO])
+    return memo
+
+
 def add_snapshot_injury_features(
     snapshots: pd.DataFrame,
     base: pd.DataFrame,
     context: BaseInjuryContext,
     *,
     progress: str | None = None,
+    target_game_ids: set[str] | None = None,
+    history_cutoffs: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
     """Attach 2_5 injury features using the latest report before each snapshot.
 
@@ -281,6 +378,14 @@ def add_snapshot_injury_features(
     ``snapshots`` needs GAME_ID, TIME_TO_MATCH_MIN and SNAPSHOT_TS_UTC. The
     report source uses strict publication time: a report stamped exactly at the
     cutoff is visible only to a later snapshot.
+
+    ``target_game_ids`` is the tonight-only mode: ``snapshots`` holds those
+    games' rows, and ``history_cutoffs`` the (GAME_ID, TIME_TO_MATCH_MIN,
+    SNAPSHOT_TS_UTC) of every other row a full build would hold. Each horizon
+    still runs every team-game, as the availability effects read earlier
+    games' players and availability at that horizon, under their own report;
+    but their rows come from the memo (``history_memo.PersistentRowCache``), and
+    the report and All-Star features are built for the targets only.
     """
     existing_effects = [
         c for c in base if c.startswith(SNAPSHOT_INJURY_EFFECT_PREFIXES)
@@ -290,16 +395,18 @@ def add_snapshot_injury_features(
             "Base game features already contain availability effects; cannot "
             f"distinguish closing-derived values from snapshot values: {existing_effects[:5]}"
         )
-    cutoffs = (
-        snapshots[KEYS + ["SNAPSHOT_TS_UTC"]]
-        .drop_duplicates(KEYS)
-        .rename(
-            columns={
-                "GAME_ID": "game_id",
-                "TIME_TO_MATCH_MIN": "snapshot_minutes",
-                "SNAPSHOT_TS_UTC": "as_of",
-            }
+    cutoff_rows = snapshots[KEYS + ["SNAPSHOT_TS_UTC"]]
+    if history_cutoffs is not None:
+        cutoff_rows = pd.concat(
+            [history_cutoffs[KEYS + ["SNAPSHOT_TS_UTC"]], cutoff_rows],
+            ignore_index=True,
         )
+    cutoffs = cutoff_rows.drop_duplicates(KEYS).rename(
+        columns={
+            "GAME_ID": "game_id",
+            "TIME_TO_MATCH_MIN": "snapshot_minutes",
+            "SNAPSHOT_TS_UTC": "as_of",
+        }
     )
     states = _states_at_snapshots(cutoffs)
     injuries = get_injury_data_from_db(context.player_context_seasons)
@@ -320,6 +427,30 @@ def add_snapshot_injury_features(
     # Raw availability effects, shared by the three families and every horizon:
     # the game history they read is the same, only the availability changes.
     effect_cache = RowCache()
+    memo = None
+    if target_game_ids is not None:
+        targets = {str(g) for g in target_game_ids}
+        all_star_rows = None  # built for the targets alone
+        memo = _injury_history_memo(
+            targets, base=base, context=context, injuries=injuries, voting=voting
+        )
+        if memo is not None:
+            # RowCache signatures end in the build's sizes, which differ
+            # between builds; the memo's digests cover what they stood for.
+            player_rows = history_memo.PersistentRowCache(
+                memo,
+                PLAYER_ROWS_MEMO,
+                season_of=lambda key: history_memo.season_of_game_id(key[0]),
+                persist=lambda key: key[0] not in targets,
+                size_positions=(3, 4),
+            )
+            # An effect reads the games before its date: never tonight's.
+            effect_cache = history_memo.PersistentRowCache(
+                memo,
+                EFFECTS_MEMO,
+                season_of=lambda key: max(key[1]),
+                size_positions=(1,),
+            )
     # The same for every horizon: the players' cumulative statistics, sort
     # and lookup indexes, and the All-Star votes, do not depend on the report.
     prepared_players = prepare_player_history(context.players.copy(), PLAYER_STATS)
@@ -346,10 +477,15 @@ def add_snapshot_injury_features(
             prepared_players,
             prepared_all_star,
             effect_cache,
+            target_game_ids=targets if target_game_ids is not None else None,
         )
         features = features.loc[features.GAME_ID.isin(ids)].copy()
+        if target_game_ids is not None:
+            features = features.loc[features.GAME_ID.astype(str).isin(targets)]
         features["TIME_TO_MATCH_MIN"] = horizon
         parts.append(features)
+    if memo is not None:
+        memo.flush()
     injury = pd.concat(parts, ignore_index=True)
     overlap = (set(injury.columns) & set(snapshots.columns)) - set(KEYS)
     if overlap:

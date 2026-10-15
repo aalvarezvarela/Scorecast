@@ -49,6 +49,7 @@ def _legacy_referee_features(
     book: str,
     tonight: pd.DataFrame | None = None,
     scheduled_crews: pd.DataFrame | None = None,
+    target_game_ids: set[str] | None = None,
 ) -> pd.DataFrame:
     """Run the existing legacy estimator once per game, using closing history.
 
@@ -100,7 +101,9 @@ def _legacy_referee_features(
         )
     games = games.merge(crews, on="GAME_ID", how="inner", validate="one_to_one")
     games["DIFF_FROM_LINE"] = games["TOTAL_POINTS"] - games[total_line_col(book)]
-    estimated = compute_referee_features(games)
+    # A row reads earlier games' crews and outcomes, never another row's
+    # features, so only the target rows need computing (the others stay NaN).
+    estimated = compute_referee_features(games, target_game_ids=target_game_ids)
     columns = [
         f"REF_{stat}_{metric}_DIFF_BEFORE"
         for metric in REFEREE_METRICS
@@ -120,6 +123,7 @@ def add_intermediate_referee_features(
     exclude_caesars: bool = False,
     combine_fanatics_and_caesars: bool | None = None,
     df_referees_scheduled: pd.DataFrame | None = None,
+    target_game_ids: set[str] | None = None,
 ) -> pd.DataFrame:
     """Attach the 2_5 referee families before games expand into snapshots.
 
@@ -128,6 +132,8 @@ def add_intermediate_referee_features(
     ``df_referees_scheduled`` (``get_all_info_for_scheduled_games``'s referee
     frame). No crew -- not released yet, or not found -- means NaN features,
     never a fallback: snapshots before 09:00 ET are NaN in training too.
+
+    ``target_game_ids`` computes the legacy per-game loop for these games only.
     """
     first_year = int(base["SEASON_YEAR"].min())
     last_year = int(base["SEASON_YEAR"].max())
@@ -163,6 +169,7 @@ def add_intermediate_referee_features(
         book=book,
         tonight=tonight,
         scheduled_crews=df_referees_scheduled,
+        target_game_ids=target_game_ids,
     )
     out = base.merge(legacy, on="GAME_ID", how="left", validate="one_to_one")
     return add_referee_tendency_features(
