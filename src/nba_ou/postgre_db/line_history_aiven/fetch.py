@@ -29,6 +29,7 @@ import pandas as pd
 import psycopg
 from psycopg import sql
 
+from nba_ou.config.odds_columns import HISTORY_ONLY_BOOKS
 from nba_ou.postgre_db.config.db_config import connect_line_history_db
 from nba_ou.postgre_db.input_cache import SeasonCache, code_key
 
@@ -515,17 +516,50 @@ def _closing_ticks_spec() -> tuple:
     )
 
 
-def refresh_season_ticks(
-    store, seasons: list[int], *, force: bool = False, now=None
-) -> dict[int, str]:
-    """Validate finished seasons of closing ticks in S3, uploading changed ones.
+def _pregame_ticks_spec(exclude_books: tuple[str, ...] = HISTORY_ONLY_BOOKS) -> tuple:
+    """``_closing_ticks_spec`` for ``fetch_pregame_ticks``' season fetches, with
+    the books the intermediate builder excludes by default."""
+    import inspect
 
-    The fingerprint is taken before the fetch, so ticks changing mid-fetch
-    leave an entry the next refresh replaces. The current season is skipped.
+    defaults = {
+        name: parameter.default
+        for name, parameter in inspect.signature(fetch_pregame_ticks).parameters.items()
+    }
+    kwargs = {
+        "markets": defaults["markets"],
+        "exclude_books": tuple(exclude_books),
+        "min_minutes_before_tip": defaults["min_minutes_before_tip"],
+    }
+    return (
+        "pregame_ticks",
+        (_fetch_pregame_ticks_once,),
+        kwargs,
+        lambda **chunk: _fetch_pregame_ticks_once(chunk["season_years"], **kwargs),
+    )
+
+
+#: What ``refresh_season_ticks`` can store: the odds repair's closing ticks and
+#: the intermediate builder's pre-game ticks.
+TICK_SPECS = {"closing_ticks": _closing_ticks_spec, "pregame_ticks": _pregame_ticks_spec}
+
+
+def refresh_season_ticks(
+    store,
+    seasons: list[int],
+    *,
+    force: bool = False,
+    now=None,
+    name: str = "closing_ticks",
+) -> dict[int, str]:
+    """Validate finished seasons of ticks in S3, uploading changed ones.
+
+    ``name`` is a ``TICK_SPECS`` entry. The fingerprint is taken before the
+    fetch, so ticks changing mid-fetch leave an entry the next refresh
+    replaces. The current season is skipped.
     """
     from nba_ou.postgre_db import season_tables
 
-    name, loaders, kwargs, fetch_one = _closing_ticks_spec()
+    name, loaders, kwargs, fetch_one = TICK_SPECS[name]()
     key = _season_ticks_key(loaders, kwargs)
     dataset = _ticks_dataset(name)
     now = pd.Timestamp.now(tz="UTC") if now is None else pd.Timestamp(now)
