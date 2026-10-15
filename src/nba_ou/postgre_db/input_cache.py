@@ -113,8 +113,20 @@ class SeasonCache:
         fingerprint: Callable[[int], list],
         fetch: Callable[[int], pd.DataFrame],
     ) -> pd.DataFrame:
-        """The season's frame: cached if its fingerprint still matches, else fetched."""
-        current = _jsonable(fingerprint(season))
+        """The season's frame: cached if its fingerprint still matches, else fetched.
+
+        A fingerprint that fails (a timeout, a dropped connection) cannot vouch
+        for anything, so the season is fetched and nothing is stored.
+        """
+        try:
+            current = _jsonable(fingerprint(season))
+        except Exception as exc:
+            print(
+                f"! input cache: fingerprint for season {season} failed "
+                f"({type(exc).__name__}); fetching it without the cache"
+            )
+            self.misses += 1
+            return fetch(season)
         frame = self.load(season, current)
         if frame is not None:
             self.hits += 1

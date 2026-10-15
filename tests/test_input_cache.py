@@ -101,6 +101,16 @@ def test_code_key_changes_with_code_and_arguments():
     assert code_key(loader_a, last_n=5) != code_key(loader_a, last_n=None)
 
 
+class _FakeConn:
+    """Enough of a connection for the cache's session settings."""
+
+    def cursor(self):
+        return contextlib.nullcontext(self)
+
+    def execute(self, *args, **kwargs):
+        pass
+
+
 def test_cached_closing_ticks_equal_the_fetched_ones(tmp_path, monkeypatch):
     """The cached path of fetch_closing_ticks against the plain season fetch."""
     monkeypatch.setenv("NBA_OU_INPUT_CACHE_DIR", str(tmp_path))
@@ -131,7 +141,7 @@ def test_cached_closing_ticks_equal_the_fetched_ones(tmp_path, monkeypatch):
 
     monkeypatch.setattr(fetch, "_fetch_closing_ticks_once", fake_once)
     monkeypatch.setattr(
-        fetch, "connect_line_history_db", lambda: contextlib.nullcontext(None)
+        fetch, "connect_line_history_db", lambda: contextlib.nullcontext(_FakeConn())
     )
     versions = {2023: "v1", 2024: "v1", 2025: "v1"}
     # One function throughout: the cache key covers the fingerprint's code.
@@ -176,3 +186,20 @@ def test_fingerprints_compare_after_a_json_round_trip(tmp_path, value):
             2024, fingerprint, lambda s: fetches.append(s) or _frame(s)
         )
     assert fetches == [2024]
+
+
+def test_failed_fingerprint_fetches_and_stores_nothing(tmp_path):
+    fetches = []
+
+    def broken(season):
+        raise TimeoutError("statement timeout")
+
+    def fetch_season(season):
+        fetches.append(season)
+        return _frame(season)
+
+    for _ in range(2):
+        frame = SeasonCache("t", "k", root=tmp_path).get(2024, broken, fetch_season)
+        assert_identical(frame, _frame(2024))
+    assert fetches == [2024, 2024]
+    assert not (tmp_path / "t" / "k").exists()

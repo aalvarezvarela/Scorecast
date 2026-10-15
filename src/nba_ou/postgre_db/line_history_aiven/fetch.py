@@ -351,12 +351,15 @@ def fetch_closing_ticks(
 #: between columns changes the hash.
 _CLOSING_TICKS_FINGERPRINT = """
     WITH season_games AS (
+        -- A UNION, not "season_year = s OR game_id IN (...)": Postgres runs
+        -- that OR as a rescan of the lines per game (10+ minutes a season).
+        SELECT g.* FROM {schema}.lh_game g WHERE g.season_year = %(season)s
+        UNION
         SELECT g.* FROM {schema}.lh_game g
-        WHERE g.season_year = %(season)s
-           OR g.game_id IN (
-               SELECT l.game_id FROM {schema}.lh_line l
-               WHERE l.season_year = %(season)s
-           )
+        JOIN (
+            SELECT DISTINCT l.game_id FROM {schema}.lh_line l
+            WHERE l.season_year = %(season)s
+        ) season_lines USING (game_id)
     )
     SELECT
         (SELECT count(*) FROM {schema}.lh_line l WHERE l.season_year = %(season)s),
@@ -370,12 +373,21 @@ _CLOSING_TICKS_FINGERPRINT = """
 """
 
 
+#: A fingerprint is a few seconds a season; one this slow means something is
+#: wrong server-side, and the season is fetched rather than waited on.
+FINGERPRINT_TIMEOUT = "120s"
+
+
 def line_history_season_fingerprint(conn: psycopg.Connection, season: int) -> list:
     """Server-side fingerprint of everything one season's tick queries read."""
     query = sql.SQL(_CLOSING_TICKS_FINGERPRINT).format(schema=sql.Identifier(SCHEMA))
-    with conn.cursor() as cur:
-        cur.execute(query, {"season": int(season)})
-        return [None if value is None else str(value) for value in cur.fetchone()]
+    try:
+        with conn.cursor() as cur:
+            cur.execute(query, {"season": int(season)})
+            return [None if value is None else str(value) for value in cur.fetchone()]
+    except psycopg.Error:
+        conn.rollback()  # keep the connection usable for the next season
+        raise
 
 
 def _cached_season_ticks(
@@ -396,6 +408,8 @@ def _cached_season_ticks(
     )
     frames = []
     with connect_line_history_db() as conn:
+        with conn.cursor() as cur:
+            cur.execute(f"SET statement_timeout = '{FINGERPRINT_TIMEOUT}'")
         for season in seasons:
             frames.append(
                 cache.get(
