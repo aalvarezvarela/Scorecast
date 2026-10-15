@@ -66,6 +66,7 @@ from nba_ou.data_processing.player_graph.fm import (
     FMConfig,
     PlayerVocab,
     edge_tensors,
+    finalize_centering,
     fit_standardization,
     load_checkpoint,
     predict,
@@ -279,6 +280,11 @@ def main() -> None:
             seed=fold_seed,
             device=args.device,
         )
+        if tensors is not None:
+            # Exact training-set centering mean (2026-10-15), from this fold's
+            # training stints only.
+            model.to("cpu")
+            finalize_centering(model, tensors)
         target = stints.subset(predict_mask)
         predictions = None
         uncorrected: list[str] = []
@@ -324,6 +330,11 @@ def main() -> None:
             "players": len(vocab),
             "predicted_stints": 0 if edge_only else len(target),
             "uncorrected_residual_targets": uncorrected,
+            "centering": (
+                "exact training mean"
+                if getattr(config, "center_interactions", False)
+                else None
+            ),
         }
         save_checkpoint(ckpt, model, vocab, std, log)
         (ckpt_dir / f"fold={fold.label}.json").write_text(

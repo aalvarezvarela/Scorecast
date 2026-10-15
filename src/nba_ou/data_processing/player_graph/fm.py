@@ -283,6 +283,14 @@ class FactorizationMachine(nn.Module):
             out.append(y)
         return torch.stack(out, dim=1)
 
+    def uncentered(self, batch: StintTensors) -> dict[str, torch.Tensor]:
+        """The interaction vectors before centering, ``(B, 10, d)`` each."""
+        p = self.blocks(batch.x, batch.ids)
+        return {name: p[name] for name in INTERACTION_BLOCKS if name in p}
+
+    def centering_buffer(self, name: str) -> torch.Tensor:
+        return getattr(self, f"mean_{name}")
+
     def _centered(self, p: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
         """Interaction vectors minus their mean over players: the batch's
         while training (updating a running mean), the running one otherwise."""
@@ -613,6 +621,33 @@ def _train_edges_only(
             totals["penalty"] += model.penalty(n).item() / steps
         history.append(totals)
     return history
+
+
+def finalize_centering(
+    model: nn.Module, train_stints: StintTensors, batch_size: int = 8192
+) -> None:
+    """Set the centering means to the **exact** mean over the training
+    stints' nodes, after training (decided 2026-10-15).
+
+    The running mean updated during training lags the network: in a fold
+    with few steps (the first, 27 steps) it covers about 75% of the way and
+    biases every interaction product at prediction. Only ``train_stints``
+    (the fold's training data) is read; nothing is predicted here.
+    """
+    if not getattr(model.config, "center_interactions", False):
+        return
+    model.eval()
+    sums: dict[str, torch.Tensor] = {}
+    count = 0
+    with torch.no_grad():
+        for start in range(0, len(train_stints), batch_size):
+            b = train_stints.take(slice(start, start + batch_size))
+            for name, values in model.uncentered(b).items():
+                flat = values.reshape(-1, values.shape[-1])
+                sums[name] = sums.get(name, 0) + flat.sum(0)
+            count += b.x.shape[0] * b.x.shape[1]
+        for name, total in sums.items():
+            model.centering_buffer(name).copy_(total / count)
 
 
 def _to(batch, device: str):

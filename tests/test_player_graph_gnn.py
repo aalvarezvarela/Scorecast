@@ -282,3 +282,59 @@ def test_checkpoint_round_trip_and_warm_start(tmp_path):
     bigger = GNN(NO_GUARD, len(grown))
     warm_start(bigger, loaded, grown, vocab_back)
     assert torch.equal(bigger.eval().forward_batch(t), loaded.forward_batch(t))
+
+
+def test_exact_centering_fixes_a_short_first_fold():
+    """27 steps (the first fold) leave the running mean short of the
+    embeddings' mean; the exact training mean centers them, and it reads the
+    training stints only."""
+    from nba_ou.data_processing.player_graph.fm import finalize_centering
+
+    rng = np.random.default_rng(10)
+    data = _stints(rng, 9 * 256)
+    data.labels = rng.normal(size=(9 * 256, 2, T))
+    t, vocab, _ = _tensors(data)
+    torch.manual_seed(0)
+    model = GNN(FULL, len(vocab))
+    train(model, t, epochs=3, batch_size=256)  # 27 steps
+    model.eval()
+    with torch.no_grad():
+        raw = model.uncentered(t)["embedding"].reshape(-1, FULL.dim)
+        stale = (raw - model.embedding_mean).mean(0).abs().max().item()
+    finalize_centering(model, t)
+    with torch.no_grad():
+        exact = (raw - model.embedding_mean).mean(0).abs().max().item()
+    assert stale > 0.05
+    assert exact < 1e-5
+    # Only the given (training) stints define it.
+    mean = model.embedding_mean.clone()
+    other = _tensors(_stints(np.random.default_rng(11), 64))[0]
+    model.forward_batch(other)  # eval-mode prediction never moves it
+    assert torch.equal(model.embedding_mean, mean)
+    finalize_centering(model, t.take(slice(0, 1024)))
+    assert not torch.equal(model.embedding_mean, mean)
+
+
+def test_exact_centering_for_the_fm_blocks():
+    from nba_ou.data_processing.player_graph.fm import (
+        FactorizationMachine,
+        FMConfig,
+        finalize_centering,
+    )
+
+    rng = np.random.default_rng(12)
+    data = _stints(rng, 512)
+    data.labels = rng.normal(size=(512, 2, T))
+    t, vocab, _ = _tensors(data)
+    torch.manual_seed(0)
+    model = FactorizationMachine(
+        FMConfig(edges=False, center_interactions=True), len(vocab)
+    )
+    train(model, t, epochs=1, batch_size=256)
+    finalize_centering(model, t)
+    with torch.no_grad():
+        for name, values in model.uncentered(t).items():
+            centered = values.reshape(-1, values.shape[-1]) - model.centering_buffer(
+                name
+            )
+            assert centered.mean(0).abs().max().item() < 1e-5
