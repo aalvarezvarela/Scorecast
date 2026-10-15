@@ -120,8 +120,14 @@ def compute_referee_features(
     df = df_refs_pivot.copy()
     df["GAME_DATE"] = pd.to_datetime(df["GAME_DATE"])
 
-    # Sort by GAME_DATE to ensure chronological order
-    df = df.sort_values("GAME_DATE").reset_index(drop=True)
+    # Chronological order, ties by GAME_ID. The past-game means below sum in
+    # this order, so it must not depend on which later games were loaded: an
+    # unstable date-only sort orders a date's games by the whole array, and a
+    # build that stops at a date then summed its past games in another order
+    # (1e-15 differences against the full build).
+    df = df.sort_values(["GAME_DATE", "GAME_ID"], kind="mergesort").reset_index(
+        drop=True
+    )
 
     if include_ref_trio_features:
         # Cache order-invariant trio key per game for faster matching
