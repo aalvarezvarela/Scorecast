@@ -30,8 +30,9 @@ from datetime import datetime
 import pandas as pd
 import psycopg
 
-from .schema import SCHEMA
 from nba_ou.postgre_db.row_order import read_sql_canonical
+
+from .schema import SCHEMA
 
 _STATUS_AS_OF = f"""
     SELECT s.game_id,
@@ -288,6 +289,27 @@ _LISTED_PAIRS = f"""
 """
 
 
+def _season_query(name: str, query: str, params=()):
+    """The query as a ``SeasonQuery``: its season filter as the placeholder."""
+    from nba_ou.postgre_db.season_queries import SeasonQuery
+
+    assert query.count(_SEASON_FILTER) == 1, name
+    return SeasonQuery(
+        dataset=f"injury_report.{name}",
+        template=query.replace(_SEASON_FILTER, "{season_filter}"),
+        season_column="g.season_year",
+        database="aiven",
+        params=params,
+    )
+
+
+def _through_s3(name: str, query: str, conn, season_years, params=()):
+    """The query's result from the S3 input cache where it can serve it."""
+    from nba_ou.postgre_db.season_queries import read_through_query
+
+    return read_through_query(_season_query(name, query, params), season_years, conn)
+
+
 def _season_params(season_years: list[int] | None) -> dict:
     # Plain ints: numpy integers mixed with Python ints cannot be dumped as one
     # Postgres array.
@@ -302,6 +324,11 @@ def last_status_before_tip(
     conn: psycopg.Connection, season_years: list[int] | None = None
 ) -> pd.DataFrame:
     """Each listed player's status on the last report published before tipoff."""
+    stored = _through_s3(
+        "last_status_before_tip", _LAST_STATUS_BEFORE_TIP, conn, season_years
+    )
+    if stored is not None:
+        return stored
     return read_sql_canonical(
         _LAST_STATUS_BEFORE_TIP, conn, params=_season_params(season_years)
     )
@@ -314,6 +341,9 @@ def filing_at_tip(
 
     A team-game with no row had no report listing its game before tip.
     """
+    stored = _through_s3("filing_at_tip", _FILING_AT_TIP, conn, season_years)
+    if stored is not None:
+        return stored
     return read_sql_canonical(_FILING_AT_TIP, conn, params=_season_params(season_years))
 
 
@@ -321,6 +351,9 @@ def report_age_at_tip(
     conn: psycopg.Connection, season_years: list[int] | None = None
 ) -> pd.DataFrame:
     """Minutes between the last parsed report and each game's tipoff."""
+    stored = _through_s3("report_age_at_tip", _REPORT_AGE_AT_TIP, conn, season_years)
+    if stored is not None:
+        return stored
     return read_sql_canonical(
         _REPORT_AGE_AT_TIP, conn, params=_season_params(season_years)
     )
@@ -332,6 +365,15 @@ def listed_status_events(
     statuses: tuple[str, ...] = LISTED_STATUS_CODES,
 ) -> pd.DataFrame:
     """Every game a player held one of ``statuses`` at any point before tip."""
+    stored = _through_s3(
+        "listed_status_events",
+        _LISTED_STATUS_EVENTS,
+        conn,
+        season_years,
+        params=(("statuses", list(statuses)),),
+    )
+    if stored is not None:
+        return stored
     params = _season_params(season_years) | {"statuses": list(statuses)}
     return read_sql_canonical(_LISTED_STATUS_EVENTS, conn, params=params)
 
@@ -340,6 +382,9 @@ def listed_pairs(
     conn: psycopg.Connection, season_years: list[int] | None = None
 ) -> pd.DataFrame:
     """Every (game, player) with any pre-tip designation, of any status."""
+    stored = _through_s3("listed_pairs", _LISTED_PAIRS, conn, season_years)
+    if stored is not None:
+        return stored
     return read_sql_canonical(_LISTED_PAIRS, conn, params=_season_params(season_years))
 
 

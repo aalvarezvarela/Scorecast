@@ -47,8 +47,9 @@ from dataclasses import dataclass
 import numpy as np
 import pandas as pd
 
-from .report_state import UNCOUNTED_REASON_CATEGORIES, InjuryReportState
 from nba_ou.postgre_db.row_order import read_sql_canonical
+
+from .report_state import UNCOUNTED_REASON_CATEGORIES, InjuryReportState
 
 #: Statuses whose listings get a play probability, an effect and a league rate.
 HISTORY_STATUSES: tuple[str, ...] = ("questionable", "probable")
@@ -184,6 +185,34 @@ def status_feature_columns(top_n: dict[str, int] | None = None) -> list[str]:
 # --------------------------------------------------------------------------------
 
 
+_BOX_HISTORY_SEASON_FILTER = (
+    "(%(season_years)s::int[] IS NULL OR p.season_year = ANY(%(season_years)s))"
+)
+_BOX_HISTORY_SQL = f"""
+        SELECT p.game_id, p.team_id::text AS team_id, p.player_id::text AS player_id,
+               p.season_year, g.game_date, p.min, p.pts, p.pace_per40
+        FROM nba_players.nba_players p
+        JOIN (SELECT DISTINCT game_id, game_date FROM nba_games.nba_games) g
+          ON g.game_id = p.game_id
+        WHERE left(p.game_id, 3) IN ('002', '004', '005')
+          AND {_BOX_HISTORY_SEASON_FILTER}
+          AND p.season_year >= 2017
+    """
+
+
+def _box_history_query():
+    from nba_ou.postgre_db.season_queries import SeasonQuery
+
+    return SeasonQuery(
+        dataset="nba_players.box_history",
+        template=_BOX_HISTORY_SQL.replace(
+            _BOX_HISTORY_SEASON_FILTER, "{season_filter}"
+        ),
+        season_column="p.season_year",
+        database="supabase",
+    )
+
+
 def load_player_box_history(season_years: list[int] | None = None) -> pd.DataFrame:
     """Box-score rows for regular season, play-in and playoffs, from Supabase.
 
@@ -194,25 +223,18 @@ def load_player_box_history(season_years: list[int] | None = None) -> pd.DataFra
         _parse_minutes_series,
     )
     from nba_ou.postgre_db.config.db_config import connect_nba_db
+    from nba_ou.postgre_db.season_queries import read_through_query
 
-    query = """
-        SELECT p.game_id, p.team_id::text AS team_id, p.player_id::text AS player_id,
-               p.season_year, g.game_date, p.min, p.pts, p.pace_per40
-        FROM nba_players.nba_players p
-        JOIN (SELECT DISTINCT game_id, game_date FROM nba_games.nba_games) g
-          ON g.game_id = p.game_id
-        WHERE left(p.game_id, 3) IN ('002', '004', '005')
-          AND (%(season_years)s::int[] IS NULL OR p.season_year = ANY(%(season_years)s))
-          AND p.season_year >= 2017
-    """
     with connect_nba_db("supabase") as conn:
-        box = read_sql_canonical(
-            query,
-            conn,
-            params={
-                "season_years": None if season_years is None else list(season_years)
-            },
-        )
+        box = read_through_query(_box_history_query(), season_years, conn)
+        if box is None:
+            box = read_sql_canonical(
+                _BOX_HISTORY_SQL,
+                conn,
+                params={
+                    "season_years": None if season_years is None else list(season_years)
+                },
+            )
     box["MIN"] = _parse_minutes_series(box.pop("min"))
     box["PTS"] = pd.to_numeric(box.pop("pts"), errors="coerce")
     box["PACE_PER40"] = pd.to_numeric(box.pop("pace_per40"), errors="coerce")

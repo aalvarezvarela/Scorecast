@@ -18,7 +18,9 @@ validated within ``season_tables.MAX_VALIDATION_AGE`` is queried instead.
 
 ``line_history_aiven.closing_ticks`` (in the default ``--tables``) does the same
 for the Aiven closing ticks the odds repair reads, fingerprinted with
-``line_history_season_fingerprint``.
+``line_history_season_fingerprint``; the ``season_queries`` entries (box-score
+history, injury-report reads) store each season's result of the loader's own
+query, fingerprinted by a server-side hash over that result.
 """
 
 from __future__ import annotations
@@ -32,6 +34,10 @@ from nba_ou.postgre_db.config.db_config import connect_nba_db
 from nba_ou.postgre_db.line_history_aiven.fetch import (
     available_seasons,
     refresh_season_ticks,
+)
+from nba_ou.postgre_db.season_queries import (
+    refresh_season_query,
+    registered_season_queries,
 )
 from nba_ou.postgre_db.season_store import default_store
 from nba_ou.postgre_db.season_tables import (
@@ -55,15 +61,20 @@ def _stored_seasons(conn, spec) -> list[int]:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
+    queries = registered_season_queries()
     parser.add_argument(
-        "--tables", nargs="*", default=sorted(SEASON_TABLES) + [CLOSING_TICKS]
+        "--tables",
+        nargs="*",
+        default=sorted(SEASON_TABLES) + sorted(queries) + [CLOSING_TICKS],
     )
     parser.add_argument("--seasons", nargs="*", type=int, default=None)
     parser.add_argument("--force", action="store_true")
     parser.add_argument("--list", action="store_true", help="show the stored seasons")
     args = parser.parse_args()
 
-    unknown = sorted(set(args.tables) - set(SEASON_TABLES) - {CLOSING_TICKS})
+    unknown = sorted(
+        set(args.tables) - set(SEASON_TABLES) - set(queries) - {CLOSING_TICKS}
+    )
     if unknown:
         parser.error(f"unknown tables {unknown}; known: {sorted(SEASON_TABLES)}")
     store = default_store()
@@ -86,8 +97,26 @@ def main() -> int:
                 print(f"{CLOSING_TICKS:42s} {season}: {result}")
             print(f"{CLOSING_TICKS:42s} done in {time.perf_counter() - started:.1f} s")
 
+    for name in [t for t in args.tables if t in queries]:
+        spec, seasons_sql = queries[name]
+        with connect_nba_db(spec.database) as conn:
+            with conn.cursor() as cur:
+                cur.execute(seasons_sql)
+                listed = sorted(int(r[0]) for r in cur.fetchall() if r[0] is not None)
+            seasons = args.seasons or [s for s in listed if s < current]
+            if args.list:
+                print(f"{name:42s} seasons {seasons}")
+                continue
+            started = time.perf_counter()
+            outcome = refresh_season_query(
+                spec, seasons, store=store, conn=conn, force=args.force
+            )
+        for season, result in outcome.items():
+            print(f"{name:42s} {season}: {result}")
+        print(f"{name:42s} done in {time.perf_counter() - started:.1f} s")
+
     with connect_nba_db() as conn:
-        for name in [t for t in args.tables if t != CLOSING_TICKS]:
+        for name in [t for t in args.tables if t in SEASON_TABLES]:
             spec = SEASON_TABLES[name]
             seasons = args.seasons or [
                 s for s in _stored_seasons(conn, spec) if s < current
