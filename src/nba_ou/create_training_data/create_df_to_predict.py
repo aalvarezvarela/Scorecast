@@ -507,6 +507,7 @@ def create_df_to_predict(
     referee_history_seasons: int = DEFAULT_REFEREE_HISTORY_SEASONS,
     include_same_season_referee_variants: bool = False,
     target_game_ids=None,
+    return_layer_inputs: bool = False,
 ) -> pd.DataFrame:
     """
     Create prediction dataset for NBA over/under prediction models.
@@ -570,7 +571,14 @@ def create_df_to_predict(
             history: whatever a target game reads from earlier games is built
             for all of them, so each returned row is exactly the row a build
             without this argument gives. Used to predict tonight's games on
-            the full training history.
+            the full training history: with ``todays_prediction`` and no
+            ``older_season_limit``, the build then loads the training build's
+            seasons (from 2017-18) and no extra head-to-head games, so tonight's
+            rows see the same history as the training rows.
+        return_layer_inputs (bool, optional): Also return, for every built
+            row (history rows included), the columns schema layers read
+            (``schema_layers.registry.required_input_columns``): the layers
+            calibrate on earlier games, so they need those rows too.
 
     Returns:
         pd.DataFrame: Complete training dataset with all features
@@ -613,7 +621,10 @@ def create_df_to_predict(
     recent_limit_to_include = pd.to_datetime(recent_limit_to_include, format="%Y-%m-%d")
 
     # Determine seasons to load
-    if todays_prediction:
+    full_history = (
+        todays_prediction and targets is not None and older_season_limit is None
+    )
+    if todays_prediction and not full_history:
         # Default to 2 seasons back (current + previous) for today's prediction
         n_seasons = older_season_limit if older_season_limit is not None else 2
     else:
@@ -643,7 +654,10 @@ def create_df_to_predict(
             if "GAME_ID" in scheduled_games.columns
             else []
         )
-        if home_away_pairs:
+        if home_away_pairs and not full_history:
+            # Only a short window needs earlier meetings added: with the full
+            # history they are loaded already, and adding older ones would
+            # give tonight's rows history the training rows never had.
             extra_game_ids = get_historical_game_ids_for_home_away_matchups(
                 home_away_pairs=home_away_pairs,
                 exclude_game_ids=scheduled_game_ids,
@@ -1036,6 +1050,16 @@ def create_df_to_predict(
             )
             print(f"Game IDs filtered: {games_not_updated}")
 
+    layer_inputs = None
+    if return_layer_inputs:
+        from nba_ou.create_training_data.schema_layers import registry as layers
+
+        wanted = layers.required_input_columns(
+            layers.BASE_SCHEMA_VERSION, layers.latest_version(), layers.CLOSING_LINE
+        )
+        layer_inputs = df_training[
+            [c for c in wanted if c in df_training.columns]
+        ].copy()
     if targets is not None:
         df_training = df_training[df_training["GAME_ID"].astype(str).isin(targets)]
         print(f"Kept the {len(df_training)} target game(s)")
@@ -1063,6 +1087,8 @@ def create_df_to_predict(
     print("--" * 20)
     print()
 
+    if return_layer_inputs:
+        return df_training, layer_inputs
     return df_training
 
 

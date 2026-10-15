@@ -3,6 +3,8 @@ import os
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
+import pandas as pd
+from nba_ou.config.dataset_versions import BASE_SCHEMA_VERSION
 from nba_ou.config.settings import SETTINGS
 from nba_ou.create_training_data.create_df_to_predict import (
     create_df_to_predict,
@@ -12,7 +14,7 @@ from nba_ou.create_training_data.get_all_info_for_scheduled_games import (
 )
 from nba_ou.create_training_data.schema_layers import (
     CLOSING_LINE,
-    apply_layers,
+    compute_new_columns,
     is_layered,
     newest_version,
 )
@@ -156,13 +158,19 @@ def predict_nba_games(
     # Step 3: Build feature DataFrame for prediction
     print_step_header(3, "Preparing Feature DataFrame")
     try:
-        df_to_predict_total = create_df_to_predict(
+        # Tonight's games only, on the training build's full history: every
+        # row is exactly what a full build would give it, at a fraction of
+        # the work (create_df_to_predict's target_game_ids).
+        tonight_ids = scheduled_data["scheduled_games"]["GAME_ID"].astype(str).tolist()
+        df_to_predict_total, layer_inputs = create_df_to_predict(
             todays_prediction=True,
             scheduled_data=scheduled_data,
             strict_mode=30,
             normalize_total_lines=normalize_total_lines,
             normalize_spread_lines=normalize_spread_lines,
             null_extreme_spread_prices=null_extreme_spread_prices,
+            target_game_ids=tonight_ids,
+            return_layer_inputs=True,
         )
         # The builder produces the base schema. Each slot reads its own
         # feature_names, and newer versions only add columns, so one frame at
@@ -170,11 +178,17 @@ def predict_nba_games(
         frame_version = newest_version(slot.schema_version for slot in configured_slots)
         if is_layered(frame_version):
             print(f"Adding schema layers up to {frame_version} ...")
-            df_to_predict_total = apply_layers(
-                df_to_predict_total,
+            # Layers calibrate on earlier games, so they run over every built
+            # row's inputs; tonight's rows then take their columns.
+            added = compute_new_columns(
+                layer_inputs,
+                from_version=BASE_SCHEMA_VERSION,
                 to_version=frame_version,
                 dataset_type=CLOSING_LINE,
+                existing_columns=df_to_predict_total.columns,
             )
+            added = added.loc[df_to_predict_total.index]
+            df_to_predict_total = pd.concat([df_to_predict_total, added], axis=1)
         df_to_predict = df_to_predict_total[
             df_to_predict_total["GAME_DATE"] == date_to_predict
         ].copy()

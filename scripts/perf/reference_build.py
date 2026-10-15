@@ -97,12 +97,18 @@ def _build(args: argparse.Namespace):
         targets = (
             args.targets.read_text().split() if args.targets is not None else None
         )
-        frame = create_df_to_predict(
+        built = create_df_to_predict(
             todays_prediction=False,
             recent_limit_to_include=args.limit,
             older_season_limit=args.n_seasons,
             target_game_ids=targets,
+            return_layer_inputs=targets is not None,
         )
+        if targets is None:
+            return built, None
+        frame, layer_inputs = built
+        # Every built row's layer inputs: a full build's own key columns.
+        layer_inputs.reset_index(drop=True).to_parquet(args.out / "layer_inputs.parquet")
         return frame, None
     from nba_ou.create_training_data.create_intermediate_line_df import (
         create_intermediate_line_df,

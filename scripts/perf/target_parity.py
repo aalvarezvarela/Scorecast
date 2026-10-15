@@ -63,9 +63,18 @@ def main() -> int:
     chosen |= {rest[i] for i in rng.choice(len(rest), args.random, replace=False)}
 
     rows = reference[dates.isin(chosen)]
+    from nba_ou.create_training_data.schema_layers import registry as layers
+
+    wanted = layers.required_input_columns(
+        layers.BASE_SCHEMA_VERSION, layers.latest_version(), layers.CLOSING_LINE
+    )
+    keys = reference[[c for c in wanted if c in reference.columns]]
     args.out.mkdir(parents=True, exist_ok=True)
     (args.out / "targets.txt").write_text("\n".join(rows["GAME_ID"].astype(str)) + "\n")
     rows.to_parquet(args.out / "reference.parquet")
+    # What the layers read, for every row: a target build's layer inputs
+    # (reference_build.py writes them) must equal these.
+    keys.reset_index(drop=True).to_parquet(args.out / "layer_inputs_reference.parquet")
     print(f"{len(chosen)} dates, {len(rows)} games -> {args.out}")
     return 0
 
