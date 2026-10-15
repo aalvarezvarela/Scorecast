@@ -452,6 +452,42 @@ def prepare_player_history(
     )
 
 
+def _history_identifiers(
+    states_of, rank, roster, stat_cols, non_inj_rows, inj_rows, questionable_rows
+) -> dict:
+    """The identifier columns of one row, as the full row builder sets them."""
+    row_update = {}
+    groups = [
+        ("", N_TOP_PLAYERS_NON_INJURED, states_of(non_inj_rows, False), non_inj_rows),
+        ("INJURED_", N_TOP_PLAYERS_INJURED, states_of(inj_rows, True), inj_rows),
+    ]
+    if questionable_rows is not None:
+        groups.append(
+            (
+                "QUESTIONABLE_",
+                N_TOP_PLAYERS_QUESTIONABLE,
+                states_of(questionable_rows, True),
+                questionable_rows,
+            )
+        )
+    for stat_col in stat_cols:
+        for prefix, n_slots, states, rows in groups:
+            ranked = rank(states, stat_col, n_players=roster.n_players(rows))
+            top = ranked[:n_slots]
+            while len(top) < n_slots:
+                top.append((None, None, 0))
+            for i in range(n_slots):
+                slot = i + 1
+                if ACTIVE_PROFILE.emits_identifier(stat_col, slot):
+                    row_update[
+                        _with_before_suffix(f"TOP{slot}_{prefix}PLAYER_ID_{stat_col}")
+                    ] = top[i][0]
+                    row_update[
+                        _with_before_suffix(f"TOP{slot}_{prefix}PLAYER_NAME_{stat_col}")
+                    ] = top[i][1]
+    return row_update
+
+
 def add_player_history_features(
     df_team,
     df_players,
@@ -467,6 +503,7 @@ def add_player_history_features(
     row_cache: RowCache | None = None,
     stat_players: pd.DataFrame | None = None,
     prepared_players: PreparedPlayerHistory | None = None,
+    target_game_ids: set[str] | None = None,
 ):
     """
     Main function to attach top player statistics and injured player stats to team data.
@@ -519,6 +556,11 @@ def add_player_history_features(
             ``prepare_player_history(df_players, stat_cols)``, the same for
             everything the builder derives from the players alone. Replaces
             ``stat_players``.
+        target_game_ids (set, optional): Games whose rows are needed in full.
+            Every other row is history: it still records its availability
+            and the player identifier columns (which later rows' availability
+            effects read), and its other columns are left empty. Each target
+            row gets exactly the values a build of every row gives it.
 
     Returns:
         pd.DataFrame: Updated df_team with extra columns for top players and injured players
@@ -776,6 +818,33 @@ def add_player_history_features(
         )
         membership_signatures = _game_membership_signatures(membership_dict)
 
+    # Each group's latest per-player states do not depend on the statistic
+    # being ranked, so they are resolved once per row rather than once per
+    # statistic; ``get_top_n_averages_with_names`` is exactly these two steps.
+    # Both read the loop's current ``roster`` and ``game_date``.
+    if array_steps:
+
+        def states_of(rows, injured):
+            return _latest_states_on_roster(roster, rows, game_date, injured=injured)
+
+        def rank(states, stat_col, *, n_players):
+            return _rank_states_on_roster(roster, states, stat_col, n_players=n_players)
+
+    else:
+
+        def states_of(rows, injured):
+            return latest_player_states(roster.frame(rows), game_date, injured=injured)
+
+        rank = rank_player_states
+
+    if target_game_ids is not None:
+        if row_cache is not None:
+            raise ValueError("target_game_ids and row_cache cannot be combined")
+        target_game_ids = {str(g) for g in target_game_ids}
+    history_id_stats = [
+        s for s in stat_cols if ACTIVE_PROFILE.id_slots_by_stat.get(s, 0) > 0
+    ]
+
     for _, (game_id, team_id, season_id, game_date) in enumerate(
         tqdm(
             df_team[cols_needed].itertuples(index=False, name=None),
@@ -873,6 +942,24 @@ def add_player_history_features(
 
         row_update = {}
 
+        if target_game_ids is not None and str(game_id) not in target_game_ids:
+            # A history row: later rows read only its availability (above) and
+            # the player ids the availability effects rank by.
+            updates_list.append(
+                _history_identifiers(
+                    states_of,
+                    rank,
+                    roster,
+                    history_id_stats,
+                    non_inj_rows,
+                    inj_rows,
+                    questionable_rows
+                    if build_questionable_group and questionable_covered
+                    else None,
+                )
+            )
+            continue
+
         if include_available_roster_count:
             dates = roster.column("GAME_DATE")[non_inj_rows]
             minutes = pd.to_numeric(
@@ -915,30 +1002,6 @@ def add_player_history_features(
         # minutes-weighted rate aggregates can pair a player's rate with their
         # own minutes after the per-statistic loop below.
         per_player_values: dict[str, dict] = {}
-
-        # Each group's latest per-player states do not depend on the statistic
-        # being ranked, so they are resolved once per row rather than once per
-        # statistic; ``get_top_n_averages_with_names`` is exactly these two steps.
-        if array_steps:
-
-            def states_of(rows, injured):
-                return _latest_states_on_roster(
-                    roster, rows, game_date, injured=injured
-                )
-
-            def rank(states, stat_col, *, n_players):
-                return _rank_states_on_roster(
-                    roster, states, stat_col, n_players=n_players
-                )
-
-        else:
-
-            def states_of(rows, injured):
-                return latest_player_states(
-                    roster.frame(rows), game_date, injured=injured
-                )
-
-            rank = rank_player_states
 
         non_inj_states = states_of(non_inj_rows, False)
         n_non_inj = roster.n_players(non_inj_rows)

@@ -333,6 +333,7 @@ def process_player_statistics_for_training(
     report_out_overrides=None,
     report_questionable_sets=None,
     include_available_roster_count: bool = False,
+    target_game_ids=None,
 ):
     """
     Process player statistics and prepare for training.
@@ -366,6 +367,8 @@ def process_player_statistics_for_training(
             covered team-game; see ``add_player_history_features``.
         include_available_roster_count (bool): Emit
             ``N_AVAILABLE_ROSTER_PLAYERS`` when report features are enabled.
+        target_game_ids (set, optional): Games whose rows are built in full;
+            see ``add_player_history_features``.
 
     Returns:
         tuple: Team features and injury dictionary, plus cleaned player rows and
@@ -407,6 +410,7 @@ def process_player_statistics_for_training(
         report_out_overrides=report_out_overrides,
         report_questionable_sets=report_questionable_sets,
         include_available_roster_count=include_available_roster_count,
+        target_game_ids=target_game_ids,
     )
 
     if return_players:
@@ -431,6 +435,7 @@ def create_df_to_predict(
     injury_report_state: InjuryReportState | None = None,
     referee_history_seasons: int = DEFAULT_REFEREE_HISTORY_SEASONS,
     include_same_season_referee_variants: bool = False,
+    target_game_ids=None,
 ) -> pd.DataFrame:
     """
     Create prediction dataset for NBA over/under prediction models.
@@ -489,10 +494,22 @@ def create_df_to_predict(
         include_same_season_referee_variants (bool, optional): Also emit
             ``REF_CREW_SS_*`` same-season-only tendencies, used to measure
             the value of multi-season history in-model. Default False.
+        target_game_ids (iterable, optional): Return only these games, and do
+            the per-game work only for them. Every loaded game is still
+            history: whatever a target game reads from earlier games is built
+            for all of them, so each returned row is exactly the row a build
+            without this argument gives. Used to predict tonight's games on
+            the full training history.
 
     Returns:
         pd.DataFrame: Complete training dataset with all features
     """
+
+    targets = (
+        None
+        if target_game_ids is None
+        else set(normalize_game_ids([str(g) for g in target_game_ids]))
+    )
 
     if todays_prediction:
         scheduled_games = scheduled_data["scheduled_games"]
@@ -683,6 +700,7 @@ def create_df_to_predict(
             report_out_overrides=overrides,
             report_questionable_sets=questionable_sets,
             include_available_roster_count=injury_report_features,
+            target_game_ids=targets,
         )
     )
     df = add_roster_continuity_feature(
@@ -691,6 +709,7 @@ def create_df_to_predict(
         injured_dict,
         df_game_context=df_team_player_context,
         scheduled_game_ids=scheduled_game_ids,
+        target_game_ids=targets,
     )
     print("✓ Player statistics processed")
 
@@ -728,6 +747,7 @@ def create_df_to_predict(
         questionable_dict=(
             nested_status_dict(questionable_sets) if questionable_sets else None
         ),
+        target_game_ids=targets,
     )
     print("✓ All-star fan-vote share features added")
 
@@ -775,6 +795,7 @@ def create_df_to_predict(
         df_referees_scheduled=df_referees_scheduled if todays_prediction else None,
         extra_game_ids=extra_game_ids,
         include_ref_trio_features=False,
+        target_game_ids=targets,
     )
 
     df_ref_team_games, df_ref_odds, df_ref_assignments = _load_referee_history_inputs(
@@ -923,6 +944,10 @@ def create_df_to_predict(
                 f"Filtered out {filtered_count} game(s) with 'NOT YET SUBMITTED' injury status"
             )
             print(f"Game IDs filtered: {games_not_updated}")
+
+    if targets is not None:
+        df_training = df_training[df_training["GAME_ID"].astype(str).isin(targets)]
+        print(f"Kept the {len(df_training)} target game(s)")
 
     # Both passes run last, and in this order for the same reason: earlier stages
     # still need what they remove. add_top3_availability_effect_features_for_columns

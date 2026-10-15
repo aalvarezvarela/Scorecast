@@ -67,7 +67,9 @@ def _normalize_referee_slots(refs) -> pd.Series:
 
 
 def compute_referee_features(
-    df_refs_pivot: pd.DataFrame, include_ref_trio_features: bool = False
+    df_refs_pivot: pd.DataFrame,
+    include_ref_trio_features: bool = False,
+    target_game_ids: set[str] | None = None,
 ):
     """
     Compute aggregate referee features for each game based on historical performance.
@@ -94,6 +96,9 @@ def compute_referee_features(
             - DIFF_FROM_LINE: TOTAL_POINTS - TOTAL_LINE_<main_book>
         include_ref_trio_features (bool): Whether to compute exact-referee-trio
             features. Defaults to False.
+        target_game_ids (set, optional): Compute only these games' rows. A
+            row reads only the past games' crews and metrics, never another
+            row's features, so its values do not change; other rows stay NaN.
 
     Returns:
         pd.DataFrame: Original DataFrame with additional columns:
@@ -211,8 +216,14 @@ def compute_referee_features(
     split_views = None
     ref_diffs: dict[str, dict[str, float | None]] = {}
 
+    if target_game_ids is not None:
+        target_game_ids = {str(g) for g in target_game_ids}
+        row_game_ids = df["GAME_ID"].astype(str).tolist()
+
     # Process each game
     for idx in tqdm(range(len(df)), desc="Computing referee features"):
+        if target_game_ids is not None and row_game_ids[idx] not in target_game_ids:
+            continue
         current_game = df.iloc[idx]
         current_date = current_game["GAME_DATE"]
         current_season = current_game["SEASON_YEAR"]
@@ -291,6 +302,7 @@ def process_referee_data_for_training(
     df_referees_scheduled=None,
     extra_game_ids=None,
     include_ref_trio_features: bool = False,
+    target_game_ids: set[str] | None = None,
 ):
     """Load assignments and compute historical referee features.
 
@@ -421,7 +433,9 @@ def process_referee_data_for_training(
 
         # Compute referee features
         df_refs_pivot = compute_referee_features(
-            df_refs_pivot, include_ref_trio_features=include_ref_trio_features
+            df_refs_pivot,
+            include_ref_trio_features=include_ref_trio_features,
+            target_game_ids=target_game_ids,
         )
 
         return df_refs_pivot
@@ -437,6 +451,7 @@ def add_referee_features_to_training_data(
     df_referees_scheduled=None,
     extra_game_ids=None,
     include_ref_trio_features: bool = False,
+    target_game_ids: set[str] | None = None,
 ):
     """Add historical referee features to the training DataFrame.
 
@@ -450,6 +465,8 @@ def add_referee_features_to_training_data(
             to the selected seasons.
         include_ref_trio_features (bool): Also compute crew-trio features when
             True. Defaults to False.
+        target_game_ids (set, optional): Games whose features are needed; the
+            others are left NaN (see ``compute_referee_features``).
 
     Returns:
         pd.DataFrame: Game rows with referee features merged by GAME_ID, or the
@@ -461,6 +478,7 @@ def add_referee_features_to_training_data(
         df_referees_scheduled=df_referees_scheduled,
         extra_game_ids=extra_game_ids,
         include_ref_trio_features=include_ref_trio_features,
+        target_game_ids=target_game_ids,
     )
 
     # Merge referee features into training data

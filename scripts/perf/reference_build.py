@@ -94,10 +94,14 @@ def _build(args: argparse.Namespace):
             create_df_to_predict,
         )
 
+        targets = (
+            args.targets.read_text().split() if args.targets is not None else None
+        )
         frame = create_df_to_predict(
             todays_prediction=False,
             recent_limit_to_include=args.limit,
             older_season_limit=args.n_seasons,
+            target_game_ids=targets,
         )
         return frame, None
     from nba_ou.create_training_data.create_intermediate_line_df import (
@@ -133,6 +137,12 @@ def main() -> int:
         type=int,
         default=None,
         help="replay: serve each result in another order its ORDER BY permits",
+    )
+    parser.add_argument(
+        "--targets",
+        type=Path,
+        default=None,
+        help="closing: file of GAME_IDs to build alone (target_game_ids)",
     )
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument(
@@ -217,6 +227,7 @@ def main() -> int:
         ).splitlines(),
         "pythonhashseed": os.environ.get("PYTHONHASHSEED"),
         "shuffle_seed": args.shuffle_seed,
+        "targets": str(args.targets) if args.targets else None,
         "input_cache": os.environ.get("NBA_OU_INPUT_CACHE", "1") != "0",
         "s3_seasons": os.environ.get("NBA_OU_S3_SEASONS", "1") != "0",
         "input_cache_dir": os.environ.get("NBA_OU_INPUT_CACHE_DIR"),

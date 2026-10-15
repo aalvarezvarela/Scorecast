@@ -251,6 +251,7 @@ def add_all_star_voting_features(
     questionable_dict: dict | None = None,
     row_cache: RowCache | None = None,
     prepared: PreparedAllStarInputs | None = None,
+    target_game_ids: set[str] | None = None,
 ) -> pd.DataFrame:
     """Adds per-team-game all-star fan-vote share columns.
 
@@ -277,7 +278,15 @@ def add_all_star_voting_features(
 
     ``prepared`` is ``prepare_all_star_inputs(df_players, all_star_voting_df)``
     for callers that pass the same players and votes repeatedly.
+
+    ``target_game_ids``, when given, limits the work to those games. A row
+    reads no other row, so each target row is exactly what a build of every
+    row gives; the others keep the no-candidate defaults.
     """
+    if target_game_ids is not None:
+        if row_cache is not None:
+            raise ValueError("target_game_ids and row_cache cannot be combined")
+        target_game_ids = {str(g) for g in target_game_ids}
     required_team_cols = {"GAME_ID", "TEAM_ID", "SEASON_ID", "GAME_DATE"}
     missing_team_cols = sorted(required_team_cols - set(df_team.columns))
     if missing_team_cols:
@@ -396,6 +405,9 @@ def add_all_star_voting_features(
             "ALL_STAR_CANDIDATE_COUNT_BEFORE": 0,
             "ALL_STAR_SEASON_YEAR_BEFORE": all_star_season_year,
         }
+        if target_game_ids is not None and str(game_id) not in target_game_ids:
+            updates.append(row_update)
+            continue
 
         team_name = TEAM_NAME_BY_ID.get(team_id_str)
         candidate_ids: set[str] = set()

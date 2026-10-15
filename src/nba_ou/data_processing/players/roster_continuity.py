@@ -117,6 +117,7 @@ def add_roster_continuity_feature(
     immediate_net_output_col: str = IMMEDIATE_NET_ROSTER_MINUTES_COLUMN,
     df_game_context: pd.DataFrame | None = None,
     scheduled_game_ids: list[Any] | set[Any] | tuple[Any, ...] | None = None,
+    target_game_ids: set[str] | None = None,
 ) -> pd.DataFrame:
     """Add continuity, incoming, and net minute shares for two roster horizons.
 
@@ -144,6 +145,9 @@ def add_roster_continuity_feature(
     ``1 - continuity``, the equivalent calculation is
     ``incoming share + continuity - 1``. Positive values mean more minutes were
     brought in than lost; negative values mean the opposite.
+
+    ``target_game_ids``, when given, computes only those games' rows; a row
+    reads the roster events, not other rows, and the rest stay NaN.
     """
     team_required = {"GAME_ID", "GAME_DATE", "SEASON_YEAR", "TEAM_ID"}
     player_required = {
@@ -484,10 +488,19 @@ def add_roster_continuity_feature(
     immediate_values: list[float] = []
     new_player_values: list[float] = []
     immediate_new_player_values: list[float] = []
-    row_cols = ["GAME_DATE", "SEASON_YEAR", "TEAM_ID"]
-    for game_date, season_year_value, team_id_value in df_team[row_cols].itertuples(
-        index=False, name=None
-    ):
+    row_cols = ["GAME_DATE", "SEASON_YEAR", "TEAM_ID", "GAME_ID"]
+    targets = (
+        None if target_game_ids is None else {str(g) for g in target_game_ids}
+    )
+    for game_date, season_year_value, team_id_value, game_id in df_team[
+        row_cols
+    ].itertuples(index=False, name=None):
+        if targets is not None and str(game_id) not in targets:
+            values.append(np.nan)
+            immediate_values.append(np.nan)
+            new_player_values.append(np.nan)
+            immediate_new_player_values.append(np.nan)
+            continue
         date_ns = _date_ns(game_date)
         season_year = _season_year(season_year_value)
         team_id = _canonical_id(team_id_value)
