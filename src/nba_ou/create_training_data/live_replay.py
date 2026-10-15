@@ -8,6 +8,7 @@ requiring the two to agree. Everything here only *reads*; nothing is stored.
 
 from __future__ import annotations
 
+from pathlib import Path
 from zoneinfo import ZoneInfo
 
 import pandas as pd
@@ -107,3 +108,66 @@ def replay_live_game_day(game_date: str, as_of: pd.Timestamp):
             day, game_ids=game_ids, as_of=as_of, refresh=False
         ),
     )
+
+
+def replay_scheduled_data(game_date: str, as_of: pd.Timestamp) -> dict:
+    """``get_all_info_for_scheduled_games``' dict for a played date, from storage.
+
+    The stored crews and odds rows of the date's games stand in for the live
+    feeds, and the archived injury report last published before ``as_of``
+    for the live one. A prediction build of it and a full build of the same
+    inputs must agree on the date's rows.
+    """
+    from nba_ou.config.settings import SETTINGS
+    from nba_ou.data_processing.scheduled_games.manage_injury_data import (
+        process_injury_data,
+    )
+    from nba_ou.fetch_data.injury_reports.archive import manifest as mf
+    from nba_ou.fetch_data.injury_reports.archive.manifest import ManifestStore
+    from nba_ou.fetch_data.injury_reports.archive.storage import S3Storage
+    from nba_ou.fetch_data.injury_reports.archive.urls import season_label
+    from nba_ou.fetch_data.injury_reports.get_latest_injury_report import (
+        read_injury_report,
+    )
+    from nba_ou.postgre_db.odds_sportsbook.fetch_data_from_db.fetch_data_from_odds_sportsbook_db import (
+        load_odds_sportsbook_from_db,
+    )
+    from nba_ou.postgre_db.odds_yahoo.fetch_data_from_db.fetch_data_from_odds_yahoo_db import (
+        load_odds_yahoo_from_db,
+    )
+
+    as_of = pd.Timestamp(as_of)
+    day = pd.Timestamp(game_date).normalize()
+    season = int(get_season_year_from_date(day))
+    scheduled = replay_scheduled_games(game_date)
+    game_ids = sorted(scheduled["GAME_ID"].astype(str))
+
+    def tonight(frame):
+        if frame is None or frame.empty:
+            return pd.DataFrame()
+        column = "game_id" if "game_id" in frame.columns else "GAME_ID"
+        return frame[frame[column].astype(str).isin(set(game_ids))].reset_index(
+            drop=True
+        )
+
+    label = season_label(day.date())
+    manifest = ManifestStore(Path("data/injury_reports/manifest")).load(label)
+    manifest = manifest[manifest["nba_available"].eq(mf.AVAILABLE_TRUE)]
+    published = mf.published_utc(manifest)
+    last = manifest[published < as_of].assign(_at=published[published < as_of])
+    key = last.sort_values("_at")["s3_key"].iloc[-1]
+    storage = S3Storage(
+        bucket=SETTINGS.s3_bucket,
+        profile=SETTINGS.s3_aws_profile,
+        region=SETTINGS.s3_aws_region,
+    )
+    report = read_injury_report(storage.get(key))
+    injury_dict, not_updated = process_injury_data(scheduled, report)
+    return {
+        "scheduled_games": scheduled,
+        "df_referees_scheduled": stored_crews(game_ids, season),
+        "injury_dict_scheduled": injury_dict,
+        "df_odds_yahoo_scheduled": tonight(load_odds_yahoo_from_db([label])),
+        "df_odds_sportsbook_scheduled": tonight(load_odds_sportsbook_from_db([label])),
+        "games_not_updated": not_updated,
+    }
