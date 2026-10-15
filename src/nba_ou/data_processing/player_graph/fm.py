@@ -49,6 +49,10 @@ from .pretraining_data import NODE_COLUMNS
 
 CHECKPOINT_VERSION = 1
 
+#: Vectors that enter the stint model only through products.
+INTERACTION_BLOCKS = ("w", "w2", "u", "v", "a", "b")
+CENTER_MOMENTUM = 0.05
+
 #: Node columns that are counts or durations: they enter as ``log1p``.
 LOG_COLUMNS = (
     "minutes_window",
@@ -160,6 +164,19 @@ class FMConfig:
     #: ablation): defenders' ``sum_j s_ij de_j``, and the matchup product.
     edge_defender: bool = True
     edge_matchup: bool = True
+    #: Capacity control of the edge-head ablation: ``ce . (a_i * g)`` with
+    #: ``g`` one learned vector, the matchup product's attacker capacity
+    #: without any defender dependence.
+    edge_capacity: bool = False
+    #: Target indices whose per-player additive terms (``off``, ``def``) are
+    #: switched off: the interaction-only residuals over RAPM, where RAPM
+    #: already holds the individual contributions (decided 2026-10-15).
+    no_additive: tuple[int, ...] = ()
+    #: Center the stint interaction vectors on their running mean over
+    #: players (as batch normalization does), so an interaction term's
+    #: average over random partners is ~0 and it cannot act as a hidden
+    #: additive rating.
+    center_interactions: bool = False
     #: False trains on the edge loss alone (edge-only models of the ablation;
     #: ``delta_penalty`` is then in attacker-games).
     stint_loss: bool = True
@@ -183,7 +200,9 @@ class FactorizationMachine(nn.Module):
             sizes |= {"w": d, "w2": d}
         if config.style:
             sizes |= {"u": d, "v": d}
-        if config.matchup or (config.edges and config.edge_matchup):
+        if config.matchup or (
+            config.edges and (config.edge_matchup or config.edge_capacity)
+        ):
             sizes |= {"a": d, "b": d}
         if config.edges:
             sizes |= {"oe": te, "de": te}
@@ -208,6 +227,15 @@ class FactorizationMachine(nn.Module):
             self.mu_edge = nn.Parameter(torch.zeros(te))
             self.hca_edge = nn.Parameter(torch.zeros(te))
             self.readout_edge = nn.Parameter(torch.ones(te, d))
+            if config.edge_capacity:
+                self.capacity = nn.Parameter(torch.zeros(d))
+                self.readout_capacity = nn.Parameter(torch.ones(te, d))
+        additive = torch.ones(t)
+        additive[list(config.no_additive)] = 0.0
+        self.register_buffer("additive_mask", additive, persistent=False)
+        for name in INTERACTION_BLOCKS:
+            if name in sizes:
+                self.register_buffer(f"mean_{name}", torch.zeros(d))
 
     # Per-player blocks ---------------------------------------------------
 
@@ -227,12 +255,15 @@ class FactorizationMachine(nn.Module):
         ``stint_graph.GUARD_EDGES`` order.
         """
         p = self.blocks(x, ids)
+        if self.config.center_interactions:
+            p = self._centered(p)
         m = share.reshape(-1, 2, 5, 5)  # (side, attacker k, defender l)
         out = []
         for side, (o, d, h) in enumerate(
             ((slice(0, 5), slice(5, 10), 1.0), (slice(5, 10), slice(0, 5), -1.0))
         ):
-            y = self.mu + h * self.hca + p["off"][:, o].sum(1) - p["def"][:, d].sum(1)
+            additive = p["off"][:, o].sum(1) - p["def"][:, d].sum(1)
+            y = self.mu + h * self.hca + additive * self.additive_mask
             term = 0
             if self.config.chemistry:
                 y = y + _pair_mean(p["w"][:, o]) @ self.readout[term].T / 10
@@ -248,6 +279,23 @@ class FactorizationMachine(nn.Module):
                 y = y + matchup @ self.readout[term].T / 5
             out.append(y)
         return torch.stack(out, dim=1)
+
+    def _centered(self, p: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
+        """Interaction vectors minus their mean over players: the batch's
+        while training (updating a running mean), the running one otherwise."""
+        out = dict(p)
+        for name in INTERACTION_BLOCKS:
+            if name not in p:
+                continue
+            running = getattr(self, f"mean_{name}")
+            if self.training:
+                mean = p[name].reshape(-1, p[name].shape[-1]).mean(0)
+                with torch.no_grad():
+                    running.mul_(1 - CENTER_MOMENTUM).add_(CENTER_MOMENTUM * mean)
+            else:
+                mean = running
+            out[name] = p[name] - mean
+        return out
 
     # Edges ---------------------------------------------------------------
 
@@ -271,6 +319,8 @@ class FactorizationMachine(nn.Module):
         # Shares sum to 1 per attacker-game, so the constant terms pass through.
         h = (home.float() * 2 - 1).unsqueeze(-1)
         out = self.mu_edge + h * self.hca_edge + a["oe"]
+        if self.config.edge_capacity:
+            out = out + (a["a"] * self.capacity) @ self.readout_capacity.T
         if self.config.edge_defender or self.config.edge_matchup:
             b = self.blocks(defender_x, defender_ids)
         if self.config.edge_defender:

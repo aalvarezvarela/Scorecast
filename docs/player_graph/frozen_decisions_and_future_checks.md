@@ -1888,6 +1888,120 @@ nothing beyond RAPM in either formulation:
 The residual heads themselves are over-dispersed (slopes 0.3 and 0.1). The
 next design step is their regularization, not more model capacity.
 
+## Phase 6, step 5: interaction-only residuals, calibration, edge capacity control; FM closed (2026-10-15)
+
+**Decisions (2026-10-15).**
+
+- Remove the per-player additive residual for points and pace (RAPM holds
+  the individual contributions); keep profiles as inputs.
+- Add a walk-forward calibration that can shrink the corrections to zero,
+  and report raw and calibrated results.
+- Add a defender-independent capacity control to the edge head.
+- One controlled run, then move to the GNN. A null FM result is kept as a
+  baseline.
+
+**Design** (declared in `experiments/runners/run_fm_interaction_ladder.sh`;
+report `fm_ladder_report.py --ladder interaction`, in
+`artifacts/experiments/fm_interaction_ladder_dev/`).
+
+- **Interaction-only (`int_*`).** `FMConfig.no_additive` switches off `off`
+  and `def` for points and pace. The interaction vectors are **centered** on
+  a running mean over players (`center_interactions`), so an interaction
+  term averages to about 0 over random partners.
+  - Without centering, interaction-only terms rebuild a planted additive
+    rating almost entirely in a synthetic test (R² 0.93 chemistry, 0.96
+    style). With centering: 0.05 for style, and 0.20 for chemistry, the
+    remainder coming from the 40-player synthetic roster (a player's
+    teammates average −1/39 of his own vector).
+  - So step 3's chemistry / style pace gain (+0.23%) may have been additive
+    leakage.
+- **Variants:** `int_control` (global intercept and home term only),
+  `int_chemistry_style`, `int_matchup`. The other four targets keep their
+  additive heads.
+- **Calibration** (`pretraining_oof.calibrated_residuals`,
+  `calibrate_residuals.py`). Per fold and target, the slope through the
+  origin of `y − base` on the correction, over the run's own earlier
+  out-of-fold rows, clipped to [0, 1]; 0 with nothing earlier.
+- **Edge capacity control.** `edge_capacity` adds `a_i · g` with one learned
+  defender-independent vector: the matchup product's attacker capacity,
+  without the defenders. Then come the defenders' terms (`+ defenders`) and
+  the matchup product (`+ matchup`) on top of it.
+- **Training:** as in steps 3-4. Three paired seeds, 25 development folds,
+  nothing tuned.
+
+**Calibration factors (mean over folds):**
+
+| Model | Points | Pace |
+| --- | --- | --- |
+| `int_control` | 0.66 | about 0.05 |
+| Interaction models | 0.40-0.42 | 0.17-0.36 |
+| Step 4's additive residual | 0.17-0.22 | 0-0.10 |
+
+**Stint targets** (110,147 stints; gain % over daily RAPM, t):
+
+| Model | Points / poss. raw | Calibrated | Pace raw | Calibrated |
+| --- | --- | --- | --- | --- |
+| 2. + intercept / home (control) | +0.038 (4.2) | +0.034 (5.4) | −0.025 (−3.7) | −0.002 |
+| 3. + chemistry / style | −0.038 (−1.8) | +0.023 (2.6) | −0.025 | +0.018 (1.5) |
+| 4. + matchup | −0.038 (−1.9) | +0.027 (3.2) | −0.039 | +0.014 (1.7) |
+| Step 4's additive residual | −0.18 | +0.028 (4.5) | −0.24 | +0.005 |
+
+| Increment | Points raw | Points calibrated | Pace raw | Pace calibrated |
+| --- | --- | --- | --- | --- |
+| Chemistry / style (3 vs 2) | −0.076 (−4.2) | −0.011 (−1.4) | 0.000 | +0.020 (1.7) |
+| Matchup (4 vs 3) | −0.001 | +0.005 (1.1) | −0.014 | −0.004 |
+| All interactions (4 vs 2) | −0.077 (−4.2) | −0.006 (−0.8) | −0.014 | +0.017 (1.9) |
+
+- **Interactions add nothing on points.** The calibrated increments are
+  −0.011 and +0.005, below 2 SE and changing sign across seasons. Seed by
+  seed, the calibrated chemistry / style increment on points is negative for
+  all three seeds; the pace increment is positive for all three (+0.013 to
+  +0.023) but at t ≈ 1.7 and 0 in 2016-17.
+- **What beats RAPM is not interactions.** It is the global intercept and
+  home correction (RAPM has no home term): +0.034% on points, positive in
+  20 of 25 folds. Calibration itself is worth +0.07% on points and +0.05% on
+  pace over the raw corrections.
+- **The four auxiliary targets** keep the additive gains (3PA/FGA +5.4%,
+  OREB +1.4%, FTA/FGA +0.8%, turnovers +0.65%); interactions change them by
+  under ±0.06%.
+- **Training was stable:** no non-finite loss, train / out-of-fold gap
+  0.013-0.014.
+
+**Edge head** (51,345 attacker-games; gain %, every seed positive):
+
+| Comparison | FGA / pp | 3PA / pp |
+| --- | --- | --- |
+| Capacity control over attacker only | +0.75 ± 0.13 (2018-19 0.0) | +2.66 ± 0.24 (2018-19 −0.08) |
+| + defenders over capacity control | +0.37 ± 0.07 | +0.94 ± 0.11 |
+| + matchup product over + defenders | **+0.62 ± 0.18** (2017-18 +0.95, 2018-19 +0.30) | **+1.58 ± 0.17** (+2.46, +0.73) |
+| Defender-dependent terms together over the control | +0.99 ± 0.18 | +2.51 ± 0.23 |
+
+- **Part of step 4's matchup gain was attacker capacity.** The control alone
+  gives +0.75% / +2.66%, almost entirely in 2017-18, when edge history is
+  short.
+- **Against the control, defender-dependent terms still help** in both
+  seasons and all seeds. The defenders' main effect gives +0.4 / +0.9%. The
+  attacker × defender product adds +0.6 / +1.6% on top (2018-19: +0.3 /
+  +0.7%).
+- **Who guards whom therefore predicts an attacker's shot volume beyond his
+  own profile and his defenders' average.** That is an individual,
+  time-attributed volume result. It does not imply better team scoring
+  prediction, which the stint results do not show.
+
+**Conclusions for phase 6 (development only).**
+
+1. **FM closed with a negative stint-level result.** Learned player
+   interactions (chemistry, style, matchups) add no measurable information
+   beyond as-of RAPM for points per possession, from scratch, as residuals,
+   or calibrated. For pace there is at most +0.02% (t < 2). This is the
+   baseline the GNN must beat.
+2. Calibrated, interaction-only residuals over RAPM are the safe form: they
+   cost nothing when the interactions carry no information.
+3. The FM's real stint gains are individual effects on the four targets
+   RAPM does not model.
+4. The edge head shows defender and attacker × defender structure in shot
+   volume. It is not yet tied to team scoring.
+
 ## Future checks
 
 ### Guarding weights (`expected_guard`)

@@ -138,6 +138,65 @@ LADDERS = {
             ("joint: residual matchup + edges", "edge-only: + matchup"),
         ),
     ),
+    "interaction": Ladder(
+        title="Phase 6 interaction-only FM residuals over daily RAPM (raw and "
+        "calibrated), development folds 2016-12 -> 2019-06",
+        out="artifacts/experiments/fm_interaction_ladder_dev",
+        variants=(
+            "int_control",
+            "int_chemistry_style",
+            "int_matchup",
+            "int_control_cal",
+            "int_chemistry_style_cal",
+            "int_matchup_cal",
+        ),
+        baselines={"constant": ("constant", False), "rapm": ("rapm_daily", True)},
+        references=("res_additive", "res_additive_cal"),
+        comparisons=(
+            ("rapm", "constant", "1. RAPM (daily) over constant"),
+            ("int_control", "rapm", "2. + intercept / home residual, raw, over RAPM"),
+            ("int_chemistry_style", "rapm", "3. + chemistry/style, raw, over RAPM"),
+            ("int_matchup", "rapm", "4. + matchup, raw, over RAPM"),
+            ("int_control_cal", "rapm", "2c. calibrated, over RAPM"),
+            ("int_chemistry_style_cal", "rapm", "3c. calibrated, over RAPM"),
+            ("int_matchup_cal", "rapm", "4c. calibrated, over RAPM"),
+            ("int_chemistry_style", "int_control", "chemistry/style increment, raw"),
+            ("int_matchup", "int_chemistry_style", "matchup increment, raw"),
+            ("int_matchup", "int_control", "all interactions, raw"),
+            (
+                "int_chemistry_style_cal",
+                "int_control_cal",
+                "chemistry/style increment, calibrated",
+            ),
+            (
+                "int_matchup_cal",
+                "int_chemistry_style_cal",
+                "matchup increment, calibrated",
+            ),
+            ("int_matchup_cal", "int_control_cal", "all interactions, calibrated"),
+            ("int_matchup_cal", "int_matchup", "calibration effect (matchup)"),
+            (
+                "res_additive_cal",
+                "rapm",
+                "step 4's additive residual, calibrated, over RAPM",
+            ),
+        ),
+        edge_models={
+            "attacker": "fm_edge_attacker",
+            "capacity control": "fm_edge_capacity",
+            "capacity + defenders": "fm_edge_capacity_defender",
+            "capacity + defenders + matchup": "fm_edge_capacity_matchup",
+            "defenders + matchup (no control)": "fm_edge_matchup",
+        },
+        edge_comparisons=(
+            ("attacker", "attacker norm"),
+            ("capacity control", "attacker"),
+            ("capacity + defenders", "capacity control"),
+            ("capacity + defenders + matchup", "capacity + defenders"),
+            ("capacity + defenders + matchup", "capacity control"),
+            ("defenders + matchup (no control)", "capacity + defenders + matchup"),
+        ),
+    ),
 }
 
 
@@ -486,9 +545,11 @@ def training_section(ladder: Ladder, root: Path, out: dict, lines: list[str]) ->
         "training loss rose over the epochs:\n"
     )
     lines.append(summary.to_markdown(floatfmt=".3f") + "\n")
-    path_rows = table.loc[table["seed"].eq(0)].pivot(
-        index="fold", columns="variant", values="last_epoch"
-    )[list(VARIANTS)]
+    path_rows = (
+        table.loc[table["seed"].eq(0)]
+        .pivot(index="fold", columns="variant", values="last_epoch")
+        .reindex(columns=[v for v in VARIANTS if v in set(table["variant"])])
+    )
     out["train_loss_by_fold_seed0"] = path_rows.to_dict()
     lines.append(
         "Standardized training loss (stint targets, last epoch, seed 0) by fold:\n"
@@ -505,6 +566,8 @@ def overfit_section(ladder: Ladder, root: Path, out: dict, lines: list[str]) -> 
     rows = []
     for v in VARIANTS:
         name = f"fm_{v}_s0"
+        if not (root / "fm" / name).exists():  # calibrated: no training of its own
+            continue
         predictions = store.read(name, data.game_id, data.seg_idx)
         for path in sorted((root / "fm" / name).glob("fold=*.pt")):
             payload = torch.load(path, weights_only=True)
@@ -540,14 +603,14 @@ def overfit_section(ladder: Ladder, root: Path, out: dict, lines: list[str]) -> 
     lines.append(
         table.groupby("variant")[["train", "out_of_fold", "gap"]]
         .mean()
-        .reindex(list(VARIANTS))
+        .reindex([v for v in VARIANTS if v in set(table["variant"])])
         .to_markdown(floatfmt=".4f")
         + "\n"
     )
     lines.append(
-        table.pivot(index="fold", columns="variant", values="gap")[
-            list(VARIANTS)
-        ].to_markdown(floatfmt="+.4f")
+        table.pivot(index="fold", columns="variant", values="gap")
+        .reindex(columns=[v for v in VARIANTS if v in set(table["variant"])])
+        .to_markdown(floatfmt="+.4f")
         + "\n"
     )
 

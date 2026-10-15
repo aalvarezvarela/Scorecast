@@ -225,6 +225,56 @@ def residual_stints(stints, base: np.ndarray, targets: Sequence[str]):
     return replace(stints, labels=labels, label_weight=weights)
 
 
+def calibrated_residuals(
+    predictions: np.ndarray,
+    base: np.ndarray,
+    labels: np.ndarray,
+    weights: np.ndarray,
+    dates: np.ndarray,
+    folds: Sequence[Fold],
+    targets: Sequence[str],
+) -> tuple[np.ndarray, pd.DataFrame]:
+    """Walk-forward shrinkage of residual corrections (decided 2026-10-15).
+
+    For each fold and residual target, ``lambda`` is the exposure-weighted
+    least-squares slope through the origin of the realized residual
+    ``y - base`` on the model's correction ``prediction - base``, over the
+    out-of-fold rows dated before the fold's checkpoint (earlier folds'
+    predictions, all known by then), clipped to ``[0, 1]``: 1 keeps the
+    correction, 0 removes it. A fold with no earlier predictions gets 0 (no
+    evidence, no correction). Returns the calibrated predictions (the other
+    targets unchanged) and the ``lambda`` per fold and target.
+    """
+    out = predictions.copy()
+    dates = pd.to_datetime(dates).to_numpy()
+    rows = []
+    for fold in folds:
+        _, predict = fold.masks(dates)
+        if not predict.any():
+            continue
+        earlier = dates < fold.checkpoint.to_datetime64()
+        row = {"fold": fold.label}
+        for name in targets:
+            k = LABELS.index(name)
+            c = predictions[earlier, :, k] - base[earlier, :, k]
+            r = labels[earlier, :, k] - base[earlier, :, k]
+            w = weights[earlier, :, k]
+            ok = np.isfinite(c) & np.isfinite(r) & (w > 0)
+            denominator = float((w[ok] * c[ok] ** 2).sum())
+            slope = (
+                float((w[ok] * c[ok] * r[ok]).sum()) / denominator
+                if denominator > 0
+                else 0.0
+            )
+            shrink = float(np.clip(slope, 0.0, 1.0))
+            out[predict, :, k] = base[predict, :, k] + shrink * (
+                predictions[predict, :, k] - base[predict, :, k]
+            )
+            row[name] = shrink
+        rows.append(row)
+    return out, pd.DataFrame(rows)
+
+
 def with_constant(predictions: np.ndarray, constant: np.ndarray) -> np.ndarray:
     """``predictions`` with its NaN targets taken from ``constant``."""
     return np.where(np.isnan(predictions), constant, predictions)
