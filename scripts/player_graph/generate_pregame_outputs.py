@@ -62,7 +62,11 @@ from nba_ou.data_processing.player_graph.pregame_encoder import (
     style_columns,
 )
 from nba_ou.data_processing.player_graph.pretraining_data import ROOT as PRETRAINING
-from nba_ou.data_processing.player_graph.pretraining_data import VERSION, load_stints
+from nba_ou.data_processing.player_graph.pretraining_data import (
+    VERSION,
+    load_stints,
+    seasons_before,
+)
 from nba_ou.data_processing.player_graph.pretraining_oof import Fold
 
 STORE = Path("player_graph") / "pregame" / "v1"
@@ -238,7 +242,7 @@ def main() -> None:
     if "embedding" in args.outputs:
         started = time.time()
         last = pd.Timestamp(f"{labels[-1]}-01")
-        stints = load_stints(pretraining, range(2016, last.year + 1), until=last)
+        stints = load_stints(pretraining, seasons_before(last), until=last)
         bases = projections(encoders, labels, stints, out / "projection")
         print(
             f"{len(bases)} fold projections ({time.time() - started:.0f}s)", flush=True
