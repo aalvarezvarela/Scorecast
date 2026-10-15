@@ -218,3 +218,29 @@ def test_frames_parquet_would_change_are_refused():
     ints_as_objects = pd.DataFrame({"a": pd.Series([1, 2, 3], dtype=object)})
     with pytest.raises(NotExactInParquet):
         to_exact_parquet(ints_as_objects)
+
+
+class _Conn:
+    rolled_back = False
+
+    def rollback(self):
+        self.rolled_back = True
+
+
+def test_read_through_steps_aside_whenever_it_cannot_serve(monkeypatch):
+    conn = _Conn()
+    dataset = "nba_players.nba_players"
+    monkeypatch.setenv("NBA_OU_S3_SEASONS", "0")
+    assert season_tables.read_through(dataset, [2024], [], conn) is None
+    monkeypatch.setenv("NBA_OU_S3_SEASONS", "1")
+    assert season_tables.read_through(dataset, None, ["0022400001"], conn) is None
+    monkeypatch.setattr(season_tables, "_shared_store", lambda: None)
+    assert season_tables.read_through(dataset, [2024], [], conn) is None
+
+    def broken(*args, **kwargs):
+        raise TimeoutError("S3 unreachable")
+
+    monkeypatch.setattr(season_tables, "_shared_store", lambda: object())
+    monkeypatch.setattr(season_tables, "read_season_table", broken)
+    assert season_tables.read_through(dataset, [2024], [], conn) is None
+    assert conn.rolled_back  # the loader's own query can still run

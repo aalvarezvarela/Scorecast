@@ -164,6 +164,7 @@ def main() -> int:
         # A tape holds the build's own queries. The input cache would add
         # fingerprint queries and skip fetches, so taped builds bypass it.
         os.environ["NBA_OU_INPUT_CACHE"] = "0"
+        os.environ["NBA_OU_S3_SEASONS"] = "0"
     if args.mode == "record":
         context = db_tape.record(args.out / "tape")
     elif args.mode == "replay":
@@ -217,6 +218,7 @@ def main() -> int:
         "pythonhashseed": os.environ.get("PYTHONHASHSEED"),
         "shuffle_seed": args.shuffle_seed,
         "input_cache": os.environ.get("NBA_OU_INPUT_CACHE", "1") != "0",
+        "s3_seasons": os.environ.get("NBA_OU_S3_SEASONS", "1") != "0",
         "input_cache_dir": os.environ.get("NBA_OU_INPUT_CACHE_DIR"),
         "build_seconds": round(build_seconds, 1),
         "shape": list(written.shape),

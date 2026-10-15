@@ -349,3 +349,55 @@ def refresh_season_table(
         store.write(spec.dataset, key, season, piece, fingerprint, now)
         outcome[season] = f"uploaded {len(piece):,} rows"
     return outcome
+
+
+_shared: dict[str, SeasonStore | None] = {}
+
+
+def _shared_store() -> SeasonStore | None:
+    """One store (one S3 client) per process; None when S3 is not configured."""
+    if "store" not in _shared:
+        from nba_ou.postgre_db.season_store import default_store
+
+        _shared["store"] = default_store()
+    return _shared["store"]
+
+
+def read_through(
+    dataset: str, season_years: list[int] | None, extra_game_ids, conn
+) -> pd.DataFrame | None:
+    """For a table loader: its frame from S3 past seasons plus the database.
+
+    Returns None whenever the loader should run its own query instead: S3
+    seasons switched off (``NBA_OU_S3_SEASONS=0``) or not configured, no
+    season filter (an all-rows or extra-ids-only query), or any failure on the
+    S3 side. Whatever happens here, the loader's result is the same frame.
+    """
+    if not s3_seasons_enabled() or not season_years:
+        return None
+    try:
+        store = _shared_store()
+        if store is None:
+            return None
+        frame, summary = read_season_table(
+            SEASON_TABLES[dataset],
+            season_years,
+            list(extra_game_ids or []),
+            store=store,
+            conn=conn,
+        )
+    except Exception as exc:  # S3 down, credentials, a damaged piece ...
+        print(
+            f"! {dataset}: S3 seasons unavailable ({type(exc).__name__}: {exc}); "
+            "querying the database"
+        )
+        try:
+            conn.rollback()  # leave the connection usable for the fallback
+        except Exception:
+            pass
+        return None
+    print(
+        f"  {dataset}: seasons {summary['s3'] or 'none'} from S3, "
+        f"{summary['db'] or 'none'} from the database"
+    )
+    return frame

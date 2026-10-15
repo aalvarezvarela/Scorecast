@@ -5,6 +5,7 @@ from nba_ou.postgre_db.config.db_config import (
 )
 from psycopg import sql
 from nba_ou.postgre_db.row_order import read_sql_canonical
+from nba_ou.postgre_db.season_tables import read_through
 
 
 def _normalize_game_ids(game_ids) -> list[str]:
@@ -45,6 +46,7 @@ def load_odds_yahoo_from_db(seasons=None, extra_game_ids=None) -> pd.DataFrame |
     try:
         conn = connect_nba_db()
         where_parts = []
+        season_years = None
         query_params = []
 
         if seasons is not None and len(seasons) > 0:
@@ -73,9 +75,14 @@ def load_odds_yahoo_from_db(seasons=None, extra_game_ids=None) -> pd.DataFrame |
         )
 
         query = query_obj.as_string(conn)
-        if query_params:
+        # Past seasons from the S3 input cache, the rest from here; the same
+        # frame either way (``season_tables``).
+        df = read_through(
+            "odds_yahoo.odds_yahoo", season_years, normalized_extra_game_ids, conn
+        )
+        if df is None and query_params:
             df = read_sql_canonical(query, conn, params=tuple(query_params))
-        else:
+        elif df is None:
             df = read_sql_canonical(query, conn)
 
         print(f"Loaded {len(df)} Yahoo odds records from database")

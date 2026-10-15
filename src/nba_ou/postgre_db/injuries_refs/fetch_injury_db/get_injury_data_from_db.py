@@ -5,6 +5,7 @@ from nba_ou.postgre_db.config.db_config import (
 )
 from psycopg import sql
 from nba_ou.postgre_db.row_order import read_sql_canonical
+from nba_ou.postgre_db.season_tables import read_through
 
 
 def _normalize_game_ids(game_ids) -> list[str]:
@@ -46,6 +47,7 @@ def get_injury_data_from_db(seasons=None, extra_game_ids=None):
         conn = connect_nba_db()
 
         where_parts = []
+        season_years = None
         query_params = []
 
         if seasons is not None and len(seasons) > 0:
@@ -74,9 +76,14 @@ def get_injury_data_from_db(seasons=None, extra_game_ids=None):
         )
 
         query = query_obj.as_string(conn)
-        if query_params:
+        # Past seasons from the S3 input cache, the rest from here; the same
+        # frame either way (``season_tables``).
+        df_injuries = read_through(
+            "nba_injuries.nba_injuries", season_years, normalized_extra_game_ids, conn
+        )
+        if df_injuries is None and query_params:
             df_injuries = read_sql_canonical(query, conn, params=tuple(query_params))
-        else:
+        elif df_injuries is None:
             df_injuries = read_sql_canonical(query, conn)
 
         # Convert column names to uppercase to match expected format
