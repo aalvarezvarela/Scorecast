@@ -20,6 +20,7 @@ from nba_ou.create_training_data.schema_layers import (
 )
 from nba_ou.postgre_db.update_all.update_all_databases import update_all_databases
 from nba_ou.prediction.baseline_predictions import (
+    baseline_history_window,
     load_baseline_predictions_for_nba_games,
 )
 from nba_ou.prediction.prediction import (
@@ -103,6 +104,14 @@ def predict_nba_games(
     6. Saves results to Excel
     """
     configure_tqdm_for_environment()
+    if run_tabpfn_client:
+        # The feature frame now holds tonight's games only; the TabPFN client
+        # trains on history features, which it would have to read from a
+        # stored training dataset instead. Fail before any work is done.
+        raise SystemExit(
+            "TabPFN needs history features, and the prediction frame carries "
+            "tonight's games only; run with --no-tabpfn."
+        )
 
     date_to_predict = (datetime.now(ZoneInfo("US/Pacific"))).strftime("%Y-%m-%d")
 
@@ -274,9 +283,11 @@ def predict_nba_games(
     print_step_header(step_number, "Generating Predictions (Baselines)")
     step_number += 1
     try:
+        # The frame holds tonight's games only; the history is every built
+        # game's layer inputs (GAME_DATE, TOTAL_POINTS among them).
         baseline_predictions = load_baseline_predictions_for_nba_games(
             df=df_to_predict,
-            df_history=df_to_predict_total,
+            df_history=baseline_history_window(layer_inputs, date_to_predict),
             prediction_datetime=prediction_time,
         )
         print_status("Baseline predictions generated")

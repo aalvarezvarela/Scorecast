@@ -7,6 +7,7 @@ from nba_ou.config.odds_columns import total_line_over_col_raw
 from nba_ou.postgre_db.predictions.create.create_ou_predictions_db import (
     upload_predictions_to_postgre,
 )
+from nba_ou.utils.general_utils import get_season_year_from_date
 
 PREDICTION_VALUE_TYPE_LINE_ERROR = "DIFF_FROM_LINE"
 
@@ -98,6 +99,24 @@ def _historical_game_date_bounds(df_history: pd.DataFrame) -> tuple[object, obje
     if valid_dates.empty:
         return None, None
     return valid_dates.dt.date.min(), valid_dates.dt.date.max()
+
+
+def baseline_history_window(
+    history: pd.DataFrame, date_to_predict, n_seasons: int = 2
+) -> pd.DataFrame:
+    """Games the historical-average baseline averages over.
+
+    The games played before ``date_to_predict`` in its season and the
+    ``n_seasons - 1`` before it: the span the prediction build loaded when it
+    still built two seasons, so the baseline keeps its meaning now that the
+    build loads the full history and returns only tonight's rows. ``history``
+    needs GAME_DATE and TOTAL_POINTS (the build's layer inputs carry both).
+    """
+    date_to_predict = pd.Timestamp(date_to_predict).normalize()
+    first_season = int(get_season_year_from_date(date_to_predict)) - (n_seasons - 1)
+    game_dates = pd.to_datetime(history["GAME_DATE"], errors="coerce")
+    start = pd.Timestamp(year=first_season, month=10, day=1)
+    return history[(game_dates >= start) & (game_dates < date_to_predict)]
 
 
 def _base_prediction_summary(
