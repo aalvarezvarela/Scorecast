@@ -255,6 +255,7 @@ def process_team_statistics_for_training(
     spread_ml_book: str = DEFAULT_SPREAD_ML_BOOK,
     total_line_book: str = DEFAULT_TOTAL_LINE_BOOK,
     exclude_yahoo: bool = False,
+    target_game_ids=None,
 ):
     """
     Process and compute team statistics for training.
@@ -272,6 +273,8 @@ def process_team_statistics_for_training(
         spread_ml_book (str): Book used for spread and moneyline columns
         total_line_book (str): Book/source used for TOTAL_LINE_<book>
         exclude_yahoo (bool): If True, exclude Yahoo betting columns from rolling stats. Default is False.
+        target_game_ids (set, optional): Games whose rows are needed; see
+            ``compute_all_rolling_statistics``.
     Returns:
         pd.DataFrame: Processed team DataFrame
     """
@@ -311,7 +314,9 @@ def process_team_statistics_for_training(
     )
 
     # Compute all rolling statistics
-    df = compute_all_rolling_statistics(df, exclude_yahoo=exclude_yahoo)
+    df = compute_all_rolling_statistics(
+        df, exclude_yahoo=exclude_yahoo, target_game_ids=target_game_ids
+    )
 
     df = df.drop_duplicates(keep="first")
 
@@ -661,6 +666,7 @@ def create_df_to_predict(
         scheduled_games=scheduled_games if todays_prediction else None,
         spread_ml_book=DEFAULT_SPREAD_ML_BOOK,
         total_line_book=DEFAULT_TOTAL_LINE_BOOK,
+        target_game_ids=targets,
     )
     print("✓ Team statistics processed")
 

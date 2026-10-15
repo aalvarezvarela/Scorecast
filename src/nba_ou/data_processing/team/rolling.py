@@ -305,6 +305,60 @@ def _linregress_slope(x: np.ndarray, y: np.ndarray) -> float:
     return ssxym / ssxm
 
 
+def _targeted_window_slopes(
+    frame, parameter, window, shift_current_game, slope, target_game_ids
+) -> np.ndarray:
+    """The within-season rolling slopes a set of target games needs, exactly.
+
+    The same values ``frame.groupby(["TEAM_ID", "SEASON_YEAR"])[parameter]
+    .transform(lambda s: shifted(s).rolling(window, min_periods=2)
+    .apply(slope, raw=True))`` gives, but only on two kinds of rows:
+
+    * the target games' rows;
+    * per team and season, the last regular-season row whose slope is not
+      NaN -- what ``_previous_regular_season_trend`` carries into the next
+      season (``groupby.last`` skips NaN, so every later row is NaN there).
+
+    Every other row is NaN. ``rolling.apply`` evaluates each window on its own,
+    from that window's values alone, so a slope computed here is the same
+    float as the full transform's. ``frame`` is in the transform's row order.
+    """
+    out = np.full(len(frame), np.nan)
+    targets = frame["GAME_ID"].astype(str).isin(target_game_ids).to_numpy()
+    if SEASON_TYPE_COLUMN in frame.columns:
+        regular = (
+            frame[SEASON_TYPE_COLUMN]
+            .isin(TREND_FALLBACK_SEASON_TYPES)
+            .to_numpy(dtype=bool)
+        )
+    else:
+        regular = np.zeros(len(frame), dtype=bool)
+    values = pd.to_numeric(frame[parameter], errors="coerce").to_numpy(
+        dtype="float64", na_value=np.nan
+    )
+    groups = frame.groupby(["TEAM_ID", "SEASON_YEAR"], sort=False).indices
+    for rows in groups.values():
+        rows = np.sort(rows)
+        group_values = values[rows]
+        if shift_current_game:
+            group_values = np.concatenate([[np.nan], group_values[:-1]])
+
+        def at(i, group_values=group_values):
+            window_values = group_values[max(0, i - window + 1) : i + 1]
+            if int((~np.isnan(window_values)).sum()) < 2:
+                return np.nan
+            return float(slope(window_values))
+
+        for i in np.flatnonzero(targets[rows]):
+            out[rows[i]] = at(i)
+        for i in np.flatnonzero(regular[rows])[::-1]:
+            value = at(i)
+            if not np.isnan(value):
+                out[rows[i]] = value
+                break
+    return out
+
+
 def compute_trend_slope(
     df,
     parameter="PTS",
@@ -313,6 +367,7 @@ def compute_trend_slope(
     add_relative_column: bool = True,
     include_home_away_relative: bool = True,
     relative_to_window: int | None = None,
+    target_game_ids: set[str] | None = None,
 ):
     """Compute team performance trends over the last window games.
 
@@ -334,6 +389,10 @@ def compute_trend_slope(
         relative_to_window (int, optional): Positive reference window used when
             include_home_away_relative=False. The relative value is the reference
             window slope minus the window slope.
+        target_game_ids (set, optional): Only these games' trend columns are
+            needed. Their values are exact; other rows hold whatever the
+            fallback chain makes of the few slopes computed for them
+            (``_targeted_window_slopes``) and must not be read.
 
     Returns:
         pd.DataFrame: Sorted team rows with
@@ -359,18 +418,31 @@ def compute_trend_slope(
 
         return _linregress_slope(X, Y)
 
+    def window_slopes(frame, size):
+        """The within-season rolling slope of ``parameter`` for every row."""
+        if target_game_ids is not None:
+            return _targeted_window_slopes(
+                frame,
+                parameter,
+                size,
+                shift_current_game,
+                calculate_slope,
+                target_game_ids,
+            )
+        return frame.groupby(["TEAM_ID", "SEASON_YEAR"])[parameter].transform(
+            lambda s: (
+                (s.shift(1) if shift_current_game else s)
+                .rolling(size, min_periods=2)
+                .apply(calculate_slope, raw=True)
+            )
+        )
+
     # Sort by team, season, and date
     df = df.sort_values(["TEAM_ID", "SEASON_YEAR", "GAME_DATE"], ascending=True)
 
     # 1. Overall trend (all games for each team)
     trend_col = f"{parameter}_TREND_SLOPE_LAST_{window}_GAMES_BEFORE"
-    within_season_trend = df.groupby(["TEAM_ID", "SEASON_YEAR"])[parameter].transform(
-        lambda s: (
-            (s.shift(1) if shift_current_game else s)
-            .rolling(window, min_periods=2)
-            .apply(calculate_slope, raw=True)
-        )
-    )
+    within_season_trend = window_slopes(df, window)
     # The grouping stays per season on purpose -- a slope spanning the offseason
     # is not a trend. The gap it leaves at the start of each season is closed by
     # the fallback chain instead.
@@ -393,16 +465,8 @@ def compute_trend_slope(
                 .copy()
                 .sort_values(["TEAM_ID", "SEASON_YEAR", "GAME_DATE"], ascending=True)
             )
-            df.loc[home_mask, trend_col_location_raw] = (
-                df_temp_home.groupby(["TEAM_ID", "SEASON_YEAR"])[parameter]
-                .transform(
-                    lambda s: (
-                        (s.shift(1) if shift_current_game else s)
-                        .rolling(window, min_periods=2)
-                        .apply(calculate_slope, raw=True)
-                    )
-                )
-                .values
+            df.loc[home_mask, trend_col_location_raw] = np.asarray(
+                window_slopes(df_temp_home, window)
             )
 
             away_mask = df["HOME"] == 0
@@ -411,16 +475,8 @@ def compute_trend_slope(
                 .copy()
                 .sort_values(["TEAM_ID", "SEASON_YEAR", "GAME_DATE"], ascending=True)
             )
-            df.loc[away_mask, trend_col_location_raw] = (
-                df_temp_away.groupby(["TEAM_ID", "SEASON_YEAR"])[parameter]
-                .transform(
-                    lambda s: (
-                        (s.shift(1) if shift_current_game else s)
-                        .rolling(window, min_periods=2)
-                        .apply(calculate_slope, raw=True)
-                    )
-                )
-                .values
+            df.loc[away_mask, trend_col_location_raw] = np.asarray(
+                window_slopes(df_temp_away, window)
             )
 
             # Filled before the subtraction, and keyed on HOME so the fallback is
@@ -444,14 +500,7 @@ def compute_trend_slope(
                 reference_trend = df[ref_col].to_numpy(dtype="float64", na_value=np.nan)
             else:
                 reference_trend = _fill_trend_from_history(
-                    df,
-                    df.groupby(["TEAM_ID", "SEASON_YEAR"])[parameter].transform(
-                        lambda s: (
-                            (s.shift(1) if shift_current_game else s)
-                            .rolling(relative_to_window, min_periods=2)
-                            .apply(calculate_slope, raw=True)
-                        )
-                    ),
+                    df, window_slopes(df, relative_to_window)
                 )
 
             df[relative_col] = reference_trend - df[trend_col]
@@ -516,7 +565,7 @@ def _rolling_source_columns(columns, exclude_yahoo: bool) -> list[str]:
     ]
 
 
-def compute_all_rolling_statistics(df, exclude_yahoo=False):
+def compute_all_rolling_statistics(df, exclude_yahoo=False, target_game_ids=None):
     """``_compute_all_rolling_statistics_on`` without dragging the wide frame.
 
     Each of the ~150 helper calls in that stage copies, sorts, merges and
@@ -527,21 +576,30 @@ def compute_all_rolling_statistics(df, exclude_yahoo=False):
     the keys and the current row order. So the stage runs unchanged on just
     those columns, and the wide frame is reordered once at the end: same rows,
     order, index, columns and values as running it on the whole frame.
+
+    ``target_game_ids`` limits the trend slopes to what those games' rows need
+    (see ``compute_trend_slope``); other rows' trend columns must not be read.
     """
     columns = pd.Index(df.columns)
     if not columns.is_unique or _ROW_POSITION in columns:
-        return _compute_all_rolling_statistics_on(df, exclude_yahoo=exclude_yahoo)
+        return _compute_all_rolling_statistics_on(
+            df, exclude_yahoo=exclude_yahoo, target_game_ids=target_game_ids
+        )
 
     narrow_columns = _rolling_source_columns(columns, exclude_yahoo)
     narrow = df[narrow_columns].copy()
     narrow[_ROW_POSITION] = np.arange(len(df))
-    narrow = _compute_all_rolling_statistics_on(narrow, exclude_yahoo=exclude_yahoo)
+    narrow = _compute_all_rolling_statistics_on(
+        narrow, exclude_yahoo=exclude_yahoo, target_game_ids=target_game_ids
+    )
 
     narrow_set = set(narrow_columns)
     created = [c for c in narrow.columns if c not in narrow_set and c != _ROW_POSITION]
     if set(created) & set(columns):
         # Unreachable given _rolling_source_columns; kept as the safe path.
-        return _compute_all_rolling_statistics_on(df, exclude_yahoo=exclude_yahoo)
+        return _compute_all_rolling_statistics_on(
+            df, exclude_yahoo=exclude_yahoo, target_game_ids=target_game_ids
+        )
 
     positions = narrow.pop(_ROW_POSITION).to_numpy()
     untouched = [c for c in columns if c not in narrow_set]
@@ -561,7 +619,123 @@ def compute_all_rolling_statistics(df, exclude_yahoo=False):
     return result
 
 
-def _compute_all_rolling_statistics_on(df, exclude_yahoo=False):
+_HELPER_POSITION = "__rolling_helper_position__"
+
+
+class _HelperFrame:
+    """The rolling stage's frame, handing each helper only the columns it reads.
+
+    Every helper (``compute_rolling_stats``, ``compute_rolling_weighted_stats``,
+    ``compute_season_std``, ``compute_trend_slope``) copies, sorts and merges
+    the whole frame it is given to add one to three columns, and the stage
+    calls them ~150 times on a frame that grows to hundreds of columns. A
+    helper reads only the key columns and its own statistic's columns
+    (``<param>`` and ``<param>_...``, which include the reference columns of
+    relative features), and every column it creates or drops is named that
+    way. Its row permutation depends only on the keys and the current row
+    order, and its index only on the current index.
+
+    So the columns are kept here in their original row order; a helper gets
+    the keys and its statistic's columns in the current order and index, plus
+    a row-position column. Its output gives the new order, the new index and
+    the new and changed columns. The column order follows the same rule as
+    the whole frame's: kept columns stay where they are, dropped ones go, new
+    ones are appended in the order the helper adds them. ``to_frame`` is then
+    exactly what calling the helpers on the whole frame gives.
+    """
+
+    def __init__(self, df: pd.DataFrame) -> None:
+        if not df.columns.is_unique or _HELPER_POSITION in df.columns:
+            raise ValueError("_HelperFrame needs unique column names")
+        self._names = list(df.columns)
+        self._data = {c: df[c].reset_index(drop=True) for c in self._names}
+        self._order = np.arange(len(df))
+        self._index = df.index
+        self._columns_name = df.columns.name
+
+    @property
+    def columns(self) -> pd.Index:
+        return pd.Index(self._names)
+
+    def _current(self, names: list[str]) -> pd.DataFrame:
+        frame = pd.concat(
+            [self._data[c].take(self._order).reset_index(drop=True) for c in names],
+            axis=1,
+        )
+        frame.columns = names
+        frame.index = self._index
+        return frame
+
+    def apply(self, helper, *args, **kwargs) -> None:
+        param = args[0] if args else kwargs.get("param", kwargs.get("parameter"))
+        prefixes = (f"{param}_", f"__{param}_")
+        names = [
+            c
+            for c in self._names
+            if c == param
+            or c in _ROLLING_KEY_COLUMNS
+            or c in _ROLLING_SCRATCH_COLUMNS
+            or c.startswith(prefixes)
+        ]
+        given = self._current(names)
+        given[_HELPER_POSITION] = self._order
+        out = helper(given, *args, **kwargs)
+
+        positions = out[_HELPER_POSITION].to_numpy()
+        if sorted(positions.tolist()) != sorted(self._order.tolist()):
+            raise RuntimeError(f"{helper.__name__} changed the rows of the frame")
+        back = np.argsort(positions, kind="stable")
+        out_names = [c for c in out.columns if c != _HELPER_POSITION]
+        for c in out_names:
+            self._data[c] = (
+                out[c].reset_index(drop=True).take(back).reset_index(drop=True)
+            )
+        kept = set(out_names)
+        for c in names:
+            if c not in kept:
+                del self._data[c]
+        given_set = set(names)
+        self._names = [c for c in self._names if c not in given_set or c in kept] + [
+            c for c in out_names if c not in given_set
+        ]
+        self._order = positions
+        self._index = out.index
+
+    def drop(self, columns: list[str]) -> None:
+        for c in columns:
+            if c in self._data:
+                del self._data[c]
+        self._names = [c for c in self._names if c in self._data]
+
+    def to_frame(self) -> pd.DataFrame:
+        frame = self._current(self._names)
+        frame.columns.name = self._columns_name
+        return frame
+
+
+class _WholeFrame:
+    """``_HelperFrame``'s interface over the frame itself, for duplicate names."""
+
+    def __init__(self, df: pd.DataFrame) -> None:
+        self.df = df
+
+    @property
+    def columns(self) -> pd.Index:
+        return self.df.columns
+
+    def apply(self, helper, *args, **kwargs) -> None:
+        self.df = helper(self.df, *args, **kwargs)
+
+    def drop(self, columns: list[str]) -> None:
+        self.df = self.df.drop(columns=columns, errors="ignore")
+
+    def to_frame(self) -> pd.DataFrame:
+        return self.df
+
+
+def _compute_all_rolling_statistics_on(
+    df, exclude_yahoo=False, whole_frame=False, target_game_ids=None
+):
     """
     Compute rolling statistics, weighted averages, and seasonal standard deviations,
     dynamically including new DIFF_FROM_* columns, ODDS_TOTAL_LINE_* columns, and
@@ -576,6 +750,9 @@ def _compute_all_rolling_statistics_on(df, exclude_yahoo=False):
     corresponding DIFF_FROM_* columns in rolling stats, weighted stats, and season std.
     Also includes odds percentages and spread/moneyline prices. Raw total-market
     over/under prices are retained without historical rolling derivatives.
+
+    ``whole_frame=True`` hands every helper the whole frame instead of a
+    ``_HelperFrame`` view; it is the reference the view is tested against.
     """
     original_columns = set(df.columns)
 
@@ -639,14 +816,18 @@ def _compute_all_rolling_statistics_on(df, exclude_yahoo=False):
 
     # Season std: include diffs, total lines and consensus, but no Yahoo history.
     cols_for_season_std = (
-        COLS_FOR_SEASON_STD
-        + new_diff_cols
-        + new_total_line_cols
-        + consensus_pct_cols
+        COLS_FOR_SEASON_STD + new_diff_cols + new_total_line_cols + consensus_pct_cols
     )
     cols_for_season_std = list(dict.fromkeys(cols_for_season_std))
 
-    # 8) Rolling stats loop
+    # 8) Rolling stats loop. Each helper is handed only the columns it reads.
+    frame = (
+        _HelperFrame(df)
+        if df.columns.is_unique
+        and _HELPER_POSITION not in df.columns
+        and not whole_frame
+        else _WholeFrame(df)
+    )
     rolling_columns = list(
         dict.fromkeys(
             COLS_TO_AVERAGE + cols_to_average_odds + list(STYLE_SOURCE_COLUMNS)
@@ -654,8 +835,8 @@ def _compute_all_rolling_statistics_on(df, exclude_yahoo=False):
     )
     for col in tqdm(rolling_columns, desc="Computing rolling stats"):
         if col in yahoo_cols:
-            df = compute_rolling_stats(
-                df,
+            frame.apply(
+                compute_rolling_stats,
                 col,
                 window=5,
                 group_by_season=False,
@@ -663,8 +844,8 @@ def _compute_all_rolling_statistics_on(df, exclude_yahoo=False):
             )
             continue
         is_style_source = col in STYLE_SOURCE_COLUMNS
-        df = compute_rolling_stats(
-            df,
+        frame.apply(
+            compute_rolling_stats,
             col,
             window=5,
             add_extra_season_avg=True,
@@ -677,10 +858,7 @@ def _compute_all_rolling_statistics_on(df, exclude_yahoo=False):
         # as its early-season fallback inside compute_rolling_stats and then
         # removed to avoid exposing a large parallel family of raw features.
         if is_style_source:
-            df = df.drop(
-                columns=[f"{col}_LAST_ALL_5_MATCHES_BEFORE"],
-                errors="ignore",
-            )
+            frame.drop([f"{col}_LAST_ALL_5_MATCHES_BEFORE"])
 
         if (
             col
@@ -689,8 +867,8 @@ def _compute_all_rolling_statistics_on(df, exclude_yahoo=False):
             + new_diff_cols
             + consensus_pct_cols
         ):
-            df = compute_rolling_stats(
-                df,
+            frame.apply(
+                compute_rolling_stats,
                 col,
                 window=10,
                 add_extra_season_avg=False,
@@ -700,28 +878,31 @@ def _compute_all_rolling_statistics_on(df, exclude_yahoo=False):
             )
 
         if col in cols_for_weighted_stats:
-            df = compute_rolling_weighted_stats(
-                df, col, window=5, group_by_season=False
+            frame.apply(
+                compute_rolling_weighted_stats,
+                col,
+                window=5,
+                group_by_season=False,
             )
 
         # Extra short windows for all DIFF columns (legacy + new ones)
         if col in COLS_FOR_SHORT_WINDOWS + new_diff_cols:
-            df = compute_rolling_stats(
-                df,
+            frame.apply(
+                compute_rolling_stats,
                 col,
                 window=1,
                 add_extra_season_avg=False,
                 add_relative_column=False,
             )
-            df = compute_rolling_stats(
-                df,
+            frame.apply(
+                compute_rolling_stats,
                 col,
                 window=2,
                 add_extra_season_avg=False,
                 add_relative_column=False,
             )
-            df = compute_rolling_stats(
-                df,
+            frame.apply(
+                compute_rolling_stats,
                 col,
                 window=3,
                 add_extra_season_avg=False,
@@ -730,24 +911,36 @@ def _compute_all_rolling_statistics_on(df, exclude_yahoo=False):
 
     # 9) Seasonal std loop
     for param in tqdm(cols_for_season_std, desc="Computing seasonal std"):
-        df = compute_season_std(df, param=param)
+        frame.apply(compute_season_std, param=param)
 
     # 10) Compute trend slopes for teams
     print("Computing team performance trends...")
-    df = compute_trend_slope(df, parameter="PTS", window=5, shift_current_game=True)
-    df = compute_trend_slope(
-        df,
+    frame.apply(
+        compute_trend_slope,
+        target_game_ids=target_game_ids,
+        parameter="PTS",
+        window=5,
+        shift_current_game=True,
+    )
+    frame.apply(
+        compute_trend_slope,
+        target_game_ids=target_game_ids,
         parameter="PTS",
         window=10,
         shift_current_game=True,
         include_home_away_relative=False,
         relative_to_window=5,
     )
-    df = compute_trend_slope(
-        df, parameter="PTS_PER_40", window=5, shift_current_game=True
+    frame.apply(
+        compute_trend_slope,
+        target_game_ids=target_game_ids,
+        parameter="PTS_PER_40",
+        window=5,
+        shift_current_game=True,
     )
-    df = compute_trend_slope(
-        df,
+    frame.apply(
+        compute_trend_slope,
+        target_game_ids=target_game_ids,
         parameter="PTS_PER_40",
         window=10,
         shift_current_game=True,
@@ -760,7 +953,13 @@ def _compute_all_rolling_statistics_on(df, exclude_yahoo=False):
     # from df here would also match derived columns such as LAST/SEASON/WMA and
     # recursively create trends of already-derived features.
     for col in tqdm(new_diff_cols, desc="Computing diff-from-line trends"):
-        df = compute_trend_slope(df, parameter=col, window=5, shift_current_game=True)
+        frame.apply(
+            compute_trend_slope,
+            target_game_ids=target_game_ids,
+            parameter=col,
+            window=5,
+            shift_current_game=True,
+        )
 
     # 12) Total-line source columns (pre-game known). As above, only use columns
     # discovered at function entry so rolling/season features are not trended.
@@ -769,30 +968,44 @@ def _compute_all_rolling_statistics_on(df, exclude_yahoo=False):
         total_line_trend_cols = [MAIN_TOTAL_LINE_COL] + [
             c for c in total_line_trend_cols if c != MAIN_TOTAL_LINE_COL
         ]
+    # Computed for every row even with target games: every later column named
+    # ODDS_TOTAL_LINE_* -- these trends included -- is read as one more "book"
+    # by the cross-book line spread of every earlier game in
+    # global_market_features (extract_total_line_books matches the prefix).
     for col in tqdm(total_line_trend_cols, desc="Computing total line trends"):
-        if col in df.columns:
-            df = compute_trend_slope(
-                df, parameter=col, window=5, shift_current_game=True
+        if col in frame.columns:
+            frame.apply(
+                compute_trend_slope,
+                parameter=col,
+                window=5,
+                shift_current_game=True,
             )
 
     # 13) Consensus percentage trends (pre-game known): shift current game
     for col in tqdm(consensus_pct_cols, desc="Computing consensus % trends"):
-        if col in df.columns:
-            df = compute_trend_slope(
-                df, parameter=col, window=5, shift_current_game=True
+        if col in frame.columns:
+            frame.apply(
+                compute_trend_slope,
+                target_game_ids=target_game_ids,
+                parameter=col,
+                window=5,
+                shift_current_game=True,
             )
 
     # 14) Yahoo percentage trends (if included)
     if not exclude_yahoo:
         for col in tqdm(yahoo_cols, desc="Computing Yahoo % trends"):
-            if col in df.columns:
-                df = compute_trend_slope(
-                    df,
+            if col in frame.columns:
+                frame.apply(
+                    compute_trend_slope,
+                    target_game_ids=target_game_ids,
                     parameter=col,
                     window=5,
                     shift_current_game=True,
                     add_relative_column=False,
                 )
+
+    df = frame.to_frame()
 
     # 15) Enforce naming convention: all newly computed rolling/stat columns must contain _BEFORE
     # Only apply to columns created inside this function (keep source columns untouched).

@@ -118,6 +118,19 @@ def test_narrow_rolling_stage_matches_the_wide_one(seed, exclude_yahoo):
     assert actual.index.name == expected.index.name
 
 
+@pytest.mark.parametrize("exclude_yahoo", [False, True])
+@pytest.mark.parametrize("seed", [0, 1, 4])
+def test_helper_views_match_helpers_on_the_whole_frame(seed, exclude_yahoo):
+    df = team_frame(seed)
+    expected = _compute_all_rolling_statistics_on(
+        df.copy(), exclude_yahoo=exclude_yahoo, whole_frame=True
+    )
+    actual = _compute_all_rolling_statistics_on(df.copy(), exclude_yahoo=exclude_yahoo)
+    assert_identical(actual, expected)
+    assert actual.index.name == expected.index.name
+    assert actual.columns.name == expected.columns.name
+
+
 def test_duplicate_column_names_take_the_wide_path():
     df = team_frame(2)
     df = pd.concat([df, df[["UNRELATED_INT"]]], axis=1)
@@ -181,6 +194,48 @@ def test_trend_slope_columns_match_linregress(monkeypatch, parameter, kwargs):
     )
     expected = compute_trend_slope(df.copy(), parameter=parameter, **kwargs)
     assert_identical(actual, expected)
+
+
+def _target_rows(df, seed):
+    """GAME_IDs of a few dates, including a season's first and last days."""
+    rng = np.random.default_rng(seed)
+    dates = np.sort(df["GAME_DATE"].unique())
+    firsts = df.groupby("SEASON_YEAR")["GAME_DATE"].min().to_numpy()
+    lasts = df.groupby("SEASON_YEAR")["GAME_DATE"].max().to_numpy()
+    chosen = set(rng.choice(dates, 6, replace=False)) | {firsts[1], lasts[0]}
+    return set(df.loc[df["GAME_DATE"].isin(chosen), "GAME_ID"].astype(str))
+
+
+@pytest.mark.parametrize("seed", [4, 5])
+@pytest.mark.parametrize("parameter", ["PTS", MAIN_TOTAL_LINE_COL, "PF"])
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"window": 5},
+        {"window": 5, "shift_current_game": False},
+        {"window": 10, "include_home_away_relative": False, "relative_to_window": 5},
+    ],
+)
+def test_targeted_trend_slopes_match_on_target_rows(seed, parameter, kwargs):
+    df = team_frame(seed)
+    targets = _target_rows(df, seed)
+    expected = compute_trend_slope(df.copy(), parameter=parameter, **kwargs)
+    actual = compute_trend_slope(
+        df.copy(), parameter=parameter, target_game_ids=targets, **kwargs
+    )
+    assert actual.index.equals(expected.index)
+    keep = expected["GAME_ID"].astype(str).isin(targets).to_numpy()
+    assert keep.sum() > 0
+    assert_identical(actual[keep], expected[keep])
+
+
+def test_targeted_rolling_stage_matches_on_target_rows():
+    df = team_frame(6)
+    targets = _target_rows(df, 6)
+    expected = compute_all_rolling_statistics(df.copy())
+    actual = compute_all_rolling_statistics(df.copy(), target_game_ids=targets)
+    keep = expected["GAME_ID"].astype(str).isin(targets).to_numpy()
+    assert_identical(actual[keep], expected[keep])
 
 
 def _weighted_moving_average_before(x: pd.Series) -> float:
