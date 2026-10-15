@@ -13,7 +13,10 @@ node_features}/season=YYYY.parquet`` and ``manifest.json`` (provenance,
 coverage, checks). Checks before writing: each team's minutes sum to 240 in
 every scenario and nobody exceeds 48; every node has features as of its game
 date; every opposing pair of a scenario has an expected guard row; no input
-table holds an observed or betting column.
+table holds an observed or betting column. A game where some team-scenario
+cannot fill 240 minutes (fewer than five available players with a minutes
+baseline: the provider's infeasible case, e.g. Toronto's 2021-12-26 COVID
+roster) is skipped whole and listed in the manifest.
 
     python scripts/player_graph/build_pregame_graph_store.py --seasons 2018
 
@@ -78,6 +81,13 @@ def season_games(season: int) -> pd.DataFrame:
     module = module_from_spec(spec)
     spec.loader.exec_module(module)
     return module.season_games(season)
+
+
+def infeasible_games(nodes: pd.DataFrame) -> list[str]:
+    """Games with a team-scenario whose minutes cannot reach 240."""
+    totals = nodes.groupby(["game_id", "scenario_id", "side"])["minutes"].sum()
+    short = totals.loc[(totals - 240.0).abs() > 1e-6]
+    return sorted(short.index.get_level_values("game_id").unique())
 
 
 def node_feature_rows(
@@ -191,10 +201,16 @@ def main() -> None:
         graphs = build_game_graphs(
             data, games, nights, report_covered=state.covered, minutes=provider
         )
-        scenarios = graphs.scenarios.copy()
-        nodes = graphs.nodes.copy()
+        infeasible = infeasible_games(graphs.nodes)
+        scenarios = graphs.scenarios.loc[
+            ~graphs.scenarios["game_id"].isin(infeasible)
+        ].copy()
+        nodes = graphs.nodes.loc[~graphs.nodes["game_id"].isin(infeasible)].copy()
         nodes["player_id"] = nodes["player_id"].astype(str)
-        edges = graphs.edges.loc[graphs.edges["relation"].eq("guards")]
+        edges = graphs.edges.loc[
+            graphs.edges["relation"].eq("guards")
+            & ~graphs.edges["game_id"].isin(infeasible)
+        ]
         guards = (
             edges.rename(columns={"src": "def_player_id", "dst": "off_player_id"})[
                 ["game_id", "off_player_id", "def_player_id", *GUARD_FIELDS]
@@ -217,6 +233,7 @@ def main() -> None:
             **summary,
             "games_in_closing_file": int(len(games)),
             "skipped_games": graphs.metadata["skipped_games"],
+            "infeasible_minutes_games": infeasible,
             "built_at": pd.Timestamp.now().isoformat(timespec="seconds"),
             "commit": commit,
         }

@@ -2330,6 +2330,27 @@ each game date, written per season with a manifest.
   column.
 - 2018-19 built in 11 minutes: 868 of 1,312 games (both teams' reports, as
   phase 5), 2.02 scenarios per game, 13.4 players per team.
+- 2019-20 → 2025-26 built 2026-10-15 (store stage; about 40 minutes of inputs,
+  then 7-10 minutes a season). Games kept / closing-file games:
+
+  | Season | Games | Scenarios per game | Players per team |
+  | --- | --- | --- | --- |
+  | 2019-20 | 1,142 / 1,143 | 2.05 | 13.9 |
+  | 2020-21 | 1,152 / 1,171 | 2.62 | 14.3 |
+  | 2021-22 | 1,312 / 1,323 | 1.54 | 14.7 |
+  | 2022-23 | 1,312 / 1,320 | 1.31 | 14.6 |
+  | 2023-24 | 1,309 / 1,319 | 1.39 | 14.7 |
+  | 2024-25 | 1,314 / 1,321 | 1.28 | 14.8 |
+  | 2025-26 | 1,303 / 1,322 | 1.08 | 15.0 |
+
+  Gaps are games without both reports or a roster (7-19 a season). One more
+  rule, found in the build: a game where some team-scenario cannot fill 240
+  minutes is skipped whole and listed (`infeasible_minutes_games`). Only
+  Toronto at Cleveland, 2021-12-26 (`0022100494`): twelve Raptors certainly
+  out under COVID protocols left four players with a minutes baseline (the
+  hardship signings have none), so the provider's infeasible case capped them
+  at 192. The provider is unchanged (phase 5 reads it); the game's graph
+  outputs are missing, as for any skipped game.
 
 **Smoke test** (2018-19, the development checkpoints of step 7 with
 running-mean centering, so their values are not used for anything).
