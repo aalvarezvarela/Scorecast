@@ -267,7 +267,7 @@ fonttools==4.56.0 ; python_version >= "3.11" and python_version < "3.14" \
     --hash=sha256:f59746f7953f69cc3290ce2f971ab01056e55ddd0fb8b792c31a8acd7fee2d28 \
     --hash=sha256:fa760e5fe8b50cbc2d71884a1eff2ed2b95a005f02dda2fa431560db0ddd927f \
     --hash=sha256:ffda9b8cd9cb8b301cae2602ec62375b59e2e2108a117746f12215145e3f786c
-greenlet==3.3.0 ; python_version >= "3.11" and python_version < "3.14" and (sys_platform == "darwin" and platform_machine == "x86_64" or (sys_platform != "darwin" or platform_machine != "x86_64") and (platform_machine == "aarch64" or platform_machine == "ppc64le" or platform_machine == "x86_64" or platform_machine == "amd64" or platform_machine == "AMD64" or platform_machine == "win32" or platform_machine == "WIN32")) and python_version >= "3.10" \
+greenlet==3.3.0 ; python_version >= "3.11" and python_version < "3.14" and (sys_platform == "linux" or sys_platform == "darwin" or platform_machine == "aarch64" or platform_machine == "ppc64le" or platform_machine == "x86_64" or platform_machine == "amd64" or platform_machine == "AMD64" or platform_machine == "win32" or platform_machine == "WIN32") and (platform_machine == "x86_64" or platform_machine == "aarch64" or platform_machine == "ppc64le" or platform_machine == "amd64" or platform_machine == "AMD64" or platform_machine == "win32" or platform_machine == "WIN32") \
     --hash=sha256:047ab3df20ede6a57c35c14bf5200fcf04039d50f908270d3f9a7a82064f543b \
     --hash=sha256:087ea5e004437321508a8d6f20efc4cfec5e3c30118e1417ea96ed1d93950527 \
     --hash=sha256:0a5d554d0712ba1de0a6c94c640f7aeba3f85b3a6e1f2899c11c2c0428da9365 \
