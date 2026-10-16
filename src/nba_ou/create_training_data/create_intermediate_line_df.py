@@ -32,7 +32,9 @@ from __future__ import annotations
 import gc
 import time
 from collections.abc import Callable
+from dataclasses import dataclass
 
+import numpy as np
 import pandas as pd
 
 from nba_ou.config.market_columns import (
@@ -50,6 +52,7 @@ from nba_ou.config.odds_columns import (
     spread_line_home_col,
     total_line_col,
 )
+from nba_ou.create_training_data import intermediate_history
 from nba_ou.create_training_data.create_base_game_features import (
     create_base_game_features,
 )
@@ -59,11 +62,13 @@ from nba_ou.create_training_data.historical_ridge_movement import (
     current_line_column,
     ridge_input_columns,
 )
+from nba_ou.create_training_data.history_memo import season_of_game_id
 from nba_ou.create_training_data.intermediate_injuries import (
     add_snapshot_injury_features,
 )
 from nba_ou.create_training_data.intermediate_market_dynamics import (
-    add_intermediate_market_dynamics,
+    attach_market_dynamics,
+    intermediate_market_dynamics_columns,
 )
 from nba_ou.create_training_data.intermediate_referees import (
     add_intermediate_referee_features,
@@ -71,6 +76,7 @@ from nba_ou.create_training_data.intermediate_referees import (
     mask_referees_before_release,
 )
 from nba_ou.create_training_data.live_game_day import LiveGameDay
+from nba_ou.create_training_data.predict_data_utils import normalize_game_ids
 from nba_ou.create_training_data.select_intermediate_columns import (
     assert_no_bare_closing_odds,
     audit_closing_line_reconstruction,
@@ -89,7 +95,9 @@ from nba_ou.data_processing.line_history.cross_book import (
 )
 from nba_ou.data_processing.line_history.history_features import (
     add_prior_game_line_dynamics,
+    build_game_line_dynamics,
 )
+from nba_ou.data_processing.line_history.market_dynamics import ORDER_COLUMN
 from nba_ou.data_processing.line_history.movement_features import (
     DEFAULT_WINDOWS,
     add_movement_features,
@@ -112,6 +120,7 @@ from nba_ou.postgre_db.line_history_aiven.fetch import (
     available_seasons,
     fetch_games,
     fetch_pregame_ticks,
+    pregame_tick_fingerprints,
 )
 from nba_ou.postgre_db.line_history_aiven.live import LiveLineHistory
 
@@ -423,6 +432,227 @@ def _ridge_closing_lines(
 SCORING_KEYS = ["GAME_ID", "TIME_TO_MATCH_MIN"]
 
 
+@dataclass
+class _SnapshotSide:
+    """The snapshot side of the build, one row per (game, output snapshot).
+
+    ``combos`` lists the (game, market, book) quotes and ``consensus_markets``
+    the (game, market) consensus rows behind the wide columns: which columns
+    exist depends on them, which is how a build of a few games is given the
+    full build's columns (see ``_build_snapshot_side``'s ``schema``).
+    """
+
+    wide: pd.DataFrame
+    ridge_closing_lines: dict[str, pd.DataFrame]
+    combos: pd.DataFrame
+    consensus_markets: pd.DataFrame
+    #: Every column's dtype. A gap anywhere in a build turns a column float
+    #: (the pivots and left joins fill it with NaN), so it depends on all rows.
+    dtypes: dict[str, str]
+
+
+#: Game id of the rows that carry a column into the pivots without a value;
+#: "~" sorts after every real id, and the rows are dropped after the pivots.
+_SCHEMA_GAME_ID = "~schema"
+
+
+def _schema_rows(
+    present: pd.DataFrame, wanted: pd.DataFrame, keys: list[str], snapshot: int
+) -> pd.DataFrame:
+    """One all-NaN row per distinct ``keys`` combination of ``wanted``, in order.
+
+    The pivots order their columns by first appearance, so these rows go
+    first: the columns then come out in the order the full build met them,
+    and a combination only ``present`` has comes last, as tonight's do there.
+    """
+    combos = wanted[keys].drop_duplicates(ignore_index=True)
+    rows = pd.DataFrame(np.nan, index=range(len(combos)), columns=present.columns)
+    for key in keys:
+        rows[key] = combos[key].to_numpy()
+    rows["game_id"] = _SCHEMA_GAME_ID
+    rows["snapshot_minutes"] = snapshot
+    return rows.astype(present.dtypes.to_dict(), errors="ignore")
+
+
+def _full_build_dtypes(wide: pd.DataFrame, history: dict[str, str]) -> pd.DataFrame:
+    """The dtypes a build over these rows and the history together would give.
+
+    A column stays non-float there only if the history keeps it so and these
+    rows have no gap in it; anything else is float64, the dtype a gap gives.
+    """
+    casts = {}
+    for column, dtype in wide.dtypes.items():
+        if column in SNAPSHOT_WIDE_KEYS:
+            continue
+        kept = history.get(column)
+        if kept is not None and wide[column].notna().all():
+            target = kept
+        else:
+            target = "float64"
+        if str(dtype) != target:
+            if not (
+                pd.api.types.is_numeric_dtype(dtype)
+                or pd.api.types.is_bool_dtype(dtype)
+            ):
+                raise TypeError(f"{column}: cannot align a {dtype} column")
+            casts[column] = target
+    return wide.astype(casts) if casts else wide
+
+
+def _history_dtypes(dtypes_by_build: list[dict[str, str]]) -> dict[str, str]:
+    """``_full_build_dtypes``' history: columns every build keeps non-float,
+    with that dtype. A build without the column had a gap there."""
+    if not dtypes_by_build:
+        return {}
+    first, *rest = dtypes_by_build
+    return {
+        column: dtype
+        for column, dtype in first.items()
+        if not pd.api.types.is_float_dtype(dtype)
+        and all(other.get(column) == dtype for other in rest)
+    }
+
+
+def _build_snapshot_side(
+    ticks: pd.DataFrame,
+    *,
+    snapshot_grid: tuple[int, ...],
+    windows: tuple[int, ...],
+    anchor: str,
+    ridge_markets: list[str],
+    normalize_total_lines: bool,
+    normalize_spread_lines: bool,
+    null_extreme_spread_prices: bool,
+    stage: Callable[[str], None],
+    progress: Callable[[str], str | None],
+    verbose: bool,
+    schema: tuple[pd.DataFrame, pd.DataFrame, dict[str, str]] | None = None,
+) -> _SnapshotSide:
+    """Panel, movement, consensus and pivot: every value is a function of one
+    game's own ticks.
+
+    ``schema`` -- ``(combos, consensus_markets, dtypes)`` of the games a full
+    build would also hold, in its panel's order -- puts an all-NaN row for each
+    (market, book) and consensus market those games quote ahead of these
+    ticks' rows, just before the pivots, and drops them after: the wide frame
+    then has the full build's columns, in its order. ``dtypes`` maps a column
+    to the dtype every build of those games gives it, where they agree on one
+    that is not float; the frame then takes the full build's dtypes too (see
+    ``_full_build_dtypes``).
+    """
+    stage("Building the snapshot panel ...")
+    panel_grid = (
+        tuple(sorted(set(snapshot_grid) | {0})) if ridge_markets else snapshot_grid
+    )
+    panel = build_snapshot_panel(
+        ticks,
+        grid=panel_grid,
+        normalize_total_lines=normalize_total_lines,
+        normalize_spread_lines=normalize_spread_lines,
+        null_extreme_spread_prices=null_extreme_spread_prices,
+        progress=progress("As-of snapshots"),
+    )
+    stage("Adding movement features ...")
+    panel = add_movement_features(
+        panel,
+        ticks,
+        grid=panel_grid,
+        windows=windows,
+        null_extreme_spread_prices=null_extreme_spread_prices,
+        progress=progress("Movement"),
+    )
+    stage("Cross-book consensus and anchor path ...")
+    consensus = aggregate_across_books(panel)
+    panel = add_book_deviation(panel)
+    anchor_path = add_anchor_total_path_features(panel, ticks, anchor=anchor)
+    if verbose:
+        print(f"✓ Snapshot panel: {len(panel):,} (game, market, book, snapshot) rows")
+    combos = panel[["game_id", "market", "book"]].drop_duplicates(ignore_index=True)
+    consensus_markets = consensus[["game_id", "market"]].drop_duplicates(
+        ignore_index=True
+    )
+
+    pivot_panel, pivot_consensus = panel, consensus
+    if schema is not None:
+        wanted_combos, wanted_markets, wanted_dtypes = schema
+        pivot_panel = pd.concat(
+            [
+                _schema_rows(panel, wanted_combos, ["market", "book"], panel_grid[0]),
+                panel,
+            ],
+            ignore_index=True,
+        )
+        pivot_consensus = pd.concat(
+            [
+                _schema_rows(consensus, wanted_markets, ["market"], panel_grid[0]),
+                consensus,
+            ],
+            ignore_index=True,
+        )
+
+    books = sorted(pivot_panel["book"].unique())
+    other_books = [book for book in books if book != anchor]
+
+    # Same fields for every book, including all configured movement windows.
+    book_features = FULL_BOOK_FEATURES + _windowed_feature_names(windows)
+    stage(f"Pivoting {len(books)} book(s) to wide snapshot rows ...")
+    wide_parts = [
+        _pivot_book_features(pivot_panel, book_features, [anchor]),
+        _pivot_book_features(pivot_panel, book_features, other_books),
+        _pivot_consensus(pivot_consensus),
+    ]
+    snapshot_wide = _merge_wide_parts(wide_parts)
+    del wide_parts, consensus, pivot_consensus, pivot_panel
+    if schema is not None:
+        snapshot_wide = snapshot_wide[
+            snapshot_wide["game_id"].ne(_SCHEMA_GAME_ID)
+        ].reset_index(drop=True)
+    snapshot_wide = snapshot_wide.merge(
+        anchor_path,
+        on=["game_id", "snapshot_minutes"],
+        how="left",
+        validate="one_to_one",
+    )
+
+    target_line = _resolve_target_line(panel, anchor=anchor)
+    ridge_closing_lines = {
+        market: _ridge_closing_lines(panel, market=market, anchor=anchor)
+        for market in ridge_markets
+    }
+    # Internal closing snapshots must not appear in the requested CSV.
+    if 0 not in snapshot_grid:
+        snapshot_wide = snapshot_wide[
+            snapshot_wide["snapshot_minutes"].isin(snapshot_grid)
+        ].copy()
+    snapshot_wide = snapshot_wide.merge(
+        target_line, on=["game_id", "snapshot_minutes"], how="left"
+    )
+
+    # The spread anchor, resolved on the SAME (game, snapshot) key as the totals
+    # anchor. Joining on snapshot_minutes is what keeps each row's reference line
+    # contemporaneous; a join on game_id alone would collapse every snapshot onto
+    # one line and silently produce ten copies of a single closing-spread target.
+    target_spread = _resolve_target_spread_line(panel, anchor=anchor)
+    snapshot_wide = snapshot_wide.merge(
+        target_spread, on=["game_id", "snapshot_minutes"], how="left"
+    )
+    # The long panel is millions of (game, market, book, snapshot) rows and
+    # nothing reads it past this point: every frame derived from it is built
+    # above. Holding it through the join below is what made the wide merge --
+    # the single largest allocation in the build -- run out of memory.
+    del panel, anchor_path, target_line, target_spread
+    gc.collect()
+    if schema is not None:
+        snapshot_wide = _full_build_dtypes(snapshot_wide, wanted_dtypes)
+    return _SnapshotSide(
+        wide=snapshot_wide,
+        ridge_closing_lines=ridge_closing_lines,
+        combos=combos,
+        consensus_markets=consensus_markets,
+        dtypes={column: str(dtype) for column, dtype in snapshot_wide.dtypes.items()},
+    )
+
+
 def _build_scoring_frame(merged: pd.DataFrame, gated: pd.DataFrame) -> pd.DataFrame:
     """Closing lines, weights and timestamps -- everything X must never see.
 
@@ -487,6 +717,167 @@ def append_live_line_history(
     return merged_ticks.reset_index(drop=True), merged_games.reset_index(drop=True)
 
 
+def _target_snapshot_inputs(
+    targets: set[str],
+    *,
+    season_years: list[int],
+    lh_games: pd.DataFrame,
+    live: LiveGameDay | None,
+    excluded_books: tuple[str, ...],
+    combine_books: bool,
+    side_settings: dict,
+    verbose: bool,
+) -> tuple[pd.DataFrame, pd.DataFrame, intermediate_history.SnapshotHistory]:
+    """Tonight's ticks and games, and every other game's snapshot history.
+
+    The history comes from the memo, season by season (``intermediate_history``),
+    for every game of ``season_years`` but the targets. The targets' ticks are
+    the live ones with ``live`` -- which replace stored rows of the same game,
+    as in a full build -- and otherwise the stored ones.
+    """
+
+    def fetch_season_ticks(season: int) -> pd.DataFrame:
+        season_ticks = fetch_pregame_ticks(
+            [season], exclude_books=excluded_books, use_cache=input_cache_enabled()
+        )
+        if combine_books:
+            season_ticks = merge_caesars_into_fanatics_ticks(season_ticks)
+        return season_ticks
+
+    def build_side(season_ticks: pd.DataFrame) -> _SnapshotSide:
+        return _build_snapshot_side(
+            season_ticks,
+            **side_settings,
+            stage=_stage_logger(False),
+            progress=lambda label: None,
+            verbose=False,
+        )
+
+    histories = intermediate_history.load_season_histories(
+        season_years,
+        fingerprints=pregame_tick_fingerprints(
+            season_years, exclude_books=excluded_books
+        ),
+        settings=intermediate_history.settings_key(
+            **side_settings,
+            excluded_books=excluded_books,
+            combine_books=combine_books,
+        ),
+        fetch_season_ticks=fetch_season_ticks,
+        build_side=build_side,
+        anchor=side_settings["anchor"],
+        verbose=verbose,
+    )
+    snapshot_history = intermediate_history.assemble_history(
+        histories,
+        keep_game=lambda ids: ~ids.isin(targets),
+        history_dtypes=_history_dtypes,
+        # A live build sorts its ticks by game across seasons
+        # (append_live_line_history); a stored one reads them season by season.
+        by_game_id=live is not None,
+    )
+    if live is not None:
+        ticks, lh_games = append_live_line_history(
+            live.line_history.ticks.iloc[0:0],
+            lh_games,
+            live.line_history,
+            exclude_books=excluded_books,
+        )
+    else:
+        target_seasons = sorted(
+            {season_of_game_id(game) for game in targets} & set(season_years)
+        )
+        ticks = fetch_pregame_ticks(
+            target_seasons,
+            exclude_books=excluded_books,
+            use_cache=input_cache_enabled(),
+        )
+    ticks = ticks[ticks["game_id"].astype(str).isin(targets)].reset_index(drop=True)
+    return ticks, lh_games, snapshot_history
+
+
+def _base_order(base: pd.DataFrame) -> dict[str, int]:
+    """Each game's position in the base frame: the merged frame's game order."""
+    return {game: i for i, game in enumerate(base["GAME_ID"].astype(str))}
+
+
+def _history_rows(
+    snapshot_history: intermediate_history.SnapshotHistory,
+    *,
+    base: pd.DataFrame,
+    lh_games: pd.DataFrame,
+) -> pd.DataFrame:
+    """The other rows a full build's merged frame holds, as the cross-row
+    stages read them: the stored snapshot values of every game the base holds
+    (the full build's inner join), with the base and tip-off columns those
+    stages need and the full build's row order."""
+    order = _base_order(base)
+    rows = snapshot_history.rows
+    rows = rows[rows["game_id"].astype(str).isin(order)].rename(
+        columns={"game_id": "GAME_ID", "snapshot_minutes": "TIME_TO_MATCH_MIN"}
+    )
+    rows["GAME_ID"] = rows["GAME_ID"].astype(str)
+    game_columns = [
+        "GAME_ID",
+        "GAME_DATE",
+        "SEASON_YEAR",
+        "TEAM_ID_TEAM_HOME",
+        "TEAM_ID_TEAM_AWAY",
+    ]
+    rows = rows.merge(base[game_columns], on="GAME_ID", how="left")
+    rows = rows.merge(
+        lh_games[["game_id", "tipoff_utc"]].rename(
+            columns={"game_id": "GAME_ID", "tipoff_utc": "TIPOFF_UTC"}
+        ),
+        on="GAME_ID",
+        how="left",
+    )
+    rows["SNAPSHOT_TS_UTC"] = rows["TIPOFF_UTC"] - pd.to_timedelta(
+        rows["TIME_TO_MATCH_MIN"], unit="m"
+    )
+    rows[ORDER_COLUMN] = intermediate_history.order_key(
+        rows["GAME_ID"], rows["TIME_TO_MATCH_MIN"], order
+    )
+    return rows.sort_values(ORDER_COLUMN, kind="stable").reset_index(drop=True)
+
+
+def _ridge_with_history(
+    target_input: pd.DataFrame,
+    history_rows: pd.DataFrame,
+    closing_lines: pd.DataFrame,
+    *,
+    anchor: str,
+    market: str,
+    line_column: str,
+) -> pd.Series:
+    """The Ridge feature of ``target_input``'s rows, fitted as a full build
+    fits it: on the earlier games' gated rows of the seasons it reads, merged
+    with these in the full build's order."""
+    seasons = pd.to_numeric(target_input["SEASON_YEAR"]).astype(int).unique()
+    fit_seasons = {int(s) for s in seasons} | {int(s) - 1 for s in seasons}
+    history = history_rows[
+        history_rows["target_line"].notna()
+        & pd.to_numeric(history_rows["SEASON_YEAR"]).astype(int).isin(fit_seasons)
+    ]
+    # The cross-market gap is stored under its own name; the spread design
+    # reads it as the G3 feature it equals.
+    history = history.rename(columns=intermediate_history.gap_columns(anchor))
+    if market == MARKET_TOTALS:
+        history = history.rename(columns={"target_line": line_column})
+    columns = [c for c in target_input.columns if c in history.columns]
+    frame = pd.concat(
+        [history[columns], target_input], ignore_index=False, keys=["h", "t"]
+    ).sort_values(ORDER_COLUMN, kind="stable")
+    fitted = add_historical_ridge_movement(
+        frame.drop(columns=ORDER_COLUMN).reset_index(drop=True),
+        closing_lines,
+        anchor=anchor,
+        market=market,
+    )[EXPECTED_MOVE_COLUMNS[market]]
+    fitted.index = frame.index
+    return fitted.loc["t"].reindex(target_input.index)
+
+
 def create_intermediate_line_df(
     *,
     recent_limit_to_include: str | pd.Timestamp | None = None,
@@ -508,6 +899,7 @@ def create_intermediate_line_df(
     include_market_dynamics: bool = True,
     return_scoring: bool = False,
     live: LiveGameDay | None = None,
+    target_game_ids=None,
     verbose: bool = True,
 ) -> pd.DataFrame | tuple[pd.DataFrame, pd.DataFrame]:
     """Build the (game, snapshot) dataset.
@@ -559,9 +951,10 @@ def create_intermediate_line_df(
     relying on the training config's ``cleaning.exclude_cols_containing`` keeps
     unwanted columns out of the CSV entirely, so they also cannot inflate
     ``max_na_per_row`` for earlier rows.
-    ``live`` adds tonight -- games the database does not hold until they are
-    finished, read in memory by ``live_game_day.fetch_live_game_day`` and never
-    written. Its line history is added to the ticks and games read from the
+    ``live`` adds tonight's schedule and line history in memory through
+    ``live_game_day.fetch_live_game_day``. Injury reports are synchronized to
+    Aiven first, and official roster snapshots are archived in S3.
+    Its line history is added to the ticks and games read from the
     store (replacing any stored rows of the same GAME_ID, which is what lets a
     past date be replayed "as of" an earlier moment to test train/serve
     parity), its schedule adds tonight's base rows, built from earlier games
@@ -570,6 +963,11 @@ def create_intermediate_line_df(
     stops the day before (``recent_limit_to_include`` defaults to it), and the
     live season is admitted even before the store holds any of it.
     """
+    targets = (
+        None
+        if target_game_ids is None
+        else set(normalize_game_ids([str(g) for g in target_game_ids]))
+    )
     # Argument validation before any I/O: a bad call should fail immediately,
     # not after opening a database connection.
     if base_lookback_seasons < 0:
@@ -621,24 +1019,6 @@ def create_intermediate_line_df(
         print(f"Line-history seasons in scope: {season_years}")
         print(f"Snapshot grid ({len(snapshot_grid)}): {sorted(snapshot_grid)}")
 
-    # ---- snapshot side -------------------------------------------------
-    stage(f"Fetching pre-game ticks for {len(season_years)} season(s) ...")
-    ticks = fetch_pregame_ticks(
-        season_years, exclude_books=excluded_books, use_cache=input_cache_enabled()
-    )
-    lh_games = fetch_games(season_years)
-    if live is not None:
-        ticks, lh_games = append_live_line_history(
-            ticks, lh_games, live.line_history, exclude_books=excluded_books
-        )
-    if ticks.empty:
-        raise ValueError("No pre-game ticks returned for the requested seasons.")
-    if combine_books:
-        ticks = merge_caesars_into_fanatics_ticks(ticks)
-    if verbose:
-        print(f"✓ {len(ticks):,} pre-game ticks over {ticks.game_id.nunique()} games")
-    stage("Building the snapshot panel ...")
-
     # Ridge labels are the 0-minute snapshot from this very tick series.
     # Generate it internally even if the caller omits 0 from the output grid.
     ridge_markets = [
@@ -650,80 +1030,66 @@ def create_intermediate_line_df(
         )
         if wanted
     ]
-    panel_grid = (
-        tuple(sorted(set(snapshot_grid) | {0})) if ridge_markets else snapshot_grid
-    )
-    panel = build_snapshot_panel(
-        ticks,
-        grid=panel_grid,
-        normalize_total_lines=normalize_total_lines,
-        normalize_spread_lines=normalize_spread_lines,
-        null_extreme_spread_prices=null_extreme_spread_prices,
-        progress=progress("As-of snapshots"),
-    )
-    stage("Adding movement features ...")
-    panel = add_movement_features(
-        panel,
-        ticks,
-        grid=panel_grid,
-        windows=windows,
-        null_extreme_spread_prices=null_extreme_spread_prices,
-        progress=progress("Movement"),
-    )
-    stage("Cross-book consensus and anchor path ...")
-    consensus = aggregate_across_books(panel)
-    panel = add_book_deviation(panel)
-    anchor_path = add_anchor_total_path_features(panel, ticks, anchor=anchor)
-    if verbose:
-        print(f"✓ Snapshot panel: {len(panel):,} (game, market, book, snapshot) rows")
-
-    books = sorted(panel["book"].unique())
-    other_books = [book for book in books if book != anchor]
-
-    # Same fields for every book, including all configured movement windows.
-    book_features = FULL_BOOK_FEATURES + _windowed_feature_names(windows)
-    stage(f"Pivoting {len(books)} book(s) to wide snapshot rows ...")
-    wide_parts = [
-        _pivot_book_features(panel, book_features, [anchor]),
-        _pivot_book_features(panel, book_features, other_books),
-        _pivot_consensus(consensus),
-    ]
-    snapshot_wide = _merge_wide_parts(wide_parts)
-    del wide_parts, consensus
-    snapshot_wide = snapshot_wide.merge(
-        anchor_path,
-        on=["game_id", "snapshot_minutes"],
-        how="left",
-        validate="one_to_one",
-    )
-
-    target_line = _resolve_target_line(panel, anchor=anchor)
-    ridge_closing_lines = {
-        market: _ridge_closing_lines(panel, market=market, anchor=anchor)
-        for market in ridge_markets
+    side_settings = {
+        "snapshot_grid": snapshot_grid,
+        "windows": windows,
+        "anchor": anchor,
+        "ridge_markets": ridge_markets,
+        "normalize_total_lines": normalize_total_lines,
+        "normalize_spread_lines": normalize_spread_lines,
+        "null_extreme_spread_prices": null_extreme_spread_prices,
     }
-    # Internal closing snapshots must not appear in the requested CSV.
-    if 0 not in snapshot_grid:
-        snapshot_wide = snapshot_wide[
-            snapshot_wide["snapshot_minutes"].isin(snapshot_grid)
-        ].copy()
-    snapshot_wide = snapshot_wide.merge(
-        target_line, on=["game_id", "snapshot_minutes"], how="left"
-    )
 
-    # The spread anchor, resolved on the SAME (game, snapshot) key as the totals
-    # anchor. Joining on snapshot_minutes is what keeps each row's reference line
-    # contemporaneous; a join on game_id alone would collapse every snapshot onto
-    # one line and silently produce ten copies of a single closing-spread target.
-    target_spread = _resolve_target_spread_line(panel, anchor=anchor)
-    snapshot_wide = snapshot_wide.merge(
-        target_spread, on=["game_id", "snapshot_minutes"], how="left"
+    # ---- snapshot side -------------------------------------------------
+    snapshot_history = None
+    if targets is None:
+        stage(f"Fetching pre-game ticks for {len(season_years)} season(s) ...")
+        ticks = fetch_pregame_ticks(
+            season_years, exclude_books=excluded_books, use_cache=input_cache_enabled()
+        )
+        lh_games = fetch_games(season_years)
+        if live is not None:
+            ticks, lh_games = append_live_line_history(
+                ticks, lh_games, live.line_history, exclude_books=excluded_books
+            )
+    else:
+        stage("Snapshot history of the finished games ...")
+        lh_games = fetch_games(season_years)
+        ticks, lh_games, snapshot_history = _target_snapshot_inputs(
+            targets,
+            season_years=season_years,
+            lh_games=lh_games,
+            live=live,
+            excluded_books=excluded_books,
+            combine_books=combine_books,
+            side_settings=side_settings,
+            verbose=verbose,
+        )
+    if ticks.empty:
+        raise ValueError("No pre-game ticks returned for the requested seasons.")
+    if combine_books:
+        ticks = merge_caesars_into_fanatics_ticks(ticks)
+    if verbose:
+        print(f"✓ {len(ticks):,} pre-game ticks over {ticks.game_id.nunique()} games")
+    side = _build_snapshot_side(
+        ticks,
+        **side_settings,
+        stage=stage,
+        progress=progress,
+        verbose=verbose,
+        schema=None if snapshot_history is None else snapshot_history.schema,
     )
-    # The long panel is millions of (game, market, book, snapshot) rows and
-    # nothing reads it past this point: every frame derived from it is built
-    # above. Holding it through the join below is what made the wide merge --
-    # the single largest allocation in the build -- run out of memory.
-    del panel, anchor_path, target_line, target_spread
+    snapshot_wide = side.wide
+    ridge_closing_lines = side.ridge_closing_lines
+    if snapshot_history is not None:
+        ridge_closing_lines = {
+            market: pd.concat(
+                [snapshot_history.ridge_closing_lines[market], closing],
+                ignore_index=True,
+            )
+            for market, closing in ridge_closing_lines.items()
+        }
+    del side
     gc.collect()
 
     # ---- historical line dynamics (prior games only) -------------------
@@ -733,7 +1099,23 @@ def create_intermediate_line_df(
     history = lh_games[["game_id"]].copy()
     for market in (MARKET_TOTALS, MARKET_SPREAD, MARKET_MONEYLINE):
         stage(f"Prior-game line dynamics ({MARKET_SHORT[market]}) ...")
-        market_history = add_prior_game_line_dynamics(lh_games, ticks, market=market)
+        if snapshot_history is None:
+            market_history = add_prior_game_line_dynamics(
+                lh_games, ticks, market=market
+            )
+        else:
+            market_history = add_prior_game_line_dynamics(
+                lh_games,
+                None,
+                market=market,
+                dynamics=pd.concat(
+                    [
+                        snapshot_history.dynamics[market],
+                        build_game_line_dynamics(ticks, market=market),
+                    ],
+                    ignore_index=True,
+                ),
+            )
         suffix = MARKET_SHORT[market]
         market_history = market_history.rename(
             columns={
@@ -778,6 +1160,7 @@ def create_intermediate_line_df(
         scheduled_games=live.scheduled_games if live is not None else None,
         roster_snapshots=roster_snapshots,
         live_as_of=live.as_of if live is not None else None,
+        target_game_ids=targets,
         verbose=verbose,
     )
     base["GAME_ID"] = base["GAME_ID"].astype(str)
@@ -793,6 +1176,7 @@ def create_intermediate_line_df(
         exclude_caesars=exclude_caesars,
         combine_fanatics_and_caesars=combine_books,
         df_referees_scheduled=live.df_referees_scheduled if live is not None else None,
+        target_game_ids=targets,
     )
 
     # Availability-effect history reads completed games' closing lines. Keep
@@ -889,15 +1273,47 @@ def create_intermediate_line_df(
         merged["TIME_TO_MATCH_MIN"], unit="m"
     )
     stage(f"✓ Joined: {merged.shape[0]:,} rows x {merged.shape[1]:,} columns")
+    history_rows = None
+    if snapshot_history is not None:
+        history_rows = _history_rows(snapshot_history, base=base, lh_games=lh_games)
+        merged[ORDER_COLUMN] = intermediate_history.order_key(
+            merged["GAME_ID"], merged["TIME_TO_MATCH_MIN"], _base_order(base)
+        )
+    # Market dynamics read no injury feature: they are computed on these rows
+    # while the injury horizons run, and attached after the injury columns.
+    market: dict[str, pd.DataFrame] = {}
+
+    def market_dynamics(snapshots=merged) -> None:
+        stage("Market dynamics (injury news, cross-market, news betas) ...")
+        market["columns"] = intermediate_market_dynamics_columns(
+            snapshots,
+            ticks=ticks,
+            anchor=anchor,
+            verbose=verbose,
+            history=history_rows,
+            live_reports=live.injury_reports if live is not None else None,
+        )
+
     stage("Snapshot injury features (per horizon) ...")
+    keys_before = merged[["GAME_ID", "TIME_TO_MATCH_MIN"]]
     merged = add_snapshot_injury_features(
-        merged, injury_base, injury_context, progress=progress("Injuries")
+        merged,
+        injury_base,
+        injury_context,
+        progress=progress("Injuries"),
+        target_game_ids=targets,
+        history_cutoffs=history_rows,
+        live_reports=live.injury_reports if live is not None else None,
+        while_waiting=market_dynamics if include_market_dynamics else None,
     )
     if include_market_dynamics:
-        stage("Market dynamics (injury news, cross-market, news betas) ...")
-        merged = add_intermediate_market_dynamics(
-            merged, ticks=ticks, anchor=anchor, verbose=verbose
-        )
+        if not merged[["GAME_ID", "TIME_TO_MATCH_MIN"]].reset_index(drop=True).equals(
+            keys_before.reset_index(drop=True)
+        ):
+            raise ValueError("Injury features reordered the snapshot rows")
+        merged = attach_market_dynamics(merged, market["columns"])
+        stage("✓ Injury features and market dynamics attached")
+    row_order = merged.pop(ORDER_COLUMN) if ORDER_COLUMN in merged else None
     # ---- targets -------------------------------------------------------
     stage("Targets, referee masking and the leakage gate ...")
     main_line_column = total_line_col(anchor)
@@ -987,14 +1403,24 @@ def create_intermediate_line_df(
         ridge_input = gated[ridge_columns].join(
             merged[["TIPOFF_UTC", "SNAPSHOT_TS_UTC"]]
         )
-        ridge_feature = add_historical_ridge_movement(
-            ridge_input,
-            ridge_closing_lines[market],
-            anchor=anchor,
-            market=market,
-        )
         output = EXPECTED_MOVE_COLUMNS[market]
-        gated[output] = ridge_feature[output]
+        if history_rows is None:
+            ridge_feature = add_historical_ridge_movement(
+                ridge_input,
+                ridge_closing_lines[market],
+                anchor=anchor,
+                market=market,
+            )
+            gated[output] = ridge_feature[output]
+        else:
+            gated[output] = _ridge_with_history(
+                ridge_input.assign(**{ORDER_COLUMN: row_order.loc[ridge_input.index]}),
+                history_rows,
+                ridge_closing_lines[market],
+                anchor=anchor,
+                market=market,
+                line_column=line_column,
+            )
     assert_no_bare_closing_odds(gated, allowed=(main_line_column, main_spread_column))
 
     # Audit BOTH markets. The spread audit is not optional politeness: the
@@ -1003,10 +1429,18 @@ def create_intermediate_line_df(
     # reconstructs the current line exactly -- the same additive-pair shape the
     # totals audit was built to catch.
     stage("Auditing closing-line reconstruction ...")
-    for market_name, anchor_column in (
-        ("total", main_line_column),
-        ("spread", main_spread_column),
-    ):
+    # A guard over the dataset's columns, not a value: a tonight-only build's
+    # rows carry the same columns as the full build that audited them (and
+    # live, no closing line yet), so it is not repeated here.
+    audited = (
+        ()
+        if targets is not None
+        else (
+            ("total", main_line_column),
+            ("spread", main_spread_column),
+        )
+    )
+    for market_name, anchor_column in audited:
         closing_reference = merged.get(
             f"ODDS_CLOSING_{anchor_column.removeprefix('ODDS_')}"
         )

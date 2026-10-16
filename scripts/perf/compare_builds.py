@@ -76,8 +76,16 @@ def _values_differ(
             unequal = diff > rtol * (1.0 + np.abs(np.where(both, yv, 0.0)))
         mask = (x_na != y_na) | unequal
         return mask, float(diff.max()) if len(diff) else 0.0
-    xs = x.astype("object").where(~x_na, None).map(lambda v: None if v is None else repr(v))
-    ys = y.astype("object").where(~y_na, None).map(lambda v: None if v is None else repr(v))
+    xs = (
+        x.astype("object")
+        .where(~x_na, None)
+        .map(lambda v: None if v is None else repr(v))
+    )
+    ys = (
+        y.astype("object")
+        .where(~y_na, None)
+        .map(lambda v: None if v is None else repr(v))
+    )
     mask = (x_na != y_na) | (~x_na & ~y_na & (xs.to_numpy() != ys.to_numpy()))
     return mask, float("nan")
 
@@ -117,8 +125,12 @@ def compare(
     only_cand_rows = cand_index.difference(ref_index)
     if len(only_ref_rows) or len(only_cand_rows):
         equal = False
-        print(f"rows only in reference: {len(only_ref_rows):,}  e.g. {list(only_ref_rows[:5])}")
-        print(f"rows only in candidate: {len(only_cand_rows):,}  e.g. {list(only_cand_rows[:5])}")
+        print(
+            f"rows only in reference: {len(only_ref_rows):,}  e.g. {list(only_ref_rows[:5])}"
+        )
+        print(
+            f"rows only in candidate: {len(only_cand_rows):,}  e.g. {list(only_cand_rows[:5])}"
+        )
     common = ref_index.intersection(cand_index, sort=False)
     if not ref_index.equals(cand_index):
         print("row ORDER or row set differs")
@@ -151,7 +163,9 @@ def compare(
         print(f"columns with differing values: {len(report)} of {len(shared)}")
         print(report.head(show).to_string(index=False))
     else:
-        print(f"values: all {len(shared):,} shared columns equal on {len(common):,} rows")
+        print(
+            f"values: all {len(shared):,} shared columns equal on {len(common):,} rows"
+        )
 
     if exact and equal:
         same_digest = frame_digest(reference) == frame_digest(candidate)
@@ -168,9 +182,19 @@ def main() -> int:
     parser.add_argument("--exact", action="store_true")
     parser.add_argument("--rtol", type=float, default=1e-9)
     parser.add_argument("--show", type=int, default=40)
+    parser.add_argument(
+        "--ignore-column-order",
+        action="store_true",
+        help="put the candidate's columns in the reference's order first (the "
+        "column SET and every value must still match)",
+    )
     args = parser.parse_args()
     reference = pd.read_parquet(args.reference)
     candidate = pd.read_parquet(args.candidate)
+    if args.ignore_column_order:
+        order = [c for c in reference.columns if c in set(candidate.columns)]
+        rest = [c for c in candidate.columns if c not in set(reference.columns)]
+        candidate = candidate[order + rest]
     ok = compare(reference, candidate, exact=args.exact, rtol=args.rtol, show=args.show)
     return 0 if ok else 1
 

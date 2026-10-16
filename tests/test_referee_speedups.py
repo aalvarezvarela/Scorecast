@@ -68,3 +68,19 @@ def test_referee_features_match_the_previous_implementation(seed, trio, missing)
     actual = compute_referee_features(frame, include_ref_trio_features=trio)
     assert_identical(actual, expected)
     assert expected["REF_AVG_TOTAL_POINTS_DIFF_BEFORE"].notna().sum() > 100
+
+
+@pytest.mark.parametrize("seed", [0, 1])
+def test_later_games_do_not_change_earlier_rows(seed):
+    """A build that stops at a date gives its games the full build's values.
+
+    The past-game means sum in the frame's sorted order; a date-only unstable
+    sort let later games reorder a date's earlier ones and move the last bits.
+    """
+    frame = crews_frame(seed)
+    full = compute_referee_features(frame, include_ref_trio_features=True)
+    cutoff = frame["GAME_DATE"].sort_values().iloc[len(frame) // 2]
+    early = compute_referee_features(
+        frame[frame["GAME_DATE"] <= cutoff], include_ref_trio_features=True
+    )
+    assert_identical(early, full[full["GAME_DATE"] <= cutoff].reset_index(drop=True))

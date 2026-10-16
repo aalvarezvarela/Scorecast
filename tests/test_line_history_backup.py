@@ -9,6 +9,7 @@ from datetime import UTC, datetime
 
 import pandas as pd
 import pytest
+from nba_ou.postgre_db import backup_core
 from nba_ou.postgre_db.line_history_aiven import backup as bk
 
 # (relname, relkind, is_partition) as pg_class reports them.
@@ -54,7 +55,7 @@ class _S3:
     def __init__(self):
         self.puts = []
 
-    def put_object(self, Bucket, Key, Body):  # noqa: N803 - boto3 casing
+    def put_object(self, Bucket, Key, Body, Tagging=None):  # noqa: N803 - boto3 casing
         self.puts.append((Bucket, Key, len(Body)))
 
 
@@ -94,7 +95,9 @@ class TestDiscovery:
 class TestBackupRun:
     def _patch_export(self, monkeypatch, payload=b"PARQUET", rows=100):
         monkeypatch.setattr(
-            bk, "export_table_to_parquet", lambda conn, schema, table: (payload, rows)
+            backup_core,
+            "export_table_to_parquet",
+            lambda conn, schema, table: (payload, rows),
         )
 
     def test_writes_one_object_per_target(self, monkeypatch):
@@ -103,7 +106,9 @@ class TestBackupRun:
         result = bk.backup_line_history(
             _Conn(), date_tag="2026-08-01", s3_client=s3, progress=False
         )
-        assert len(s3.puts) == 6  # 4 plain tables + 2 partitions, parent skipped
+        # 4 plain tables + 2 partitions (parent skipped), plus the manifest.
+        assert len(s3.puts) == 7
+        assert len([k for _, k, _ in s3.puts if k.endswith("_manifest.json")]) == 1
         assert len(result.uploaded) == 6
         assert result.rows == 600
 

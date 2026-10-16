@@ -780,3 +780,52 @@ def test_scheduled_game_without_an_assignment_only_warns():
 
 
 SPEC_FEATURE_FTA = "REF_CREW_FTA_TENDENCY_BEFORE"
+
+
+def test_later_games_do_not_change_earlier_estimates():
+    """A build that stops at a date gives its games the full build's estimates.
+
+    A matrix product over the official's whole game list, later games weighted
+    zero, still summed in an order that depends on the list's length.
+    """
+    rng = np.random.default_rng(3)
+    dates = pd.Timestamp("2024-10-20") + pd.to_timedelta(
+        np.sort(rng.integers(0, 600, 400)), unit="D"
+    )
+    history = pd.DataFrame(
+        {
+            "GAME_ID": [f"g{i:04d}" for i in range(400)],
+            "GAME_DATE": dates,
+            "SEASON_YEAR": np.where(dates < pd.Timestamp("2025-08-01"), 2024, 2025),
+            "Q": rng.normal(0.0, 3.0, 400),
+        }
+    )
+    history.loc[rng.random(400) < 0.1, "Q"] = np.nan
+    pairs = [
+        (game, official)
+        for game in history["GAME_ID"]
+        for official in rng.choice(["a", "b", "c", "d", "e"], 3, replace=False)
+    ]
+    crews = _crews(pairs, history)
+    full = compute_official_tendencies(
+        crews,
+        history,
+        specs=(SPEC,),
+        max_history_days=365,
+        include_same_season_variants=True,
+    )
+    cutoff = history["GAME_DATE"].iloc[250]
+    early = compute_official_tendencies(
+        crews[crews["GAME_DATE"] <= cutoff],
+        history[history["GAME_DATE"] <= cutoff],
+        specs=(SPEC,),
+        max_history_days=365,
+        include_same_season_variants=True,
+    )
+    keys = ["GAME_ID", "OFFICIAL_ID"]
+    expected = (
+        full[full["GAME_DATE"] <= cutoff].sort_values(keys).reset_index(drop=True)
+    )
+    pd.testing.assert_frame_equal(
+        early.sort_values(keys).reset_index(drop=True), expected, check_exact=True
+    )

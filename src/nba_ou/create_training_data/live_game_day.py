@@ -13,12 +13,14 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
+from pathlib import Path
 
 import pandas as pd
 
 from nba_ou.fetch_data.injury_reports.sync import synchronize_injury_reports
 from nba_ou.fetch_data.live_rosters import load_live_rosters
 from nba_ou.fetch_data.nba_schedule.fetch_nba_schedule import fetch_schedules
+from nba_ou.postgre_db.injury_report_aiven.live import LiveInjuryReports
 from nba_ou.postgre_db.line_history_aiven.live import (
     LiveLineHistory,
     fetch_live_line_history,
@@ -38,7 +40,7 @@ class LiveGameDay:
     REF_1..REF_3); ``None`` or a missing game means no crew yet, which becomes
     NaN features -- exactly what a pre-09:00-ET snapshot holds in training.
     ``roster_snapshots`` holds official team membership observations with UTC
-    timestamps; each intermediate horizon selects its own eligible version.
+    timestamps; all horizons use the latest same-day observation at ``as_of``.
     """
 
     game_date: pd.Timestamp
@@ -47,6 +49,9 @@ class LiveGameDay:
     line_history: LiveLineHistory
     df_referees_scheduled: pd.DataFrame | None = None
     roster_snapshots: pd.DataFrame | None = None
+    #: Optional archived-PDF overlay for replay diagnostics. Current prediction
+    #: reads the synchronized Aiven store, so this stays ``None``.
+    injury_reports: LiveInjuryReports | None = None
 
     @property
     def history_limit(self) -> pd.Timestamp:
@@ -58,6 +63,49 @@ class LiveGameDay:
         return sorted(self.scheduled_games["GAME_ID"].astype(str).unique())
 
 
+def fetch_live_injury_reports(
+    game_date: pd.Timestamp,
+    *,
+    game_ids: list[str],
+    as_of: pd.Timestamp,
+    refresh: bool = True,
+) -> LiveInjuryReports:
+    """Archived injury reports before ``as_of``, for replay diagnostics.
+
+    ``refresh`` first fetches the reports published since the last run into the
+    S3 archive; a replay of a past date reads the archive as it is.
+    """
+    from nba_ou.config.settings import SETTINGS
+    from nba_ou.fetch_data.injury_reports.archive.live import refresh_recent_reports
+    from nba_ou.fetch_data.injury_reports.archive.manifest import ManifestStore
+    from nba_ou.fetch_data.injury_reports.archive.storage import S3Storage
+    from nba_ou.fetch_data.injury_reports.archive.urls import season_label
+    from nba_ou.postgre_db.config.db_config import connect_nba_db
+    from nba_ou.postgre_db.injury_report_aiven.live import build_live_injury_reports
+
+    day = pd.Timestamp(game_date).date()
+    storage = S3Storage(
+        bucket=SETTINGS.s3_bucket,
+        profile=SETTINGS.s3_aws_profile,
+        region=SETTINGS.s3_aws_region,
+    )
+    season = season_label(day)
+    if refresh:
+        manifest = refresh_recent_reports(day, as_of, storage=storage)
+    else:
+        manifest = ManifestStore(Path("data/injury_reports/manifest")).load(season)
+    with connect_nba_db(env="supabase") as source:
+        return build_live_injury_reports(
+            manifest,
+            storage,
+            source,
+            game_date=day,
+            game_ids=game_ids,
+            as_of=as_of,
+            season=season,
+        )
+
+
 def fetch_live_game_day(
     game_date: str | pd.Timestamp,
     *,
@@ -65,19 +113,23 @@ def fetch_live_game_day(
     df_referees_scheduled: pd.DataFrame | None = None,
     as_of: pd.Timestamp | None = None,
     roster_snapshots: pd.DataFrame | None = None,
+    injury_reports: bool = True,
 ) -> LiveGameDay:
-    """Read tonight's line history for ``scheduled_games`` and bundle it.
+    """Read tonight's line history and injury reports for ``scheduled_games``.
 
     The schedule and crews are passed in because the prediction job already
     fetches them (``get_all_info_for_scheduled_games``); a replay passes
     ``live_replay.replay_scheduled_games`` and the stored crews instead.
+    Current injury reports are synchronized to S3/Aiven before feature reads;
+    ``injury_reports=False`` skips that refresh and reads the existing store.
+    An explicit ``as_of`` replays stored state without refreshing reports.
     """
     game_date = pd.Timestamp(game_date).normalize()
     if roster_snapshots is None:
         roster_snapshots = load_live_rosters(scheduled_games, as_of=as_of)
     refresh = as_of is None
     as_of = pd.Timestamp.now(tz="UTC") if as_of is None else pd.Timestamp(as_of)
-    if refresh:
+    if refresh and injury_reports:
         try:
             synchronize_injury_reports(
                 game_date,

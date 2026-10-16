@@ -1,0 +1,116 @@
+name: DB Backup to S3
+
+# Both databases in one job, under one date tag. They used to run on separate
+# days (the 1st and the 15th), which meant no single date ever held a backup of
+# both -- so there was no consistent point in time to restore the pair from.
+# Running them together also serialises them, which was the original reason for
+# staggering the dates in the first place.
+
+on:
+    workflow_dispatch:
+        inputs:
+            dry_run:
+                description: "List what would be written without uploading"
+                type: boolean
+                default: false
+    schedule:
+        # Weekly on Mondays through the season (November-June).
+        - cron: "23 05 * 11,12,1,2,3,4,5,6 1"
+        # Monthly on the 1st through the off-season (July-October).
+        - cron: "23 05 1 7,8,9,10 *"
+
+concurrency:
+    group: db-backup
+    cancel-in-progress: true
+
+permissions:
+    contents: read
+    id-token: write
+
+jobs:
+    backup:
+        runs-on: ubuntu-latest
+        env:
+            PYTHONWARNINGS: "ignore::UserWarning,ignore::DeprecationWarning,ignore::FutureWarning"
+            PYTHONPATH: ${{ github.workspace }}:${{ github.workspace }}/src
+
+            # Supabase is the default connection; the line-history script asks
+            # for Aiven explicitly, so one job can carry both credential sets.
+            DB_ENV: supabase
+            SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+            SUPABASE_DB_PASSWORD: ${{ secrets.SUPABASE_DB_PASSWORD }}
+            AIVEN_DB_URL: ${{ secrets.AIVEN_DB_URL }}
+            AIVEN_DB_PASSWORD: ${{ secrets.AIVEN_DB_PASSWORD }}
+
+            # Backups live apart from the model registry so a mistake against
+            # one cannot take out the other.
+            S3_BACKUP_BUCKET: adrian-nba-backups-eu-west-1
+
+            # Empty means "use the ambient OIDC credentials" rather than a
+            # named local profile.
+            S3_AWS_PROFILE: ""
+
+            TZ: UTC
+
+        steps:
+            - name: Checkout
+              uses: actions/checkout@v6
+
+            - name: Set up Python
+              uses: actions/setup-python@v6
+              with:
+                  python-version: "3.12"
+
+            - name: Configure AWS credentials (OIDC)
+              uses: aws-actions/configure-aws-credentials@v6
+              with:
+                  role-to-assume: ${{ secrets.AWS_ROLE_TO_ASSUME }}
+                  aws-region: eu-west-1
+
+            - name: Install dependencies
+              run: |
+                  python -m pip install --upgrade pip
+                  pip install -r requirements.txt
+
+            # Resolved once, then passed to both backups. Without this a run
+            # that crosses midnight UTC would split itself across two date
+            # folders -- exactly the problem this workflow exists to fix.
+            - name: Resolve the shared date tag
+              id: tag
+              run: echo "date=$(date -u +%F)" >> "$GITHUB_OUTPUT"
+
+            - name: Back up Supabase
+              id: supabase
+              run: |
+                  python scripts/backup/backup_db_to_s3.py \
+                    --date-tag "${{ steps.tag.outputs.date }}" \
+                    ${{ inputs.dry_run && '--dry-run' || '' }}
+
+            # A Supabase failure must not cost us the Aiven backup too, so this
+            # runs regardless and the job fails at the end on either.
+            - name: Back up Aiven line-history
+              if: ${{ !cancelled() }}
+              run: |
+                  python scripts/backup/backup_line_history_to_s3.py \
+                    --date-tag "${{ steps.tag.outputs.date }}" \
+                    ${{ inputs.dry_run && '--dry-run' || '' }}
+
+            # Fails the run if a live relation has no file in the backup just
+            # taken. Without this a new schema or season partition goes
+            # unnoticed until a restore needs it -- which is how three schemas
+            # and two season partitions went missing.
+            - name: Verify Supabase backup
+              if: ${{ !cancelled() && !inputs.dry_run }}
+              run: |
+                  python scripts/backup/backup_db_to_s3.py --verify \
+                    --date-tag "${{ steps.tag.outputs.date }}"
+
+            - name: Verify Aiven line-history backup
+              if: ${{ !cancelled() && !inputs.dry_run }}
+              run: |
+                  python scripts/backup/backup_line_history_to_s3.py --verify \
+                    --date-tag "${{ steps.tag.outputs.date }}"
+
+            - name: List retained backups
+              if: ${{ !cancelled() && !inputs.dry_run }}
+              run: python scripts/backup/backup_line_history_to_s3.py --list

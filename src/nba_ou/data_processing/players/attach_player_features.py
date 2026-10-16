@@ -516,6 +516,7 @@ def add_player_history_features(
     history_memo=None,
     current_rosters: dict | None = None,
     current_game_ids: set[str] | None = None,
+    injured_players: dict | None = None,
 ):
     """
     Main function to attach top player statistics and injured player stats to team data.
@@ -582,6 +583,10 @@ def add_player_history_features(
             history rows of finished seasons are read from it when their
             season's inputs are unchanged, and written to it otherwise
             (``create_training_data.history_memo``).
+        injured_players (dict, optional): ``get_injured_players_dict(
+            df_injuries, df_players=df_players)``, for callers that run this
+            builder repeatedly on the same injuries and players. Read, never
+            modified, so passing it changes no value.
 
     Returns:
         pd.DataFrame: Updated df_team with extra columns for top players and injured players
@@ -591,9 +596,13 @@ def add_player_history_features(
             injury-report dictionary.
     """
     # Build injuries lookup
-    injured_dict = get_injured_players_dict(df_injuries, df_players=df_players)
+    if injured_players is None:
+        injured_dict = get_injured_players_dict(df_injuries, df_players=df_players)
+    else:
+        injured_dict = injured_players
 
     if injury_dict_scheduled:
+        injured_dict = dict(injured_dict)
         injured_dict.update(injury_dict_scheduled)
 
     # The third group, keyed the same way. Its members are removed from BOTH the

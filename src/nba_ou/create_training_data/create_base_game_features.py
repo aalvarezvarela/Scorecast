@@ -49,6 +49,7 @@ from nba_ou.create_training_data.create_df_to_predict import (
 )
 from nba_ou.create_training_data.predict_data_utils import (
     filter_by_seasons_with_extra_game_ids,
+    normalize_game_ids,
 )
 from nba_ou.data_processing.all_star_voting.attach_all_star_voting_features import (
     add_all_star_voting_features,
@@ -147,7 +148,11 @@ _ALL_STAR_KEEP_PREFIXES = (
 
 
 def _add_all_star_team_features(
-    df: pd.DataFrame, df_players: pd.DataFrame, *, verbose: bool
+    df: pd.DataFrame,
+    df_players: pd.DataFrame,
+    *,
+    verbose: bool,
+    target_game_ids: set[str] | None = None,
 ) -> pd.DataFrame:
     """Team-level all-star fan-vote share, without the injured-player variants.
 
@@ -172,6 +177,7 @@ def _add_all_star_team_features(
         df_players=df_players,
         all_star_voting_df=voting,
         injured_dict={},
+        target_game_ids=target_game_ids,
     )
 
     dropped = [
@@ -286,6 +292,7 @@ def create_base_game_features(
     scheduled_games: pd.DataFrame | None = None,
     roster_snapshots: pd.DataFrame | None = None,
     live_as_of: pd.Timestamp | None = None,
+    target_game_ids=None,
     verbose: bool = True,
 ) -> pd.DataFrame | tuple[pd.DataFrame, BaseInjuryContext]:
     """One row per game, carrying only leakage-safe pre-game team features.
@@ -326,7 +333,18 @@ def create_base_game_features(
     the lagged roster report reaches them. Every feature they get is built from
     earlier games; their outcome columns are NaN. ``recent_limit_to_include``
     must then be the day before, so history stops where tonight begins.
+
+    ``target_game_ids`` builds every row but computes the per-row stages
+    (all-star, roster continuity, the rolling trend slopes) only for these
+    games, exactly as ``create_df_to_predict`` does: the other rows still carry
+    everything a later row reads from them -- outcomes, closing lines, rolling
+    means -- and their skipped columns are NaN.
     """
+    targets = (
+        None
+        if target_game_ids is None
+        else {str(g) for g in normalize_game_ids([str(g) for g in target_game_ids])}
+    )
     if recent_limit_to_include is None:
         recent_limit_to_include = pd.Timestamp.now(
             tz=ZoneInfo("US/Pacific")
@@ -405,6 +423,7 @@ def create_base_game_features(
         scheduled_games=scheduled_games if has_scheduled else None,
         spread_ml_book=DEFAULT_BOOK,
         total_line_book=DEFAULT_BOOK,
+        target_game_ids=targets,
     )
     # Roster continuity must not see tonight's placeholders. It treats a
     # scheduled placeholder as known on game day, but for a stored game only the
@@ -451,7 +470,9 @@ def create_base_game_features(
     if include_all_star:
         if verbose:
             print("Adding all-star fan-vote share features...")
-        df = _add_all_star_team_features(df, df_players, verbose=verbose)
+        df = _add_all_star_team_features(
+            df, df_players, verbose=verbose, target_game_ids=targets
+        )
 
     if include_roster_continuity:
         if verbose:
@@ -469,6 +490,7 @@ def create_base_game_features(
                 df_team_player_context,
             ),
             df_game_context=df_team_player_context,
+            target_game_ids=targets,
         )
 
     if verbose:

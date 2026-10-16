@@ -120,3 +120,26 @@ def test_s3_failure_falls_back_to_fetching(monkeypatch, tmp_path):
     ticks = fetch.fetch_closing_ticks(season_years=[2022, 2023], use_cache=True)
     assert server["fetches"] == [2022, 2023]
     assert_identical(ticks, _direct([2022, 2023]))
+
+
+def test_pregame_ticks_are_served_from_s3_as_the_builder_fetches_them(
+    monkeypatch, tmp_path
+):
+    server, store = _setup(monkeypatch, tmp_path)
+
+    def fake_pregame(season_years, **kwargs):
+        season = season_years[0]
+        server["fetches"].append(season)
+        return _ticks(season, server["version"][season])
+
+    monkeypatch.setattr(fetch, "_fetch_pregame_ticks_once", fake_pregame)
+    outcome = fetch.refresh_season_ticks(store, [2022, 2023], name="pregame_ticks")
+    assert outcome[2022].startswith("uploaded")
+    server["fetches"].clear()
+    # The intermediate builder's call: its default excluded books.
+    ticks = fetch.fetch_pregame_ticks(
+        [2022, 2023, 2024], exclude_books=fetch.HISTORY_ONLY_BOOKS, use_cache=True
+    )
+    assert server["fetches"] == [2024]
+    assert_identical(ticks, _direct([2022, 2023, 2024]))
+    assert set(ticks.attrs["season_fingerprints"]) == {2022, 2023, 2024}

@@ -29,6 +29,7 @@ import pandas as pd
 import psycopg
 from psycopg import sql
 
+from nba_ou.config.odds_columns import HISTORY_ONLY_BOOKS
 from nba_ou.postgre_db.config.db_config import connect_line_history_db
 from nba_ou.postgre_db.input_cache import SeasonCache, code_key
 
@@ -493,6 +494,60 @@ def _cached_season_ticks(
     return ticks
 
 
+def pregame_tick_fingerprints(
+    season_years: list[int],
+    *,
+    exclude_books: tuple[str, ...] = (),
+    markets: tuple[str, ...] = ALL_MARKETS,
+    min_minutes_before_tip: int = DEFAULT_MIN_MINUTES_BEFORE_TIP,
+) -> dict[int, list]:
+    """Each season's server fingerprint, as ``fetch_pregame_ticks`` would
+    validate it, without reading the ticks.
+
+    A finished season the S3 input cache validated recently gives its stored
+    fingerprint -- the refresher re-checks it against the server daily --
+    and any other the server's (``line_history_season_fingerprint``).
+    """
+    kwargs = {
+        "markets": markets,
+        "exclude_books": tuple(exclude_books),
+        "min_minutes_before_tip": min_minutes_before_tip,
+    }
+    key = _season_ticks_key((_fetch_pregame_ticks_once,), kwargs)
+    out = {}
+    try:
+        from nba_ou.postgre_db import season_tables
+
+        store = (
+            season_tables._shared_store()
+            if season_tables.s3_seasons_enabled()
+            else None
+        )
+        current = season_tables.current_season_year()
+        now = pd.Timestamp.now(tz="UTC")
+        for season in season_years:
+            if store is None or season >= current:
+                continue
+            entry = store.entry(_ticks_dataset("pregame_ticks"), key, season)
+            if (
+                entry is not None
+                and now - entry.validated_at <= season_tables.MAX_VALIDATION_AGE
+            ):
+                out[int(season)] = entry.fingerprint
+    except Exception as exc:  # noqa: BLE001 -- S3 is only a shortcut
+        print(
+            f"! pregame ticks: S3 fingerprints unavailable ({type(exc).__name__}: {exc})"
+        )
+    missing = [int(s) for s in season_years if int(s) not in out]
+    if missing:
+        with connect_line_history_db() as conn:
+            with conn.cursor() as cur:
+                cur.execute(f"SET statement_timeout = '{FINGERPRINT_TIMEOUT}'")
+            for season in missing:
+                out[season] = line_history_season_fingerprint(conn, season)
+    return {season: out[int(season)] for season in season_years}
+
+
 def _closing_ticks_spec() -> tuple:
     """Name, loaders, arguments and fetcher of ``fetch_closing_ticks``' season
     fetches with its default arguments, as the odds repair calls it."""
@@ -515,17 +570,53 @@ def _closing_ticks_spec() -> tuple:
     )
 
 
-def refresh_season_ticks(
-    store, seasons: list[int], *, force: bool = False, now=None
-) -> dict[int, str]:
-    """Validate finished seasons of closing ticks in S3, uploading changed ones.
+def _pregame_ticks_spec(exclude_books: tuple[str, ...] = HISTORY_ONLY_BOOKS) -> tuple:
+    """``_closing_ticks_spec`` for ``fetch_pregame_ticks``' season fetches, with
+    the books the intermediate builder excludes by default."""
+    import inspect
 
-    The fingerprint is taken before the fetch, so ticks changing mid-fetch
-    leave an entry the next refresh replaces. The current season is skipped.
+    defaults = {
+        name: parameter.default
+        for name, parameter in inspect.signature(fetch_pregame_ticks).parameters.items()
+    }
+    kwargs = {
+        "markets": defaults["markets"],
+        "exclude_books": tuple(exclude_books),
+        "min_minutes_before_tip": defaults["min_minutes_before_tip"],
+    }
+    return (
+        "pregame_ticks",
+        (_fetch_pregame_ticks_once,),
+        kwargs,
+        lambda **chunk: _fetch_pregame_ticks_once(chunk["season_years"], **kwargs),
+    )
+
+
+#: What ``refresh_season_ticks`` can store: the odds repair's closing ticks and
+#: the intermediate builder's pre-game ticks.
+TICK_SPECS = {
+    "closing_ticks": _closing_ticks_spec,
+    "pregame_ticks": _pregame_ticks_spec,
+}
+
+
+def refresh_season_ticks(
+    store,
+    seasons: list[int],
+    *,
+    force: bool = False,
+    now=None,
+    name: str = "closing_ticks",
+) -> dict[int, str]:
+    """Validate finished seasons of ticks in S3, uploading changed ones.
+
+    ``name`` is a ``TICK_SPECS`` entry. The fingerprint is taken before the
+    fetch, so ticks changing mid-fetch leave an entry the next refresh
+    replaces. The current season is skipped.
     """
     from nba_ou.postgre_db import season_tables
 
-    name, loaders, kwargs, fetch_one = _closing_ticks_spec()
+    name, loaders, kwargs, fetch_one = TICK_SPECS[name]()
     key = _season_ticks_key(loaders, kwargs)
     dataset = _ticks_dataset(name)
     now = pd.Timestamp.now(tz="UTC") if now is None else pd.Timestamp(now)

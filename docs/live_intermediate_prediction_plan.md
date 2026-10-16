@@ -11,6 +11,13 @@ and ingested into Aiven before prediction. The database is their prediction
 source at every time cutoff. Referee assignments use a separate S3 cache.
 See [live injury reports](live_injury_reports.md).
 
+Live roster membership uses the latest same-day official roster observed by
+the run, as documented in [live rosters](live_rosters.md). Report publication
+cutoffs remain strict per horizon; an intraday roster transaction may therefore
+affect a horizon that passed before the roster was fetched. Historical replay
+matches training when given the same roster inputs; it cannot reconstruct
+official membership before roster observations were archived.
+
 ## The design: exact rows for every horizon already passed
 
 A snapshot at horizon `h` for a game tipping at `T` is built only from data at
@@ -120,29 +127,30 @@ require the rows to equal the training dataset's for those games.
 3. **Injuries per horizon: ingestion implemented.** The scheduled-data path
    synchronizes yesterday's and today's published PDFs into S3 and Aiven.
    `add_snapshot_injury_features` reads that timeline at each horizon's strict
-   publication cutoff; it does not need an in-memory PDF overlay. Direct live
-   callers must run the synchronizer before building snapshots.
-4. **Market dynamics and ridge move-to-close** over history plus tonight; the
-   ridge stays fitted on completed games only.
-5. **Leakage gate and targets**: tonight's rows carry no outcome and must
-   survive the target step without being dropped.
-6. **Prediction job**: build the intermediate frame for passed horizons, select
-   each slot's row, add `"intermediate_line"` to
-   `nba_ou.prediction.prediction.SERVABLE_DATASET_TYPES`, add the active flag
-   and the recorded fields above; run every 30-60 minutes on game days.
-   - **Keep only passed horizons** (`TIPOFF_UTC - TIME_TO_MATCH_MIN <= as_of`).
-     The builder also emits rows for horizons still ahead; those are built from
-     the latest ticks so far, not from the real snapshot, and must never be
-     predicted from or recorded.
-   - **Runtime.** A live build recomputes the whole season's history (base
-     features, prior-game line dynamics, the walk-forward ridge) to produce a
-     handful of rows -- too slow to repeat every 30 minutes. Cache the
-     history-only parts once a day (they cannot change until tonight's games
-     are stored) and rebuild only tonight's rows per run; the replay test
-     guards that the cached path still matches.
-7. **Parity test** end to end on replayed dates.
+   publication cutoff; it does not need an in-memory PDF overlay.
+   `fetch_live_game_day` also synchronizes current runs. Explicit `as_of` reads
+   stored state without refreshing. The archived-PDF overlay remains available
+   to the historical replay harness, separate from current prediction reads.
+   The daily finished-day ingest from `perf` remains in the database workflow.
+4. ~~Market dynamics and ridge~~ -- done (d233c06): fitted over the stored
+   history rows merged with tonight's in the full build's order.
+5. ~~Leakage gate and targets~~ -- tonight's rows pass (NaN outcomes kept).
+6. ~~Prediction job~~ -- done (4de9d8e): `prediction.intermediate_frame`
+   builds tonight's rows tonight-only and keeps the passed snapshots; an
+   intermediate slot predicts the rows of its own horizon
+   (`load_registry_model_and_predict(frames=...)`). Runtime: the tonight-only
+   mode (`create_intermediate_line_df(target_game_ids=...)`) computes only
+   tonight's rows; every earlier game comes from per-season stored history
+   (`intermediate_history`, `PersistentRowCache`), see
+   `docs/pipeline_speedup_plan.md`.
+7. ~~Parity test~~ -- `point_in_time_parity.py --kind intermediate --targets`
+   (tonight-only build == full build rows, dataset and scoring) and
+   `live_replay_parity.py` (live tonight-only == live full, replayed date).
+   These harnesses are retained; their previous acceptance results do not
+   certify this integration until rerun on the merged commit.
 8. **Daily intermediate refit** (`docs/model_registry_reorg_plan.md` section 5):
-   rebuild from the store, which now only ever holds finished games.
+   rebuild from finished-game history. The injury store also holds published
+   reports for upcoming games, read under each snapshot's strict time cutoff.
 
 The 2026-27 regular season starts around 2026-10-20; until then everything is
 tested by replaying past dates.
@@ -152,8 +160,10 @@ tested by replaying past dates.
 - [x] **Game-day injury-report ingest.** The prediction scheduled-data path
       archives new immutable PDFs in S3 and atomically updates affected Aiven
       game timelines, including empty/unchanged reports and retry receipts.
-- [x] **Live injury-report source.** Aiven supplies current and historical
-      snapshot states; there is no separate live PDF overlay. See stage 3 above.
+- [x] **Live injury-report source.** Aiven supplies current prediction states;
+      archived-PDF overlays are retained only for replay diagnostics.
+- [x] **Daily finished-day injury ingest.** The database workflow retains
+      `scripts/injury_reports/daily_injury_reports.py` to rebuild finished days.
 - [ ] **Referees on the prediction side** can be missing (assignments are
       released ~9am ET). Missing means NaN, exactly as training masks them
       before release -- never a fallback value.

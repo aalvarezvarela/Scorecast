@@ -486,3 +486,56 @@ def _require_aware(as_of: datetime) -> None:
             "as_of must be timezone-aware; a naive timestamp cannot be ordered "
             "correctly across a DST fall-back"
         )
+
+
+#: Count and row hash of everything the snapshot reads see, per season: the
+#: spans and filings of its games, the games, and the reports published in it
+#: (by publication season, 1 September to 31 August). The dimensions the reads
+#: join come with no season.
+_SEASON_FINGERPRINTS = f"""
+    SELECT g.season_year::int AS season, 'status_span' AS part, count(*) AS n,
+           sum(hashtextextended(s::text, 0))::text AS h
+    FROM {SCHEMA}.ir_status_span s JOIN {SCHEMA}.ir_game g USING (game_id)
+    GROUP BY 1
+    UNION ALL
+    SELECT g.season_year::int, 'filing_span', count(*),
+           sum(hashtextextended(f::text, 0))::text
+    FROM {SCHEMA}.ir_filing_span f JOIN {SCHEMA}.ir_game g USING (game_id)
+    GROUP BY 1
+    UNION ALL
+    SELECT g.season_year::int, 'game', count(*),
+           sum(hashtextextended(g::text, 0))::text
+    FROM {SCHEMA}.ir_game g GROUP BY 1
+    UNION ALL
+    SELECT EXTRACT(YEAR FROM r.observed_at - INTERVAL '8 months')::int, 'report',
+           count(*), sum(hashtextextended(r::text, 0))::text
+    FROM {SCHEMA}.ir_report r GROUP BY 1
+    UNION ALL
+    SELECT NULL, 'dimensions', count(*), sum(hashtextextended(d::text, 0))::text
+    FROM (
+        SELECT t::text AS d FROM {SCHEMA}.ir_team t
+        UNION ALL SELECT r::text FROM {SCHEMA}.ir_reason r
+        UNION ALL SELECT c::text FROM {SCHEMA}.ir_reason_category c
+        UNION ALL SELECT s::text FROM {SCHEMA}.ir_status s
+    ) dims
+"""
+
+
+def report_season_fingerprints(conn: psycopg.Connection) -> dict[int, str]:
+    """A digest per season of every stored row a snapshot read of that season,
+    or of any earlier one, can see -- chained, so a season's digest changes
+    when it or an earlier season does. About a second for every season."""
+    import hashlib
+
+    frame = pd.read_sql_query(_SEASON_FINGERPRINTS, conn)
+    dims = frame.loc[frame["season"].isna(), ["n", "h"]].to_numpy().tolist()
+    parts = frame.dropna(subset=["season"]).astype({"season": int})
+    out = {}
+    chain = hashlib.sha256(repr(dims).encode()).hexdigest()
+    for season in sorted(parts["season"].unique()):
+        rows = parts[parts["season"] == season].sort_values("part")
+        chain = hashlib.sha256(
+            (chain + repr(rows[["part", "n", "h"]].to_numpy().tolist())).encode()
+        ).hexdigest()
+        out[int(season)] = chain
+    return out

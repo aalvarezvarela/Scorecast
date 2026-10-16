@@ -281,7 +281,10 @@ def test_closing_adapter_passes_official_roster_and_report_membership(inputs):
     assert current.TOP1_PLAYER_PTS_BEFORE == pytest.approx(28.0)
 
 
-def test_intermediate_horizons_share_the_run_roster_like_closing(inputs, monkeypatch):
+@pytest.mark.parametrize("target_only", [False, True], ids=["full", "tonight-only"])
+def test_intermediate_horizons_share_the_run_roster_like_closing(
+    inputs, monkeypatch, target_only
+):
     # The roster fetched at 20:00 also applies to the 17:00 horizon: every
     # horizon reads the same pool the closing prediction would.
     from nba_ou.create_training_data import intermediate_injuries as pipeline
@@ -362,8 +365,9 @@ def test_intermediate_horizons_share_the_run_roster_like_closing(inputs, monkeyp
         }
     )
     monkeypatch.setattr(
-        pipeline, "_states_at_snapshots", lambda c: {360: state, 60: state}
+        pipeline, "_states_at_snapshots", lambda *a, **kw: {360: state, 60: state}
     )
+    monkeypatch.setattr(pipeline, "_injury_history_memo", lambda *a, **kw: None)
     monkeypatch.setattr(pipeline, "get_injury_data_from_db", lambda *a: missing)
     monkeypatch.setattr(pipeline, "load_player_box_history", lambda: pd.DataFrame())
     monkeypatch.setattr(pipeline, "prepare_box_and_form", lambda b: b)
@@ -376,9 +380,21 @@ def test_intermediate_horizons_share_the_run_roster_like_closing(inputs, monkeyp
         return frame.assign(INJURY_REPORT_COVERED_BEFORE=1)
 
     monkeypatch.setattr(pipeline, "add_injury_report_features", reports)
-    result = pipeline.add_snapshot_injury_features(snapshots, base, context).set_index(
-        "TIME_TO_MATCH_MIN"
+    monkeypatch.setattr(
+        pipeline,
+        "report_counter_features",
+        lambda frame, state: pd.DataFrame(
+            {"INJURY_REPORT_COVERED_BEFORE": 1}, index=frame.index
+        ),
     )
+    monkeypatch.setattr(
+        pipeline,
+        "add_status_features",
+        lambda frame, *a: pd.DataFrame(index=frame.index),
+    )
+    result = pipeline.add_snapshot_injury_features(
+        snapshots, base, context, target_game_ids={GAME} if target_only else None
+    ).set_index("TIME_TO_MATCH_MIN")
     assert result.TOP1_PLAYER_PTS_BEFORE_TEAM_HOME.tolist() == pytest.approx(
         [28.0, 28.0]
     )

@@ -183,3 +183,77 @@ def test_unfiled_side_has_nan_injury_features_even_with_legacy_values(
     assert pd.isna(result["TOP1_INJURED_PLAYER_PTS_BEFORE_TEAM_AWAY"])
     assert pd.isna(result["LAST_STATUS_REPORT_AGE_MIN_BEFORE_TEAM_AWAY"])
     assert pd.isna(result["INJ_FRESH_OUT_PTS_SUM_BEFORE"])
+
+
+def test_horizons_in_processes_equal_the_horizons_in_turn(monkeypatch, tmp_path):
+    """Forked horizons give the same rows, memo entries and sums as a loop."""
+    from nba_ou.create_training_data import history_memo
+    from nba_ou.create_training_data import intermediate_injuries as ii
+
+    game_ids = [f"002{s % 100:02d}{g:05d}" for s in (2023, 2024) for g in range(6)]
+    horizons = [30, 60, 120, 240]
+    rosters = {(game_ids[-1], "home"): {"rookie": "New player"}}
+    cutoffs = pd.DataFrame(
+        [(g, h) for g in game_ids for h in horizons],
+        columns=["game_id", "snapshot_minutes"],
+    )
+
+    def one_horizon(base, context, state, *args, horizon=None, priors=None, **kw):
+        assert kw["current_rosters"] == rosters
+        player_rows, effect_cache = args[4], args[8]
+        values = []
+        for game_id in game_ids:
+            key = (game_id, state, 0, 9, 9)
+            if player_rows.rows.get(key) is None:
+                player_rows.rows[key] = len(game_id) * state
+            values.append(player_rows.rows.get(key))
+            effect_cache.rows[("e", (int(game_id[3:5]) + 2000,), state)] = state
+        priors.setdefault((horizon, "F"), {"sum": float(state)})
+        return pd.DataFrame({"GAME_ID": game_ids, "X": values})
+
+    monkeypatch.setattr(ii, "_one_horizon", one_horizon)
+
+    def run(workers):
+        backend = history_memo._LocalBackend(tmp_path / str(workers))
+        memo = history_memo.HistoryMemo(backend, {2023: "a", 2024: "b"}, 2024)
+        caches = [
+            history_memo.PersistentRowCache(
+                memo, name, season_of=season_of, size_positions=()
+            )
+            for name, season_of in (
+                ("p", lambda key: history_memo.season_of_game_id(key[0])),
+                ("e", lambda key: max(key[1])),
+            )
+        ]
+        inputs = ii._HorizonInputs(
+            base=None, context=None, states={h: h // 30 for h in horizons},
+            cutoffs=cutoffs, injuries=None, box=None, voting=None,
+            player_rows=caches[0], all_star_rows=None, prepared_players=None,
+            prepared_all_star=None, effect_cache=caches[1], targets=None,
+            priors={}, first_current_season=2024, current_rosters=rosters,
+        )
+        calls = []
+        if workers > 1:
+            parts = ii._horizons_in_processes(
+                inputs, memo, workers, None, while_waiting=lambda: calls.append(1)
+            )
+            assert calls == [1]
+        else:
+            parts = [ii._horizon_features(inputs, h) for h in horizons]
+        tables = {key: dict(table) for key, table in memo._tables.items()}
+        return pd.concat(parts, ignore_index=True), tables, inputs.priors
+
+    rows, tables, priors = run(1)
+    forked_rows, forked_tables, forked_priors = run(3)
+    pd.testing.assert_frame_equal(forked_rows, rows)
+    assert forked_tables == tables and len(tables) == 4
+    assert forked_priors == priors and len(priors) == 4
+
+    # A failing worker costs time, never a value: the horizons run in turn.
+    def broken(horizon):
+        raise RuntimeError("worker died")
+
+    monkeypatch.setattr(ii, "_forked_horizon", broken)
+    fallback_rows, fallback_tables, fallback_priors = run(2)
+    pd.testing.assert_frame_equal(fallback_rows, rows)
+    assert fallback_tables == tables and fallback_priors == priors

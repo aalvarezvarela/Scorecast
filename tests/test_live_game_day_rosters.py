@@ -43,10 +43,16 @@ def test_intermediate_bundle_shares_rosters_and_replay_never_refreshes_injuries(
     )
     monkeypatch.setattr(live, "fetch_schedules", lambda *args: pd.DataFrame())
     monkeypatch.setattr(live, "fetch_live_line_history", lines)
+    monkeypatch.setattr(
+        live,
+        "fetch_live_injury_reports",
+        lambda *a, **kw: pytest.fail("current predictions must read Aiven"),
+    )
     bundle = live.fetch_live_game_day(
         "2026-10-16", scheduled_games=games, as_of=as_of if replay else None
     )
     assert bundle.roster_snapshots is rosters
+    assert bundle.injury_reports is None
     assert calls == (
         ["rosters", "lines"] if replay else ["rosters", "injuries", "lines"]
     )

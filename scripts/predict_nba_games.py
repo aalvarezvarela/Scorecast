@@ -20,8 +20,10 @@ from nba_ou.create_training_data.schema_layers import (
 )
 from nba_ou.postgre_db.update_all.update_all_databases import update_all_databases
 from nba_ou.prediction.baseline_predictions import (
+    baseline_history_window,
     load_baseline_predictions_for_nba_games,
 )
+from nba_ou.prediction.intermediate_frame import tonight_intermediate_frame
 from nba_ou.prediction.prediction import (
     load_registry_model_and_predict,
 )
@@ -103,6 +105,14 @@ def predict_nba_games(
     6. Saves results to Excel
     """
     configure_tqdm_for_environment()
+    if run_tabpfn_client:
+        # The feature frame now holds tonight's games only; the TabPFN client
+        # trains on history features, which it would have to read from a
+        # stored training dataset instead. Fail before any work is done.
+        raise SystemExit(
+            "TabPFN needs history features, and the prediction frame carries "
+            "tonight's games only; run with --no-tabpfn."
+        )
 
     date_to_predict = (datetime.now(ZoneInfo("US/Pacific"))).strftime("%Y-%m-%d")
 
@@ -204,6 +214,27 @@ def predict_nba_games(
 
     print_status(f"Found {len(df_to_predict)} game(s) to predict")
 
+    # Intermediate slots predict a fixed time before tip-off: tonight's passed
+    # snapshots, built tonight-only from the live line history. A failure here
+    # costs only those slots, never the closing ones.
+    frames = {"closing_line": df_to_predict}
+    if any(slot.horizon_minutes for slot in configured_slots):
+        print_step_header(3, "Preparing Intermediate Snapshot Rows")
+        try:
+            intermediate_df = tonight_intermediate_frame(
+                scheduled_data, game_date=date_to_predict
+            )
+            if intermediate_df.empty:
+                print_status("No snapshot of tonight's games has passed yet")
+            else:
+                frames["intermediate_line"] = intermediate_df
+                print_status(
+                    f"{len(intermediate_df)} passed snapshot row(s) over "
+                    f"{intermediate_df['GAME_ID'].nunique()} game(s)"
+                )
+        except Exception as e:  # noqa: BLE001 -- the closing slots still run
+            print_status(f"Intermediate rows unavailable: {e}", ok=False)
+
     # Initialize S3 client once for all model operations
     s3 = make_s3_client(profile=SETTINGS.s3_aws_profile, region=SETTINGS.s3_aws_region)
     pipeline_start_time = datetime.now(ZoneInfo("Europe/Madrid"))
@@ -238,6 +269,7 @@ def predict_nba_games(
                 slot=slot,
                 df=df_to_predict,
                 prediction_datetime=prediction_time,
+                frames=frames,
             )
             if predictions_df is None or predictions_df.empty:
                 # The horizon guard found no eligible rows: this model is not
@@ -274,9 +306,11 @@ def predict_nba_games(
     print_step_header(step_number, "Generating Predictions (Baselines)")
     step_number += 1
     try:
+        # The frame holds tonight's games only; the history is every built
+        # game's layer inputs (GAME_DATE, TOTAL_POINTS among them).
         baseline_predictions = load_baseline_predictions_for_nba_games(
             df=df_to_predict,
-            df_history=df_to_predict_total,
+            df_history=baseline_history_window(layer_inputs, date_to_predict),
             prediction_datetime=prediction_time,
         )
         print_status("Baseline predictions generated")

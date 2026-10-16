@@ -83,8 +83,11 @@ explicit Aiven snapshot strictly before `min(prediction cutoff, tipoff)`.
 The same state feeds the scheduled absence dictionary and richer report features.
 Intermediate snapshot readers already use their own strict publication cutoffs,
 so newly stored reports remain invisible to earlier horizons. Intermediate model
-serving is not enabled by this change; live callers should synchronize reports
-before building their snapshots, as the scheduled-data path does.
+serving uses the tonight-only path from `perf`: `fetch_live_game_day` synchronizes
+current runs, then the builders read Aiven at each horizon. The scheduled-data
+path shares its official roster snapshots with that bundle. Explicit `as_of`
+reads do not refresh PDFs; archived-PDF overlays remain available to historical
+replay diagnostics, rather than current predictions.
 
 Refresh failures log an error and leave Aiven at its previous known state.
 Existing stored reports can still be used with their report-age features.

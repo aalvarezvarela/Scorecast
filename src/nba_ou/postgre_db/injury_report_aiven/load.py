@@ -190,6 +190,30 @@ def upsert_reports(
     return mapping
 
 
+def clear_games(conn: psycopg.Connection, game_ids: list[str]) -> dict[str, int]:
+    """Remove these games' spans and filing spans, so they can be rebuilt.
+
+    One transaction, like ``clear_season``. Reports stay: they are shared by
+    every game they list, and re-inserting them is idempotent.
+    """
+    deleted: dict[str, int] = {}
+    if not game_ids:
+        return deleted
+    try:
+        with conn.cursor() as cur:
+            for table in ("ir_status_span", "ir_filing_span"):
+                cur.execute(
+                    _q(f"DELETE FROM {{schema}}.{table} WHERE game_id = ANY(%s)"),
+                    (list(game_ids),),
+                )
+                deleted[table] = cur.rowcount
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    return deleted
+
+
 def insert_spans(
     conn: psycopg.Connection, spans: pd.DataFrame, *, commit: bool = True
 ) -> int:

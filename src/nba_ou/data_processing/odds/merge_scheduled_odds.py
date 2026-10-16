@@ -130,6 +130,12 @@ def merge_and_validate_scheduled_odds(
                 )
                 df_odds_predict = df_odds_predict.loc[~rows_exceeding].copy()
 
+    # A scheduled game has one odds row: tonight's. The stored odds never hold
+    # it before tip-off, but a replay of a played date reads them after.
+    if "game_id" in df_odds.columns and "game_id" in df_odds_predict.columns:
+        scheduled_ids = set(df_odds_predict["game_id"].astype(str))
+        df_odds = df_odds[~df_odds["game_id"].astype(str).isin(scheduled_ids)]
+
     # Concatenate and sort
     df_odds_combined = pd.concat([df_odds, df_odds_predict], ignore_index=True)
     df_odds_combined.sort_values(by="game_date", inplace=True, ascending=False)

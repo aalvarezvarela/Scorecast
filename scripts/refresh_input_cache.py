@@ -16,9 +16,9 @@ Run it daily after the games are final, and after any repair or backfill of a
 past season (with ``--seasons``), so loaders never read a stale season: one not
 validated within ``season_tables.MAX_VALIDATION_AGE`` is queried instead.
 
-``line_history_aiven.closing_ticks`` (in the default ``--tables``) does the same
-for the Aiven closing ticks the odds repair reads, fingerprinted with
-``line_history_season_fingerprint``; the ``season_queries`` entries (box-score
+``line_history_aiven.closing_ticks`` and ``line_history_aiven.pregame_ticks`` (in
+the default ``--tables``) do the same for the Aiven ticks the odds repair and the
+intermediate builder read, fingerprinted with ``line_history_season_fingerprint``; the ``season_queries`` entries (box-score
 history, injury-report reads) store each season's result of the loader's own
 query, fingerprinted by a server-side hash over that result.
 """
@@ -48,6 +48,8 @@ from nba_ou.postgre_db.season_tables import (
 from psycopg import sql
 
 CLOSING_TICKS = "line_history_aiven.closing_ticks"
+PREGAME_TICKS = "line_history_aiven.pregame_ticks"
+TICK_TABLES = {CLOSING_TICKS: "closing_ticks", PREGAME_TICKS: "pregame_ticks"}
 
 
 def _stored_seasons(conn, spec) -> list[int]:
@@ -65,7 +67,7 @@ def main() -> int:
     parser.add_argument(
         "--tables",
         nargs="*",
-        default=sorted(SEASON_TABLES) + sorted(queries) + [CLOSING_TICKS],
+        default=sorted(SEASON_TABLES) + sorted(queries) + sorted(TICK_TABLES),
     )
     parser.add_argument("--seasons", nargs="*", type=int, default=None)
     parser.add_argument("--force", action="store_true")
@@ -73,7 +75,7 @@ def main() -> int:
     args = parser.parse_args()
 
     unknown = sorted(
-        set(args.tables) - set(SEASON_TABLES) - set(queries) - {CLOSING_TICKS}
+        set(args.tables) - set(SEASON_TABLES) - set(queries) - set(TICK_TABLES)
     )
     if unknown:
         parser.error(f"unknown tables {unknown}; known: {sorted(SEASON_TABLES)}")
@@ -86,16 +88,18 @@ def main() -> int:
         f"s3://{store.bucket}/{store.prefix}/  (current season {current}, never stored)"
     )
 
-    if CLOSING_TICKS in args.tables:
+    for table in [t for t in args.tables if t in TICK_TABLES]:
         seasons = args.seasons or [s for s in available_seasons() if s < current]
         if args.list:
-            print(f"{CLOSING_TICKS}: seasons {seasons} (see the S3 prefix for entries)")
-        else:
-            started = time.perf_counter()
-            outcome = refresh_season_ticks(store, seasons, force=args.force)
-            for season, result in outcome.items():
-                print(f"{CLOSING_TICKS:42s} {season}: {result}")
-            print(f"{CLOSING_TICKS:42s} done in {time.perf_counter() - started:.1f} s")
+            print(f"{table}: seasons {seasons} (see the S3 prefix for entries)")
+            continue
+        started = time.perf_counter()
+        outcome = refresh_season_ticks(
+            store, seasons, force=args.force, name=TICK_TABLES[table]
+        )
+        for season, result in outcome.items():
+            print(f"{table:42s} {season}: {result}")
+        print(f"{table:42s} done in {time.perf_counter() - started:.1f} s")
 
     for name in [t for t in args.tables if t in queries]:
         spec, seasons_sql = queries[name]

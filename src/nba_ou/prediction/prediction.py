@@ -49,6 +49,9 @@ DEFAULT_HORIZON_TOLERANCE_MINUTES = 45
 #: ``create_intermediate_line_df`` produces. Such a slot is skipped, not failed,
 #: until the live snapshot features exist -- then add "intermediate_line" here.
 SERVABLE_DATASET_TYPES: frozenset[str] = frozenset({"closing_line"})
+#: A dataset type whose rows are (game, snapshot): a slot predicts the row of
+#: its own horizon, ``TIME_TO_MATCH_MIN`` minutes before tip-off.
+SNAPSHOT_DATASET_TYPES: frozenset[str] = frozenset({"intermediate_line"})
 
 #: Map a registry target onto this module's prediction target.
 REGISTRY_TARGET_TO_PREDICTION_TARGET: dict[str, PredictionTarget] = {
@@ -744,8 +747,14 @@ def load_registry_model_and_predict(
     horizon_tolerance_minutes: int = DEFAULT_HORIZON_TOLERANCE_MINUTES,
     servable_dataset_types: frozenset[str] = SERVABLE_DATASET_TYPES,
     channel=None,
+    frames: dict[str, pd.DataFrame] | None = None,
 ) -> pd.DataFrame:
     """Predict with whatever a slot's channel currently points at.
+
+    ``frames`` maps a dataset type to its feature frame (tonight's closing
+    rows, tonight's passed intermediate snapshots); the slot's model reads the
+    frame of its own type, and ``df`` and ``servable_dataset_types`` are then
+    ignored. An intermediate model predicts the rows of its horizon.
 
     Resolution is ``channels/production.json -> fit -> spec -> model``: the
     served model is interpreted by the spec ITS OWN FIT names, never by the
@@ -769,6 +778,9 @@ def load_registry_model_and_predict(
     fit = resolved.fit
 
     dataset_type = str(spec.identity.dataset_type)
+    if frames is not None:
+        servable_dataset_types = frozenset(frames)
+        df = frames.get(dataset_type)
     if dataset_type not in servable_dataset_types:
         # Same contract as the horizon guard below: an empty frame means "not
         # this model's turn", which the daily job skips without failing. The
@@ -783,11 +795,16 @@ def load_registry_model_and_predict(
 
     prediction_target = resolve_prediction_target(spec.identity.target)
 
-    eligible = select_rows_for_horizon(
-        df,
-        horizon_minutes=spec.identity.horizon_minutes,
-        tolerance_minutes=horizon_tolerance_minutes,
-    )
+    if dataset_type in SNAPSHOT_DATASET_TYPES:
+        eligible = pd.to_numeric(df["TIME_TO_MATCH_MIN"], errors="coerce").eq(
+            spec.identity.horizon_minutes
+        )
+    else:
+        eligible = select_rows_for_horizon(
+            df,
+            horizon_minutes=spec.identity.horizon_minutes,
+            tolerance_minutes=horizon_tolerance_minutes,
+        )
     if not bool(eligible.any()):
         print(
             f"  {slot.describe()}: no rows within "

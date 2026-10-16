@@ -386,6 +386,8 @@ def _expanding_empirical_bayes_weights(
     inverse_n: np.ndarray,
     *,
     min_samples: int = MIN_SHRINKAGE_FIT_SAMPLES,
+    prior: tuple[float, float, float, float, float] | None = None,
+    totals_before: int | None = None,
 ) -> tuple[np.ndarray, dict[str, float]]:
     """Per-observation shrinkage weights ``tau2 / (tau2 + se2)``, fitted on history.
 
@@ -412,6 +414,13 @@ def _expanding_empirical_bayes_weights(
     A ``tau2`` of zero is a real answer, not a failure: it says the spread
     between players is fully explained by sampling noise, and the honest
     estimate of every effect is then zero. The returned diagnostics report it.
+
+    ``prior`` -- (count, sum raw, sum raw^2, sum se2, sum sigma2) -- stands for
+    informative observations dated before every one given here: the running
+    sums continue from it, adding these in the same order, so the weights are
+    the ones a fit over all of them gives. ``totals_before`` (a date ordinal)
+    puts those sums over the observations dated before it in the diagnostics
+    (``"totals_before"``), for a later call's ``prior``.
     """
     weights = np.full(raw.shape, np.nan, dtype="float64")
     diagnostics = {"tau2": np.nan, "sigma2": np.nan, "implied_k": np.nan, "n_fit": 0.0}
@@ -422,7 +431,9 @@ def _expanding_empirical_bayes_weights(
         & np.isfinite(inverse_n)
         & (inverse_n > 0)
     )
-    if int(informative.sum()) < min_samples:
+    if prior is None and int(informative.sum()) < min_samples:
+        if totals_before is not None:
+            diagnostics["totals_before"] = None
         return weights, diagnostics
 
     order = np.flatnonzero(informative)
@@ -433,19 +444,49 @@ def _expanding_empirical_bayes_weights(
     # se2 = sigma2 * (1/n_present + 1/n_injured), so this inverts to sigma2.
     fit_sigma2 = fit_se2 / inverse_n[order]
 
-    counts = np.arange(1, fit_raw.size + 1, dtype="float64")
-    cumulative_raw = np.cumsum(fit_raw)
-    cumulative_raw2 = np.cumsum(fit_raw**2)
-    cumulative_se2 = np.cumsum(fit_se2)
-    cumulative_sigma2 = np.cumsum(fit_sigma2)
+    if totals_before is not None:
+        if prior is not None:
+            raise ValueError("totals_before is taken from a fit without a prior")
+        k = int(np.searchsorted(fit_dates, totals_before, side="left"))
+        diagnostics["totals_before"] = (
+            None
+            if k == 0
+            else (
+                float(k),
+                float(np.cumsum(fit_raw)[k - 1]),
+                float(np.cumsum(fit_raw**2)[k - 1]),
+                float(np.cumsum(fit_se2)[k - 1]),
+                float(np.cumsum(fit_sigma2)[k - 1]),
+            )
+        )
 
     # Observations strictly earlier than each row's game date.
     prior_counts = np.searchsorted(fit_dates, date_ordinals, side="left")
-    fittable = prior_counts >= min_samples
+    if prior is None:
+        counts = np.arange(1, fit_raw.size + 1, dtype="float64")
+        cumulative_raw = np.cumsum(fit_raw)
+        cumulative_raw2 = np.cumsum(fit_raw**2)
+        cumulative_se2 = np.cumsum(fit_se2)
+        cumulative_sigma2 = np.cumsum(fit_sigma2)
+        fittable = prior_counts >= min_samples
+        last = prior_counts[fittable] - 1
+    else:
+        # Index j holds the sums over the prior and the first j observations.
+        prior_n, prior_raw, prior_raw2, prior_se2, prior_sigma2 = prior
+
+        def continued(start: float, values: np.ndarray) -> np.ndarray:
+            return np.cumsum(np.concatenate([[start], values]))
+
+        counts = prior_n + np.arange(0, fit_raw.size + 1, dtype="float64")
+        cumulative_raw = continued(prior_raw, fit_raw)
+        cumulative_raw2 = continued(prior_raw2, fit_raw**2)
+        cumulative_se2 = continued(prior_se2, fit_se2)
+        cumulative_sigma2 = continued(prior_sigma2, fit_sigma2)
+        fittable = counts[prior_counts] >= min_samples
+        last = prior_counts[fittable]
     if not fittable.any():
         return weights, diagnostics
 
-    last = prior_counts[fittable] - 1
     n_prior = counts[last]
     mean_raw = cumulative_raw[last] / n_prior
     var_raw = np.maximum(cumulative_raw2[last] / n_prior - mean_raw**2, 0.0)
@@ -464,14 +505,16 @@ def _expanding_empirical_bayes_weights(
 
     final_tau2 = float(tau2[-1])
     final_sigma2 = float(sigma2[-1])
-    diagnostics = {
-        "tau2": final_tau2,
-        "sigma2": final_sigma2,
-        "implied_k": (
-            float(final_sigma2 / final_tau2) if final_tau2 > 0.0 else float("inf")
-        ),
-        "n_fit": float(n_prior[-1]),
-    }
+    diagnostics.update(
+        {
+            "tau2": final_tau2,
+            "sigma2": final_sigma2,
+            "implied_k": (
+                float(final_sigma2 / final_tau2) if final_tau2 > 0.0 else float("inf")
+            ),
+            "n_fit": float(n_prior[-1]),
+        }
+    )
     return weights, diagnostics
 
 
@@ -500,12 +543,27 @@ def add_top3_availability_effect_features_for_columns(
     emit_max_abs_effects: bool = False,
     effect_cache: RowCache | None = None,
     history_memo=None,
+    computed_rows: np.ndarray | None = None,
+    shrinkage_prior: dict[str, tuple] | None = None,
+    shrinkage_totals_before: int | None = None,
+    shrinkage_totals: dict | None = None,
+    availability_index: dict | None = None,
 ) -> pd.DataFrame:
     """
     Compute player availability impact features from past games only (< current game date).
 
     ``effect_cache`` shares raw per-player effects between calls on the same
     game history (see ``_TeamHistoryIndex``); it changes no value.
+
+    ``computed_rows`` (a boolean mask over the rows) skips every other row:
+    its outputs are left empty. The shrinkage fit then sees only these rows'
+    effects; ``shrinkage_prior`` (per metric, the fit's running sums over the
+    skipped rows' effects, all dated earlier) continues it exactly as over
+    every row. A fit over every row hands those sums out:
+    ``shrinkage_totals_before`` (a date ordinal) fills ``shrinkage_totals``
+    with each metric's sums over the effects dated before it.
+    ``availability_index`` is ``availability_dict`` indexed, when the caller
+    already built it (it is the same for every effect family).
 
     ``history_memo`` (``create_training_data.history_memo.HistoryMemo``) keeps
     the raw effects of finished seasons' rows across builds. A raw effect is a
@@ -591,11 +649,11 @@ def add_top3_availability_effect_features_for_columns(
     if missing:
         raise ValueError(f"Missing required columns: {missing}")
 
-    injured_index = _build_injured_games_index(injured_dict)
-    availability_index = (
-        _build_availability_games_index(availability_dict)
-        if availability_dict is not None
-        else None
+    if availability_index is None and availability_dict is not None:
+        availability_index = _build_availability_games_index(availability_dict)
+    # Read only without an availability index.
+    injured_index = (
+        _build_injured_games_index(injured_dict) if availability_index is None else {}
     )
 
     # Build TEAM-game history (two rows per game: one per team)
@@ -764,6 +822,8 @@ def add_top3_availability_effect_features_for_columns(
             desc="Computing availability effects",
         )
     ):
+        if computed_rows is not None and not computed_rows[i]:
+            continue
         date = getattr(row, game_date_col)
         season_year = getattr(row, season_year_col)
         home_team = getattr(row, home_team_id_col)
@@ -918,7 +978,11 @@ def add_top3_availability_effect_features_for_columns(
                     np.concatenate(flat_raw),
                     np.concatenate(flat_se),
                     np.concatenate(flat_inv_n),
+                    prior=(shrinkage_prior or {}).get(metric),
+                    totals_before=shrinkage_totals_before,
                 )
+                if shrinkage_totals is not None and shrinkage_totals_before is not None:
+                    shrinkage_totals[metric] = diagnostics.get("totals_before")
             else:
                 weights = np.full(
                     sum(a.size for a in flat_raw), np.nan, dtype="float64"

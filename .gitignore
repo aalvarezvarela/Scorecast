@@ -238,3 +238,8 @@ artifacts/
 
 # Reproducible configuration for the bounded temporal-CV investigation.
 !experiments/temporal_cv_probe_2026_09/probe.json
+
+# IAM policy documents for the backup bucket. Applied by hand from a local
+# copy; they carry account-specific role and bucket ARNs, so they stay out of
+# the repo. scripts/backup/README.md describes the permissions they grant.
+scripts/backup/iam/

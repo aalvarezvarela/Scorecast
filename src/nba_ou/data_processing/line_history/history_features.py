@@ -91,18 +91,24 @@ def _team_long_frame(games: pd.DataFrame, dynamics: pd.DataFrame) -> pd.DataFram
 
 def add_prior_game_line_dynamics(
     games: pd.DataFrame,
-    ticks: pd.DataFrame,
+    ticks: pd.DataFrame | None,
     *,
     windows: tuple[int, ...] = DEFAULT_WINDOWS,
     market: str = MARKET_TOTALS,
+    dynamics: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
     """Per-game team and league rollups of prior games' line dynamics.
 
     Returns one row per ``game_id`` with ``_BEFORE`` columns. Every rollup is
     shifted by one game within the team, so a game never contributes to its own
     feature.
+
+    ``dynamics`` is ``build_game_line_dynamics``' frame, given instead of the
+    ticks: each game's summary reads its own ticks only, so a tonight-only
+    build passes the finished games' summaries from storage, plus tonight's.
     """
-    dynamics = build_game_line_dynamics(ticks, market=market)
+    if dynamics is None:
+        dynamics = build_game_line_dynamics(ticks, market=market)
     if dynamics.empty or games.empty:
         return pd.DataFrame({"game_id": games.get("game_id", pd.Series(dtype=str))})
 
@@ -173,8 +179,10 @@ def _league_wide_rollups(
                 prior.rolling(window, min_periods=1).mean().to_numpy()
             )
 
-    return games[["game_id", "game_date"]].merge(out, on="game_date", how="left").drop(
-        columns=["game_date"]
+    return (
+        games[["game_id", "game_date"]]
+        .merge(out, on="game_date", how="left")
+        .drop(columns=["game_date"])
     )
 
 
