@@ -79,6 +79,10 @@ from nba_ou.data_processing.past_injuries.past_injuries import get_injured_playe
 from nba_ou.data_processing.players.attach_player_features import (
     clear_player_statistics,
 )
+from nba_ou.data_processing.players.live_roster import (
+    game_day_rosters,
+    previous_game_rosters,
+)
 from nba_ou.data_processing.players.roster_continuity import (
     add_roster_continuity_feature,
 )
@@ -90,6 +94,7 @@ from nba_ou.data_processing.team.merge_game_df_with_odds_by_game_id import (
 )
 from nba_ou.data_processing.team.style_matchups import add_style_matchup_features
 from nba_ou.data_processing.travel.travel_processing import compute_travel_features
+from nba_ou.fetch_data.live_rosters import roster_overrides
 from nba_ou.postgre_db import load_all_nba_data_from_db
 from nba_ou.postgre_db.all_star_voting.fetch_data_from_db.fetch_all_star_voting_from_db import (
     load_all_star_voting_from_db,
@@ -153,8 +158,12 @@ def _add_all_star_team_features(
     *,
     verbose: bool,
     target_game_ids: set[str] | None = None,
+    rosters: dict | None = None,
 ) -> pd.DataFrame:
     """Team-level all-star fan-vote share, without the injured-player variants.
+
+    ``rosters`` is each team-game's roster (``game_day_rosters`` for stored
+    games, tonight's official one), the candidates the votes are summed over.
 
     Leakage-safe by construction: ``all_star_season_year_for_game_date`` always
     resolves to the most recently *completed* vote. A November 2024 game maps to
@@ -178,6 +187,7 @@ def _add_all_star_team_features(
         all_star_voting_df=voting,
         injured_dict={},
         target_game_ids=target_game_ids,
+        current_rosters=rosters,
     )
 
     dropped = [
@@ -263,6 +273,21 @@ def _build_roster_injury_dict(
     if mode == "full":
         return injured_dict
     return _lag_injured_dict_by_one_team_game(injured_dict, game_context)
+
+
+def _roster_injury_dict_for(
+    mode: str, realized: dict | None, game_context: pd.DataFrame
+) -> dict | None:
+    """``_build_roster_injury_dict(mode, ...)`` from an already loaded full dict."""
+    if mode == "none" or realized is None:
+        return None
+    if mode == "full":
+        return realized
+    if mode == "lagged":
+        return _lag_injured_dict_by_one_team_game(realized, game_context)
+    raise ValueError(
+        f"roster_injury_reports must be 'none', 'lagged' or 'full'; got {mode!r}."
+    )
 
 
 def _inject_player_placeholders(df: pd.DataFrame) -> pd.DataFrame:
@@ -467,11 +492,42 @@ def create_base_game_features(
         else None
     )
 
+    rosters = {}
+    realized_injuries = None
+    if needs_players:
+        # Both stages read each team-game's roster as the player features do:
+        # a stored game's game-day roster -- box score plus the realized
+        # inactive list -- and tonight's official one (or, if that fetch
+        # failed, the previous game's). Roster membership, never who is out:
+        # this dataset reads no injury status.
+        realized_injuries = _build_roster_injury_dict(
+            "full", player_context_seasons, df_players_history, df_team_player_context
+        )
+        rosters = game_day_rosters(
+            df_players_history, realized_injuries, exclude_games=scheduled_game_ids
+        )
+        if has_scheduled:
+            official = (
+                roster_overrides(scheduled_games, roster_snapshots, as_of=live_as_of)
+                if roster_snapshots is not None
+                else {}
+            )
+            official.update(
+                previous_game_rosters(
+                    df,
+                    df_players_history,
+                    realized_injuries,
+                    scheduled_game_ids,
+                    rosters=official,
+                )
+            )
+            rosters.update(official)
+
     if include_all_star:
         if verbose:
             print("Adding all-star fan-vote share features...")
         df = _add_all_star_team_features(
-            df, df_players, verbose=verbose, target_game_ids=targets
+            df, df_players, verbose=verbose, target_game_ids=targets, rosters=rosters
         )
 
     if include_roster_continuity:
@@ -483,14 +539,12 @@ def create_base_game_features(
         df = add_roster_continuity_feature(
             df,
             df_players_history,
-            injured_dict=_build_roster_injury_dict(
-                roster_injury_reports,
-                player_context_seasons,
-                df_players_history,
-                df_team_player_context,
+            injured_dict=_roster_injury_dict_for(
+                roster_injury_reports, realized_injuries, df_team_player_context
             ),
             df_game_context=df_team_player_context,
             target_game_ids=targets,
+            current_rosters=rosters,
         )
 
     if verbose:

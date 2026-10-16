@@ -19,6 +19,29 @@ from .legacy_player_lookup import create_player_lookup_before
 TEAMS = [1610612737 + t for t in range(4)]
 
 
+def after_game_values(df: pd.DataFrame, injured: bool, date=None) -> pd.DataFrame:
+    """Adapt old ranking code to today's date-based state-value rule.
+
+    Out/Questionable players are now valued with their last game included: the
+    ``<stat>_CUM_AVG_AFTER`` columns stand in for ``<stat>_CUM_AVG``. The
+    Available players also read those values for strictly earlier rows; their
+    same-day rows stay shifted. The old functions get the swapped frame so the
+    comparison still checks lookup and ranking independently, bit for bit.
+    """
+    if not injured and date is None:
+        return df
+    after = [c for c in df.columns if c.endswith("_CUM_AVG_AFTER")]
+    if injured:
+        return df.assign(**{c[: -len("_AFTER")]: df[c] for c in after})
+    use_after = df["GAME_DATE"].lt(date)
+    return df.assign(
+        **{
+            c[: -len("_AFTER")]: df[c[: -len("_AFTER")]].mask(use_after, df[c])
+            for c in after
+        }
+    )
+
+
 def players_frame(seed: int = 0) -> pd.DataFrame:
     """Box scores over two seasons with trades, DNPs, scheduled placeholders,
     playoff season ids that fall back to the season year, and missing ids."""
@@ -124,7 +147,7 @@ def _use_previous_player_code(monkeypatch):
         attach_player_features,
         "rank_player_states",
         lambda states, stat_col, *, n_players: get_top_n_averages_with_names_before(
-            states[0],
+            after_game_values(states[0], states[2], states[1]),
             date=states[1],
             stat_col=stat_col,
             injured=states[2],
@@ -144,6 +167,25 @@ class _PreviousPlayerLookupIndex:
     def __init__(self, df_players):
         self._players = df_players
 
+    def prior_history_members(self, season_id, team_id, date, game_id, listed=None):
+        players = self._players
+        box = players.loc[
+            players.GAME_ID.astype(str).eq(str(game_id))
+            & players.TEAM_ID.astype(str).eq(str(team_id)),
+            "PLAYER_ID",
+        ].dropna()
+        if box.empty:
+            return None
+        roster = set(box.astype(str)) | set(
+            map(str, (listed or {}).get(str(game_id), {}).get(str(team_id), ()))
+        )
+        prior = players.loc[players.GAME_DATE.lt(date)]
+        current = prior.loc[prior.SEASON_YEAR.eq(int(str(season_id)[-4:]))]
+        missing = roster - set(current.PLAYER_ID.astype(str))
+        if missing & set(prior.PLAYER_ID.astype(str)):
+            return {p: p for p in sorted(roster)}
+        return None
+
     def bucket_column(self, df_bucket, column):
         from nba_ou.data_processing.past_injuries.past_injuries import (
             bucket_column_values,
@@ -151,8 +193,46 @@ class _PreviousPlayerLookupIndex:
 
         return bucket_column_values(df_bucket, column)
 
-    def lookup_for(self, injured_dict=None, *, rows_only=False):
-        lookup = create_player_lookup_before(self._players, injured_dict=injured_dict)
+    def lookup_for(
+        self,
+        injured_dict=None,
+        *,
+        rows_only=False,
+        game_day_listed=None,
+        inferred_games=frozenset(),
+    ):
+        inferred = create_player_lookup_before(self._players, injured_dict=injured_dict)
+        players = self._players[self._players["PLAYER_ID"].notna()].sort_values(
+            ["SEASON_ID", "TEAM_ID", "PLAYER_ID", "GAME_DATE"]
+        )
+        ids = players["PLAYER_ID"].astype(str)
+        box = players.assign(_id=ids).groupby(
+            [players["GAME_ID"].astype(str), players["TEAM_ID"].astype(str)]
+        )["_id"]
+        box = {key: set(group) for key, group in box}
+
+        def lookup(season_id, team_id, date_to_filter, game_id=None):
+            # Reference for the game-day roster: a plain mask, written apart
+            # from PlayerLookupIndex. The box score plus the listed players,
+            # their rows of the season year up to the game.
+            key = (str(game_id), str(team_id))
+            if (
+                game_day_listed is None
+                or game_id is None
+                or str(game_id) in inferred_games
+                or key not in box
+            ):
+                return inferred(season_id, team_id, date_to_filter, game_id=game_id)
+            roster = box[key] | {
+                str(p) for p in game_day_listed.get(key[0], {}).get(key[1], ())
+            }
+            mask = (
+                players["SEASON_YEAR"].eq(int(str(season_id)[-4:]))
+                & ids.isin(roster)
+                & players["GAME_DATE"].le(date_to_filter)
+            )
+            return players[mask.to_numpy()]
+
         if not rows_only:
             return lookup
 
@@ -209,15 +289,29 @@ def test_top_n_split_matches_the_previous_function():
                     ("PTS", True),
                     ("DEF_RATING", False),
                 ):
-                    frame = roster.drop(columns="MIN_CUM_AVG") if drop_min else roster
+                    frame = (
+                        roster.drop(columns=["MIN_CUM_AVG", "MIN_CUM_AVG_AFTER"])
+                        if drop_min
+                        else roster
+                    )
                     if stat == "DEF_RATING":
-                        frame = frame.assign(DEF_RATING_CUM_AVG=frame["PTS_CUM_AVG"])
+                        frame = frame.assign(
+                            DEF_RATING_CUM_AVG=frame["PTS_CUM_AVG"],
+                            DEF_RATING_CUM_AVG_AFTER=frame["PTS_CUM_AVG_AFTER"],
+                        )
                     for n in (3, 50):
-                        assert get_top_n_averages_with_names(
-                            frame, date, stat_col=stat, injured=injured, n_players=n
-                        ) == get_top_n_averages_with_names_before(
+                        actual = get_top_n_averages_with_names(
                             frame, date, stat_col=stat, injured=injured, n_players=n
                         )
+                        expected = get_top_n_averages_with_names_before(
+                            after_game_values(frame, injured, date),
+                            date,
+                            stat_col=stat,
+                            injured=injured,
+                            n_players=n,
+                        )
+                        # NaN != NaN (players with no history), so compare text.
+                        assert list(map(repr, actual)) == list(map(repr, expected))
 
 
 def test_top_n_ranking_keeps_pandas_tie_and_nan_order():
@@ -236,7 +330,12 @@ def test_top_n_ranking_keeps_pandas_tie_and_nan_order():
     coarse = np.round(df["PTS_CUM_AVG"].to_numpy() / 5) * 5
     coarse[rng.random(len(coarse)) < 0.1] = np.nan
     coarse[rng.random(len(coarse)) < 0.1] = -0.0
-    df = df.assign(PTS_CUM_AVG=coarse, DEF_RATING_CUM_AVG=coarse)
+    df = df.assign(
+        PTS_CUM_AVG=coarse,
+        DEF_RATING_CUM_AVG=coarse,
+        PTS_CUM_AVG_AFTER=coarse,
+        DEF_RATING_CUM_AVG_AFTER=coarse,
+    )
     dates = sorted(df["GAME_DATE"].unique())[::5]
     compared = 0
     for team in TEAMS:
@@ -249,7 +348,11 @@ def test_top_n_ranking_keeps_pandas_tie_and_nan_order():
                             roster, date, stat_col=stat, injured=injured, n_players=n
                         )
                         expected = get_top_n_averages_with_names_before(
-                            roster, date, stat_col=stat, injured=injured, n_players=n
+                            after_game_values(roster, injured, date),
+                            date,
+                            stat_col=stat,
+                            injured=injured,
+                            n_players=n,
                         )
                         # NaN != NaN, so compare the text form of each tuple.
                         assert list(map(repr, actual)) == list(map(repr, expected))

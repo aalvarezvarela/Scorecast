@@ -228,11 +228,22 @@ def spread_line_home_col(book: str | None = None) -> str:
     return f"ODDS_SPREAD_LINE_HOME_{b}"
 
 
+#: A sportsbook slug as it appears in raw per-book column names: lower case
+#: (``bet365``, ``fanatics_sportsbook``, ``consensus_opener``). Columns derived
+#: from a book's line -- rolling means, trends, season averages -- append an
+#: upper-case suffix (``ODDS_TOTAL_LINE_bet365_LAST_ALL_5_MATCHES_BEFORE``), so
+#: matching the whole name against this keeps them from being read as books.
+BOOK_SLUG_PATTERN = r"[a-z0-9_]+"
+
+
 def extract_spread_line_home_books(df: pd.DataFrame) -> list[str]:
-    """Books with a canonical ``ODDS_SPREAD_LINE_HOME_<book>`` column, sorted."""
+    """Books with a canonical ``ODDS_SPREAD_LINE_HOME_<book>`` column, sorted.
+
+    Derived columns (upper-case suffix) are not books; see ``BOOK_SLUG_PATTERN``.
+    """
     books = set()
     for col in df.columns:
-        m = re.match(r"^ODDS_SPREAD_LINE_HOME_(.+)$", col)
+        m = re.fullmatch(rf"ODDS_SPREAD_LINE_HOME_({BOOK_SLUG_PATTERN})", col)
         if m:
             books.add(m.group(1))
     return sorted(books)
@@ -258,13 +269,17 @@ def moneyline_col(book: str | None = None) -> str:
 
 
 def extract_total_line_books(df: pd.DataFrame) -> list[str]:
-    """
-    Infer sportsbook names from columns shaped as ODDS_TOTAL_LINE_<book>.
-    Returns books in deterministic sorted order.
+    """Books with a raw total column ``ODDS_TOTAL_LINE_<book>``, sorted.
+
+    Book slugs are lower case (``bet365``, ``fanatics_sportsbook``,
+    ``consensus_opener``). Derived columns -- rolling means, trends, season
+    averages, e.g. ``ODDS_TOTAL_LINE_bet365_LAST_ALL_5_MATCHES_BEFORE_TEAM_HOME``
+    -- carry an upper-case suffix and are not books. Matching any suffix once
+    made the cross-book std a std over ~200 rolling columns.
     """
     books = set()
     for col in df.columns:
-        m = re.match(r"^ODDS_TOTAL_LINE_(.+)$", col)
+        m = re.fullmatch(rf"ODDS_TOTAL_LINE_({BOOK_SLUG_PATTERN})", col)
         if m:
             books.add(m.group(1))
     return sorted(books)

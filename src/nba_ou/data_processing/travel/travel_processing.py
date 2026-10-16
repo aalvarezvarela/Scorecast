@@ -269,8 +269,10 @@ def merge_travel_features(df, team_log, log_scale=True):
     """
     Merge travel features back to original game-level dataframe.
 
-    Creates columns for multiple rolling windows (1, 2, 5, 7, 14 days) and
-    recent jetlag hours for both home and away teams.
+    Creates columns for multiple rolling windows (1, 2, 5, 7, 14 days), recent
+    jetlag hours and raw-kilometer travel-recency ratios for both teams. Ratios
+    are computed before the optional log transform; zero 14-day travel leaves
+    the ratio undefined (NaN).
 
     Args:
         df (pd.DataFrame): Original game-level dataframe
@@ -323,7 +325,7 @@ def merge_travel_features(df, team_log, log_scale=True):
     for w in windows:
         travel_columns.append(f"TOTAL_KM_IN_LAST_{w}_DAYS_HOME_TEAM")
         travel_columns.append(f"TOTAL_KM_IN_LAST_{w}_DAYS_AWAY_TEAM")
-    
+
     travel_columns.extend(
         [
             "JETLAG_HOURS_FROM_LAST_GAME_HOME_TEAM",
@@ -331,12 +333,21 @@ def merge_travel_features(df, team_log, log_scale=True):
         ]
     )
 
-    # Fill any remaining NaN values with 0 and optionally apply log transformation
+    # Missing travel keeps its existing zero-distance fallback.
     for col in travel_columns:
         if col in df.columns:
             df[col] = df[col].fillna(0)
-            # Apply logarithmic transformation (log1p handles zeros gracefully)
-            if log_scale and col.startswith("TOTAL_KM_"):
+
+    # A concentration is a fraction of kilometers, independent of their scale.
+    # Compute it while these columns still carry raw distances.
+    for side in ("HOME", "AWAY"):
+        recent = df[f"TOTAL_KM_IN_LAST_2_DAYS_{side}_TEAM"]
+        total = df[f"TOTAL_KM_IN_LAST_14_DAYS_{side}_TEAM"].replace(0, np.nan)
+        df[f"TRAVEL_RECENCY_RATIO_{side}_2D_OVER_14D_BEFORE"] = recent / total
+
+    if log_scale:
+        for col in travel_columns:
+            if col.startswith("TOTAL_KM_"):
                 df[col] = np.log1p(df[col])
 
     return df
@@ -352,7 +363,8 @@ def compute_travel_features(df, log_scale=True):
     3. Computing timezone-change hours from the last game in the past 4 days
     4. Calculating rolling sums for 1, 2, 5, 7, and 14 day windows
     5. Merging features back to original dataframe
-    6. Optionally applying log transformation to travel distances
+    6. Computing travel-recency ratios from raw kilometers
+    7. Optionally applying log transformation to travel distances
 
     Args:
         df (pd.DataFrame): Game-level dataframe with required columns:
@@ -370,6 +382,7 @@ def compute_travel_features(df, log_scale=True):
             - TOTAL_KM_IN_LAST_{1,2,5,7,14}_DAYS_AWAY_TEAM
             - JETLAG_HOURS_FROM_LAST_GAME_HOME_TEAM
             - JETLAG_HOURS_FROM_LAST_GAME_AWAY_TEAM
+            - TRAVEL_RECENCY_RATIO_{HOME,AWAY}_2D_OVER_14D_BEFORE (raw km ratio)
     """
     print("Computing travel features...")
 

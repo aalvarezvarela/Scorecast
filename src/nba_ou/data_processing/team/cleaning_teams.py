@@ -39,10 +39,10 @@ def adjust_overtime(df):
     This function:
     - Preserves raw ``PTS`` so game targets remain actual final scores,
       including overtime.
-    - Creates ``PTS_PER_40`` with an explicit valid-minutes guard. For
-      ``0 < MIN < 240``, it uses ``PTS * TEAM_MINUTES_PER_40 / MIN``. For
-      every other minutes value, including missing, zero, negative, non-finite,
-      regulation, and overtime minutes, it retains raw ``PTS``.
+    - Creates ``PTS_PER_40`` as ``PTS * TEAM_MINUTES_PER_40 / MIN`` for every
+      positive, finite aggregate minutes value, including regulation and
+      overtime games. Missing, zero, negative and non-finite minutes produce
+      NaN rather than mixing raw points into the normalized feature.
     - Creates ``IS_OVERTIME`` using the shared overtime threshold.
     - Normalizes only explicitly allowlisted additive counting statistics in
       overtime games to a 48-minute regulation equivalent via ``240 / MIN``.
@@ -66,14 +66,9 @@ def adjust_overtime(df):
 
     df["IS_OVERTIME"] = overtime_mask.astype(int)
 
-    points_per_40 = points.astype(float).copy()
-    below_regulation_mask = valid_minutes & minutes.lt(REGULATION_GAME_MINUTES)
-    points_per_40.loc[below_regulation_mask] = (
-        points.loc[below_regulation_mask]
-        * TEAM_MINUTES_PER_40
-        / minutes.loc[below_regulation_mask]
+    df[PTS_PER_40_COLUMN] = (
+        points.astype(float) * TEAM_MINUTES_PER_40 / minutes.where(valid_minutes)
     )
-    df[PTS_PER_40_COLUMN] = points_per_40
 
     regulation_factor = REGULATION_GAME_MINUTES / minutes.loc[overtime_mask]
     normalized_columns = [

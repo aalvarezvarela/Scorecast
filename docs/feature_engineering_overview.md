@@ -117,14 +117,14 @@ intermediate dataset.
 | Rolling team stats (windows, expanding season mean and std, trends, home/away) | `PTS_LAST_ALL_5_MATCHES_BEFORE_TEAM_HOME`, `PTS_SEASON_BEFORE_AVG_TEAM_HOME` | `data_processing/team/rolling.py`, `team/totals.py` | team games | C, I |
 | Records, rest, playoffs last season, overtime history | `TEAM_RECORD_BEFORE_GAME`, `REST_DAYS_BEFORE_MATCH`, `IS_OVERTIME_LAST_GAME_BEFORE` | `team/records.py`, `team/rolling.py` | team games | C, I |
 | Style matchups (offence against opposing defence, pace) | `EXPECTED_POSS_FROM_PACE_BEFORE`, `OFFDEF_MISMATCH_*_BEFORE` | `team/style_matchups.py`, `merged_home_away_data/add_features_after_merging.py` | team games | C, I |
-| Travel and schedule | `TOTAL_KM_IN_LAST_<N>_DAYS_*`, `JETLAG_HOURS_FROM_LAST_GAME_*`, `BACK_TO_BACK_BEFORE` | `travel/travel_processing.py` | schedule, arenas | C, I |
+| Travel and schedule | `TOTAL_KM_IN_LAST_<N>_DAYS_*`, `TRAVEL_RECENCY_RATIO_*_BEFORE` (raw 2-day / 14-day km, before log scaling), `JETLAG_HOURS_FROM_LAST_GAME_*`, `BACK_TO_BACK_BEFORE` | `travel/travel_processing.py` | schedule, arenas | C, I |
 | Calendar and team context | `IS_WEEKEND_BEFORE`, `SAME_DIVISION_BEFORE`, team one-hot | `add_features_after_merging.add_game_date_features`, `team_one_hot_features.py` | schedule | C, I |
 
 ### Players, injuries and availability
 
 | Family | Example columns | Module | Inputs | Datasets |
 |---|---|---|---|---|
-| Player profile: top players, injured, available and questionable groups | `TOP1_PLAYER_*_BEFORE_TEAM_*`, `TOTAL_INJURED_PLAYER_PTS_BEFORE_*`, `N_QUESTIONABLE_PLAYERS_*` | `players/attach_player_features.py`, `players/feature_profile.py` | box scores, `nba_injuries`, report state | C, I (per snapshot) |
+| Player profile: top players, injured, available and questionable groups | `TOP1_PLAYER_*_BEFORE_TEAM_*`, `TOTAL_INJURED_PLAYER_PTS_BEFORE_*`, `N_QUESTIONABLE_PLAYERS_*` | `players/attach_player_features.py`, `players/feature_profile.py` | box scores, `nba_injuries`, report state; per-member earlier-season history; strictly earlier states use `_AFTER`, same-day states stay shifted | C, I (per snapshot) |
 | Report state (coverage, report age, status counts, P_PLAY, effects) | `INJURY_REPORT_COVERED_*`, `LAST_STATUS_REPORT_AGE_MIN_*`, `N_REPORT_OUT_PLAYERS_*` | `injury_status/features.py`, `report_state.py`, `status_history.py` | Aiven `injury_report` | C (last report before tip), I (per snapshot) |
 | Fresh absences | `INJ_FRESH_OUT_<stat>_BEFORE_*`, `INJ_KEY_PLAYER_FIRST_GAME_OUT_*` | `players/fresh_absence.py`, `add_fresh_absence_sums` | box scores, injuries | C, I |
 | Availability effects (empirical-Bayes with/without deltas) | `TOP3_AVAILABILITY_EFFECT_*`, `TOP3_INJURED_*`, `TOP2_QUESTIONABLE_*` | `past_injuries/injury_effects.py` | box scores, closing lines of **earlier** games | C, I (per snapshot) |

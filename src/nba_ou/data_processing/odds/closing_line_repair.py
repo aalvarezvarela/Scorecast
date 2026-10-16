@@ -38,6 +38,13 @@ almost all stale (a BetMGM 2019 quote 27 hours old) or sign-flipped (Caesars
 +10 against a -10 market). Deviations of 4-6 points were left alone because
 their slope is too noisy to call.
 
+Unpriced SBR cells -- a line with no usable prices -- have no normalized level,
+so the comparison above never saw them. Early-2021 BetMGM totals of 114.5 and
+190.5 against a 230 market survived that way. Their raw line is compared
+instead, at the wider ``UNPRICED_OUTLIER_THRESHOLDS`` (an uncentered line can
+sit a point or so off its -110 level), and any unverified total outside
+``TOTAL_LINE_BOUNDS`` is an outlier whatever the other books say.
+
 Outlier cells are emptied, except for ``TARGET_ANCHOR_BOOK``, which anchors the
 residual targets and is filled with the verified books' median instead.
 
@@ -111,6 +118,13 @@ OUTLIER_THRESHOLDS: dict[str, float] = {
     MARKET_TOTALS: 6.0,
     MARKET_SPREAD: 5.0,
     MARKET_MONEYLINE: 0.15,
+}
+#: Raw-line deviation that makes an unpriced cell an outlier. On the 2_5
+#: closing build, unpriced BetMGM totals sat 111-117 and 25-38 points from the
+#: other books (half-game lines and unexplained 190s), then 11.5, 9 and 8.75;
+#: every priced book stayed within 7.5. Totals only: spreads were not measured.
+UNPRICED_OUTLIER_THRESHOLDS: dict[str, float] = {
+    MARKET_TOTALS: 10.0,
 }
 OTHERS_MAX_RANGE: dict[str, float] = {
     MARKET_TOTALS: 1.5,
@@ -476,10 +490,25 @@ def repair_closing_lines(
 
     # ---- Step B ---------------------------------------------------------- #
     cells = cells.join(_leave_one_out_stats(cells))
-    cells["deviation"] = cells["final_level"] - cells["others_median"]
-    threshold = cells["market"].map(OUTLIER_THRESHOLDS)
+    final_line = pd.to_numeric(cells["final_line"], errors="coerce")
+    unpriced = (
+        cells["final_level"].isna()
+        & final_line.notna()
+        & cells["market"].isin(list(UNPRICED_OUTLIER_THRESHOLDS))
+    )
+    compared = cells["final_level"].where(~unpriced, final_line)
+    cells["deviation"] = compared - cells["others_median"]
+    threshold = cells["market"].map(OUTLIER_THRESHOLDS).where(
+        ~unpriced, cells["market"].map(UNPRICED_OUTLIER_THRESHOLDS)
+    )
     max_range = cells["market"].map(OTHERS_MAX_RANGE)
-    candidate = (
+    implausible_total = (
+        ~cells["verified"]
+        & cells["market"].eq(MARKET_TOTALS)
+        & final_line.notna()
+        & ~final_line.between(*TOTAL_LINE_BOUNDS)
+    )
+    candidate = implausible_total | (
         cells["n_others"].ge(MIN_OTHER_BOOKS)
         & cells["others_range"].le(max_range)
         & cells["deviation"].abs().ge(threshold)
@@ -499,7 +528,8 @@ def repair_closing_lines(
             candidate[in_line_when_quoted[in_line_when_quoted].index] = False
 
     outlier = candidate
-    anchor = cells["book"].eq(anchor_book)
+    # Only an implausible total can be an outlier with no median to fill from.
+    anchor = cells["book"].eq(anchor_book) & cells["others_median"].notna()
     cells.loc[outlier & ~anchor, "action"] = ACTION_OUTLIER_NULLED
     cells.loc[outlier & anchor, "action"] = ACTION_OUTLIER_MEDIAN
 

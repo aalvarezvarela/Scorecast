@@ -37,6 +37,7 @@ from nba_ou.data_processing.injury_status.report_state import (
     nested_status_dict,
     report_out_overrides,
     report_questionable_sets,
+    union_membership_dicts,
 )
 from nba_ou.data_processing.injury_status.status_history import (
     load_player_box_history,
@@ -81,7 +82,12 @@ from nba_ou.data_processing.players.attach_player_features import (
     drop_player_identifier_columns,
     player_history_memo_name,
 )
+from nba_ou.data_processing.past_injuries.past_injuries import (
+    get_injured_players_dict,
+)
 from nba_ou.data_processing.players.live_roster import (
+    game_day_rosters,
+    previous_game_rosters,
     report_membership,
     supplement_rosters,
 )
@@ -820,14 +826,24 @@ def create_df_to_predict(
         roster_snapshots = scheduled_data.get("roster_snapshots")
         if roster_snapshots is None:
             roster_snapshots = load_live_rosters(scheduled_games)
-        current_rosters = supplement_rosters(
-            roster_overrides(
-                scheduled_games,
-                roster_snapshots,
-                as_of=scheduled_data.get("injury_as_of_utc"),
-            ),
-            listed_players,
+        official = roster_overrides(
+            scheduled_games,
+            roster_snapshots,
+            as_of=scheduled_data.get("injury_as_of_utc"),
         )
+        # A team whose official roster could not be fetched takes its previous
+        # game's roster, box score plus inactive list: what training reads for
+        # a stored game, one game earlier. The report supplements both.
+        official.update(
+            previous_game_rosters(
+                df,
+                df_players,
+                get_injured_players_dict(df_injuries, df_players=df_players),
+                scheduled_games["GAME_ID"],
+                rosters=official,
+            )
+        )
+        current_rosters = supplement_rosters(official, listed_players)
 
     # Add Players Statistics
     print("Processing player statistics...")
@@ -853,13 +869,22 @@ def create_df_to_predict(
             history_memo=history_memo,
         )
     )
+    # Roster continuity and the All-Star candidates read one roster per
+    # team-game, as the player features do: a stored game's game-day roster
+    # (box score plus every listed player), tonight's official one.
+    rosters = game_day_rosters(
+        df_players,
+        union_membership_dicts(injured_dict, listed_players),
+        exclude_games=scheduled_game_ids,
+    )
+    rosters.update(current_rosters)
     df = add_roster_continuity_feature(
         df,
         df_players,
         injured_dict,
         df_game_context=df_team_player_context,
         scheduled_game_ids=scheduled_game_ids,
-        current_rosters=current_rosters,
+        current_rosters=rosters,
         target_game_ids=targets,
     )
     print("✓ Player statistics processed")
@@ -895,7 +920,7 @@ def create_df_to_predict(
         df_players=df_players,
         all_star_voting_df=all_star_voting_df,
         injured_dict=pregame_injured_dict,
-        current_rosters=current_rosters,
+        current_rosters=rosters,
         questionable_dict=(
             nested_status_dict(questionable_sets) if questionable_sets else None
         ),
