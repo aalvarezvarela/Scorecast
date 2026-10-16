@@ -189,6 +189,59 @@ def _wide_team_injury_features(
     return parts[0].merge(parts[1], on="GAME_ID", validate="one_to_one")
 
 
+#: The availability-effect families: output prefix and the player columns read.
+EFFECT_FAMILIES = (
+    (
+        "TOP3_AVAILABILITY_EFFECT",
+        (
+            "TOP1_PLAYER_ID_PTS",
+            "TOP2_PLAYER_ID_PTS",
+            "TOP3_PLAYER_ID_PTS",
+            "TOP1_PLAYER_ID_MIN",
+        ),
+    ),
+    (
+        "TOP3_INJURED_AVAILABILITY_EFFECT",
+        (
+            "TOP1_INJURED_PLAYER_ID_PTS",
+            "TOP2_INJURED_PLAYER_ID_PTS",
+            "TOP3_INJURED_PLAYER_ID_PTS",
+            "TOP1_INJURED_PLAYER_ID_MIN",
+        ),
+    ),
+    (
+        "TOP2_QUESTIONABLE_AVAILABILITY_EFFECT",
+        (
+            "TOP1_QUESTIONABLE_PLAYER_ID_PTS",
+            "TOP2_QUESTIONABLE_PLAYER_ID_PTS",
+            "TOP1_QUESTIONABLE_PLAYER_ID_MIN",
+        ),
+    ),
+)
+
+
+def _fit_continues_from_priors(
+    games: pd.DataFrame,
+    priors: dict | None,
+    horizon: int | None,
+    first_current_season: int | None,
+) -> bool:
+    """Whether ``_add_availability_effects`` computes the current seasons only.
+
+    True when every family's shrinkage sums over the earlier seasons are stored
+    for this horizon, and there are rows both before and from
+    ``first_current_season``: the conditions under which it reads no earlier
+    row's effect.
+    """
+    if priors is None or first_current_season is None:
+        return False
+    seasons = pd.to_numeric(games["SEASON_YEAR"], errors="coerce")
+    current = (seasons >= first_current_season).to_numpy()
+    if not current.any() or current.all():
+        return False
+    return all((horizon, prefix) in priors for prefix, _ in EFFECT_FAMILIES)
+
+
 def _add_availability_effects(
     games: pd.DataFrame,
     injured_dict: dict,
@@ -221,35 +274,7 @@ def _add_availability_effects(
         before = current_dates.min().toordinal() if len(current_dates) else None
         if before is None or not (~computed_rows).any():
             priors = None
-    families = (
-        (
-            "TOP3_AVAILABILITY_EFFECT",
-            (
-                "TOP1_PLAYER_ID_PTS",
-                "TOP2_PLAYER_ID_PTS",
-                "TOP3_PLAYER_ID_PTS",
-                "TOP1_PLAYER_ID_MIN",
-            ),
-        ),
-        (
-            "TOP3_INJURED_AVAILABILITY_EFFECT",
-            (
-                "TOP1_INJURED_PLAYER_ID_PTS",
-                "TOP2_INJURED_PLAYER_ID_PTS",
-                "TOP3_INJURED_PLAYER_ID_PTS",
-                "TOP1_INJURED_PLAYER_ID_MIN",
-            ),
-        ),
-        (
-            "TOP2_QUESTIONABLE_AVAILABILITY_EFFECT",
-            (
-                "TOP1_QUESTIONABLE_PLAYER_ID_PTS",
-                "TOP2_QUESTIONABLE_PLAYER_ID_PTS",
-                "TOP1_QUESTIONABLE_PLAYER_ID_MIN",
-            ),
-        ),
-    )
-    for prefix, names in families:
+    for prefix, names in EFFECT_FAMILIES:
         stored = priors.get((horizon, prefix)) if priors is not None else None
         totals = {} if priors is not None and stored is None else None
         games = add_top3_availability_effect_features_for_columns(
@@ -306,8 +331,21 @@ def _one_horizon(
                 player_id
             )
     original_columns = set(context.team_games.columns)
+    team_games = context.team_games
+    if target_game_ids is not None and _fit_continues_from_priors(
+        base, priors, horizon, first_current_season
+    ):
+        # Only the current seasons' effects are computed (the earlier ones'
+        # shrinkage sums are stored), and an effect reads its own season and
+        # the one before (``_infer_last_two_season_years_for_row``): earlier
+        # team-games' availability is never read. Tonight's rows read their
+        # season and the one before too (the streak lookups); every other read
+        # is of the row's own game, or of the players and injuries, which stay
+        # whole. So those two seasons' rows are what a build of every row gives.
+        seasons = history_memo.season_of_game_ids(team_games["GAME_ID"])
+        team_games = team_games[seasons >= first_current_season - 1]
     team, injured_dict, availability = add_player_history_features(
-        context.team_games.copy(),
+        team_games.copy(),
         context.players.copy(),
         injuries,
         PLAYER_STATS,
