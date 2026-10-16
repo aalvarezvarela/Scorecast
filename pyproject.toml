@@ -95,7 +95,18 @@ tabpfn-time-series = "^1.0.8"
 optional = true
 
 [tool.poetry.group.graph.dependencies]
-torch = "2.9.1"
+# Linux x86_64 takes the CUDA 12.6 build: PyPI's default (cu128) dropped
+# Pascal (sm_61, the GTX 1060); cu126 keeps sm_50-sm_90 but lacks
+# Blackwell (sm_100/sm_120). Other platforms stay on PyPI.
+torch = [
+  { version = "2.9.1+cu126", source = "pytorch-cu126", markers = "sys_platform == 'linux' and platform_machine == 'x86_64'" },
+  { version = "2.9.1", source = "pypi", markers = "sys_platform != 'linux' or platform_machine != 'x86_64'" },
+]
+
+[[tool.poetry.source]]
+name = "pytorch-cu126"
+url = "https://download.pytorch.org/whl/cu126"
+priority = "explicit"
 
 [build-system]
 requires = ["poetry-core"]
