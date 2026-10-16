@@ -116,6 +116,9 @@ class BaseInjuryContext:
     players: pd.DataFrame
     seasons: list[str]
     player_context_seasons: list[str]
+    scheduled_games: pd.DataFrame | None = None
+    roster_snapshots: pd.DataFrame | None = None
+    live_as_of: pd.Timestamp | None = None
 
 
 #: ``merge_home_away_data`` derives two "star player" ratios inline and indexes
@@ -287,6 +290,8 @@ def create_base_game_features(
     combine_fanatics_and_caesars: bool | None = None,
     return_injury_context: bool = False,
     scheduled_games: pd.DataFrame | None = None,
+    roster_snapshots: pd.DataFrame | None = None,
+    live_as_of: pd.Timestamp | None = None,
     target_game_ids=None,
     verbose: bool = True,
 ) -> pd.DataFrame | tuple[pd.DataFrame, BaseInjuryContext]:
@@ -454,6 +459,9 @@ def create_base_game_features(
             players=df_players.copy(),
             seasons=seasons,
             player_context_seasons=player_context_seasons,
+            scheduled_games=scheduled_games,
+            roster_snapshots=roster_snapshots,
+            live_as_of=live_as_of,
         )
         if return_injury_context
         else None

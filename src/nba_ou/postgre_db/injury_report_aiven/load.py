@@ -70,7 +70,9 @@ def clear_season(conn: psycopg.Connection, season_year: int) -> dict[str, int]:
     return deleted
 
 
-def upsert_teams(conn: psycopg.Connection, teams: pd.DataFrame) -> dict[str, int]:
+def upsert_teams(
+    conn: psycopg.Connection, teams: pd.DataFrame, *, commit: bool = True
+) -> dict[str, int]:
     """Register clubs; returns ``report_name -> team_id``."""
     with conn.cursor() as cur:
         for row in teams.itertuples(index=False):
@@ -83,11 +85,14 @@ def upsert_teams(conn: psycopg.Connection, teams: pd.DataFrame) -> dict[str, int
             )
         cur.execute(_q("SELECT report_name, team_id FROM {schema}.ir_team"))
         mapping = {name: team_id for name, team_id in cur.fetchall()}
-    conn.commit()
+    if commit:
+        conn.commit()
     return mapping
 
 
-def upsert_games(conn: psycopg.Connection, games: pd.DataFrame) -> int:
+def upsert_games(
+    conn: psycopg.Connection, games: pd.DataFrame, *, commit: bool = True
+) -> int:
     """Copy the game dimension across so every read can join locally."""
     written = 0
     with conn.cursor() as cur:
@@ -113,7 +118,8 @@ def upsert_games(conn: psycopg.Connection, games: pd.DataFrame) -> int:
                 ),
             )
             written += 1
-    conn.commit()
+    if commit:
+        conn.commit()
     return written
 
 
@@ -157,7 +163,7 @@ def upsert_reasons(
 
 
 def upsert_reports(
-    conn: psycopg.Connection, reports: pd.DataFrame
+    conn: psycopg.Connection, reports: pd.DataFrame, *, commit: bool = True
 ) -> dict[pd.Timestamp, int]:
     """Register report coverage; returns ``observed_at -> report_id``."""
     with conn.cursor() as cur:
@@ -179,7 +185,8 @@ def upsert_reports(
             )
         cur.execute(_q("SELECT observed_at, report_id FROM {schema}.ir_report"))
         mapping = {ts: rid for ts, rid in cur.fetchall()}
-    conn.commit()
+    if commit:
+        conn.commit()
     return mapping
 
 
@@ -207,7 +214,9 @@ def clear_games(conn: psycopg.Connection, game_ids: list[str]) -> dict[str, int]
     return deleted
 
 
-def insert_spans(conn: psycopg.Connection, spans: pd.DataFrame) -> int:
+def insert_spans(
+    conn: psycopg.Connection, spans: pd.DataFrame, *, commit: bool = True
+) -> int:
     """Insert status spans; idempotent on the primary key."""
     if spans.empty:
         return 0
@@ -227,11 +236,14 @@ def insert_spans(conn: psycopg.Connection, spans: pd.DataFrame) -> int:
     ]
     with conn.cursor() as cur:
         cur.executemany(statement, rows)
-    conn.commit()
+    if commit:
+        conn.commit()
     return len(rows)
 
 
-def insert_filing_spans(conn: psycopg.Connection, spans: pd.DataFrame) -> int:
+def insert_filing_spans(
+    conn: psycopg.Connection, spans: pd.DataFrame, *, commit: bool = True
+) -> int:
     if spans.empty:
         return 0
     columns = sql.SQL(", ").join(sql.Identifier(c) for c in FILING_COLUMNS)
@@ -250,11 +262,14 @@ def insert_filing_spans(conn: psycopg.Connection, spans: pd.DataFrame) -> int:
     ]
     with conn.cursor() as cur:
         cur.executemany(statement, rows)
-    conn.commit()
+    if commit:
+        conn.commit()
     return len(rows)
 
 
-def record_unresolved(conn: psycopg.Connection, unresolved: list[dict]) -> int:
+def record_unresolved(
+    conn: psycopg.Connection, unresolved: list[dict], *, commit: bool = True
+) -> int:
     """Persist every name that did not resolve, with an occurrence count."""
     if not unresolved:
         return 0
@@ -280,7 +295,8 @@ def record_unresolved(conn: psycopg.Connection, unresolved: list[dict]) -> int:
                 ),
                 (name, team, season, n),
             )
-    conn.commit()
+    if commit:
+        conn.commit()
     return len(counts)
 
 

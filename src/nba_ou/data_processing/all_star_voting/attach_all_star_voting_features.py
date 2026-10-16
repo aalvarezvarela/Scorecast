@@ -252,6 +252,7 @@ def add_all_star_voting_features(
     row_cache: RowCache | None = None,
     prepared: PreparedAllStarInputs | None = None,
     target_game_ids: set[str] | None = None,
+    current_rosters: dict | None = None,
 ) -> pd.DataFrame:
     """Adds per-team-game all-star fan-vote share columns.
 
@@ -368,6 +369,7 @@ def add_all_star_voting_features(
         game_date = pd.Timestamp(game_date)
         game_day = game_date.normalize()
         team_id_str = str(team_id)
+        members = (current_rosters or {}).get((str(game_id), team_id_str))
         if row_cache is not None:
             team_questionable = (
                 questionable_normalized.get(str(game_id))
@@ -380,6 +382,7 @@ def add_all_star_voting_features(
                 str(season_id),
                 game_date,
                 day_signatures.get(game_day),
+                frozenset(members) if members is not None else None,
                 (
                     frozenset(team_questionable[team_id_str])
                     if team_questionable is not None
@@ -457,6 +460,8 @@ def add_all_star_voting_features(
         injured_ids = injured_dict_normalized.get(str(game_id), {}).get(
             team_id_str, set()
         )
+        if members is not None:
+            candidate_ids = set(members) & season_index["all_player_ids"]
         # A current pregame injury assignment is also authoritative roster
         # evidence, including when a transferred player has not yet logged a
         # box score for the new team.

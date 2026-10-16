@@ -118,6 +118,7 @@ def add_roster_continuity_feature(
     df_game_context: pd.DataFrame | None = None,
     scheduled_game_ids: list[Any] | set[Any] | tuple[Any, ...] | None = None,
     target_game_ids: set[str] | None = None,
+    current_rosters: dict | None = None,
 ) -> pd.DataFrame:
     """Add continuity, incoming, and net minute shares for two roster horizons.
 
@@ -417,6 +418,7 @@ def add_roster_continuity_feature(
         date_ns: int,
         window_start_ns: int,
         require_previous_season_baseline: bool,
+        members: dict | None = None,
     ) -> tuple[float, float]:
         bucket_key = (season_year, team_id)
         bucket = team_buckets.get(bucket_key, [])
@@ -430,6 +432,8 @@ def add_roster_continuity_feature(
             return np.nan, np.nan
 
         candidate_players = {player_id for _, _, player_id, _ in window_bucket}
+        if members is not None:
+            candidate_players.update(members)
         lost_minutes = 0.0
         candidate_minutes = 0.0
         new_player_minutes = 0.0
@@ -450,12 +454,20 @@ def add_roster_continuity_feature(
             )
             candidate_minutes += player_target_team_minutes
             latest_team = timeline[assignment_index - 1][3]
+            prior_index = assignment_index - 2
+            if members is not None:
+                if player_id in members:
+                    if latest_team != team_id:
+                        prior_index = assignment_index - 1
+                    latest_team = team_id
+                else:
+                    latest_team = None
             if latest_team != team_id:
                 lost_minutes += player_target_team_minutes
                 continue
 
             previous_team_id = None
-            for timeline_index in range(assignment_index - 2, -1, -1):
+            for timeline_index in range(prior_index, -1, -1):
                 _, actual_ns, _, assigned_team = timeline[timeline_index]
                 # The bisect already limits these indexes to known_ns <= date_ns.
                 # In reverse chronological order, crossing the window boundary
@@ -489,9 +501,7 @@ def add_roster_continuity_feature(
     new_player_values: list[float] = []
     immediate_new_player_values: list[float] = []
     row_cols = ["GAME_DATE", "SEASON_YEAR", "TEAM_ID", "GAME_ID"]
-    targets = (
-        None if target_game_ids is None else {str(g) for g in target_game_ids}
-    )
+    targets = None if target_game_ids is None else {str(g) for g in target_game_ids}
     for game_date, season_year_value, team_id_value, game_id in df_team[
         row_cols
     ].itertuples(index=False, name=None):
@@ -517,6 +527,7 @@ def add_roster_continuity_feature(
             date_ns=date_ns,
             window_start_ns=_late_previous_season_start_ns(season_year),
             require_previous_season_baseline=True,
+            members=(current_rosters or {}).get((str(game_id), team_id)),
         )
         immediate_continuity, immediate_new_player_share = roster_metrics_for_window(
             season_year=season_year,
@@ -524,6 +535,7 @@ def add_roster_continuity_feature(
             date_ns=date_ns,
             window_start_ns=_immediate_trade_window_start_ns(date_ns),
             require_previous_season_baseline=False,
+            members=(current_rosters or {}).get((str(game_id), team_id)),
         )
         values.append(continuity)
         immediate_values.append(immediate_continuity)

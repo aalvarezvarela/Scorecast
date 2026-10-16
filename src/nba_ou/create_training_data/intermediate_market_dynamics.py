@@ -70,7 +70,7 @@ def load_injury_news_timeline(
     requested = {int(s) for s in season_years}
     seasons = sorted(requested | {min(requested) - 1})
     with connect_nba_db("aiven") as conn:
-        # Tonight's games, which the store does not hold, from live_reports.
+        # Synchronized Aiven state, optionally overlaid for historical replay.
         spans = live.status_spans(conn, seasons, live_reports)
         filings = live.filing_spans(conn, seasons, live_reports)
         schedule = live.team_game_schedule(conn, seasons, live_reports)

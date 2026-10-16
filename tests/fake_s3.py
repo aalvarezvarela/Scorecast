@@ -56,7 +56,7 @@ class FakeS3Client:
             )
         return {"Body": _Body(self.store[Key])}
 
-    def put_object(self, Bucket: str, Key: str, Body: bytes):  # noqa: N803
+    def put_object(self, Bucket: str, Key: str, Body: bytes, **kwargs):  # noqa: N803
         self.store[Key] = Body
         self.put_order.append(Key)
         return {}

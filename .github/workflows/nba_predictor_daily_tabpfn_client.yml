@@ -30,6 +30,7 @@ jobs:
             DB_ENV: supabase
             SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
             SUPABASE_DB_PASSWORD: ${{ secrets.SUPABASE_DB_PASSWORD }}
+            AIVEN_DB_URL: ${{ secrets.AIVEN_DB_URL }}
             TABPFN_ACCESS_TOKEN: ${{ secrets.TABPFN_ACCESS_TOKEN }}
             S3_AWS_PROFILE: ""
 

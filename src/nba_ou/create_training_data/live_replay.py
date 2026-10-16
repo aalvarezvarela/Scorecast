@@ -129,6 +129,7 @@ def replay_scheduled_data(game_date: str, as_of: pd.Timestamp) -> dict:
     from nba_ou.fetch_data.injury_reports.get_latest_injury_report import (
         read_injury_report,
     )
+    from nba_ou.fetch_data.live_rosters import load_live_rosters
     from nba_ou.postgre_db.odds_sportsbook.fetch_data_from_db.fetch_data_from_odds_sportsbook_db import (
         load_odds_sportsbook_from_db,
     )
@@ -170,4 +171,6 @@ def replay_scheduled_data(game_date: str, as_of: pd.Timestamp) -> dict:
         "df_odds_yahoo_scheduled": tonight(load_odds_yahoo_from_db([label])),
         "df_odds_sportsbook_scheduled": tonight(load_odds_sportsbook_from_db([label])),
         "games_not_updated": not_updated,
+        "injury_as_of_utc": as_of,
+        "roster_snapshots": load_live_rosters(scheduled, as_of=as_of),
     }

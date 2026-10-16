@@ -110,6 +110,7 @@ from nba_ou.data_processing.odds.book_combination import resolve_combine_books
 from nba_ou.data_processing.referees.referee_tendencies import (
     DEFAULT_REFEREE_HISTORY_SEASONS,
 )
+from nba_ou.fetch_data.live_rosters import load_live_rosters
 from nba_ou.postgre_db.input_cache import input_cache_enabled
 from nba_ou.postgre_db.line_history_aiven.fetch import (
     MARKET_MONEYLINE,
@@ -950,9 +951,10 @@ def create_intermediate_line_df(
     relying on the training config's ``cleaning.exclude_cols_containing`` keeps
     unwanted columns out of the CSV entirely, so they also cannot inflate
     ``max_na_per_row`` for earlier rows.
-    ``live`` adds tonight -- games the database does not hold until they are
-    finished, read in memory by ``live_game_day.fetch_live_game_day`` and never
-    written. Its line history is added to the ticks and games read from the
+    ``live`` adds tonight's schedule and line history in memory through
+    ``live_game_day.fetch_live_game_day``. Injury reports are synchronized to
+    Aiven first, and official roster snapshots are archived in S3.
+    Its line history is added to the ticks and games read from the
     store (replacing any stored rows of the same GAME_ID, which is what lets a
     past date be replayed "as of" an earlier moment to test train/serve
     parity), its schedule adds tonight's base rows, built from earlier games
@@ -1142,6 +1144,9 @@ def create_intermediate_line_df(
             "they lengthen the build without warming any odds rollup."
         )
     stage("Creating base game features (closing pipeline) ...")
+    roster_snapshots = live.roster_snapshots if live is not None else None
+    if live is not None and roster_snapshots is None:
+        roster_snapshots = load_live_rosters(live.scheduled_games, as_of=live.as_of)
     base, injury_context = create_base_game_features(
         recent_limit_to_include=recent_limit_to_include,
         season_start_date=pd.Timestamp(year=base_start_year, month=10, day=1),
@@ -1153,6 +1158,8 @@ def create_intermediate_line_df(
         combine_fanatics_and_caesars=combine_books,
         return_injury_context=True,
         scheduled_games=live.scheduled_games if live is not None else None,
+        roster_snapshots=roster_snapshots,
+        live_as_of=live.as_of if live is not None else None,
         target_game_ids=targets,
         verbose=verbose,
     )

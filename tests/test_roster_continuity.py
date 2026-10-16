@@ -108,6 +108,31 @@ def test_scheduled_placeholder_requires_explicit_scheduled_game_id() -> None:
     assert continuity == 1.0
 
 
+def test_official_roster_records_unreported_departures_and_new_signings():
+    team = _team_rows(["2025-10-22"])
+    game = team.GAME_ID.iloc[0]
+    players = pd.DataFrame(
+        [
+            _player("0022400901", "2025-03-20", 2024, "A", "stays", 40),
+            _player("0022400901", "2025-03-20", 2024, "A", "leaves", 110),
+            _player("0022400901", "2025-03-20", 2024, "B", "baseline", 30),
+        ]
+    )
+    result = add_roster_continuity_feature(
+        team,
+        players,
+        {},
+        current_rosters={
+            (game, "A"): {"stays": "Stays"},
+            (game, "B"): {"leaves": "Incoming", "baseline": "Baseline"},
+        },
+    )
+    home = result.loc[result.TEAM_ID.eq("A")].iloc[0]
+    away = result.loc[result.TEAM_ID.eq("B")].iloc[0]
+    assert home[ROSTER_CONTINUITY_COLUMN] == pytest.approx(40 / 150)
+    assert away[NEW_PLAYER_MINUTES_COLUMN] == pytest.approx(110 / 240)
+
+
 def test_sequential_departures_cannot_force_artificial_zero_continuity() -> None:
     df_team = _team_rows(["2025-10-22"])
     df_players = pd.DataFrame(

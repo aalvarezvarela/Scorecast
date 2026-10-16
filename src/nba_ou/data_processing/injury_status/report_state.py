@@ -192,6 +192,57 @@ def snapshot_report_states(
     return states
 
 
+def load_prediction_report_state(
+    game_ids: list[str], as_of: pd.Timestamp
+) -> InjuryReportState:
+    """Historical outcomes plus today's Aiven state, capped at now and tipoff."""
+    from nba_ou.postgre_db.config.db_config import connect_nba_db
+    from nba_ou.postgre_db.injury_report_aiven import fetch
+    from nba_ou.postgre_db.row_order import read_sql_canonical
+
+    as_of = pd.Timestamp(as_of)
+    if as_of.tzinfo is None:
+        raise ValueError("Prediction injury cutoff must be timezone-aware")
+    state = load_injury_report_state()
+    ids = set(map(str, game_ids))
+    with connect_nba_db("aiven") as conn:
+        cutoffs = read_sql_canonical(
+            """
+            SELECT game_id, 0 AS snapshot_minutes, LEAST(tipoff_utc, %(as_of)s) AS as_of
+            FROM injury_report.ir_game WHERE game_id = ANY(%(ids)s)
+        """,
+            conn,
+            params={"ids": sorted(ids), "as_of": as_of.to_pydatetime()},
+        )
+        statuses, filings, ages = fetch.report_state_at_snapshots(conn, cutoffs)
+        listed = read_sql_canonical(
+            """
+            SELECT DISTINCT game_id, player_id::text AS player_id
+            FROM injury_report.ir_status_span
+            WHERE game_id = ANY(%(ids)s) AND valid_from < %(as_of)s
+              AND is_pregame AND status_id IS NOT NULL
+        """,
+            conn,
+            params={"ids": sorted(ids), "as_of": as_of.to_pydatetime()},
+        )
+    current = snapshot_report_states(statuses, filings, ages, [0])[0]
+
+    def replace_today(history, today):
+        return pd.concat(
+            [history.loc[~history.game_id.isin(ids)], today], ignore_index=True
+        )
+
+    return InjuryReportState(
+        statuses=replace_today(state.statuses, current.statuses),
+        filings=replace_today(state.filings, current.filings),
+        report_age=replace_today(state.report_age, current.report_age),
+        status_events=state.status_events.loc[
+            ~state.status_events.game_id.isin(ids)
+        ].copy(),
+        listed_pairs=replace_today(state.listed_pairs, listed),
+    )
+
+
 def load_snapshot_report_states(
     cutoffs: pd.DataFrame,
 ) -> dict[int, InjuryReportState]:
@@ -217,9 +268,7 @@ def report_state_digest(
     what an earlier build saw; the manifest keeps this digest to tell.
     """
     items = (
-        sorted(states.items())
-        if isinstance(states, Mapping)
-        else [("closing", states)]
+        sorted(states.items()) if isinstance(states, Mapping) else [("closing", states)]
     )
     digest = sha256()
     for key, state in items:

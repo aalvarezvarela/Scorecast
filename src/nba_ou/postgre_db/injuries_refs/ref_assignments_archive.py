@@ -1,4 +1,8 @@
-"""Archive of the daily official.nba.com referee assignments, with roles.
+"""Legacy PostgreSQL archive of daily referee assignments, with roles.
+
+The prediction path no longer calls this module. Live assignments now use
+``fetch_data.referees.assignment_store`` (S3 Parquet); this utility is kept for
+existing archive maintenance and does not migrate or delete existing rows.
 
 The historical ``nba_refs`` table stores crews without roles: its row order
 only started to follow Crew Chief / Referee / Umpire in 2021-22, and the

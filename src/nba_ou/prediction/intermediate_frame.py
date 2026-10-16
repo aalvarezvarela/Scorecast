@@ -66,6 +66,7 @@ def tonight_intermediate_frame(
         game_date,
         scheduled_games=scheduled,
         df_referees_scheduled=scheduled_data.get("df_referees_scheduled"),
+        roster_snapshots=scheduled_data.get("roster_snapshots"),
         as_of=as_of,
     )
     frame, scoring = create_intermediate_line_df(
