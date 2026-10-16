@@ -19,12 +19,12 @@ class S3ModelBundleLocation:
     meta_key: str
 
 
-def make_s3_client(*, profile: str | None, region: str):
+def make_s3_client(*, profile: str | None, region: str, config=None):
     session_kwargs = {"region_name": region}
     if profile:
         session_kwargs["profile_name"] = profile
     session = boto3.Session(**session_kwargs)
-    return session.client("s3")
+    return session.client("s3", **({"config": config} if config is not None else {}))
 
 
 def read_s3_object_bytes(*, s3_client, bucket: str, key: str) -> bytes:

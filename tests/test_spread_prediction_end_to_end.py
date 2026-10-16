@@ -20,6 +20,7 @@ from nba_ou.prediction import prediction as prediction_module
 from nba_ou.prediction.prediction import (
     PREDICTION_TARGET_LINE_ERROR,
     PREDICTION_TARGET_SPREAD_ERROR,
+    PREDICTION_TARGET_TOTAL_POINTS,
     _prepare_required_features_for_prediction,
     load_and_predict_model_for_nba_games,
 )
@@ -156,3 +157,38 @@ def test_a_line_error_model_is_unaffected_by_the_spread_branches(captured_upload
     assert set(result["PRED_PICK"]).issubset({"OVER", "UNDER", "PUSH"})
     assert (result["PREDICTION_VALUE_TYPE"] == "DIFF_FROM_LINE").all()
     assert "PRED_SPREAD_ERROR" not in result.columns
+
+
+@pytest.mark.parametrize(
+    "target",
+    [
+        PREDICTION_TARGET_LINE_ERROR,
+        PREDICTION_TARGET_TOTAL_POINTS,
+        PREDICTION_TARGET_SPREAD_ERROR,
+    ],
+)
+def test_predictions_continue_with_nan_referee_features(captured_uploads, target):
+    referee_feature = "REF_CREW_FTA_TENDENCY_BEFORE"
+    features = [referee_feature, "FEAT_B"]
+    training = _frame(32).rename(columns={"FEAT_A": referee_feature})
+    model = XGBRegressor(n_estimators=6, max_depth=2, verbosity=0)
+    model.fit(training[features], training[referee_feature] * 2 - training.FEAT_B)
+    frame = _frame().rename(columns={"FEAT_A": referee_feature})
+    frame[referee_feature] = np.nan
+
+    result = load_and_predict_model_for_nba_games(
+        df=frame,
+        regressor=model,
+        model_name="missing_referees",
+        model_type="test",
+        model_version="test",
+        required_features=features,
+        prediction_target=target,
+        prediction_datetime=PREDICTION_AT,
+        shap_top_n=2,
+    )
+
+    assert len(result) == len(frame)
+    assert result.NA_COLUMNS_COUNT.eq(1).all()
+    assert result.NA_COLUMNS_NAMES.eq(referee_feature).all()
+    assert len(captured_uploads[0]) == len(frame)

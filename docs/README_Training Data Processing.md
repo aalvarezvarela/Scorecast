@@ -1163,9 +1163,33 @@ on 2012-2016 and tested forward on 2017+):
 - Crew roles (chief/referee/umpire) added nothing, and `nba_refs` only encodes
   roles by row order from 2021-22 on. Crews are unordered sets.
 
-`process_scheduled_referee_assignments()` also archives each scrape of the
-assignments page, with roles and first-seen time, into
-`<refs schema>.nba_ref_assignments` (best effort, never blocks prediction).
+`process_scheduled_referee_assignments()` reads NBA Official first, then falls
+back to the requested game's date in S3 if the live fetch, parsing, or date
+validation fails. It does not write to PostgreSQL. The historical `nba_refs`
+box-score update remains separate.
+
+Raw assignments use compressed Parquet in the configured S3 bucket:
+
+```text
+train_data/live_inputs/v1/referees/game_date=YYYY-MM-DD/
+  latest.json
+  fetched_at=YYYY-MM-DDTHH-MM-SS.ffffffZ/assignments.parquet
+```
+
+The game date is Eastern; fetch timestamps are UTC. The manifest contains the
+exact Parquet key, assignment date, original fetch time, row count and content
+and file checksums. Fallback makes one direct GET for `latest.json`, then one
+for Parquet; it never lists the bucket or makes a separate existence request.
+It refuses wrong-date or corrupt data and logs the backup's original fetch
+time when used.
+
+A successful nonempty live response is saved only if its normalized content
+changed (row order does not count as a change). Data is uploaded before its
+manifest. S3 write failures do not prevent using live crews. Successful empty
+responses keep NaN features and do not overwrite or revive a previous crew.
+If both live and S3 fail, games remain with NaN referee features, for both
+closing and intermediate builders. Existing prediction-feature S3 snapshots
+are independent and unchanged.
 
 ## Availability Effect Features
 
