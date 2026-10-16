@@ -494,29 +494,11 @@ def add_high_value_features_for_team_points(df: pd.DataFrame) -> pd.DataFrame:
         )
 
     # ---------------------------------------------------------------------
-    # 4) Fatigue and travel compression
+    # 4) Rest mismatch
     # ---------------------------------------------------------------------
 
-    # Travel intensity: concentration of travel in last 2 vs 14 days
-    if _has(
-        ["TOTAL_KM_IN_LAST_2_DAYS_HOME_TEAM", "TOTAL_KM_IN_LAST_14_DAYS_HOME_TEAM"]
-    ):
-        ratio = _safe_div(
-            out["TOTAL_KM_IN_LAST_2_DAYS_HOME_TEAM"],
-            out["TOTAL_KM_IN_LAST_14_DAYS_HOME_TEAM"],
-        )
-        _add("TRAVEL_RECENCY_RATIO_HOME_2D_OVER_14D", ratio)
-
-    if _has(
-        ["TOTAL_KM_IN_LAST_2_DAYS_AWAY_TEAM", "TOTAL_KM_IN_LAST_14_DAYS_AWAY_TEAM"]
-    ):
-        ratio = _safe_div(
-            out["TOTAL_KM_IN_LAST_2_DAYS_AWAY_TEAM"],
-            out["TOTAL_KM_IN_LAST_14_DAYS_AWAY_TEAM"],
-        )
-        _add("TRAVEL_RECENCY_RATIO_AWAY_2D_OVER_14D", ratio)
-
-    # Rest mismatch
+    # Travel-recency ratios are already computed by compute_travel_features
+    # from raw kilometers, before the distance columns become log1p(km).
     if _has(["REST_DAYS_BEFORE_MATCH_TEAM_HOME", "REST_DAYS_BEFORE_MATCH_TEAM_AWAY"]):
         _add(
             "REST_DAYS_DIFF_HOME_MINUS_AWAY",

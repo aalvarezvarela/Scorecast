@@ -52,6 +52,14 @@ TAIL_THRESHOLDS = [10, 15, 20]
 # Opening-line column (consensus opener kept after merge)
 OPEN_LINE_COL = "ODDS_TOTAL_LINE_consensus_opener"
 
+#: Not a book's close but an opening consensus: across books it would measure
+#: line movement, not disagreement.
+CROSSBOOK_EXCLUDED_BOOKS = ("consensus_opener",)
+
+#: A game with one book has no disagreement to measure; ``ddof=0`` would call it
+#: 0 ("the books agree"), so it is NaN instead.
+CROSSBOOK_MIN_BOOKS = 2
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -312,19 +320,25 @@ def add_global_market_features(df: pd.DataFrame) -> pd.DataFrame:
         )
 
     # ---- cross-book per-game features (section 8.1) ----
-    total_line_books = extract_total_line_books(out)
-    if len(total_line_books) > 1:
+    total_line_books = [
+        b
+        for b in extract_total_line_books(out)
+        if b not in CROSSBOOK_EXCLUDED_BOOKS
+    ]
+    if len(total_line_books) >= CROSSBOOK_MIN_BOOKS:
         book_lines = pd.DataFrame(
             {
                 b: pd.to_numeric(out[f"ODDS_TOTAL_LINE_{b}"], errors="coerce")
                 for b in total_line_books
-                if f"ODDS_TOTAL_LINE_{b}" in out.columns
             }
         )
-        crossbook_std = book_lines.std(axis=1, skipna=True, ddof=0)
-        crossbook_range = book_lines.max(axis=1, skipna=True) - book_lines.min(
-            axis=1, skipna=True
+        enough_books = book_lines.notna().sum(axis=1) >= CROSSBOOK_MIN_BOOKS
+        crossbook_std = book_lines.std(axis=1, skipna=True, ddof=0).where(
+            enough_books
         )
+        crossbook_range = (
+            book_lines.max(axis=1, skipna=True) - book_lines.min(axis=1, skipna=True)
+        ).where(enough_books)
     else:
         crossbook_std = None
         crossbook_range = None

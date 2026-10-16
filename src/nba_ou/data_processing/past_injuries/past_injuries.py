@@ -302,6 +302,34 @@ class PlayerLookupIndex:
                 for key, timeline in timelines.items()
             }
 
+        # Game-day rosters: every player with a box-score row for the team-game,
+        # minutes or not. The box score lists the players dressed for the game,
+        # so this is the roster on game day, published before tip and identical
+        # whoever ends up playing. ``game_roster`` adds the game's inactive and
+        # report-listed players, who have no box-score row.
+        box_rows = df_valid[df_valid["GAME_ID"].notna()]
+        box_keys = pd.DataFrame(
+            {
+                "game": box_rows["GAME_ID"].astype(str).to_numpy(),
+                "team": box_rows["TEAM_ID"].astype(str).to_numpy(),
+                "player": box_rows["PLAYER_ID"].astype(str).to_numpy(),
+            }
+        ).drop_duplicates()
+        self.box_score_players = {
+            key: frozenset(players)
+            for key, players in box_keys.groupby(["game", "team"], sort=False)["player"]
+        }
+        # A roster member can have no earlier row this season while still
+        # having useful history from an earlier season. Resolve that per
+        # player, rather than falling back only when the whole roster is empty.
+        first_dates = box_rows.assign(_player=box_rows["PLAYER_ID"].astype(str))
+        self.first_player_dates = (
+            first_dates.groupby("_player")["GAME_DATE"].min().to_dict()
+        )
+        self.first_season_player_dates = (
+            first_dates.groupby(["SEASON_YEAR", "_player"])["GAME_DATE"].min().to_dict()
+        )
+
         self.season_groups = season_groups
         self.season_year_groups = season_year_groups
         self.player_timeline = player_timeline
@@ -331,7 +359,55 @@ class PlayerLookupIndex:
             self._bucket_columns[key] = values
         return values
 
-    def lookup_for(self, injured_dict=None, *, ids_only=False, rows_only=False):
+    def game_roster(self, game_id, team_id, listed=None) -> set[str] | None:
+        """The team's game-day roster: box-score players plus ``listed`` ones.
+
+        ``listed`` is ``game -> team -> players`` named for the game without a
+        box-score row: the inactive list and the injury report. A listed
+        player belongs to the team even when he never appears in its box score.
+        ``None`` where the team-game has no box score (a scheduled game, or a
+        gap in the data); the caller then falls back to inferring the roster.
+        """
+        box = self.box_score_players.get((str(game_id), str(team_id)))
+        if box is None:
+            return None
+        roster = set(box)
+        roster.update(
+            str(p)
+            for p in (listed or {}).get(str(game_id), {}).get(str(team_id), ())
+            if pd.notna(p)
+        )
+        return roster
+
+    def prior_history_members(self, season_id, team_id, date, game_id, listed=None):
+        """Game-day roster needing an earlier-season state for any member.
+
+        The caller builds these members' states through ``live_roster_history``,
+        the same path as an official live roster. This retains earlier seasons
+        for unavailable players and supplies safe same-day pre-game states for
+        available ones. Rookies without earlier history keep their missing stats.
+        """
+        roster = self.game_roster(game_id, team_id, listed)
+        if roster is None:
+            return None
+        season_year = int(str(season_id)[-4:])
+        if any(
+            self.first_player_dates.get(player, date) < date
+            and self.first_season_player_dates.get((season_year, player), date) >= date
+            for player in roster
+        ):
+            return {player: player for player in sorted(roster)}
+        return None
+
+    def lookup_for(
+        self,
+        injured_dict=None,
+        *,
+        ids_only=False,
+        rows_only=False,
+        game_day_listed=None,
+        inferred_games=frozenset(),
+    ):
         """The lookup ``create_player_lookup(df_players, injured_dict)`` returns.
 
         ``ids_only=True`` returns a lookup of
@@ -343,6 +419,15 @@ class PlayerLookupIndex:
         ``df_bucket.iloc[rows]`` is exactly the frame the lookup returns, or
         ``None`` where that frame is empty. Read its columns through
         :meth:`bucket_column`.
+
+        ``game_day_listed`` switches a stored game to its game-day roster
+        (:meth:`game_roster` with these listed players) instead of inferring
+        membership from each player's last team: a trade, signing or release
+        counts from the first game it affects, not one game later. Rows come
+        from the season year, so a playoff or play-in game still sees each
+        player's regular-season rows. Games in ``inferred_games`` (tonight's,
+        whose box score does not exist) and games without a box score keep
+        the inference.
         """
         if ids_only and rows_only:
             raise ValueError("ids_only and rows_only are exclusive")
@@ -446,6 +531,9 @@ class PlayerLookupIndex:
                 if last_team == team_key:
                     valid_players.append(str(player_id))
 
+            return _rows_of(valid_players, bucket_key, date_to_filter, bucket_groups)
+
+        def _rows_of(valid_players, bucket_key, date_to_filter, bucket_groups):
             if not valid_players:
                 return empty_df
 
@@ -489,6 +577,17 @@ class PlayerLookupIndex:
             """
             Fast lookup for players on a team in a season before a given date.
             """
+            if (
+                game_day_listed is not None
+                and game_id is not None
+                and str(game_id) not in inferred_games
+            ):
+                roster = self.game_roster(game_id, team_id, game_day_listed)
+                season_year = _season_year_from_season_id(season_id)
+                if roster is not None and season_year is not None:
+                    return _rows_of(
+                        roster, season_year, date_to_filter, season_year_groups
+                    )
             result = _lookup_by_key(
                 season_id,
                 team_id,

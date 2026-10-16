@@ -56,7 +56,7 @@ def _before(df, stat_col, halflife=players_statistics.EWMA_HALFLIFE_GAMES):
     in_season = shifted.groupby(
         [out["SEASON_YEAR"], out["PLAYER_ID"]], group_keys=False
     ).transform(
-        lambda s: s.ewm(halflife=halflife, adjust=False, min_periods=1, ignore_na=True).mean()
+        lambda s: s.ewm(halflife=halflife, adjust=True, min_periods=1, ignore_na=True).mean()
     )
     regular = valid_mask & out["GAME_ID"].map(_is_fallback_season_type)
     means = (
@@ -71,7 +71,12 @@ def _before(df, stat_col, halflife=players_statistics.EWMA_HALFLIFE_GAMES):
         means, on=["PLAYER_ID", "SEASON_YEAR"], how="left"
     )
     previous = pd.Series(merged["_previous_season_stat"].to_numpy(), index=out.index)
-    out[f"{stat_col}_CUM_AVG"] = in_season.fillna(previous).fillna(0)
+    # No valid appearance before the row in any season: no estimate.
+    seen_before = (
+        valid_mask.astype(int).groupby(out["PLAYER_ID"]).cumsum()
+        - valid_mask.astype(int)
+    ).gt(0)
+    out[f"{stat_col}_CUM_AVG"] = in_season.fillna(previous).fillna(0).where(seen_before)
     return out
 
 
@@ -79,4 +84,25 @@ def _before(df, stat_col, halflife=players_statistics.EWMA_HALFLIFE_GAMES):
 @pytest.mark.parametrize("stat_col", ["PTS", "TS_PCT"])
 def test_same_averages_as_the_per_group_lambda(seed, stat_col):
     df = _players(seed)
-    assert_identical(precompute_cumulative_avg_stat(df, stat_col), _before(df, stat_col))
+    actual = precompute_cumulative_avg_stat(df, stat_col)
+    assert_identical(
+        actual.drop(columns=f"{stat_col}_CUM_AVG_AFTER"), _before(df, stat_col)
+    )
+
+
+@pytest.mark.parametrize("seed", [0, 1, 2])
+@pytest.mark.parametrize("stat_col", ["PTS", "TS_PCT"])
+def test_after_game_value_is_what_the_next_row_carries(seed, stat_col):
+    # Within a player-season, a row's value including its own game is exactly
+    # the pre-game value of the player's next row: the EWMA of the same games.
+    out = precompute_cumulative_avg_stat(_players(seed), stat_col)
+    out = out.dropna(subset=["SEASON_YEAR", "PLAYER_ID"])
+    next_row = out.groupby(["SEASON_YEAR", "PLAYER_ID"])[f"{stat_col}_CUM_AVG"].shift(
+        -1
+    )
+    has_next = next_row.notna()
+    assert has_next.sum() > 1000
+    np.testing.assert_array_equal(
+        out.loc[has_next, f"{stat_col}_CUM_AVG_AFTER"].to_numpy(),
+        next_row[has_next].to_numpy(),
+    )

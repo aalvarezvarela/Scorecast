@@ -11,6 +11,7 @@ from nba_ou.data_processing.players.live_roster import (
     live_roster_history,
     supplement_rosters,
 )
+from nba_ou.data_processing.players.players_statistics import EWMA_HALFLIFE_GAMES
 from nba_ou.utils.row_cache import RowCache
 
 TEAM, OLD_TEAM = "1610612744", "1610612738"
@@ -198,9 +199,9 @@ def test_live_unavailable_statistics_match_training_with_variable_history(
         stat_cols=["PTS", "MIN"],
         prepared_players=prepared,
         report_out_overrides={(target, TEAM): ["1", "2"] if status == "out" else []},
-        report_questionable_sets={(target, TEAM): ["1", "2"]}
-        if status == "questionable"
-        else {},
+        report_questionable_sets=(
+            {(target, TEAM): ["1", "2"]} if status == "questionable" else {}
+        ),
     )
     training, _ = add_player_history_features(team, players, injuries, **kwargs)
     actual, _ = add_player_history_features(
@@ -214,8 +215,16 @@ def test_live_unavailable_statistics_match_training_with_variable_history(
     current = actual.loc[actual.GAME_ID.eq(target)].iloc[0]
     group = "INJURED" if status == "out" else "QUESTIONABLE"
     if last_row == "appearance":
-        assert expected[f"TOP1_{group}_PLAYER_PTS_BEFORE"] == (
-            9.0 if minutes_cross_threshold else 10.0
+        # Player 1 scored 10, then 30, then is Out/Questionable. His value
+        # includes the 30-point game: the EWMA after it, not the one before it
+        # (which read 10), with the latest game weighted 1 and the one before
+        # it 0.5 ** (1 / halflife). With crossing minutes, that game also lifts
+        # his minutes average (11 -> ~26) over the injured threshold (12), so he
+        # still outranks player 2's steady 9 points.
+        older = 0.5 ** (1 / EWMA_HALFLIFE_GAMES)
+        assert expected[f"TOP1_{group}_PLAYER_ID_PTS_BEFORE"] == "1"
+        assert expected[f"TOP1_{group}_PLAYER_PTS_BEFORE"] == pytest.approx(
+            (30.0 + older * 10.0) / (1.0 + older)
         )
     pd.testing.assert_series_equal(current, expected, check_exact=True)
 
@@ -245,6 +254,144 @@ def test_report_only_rookie_is_kept_but_ranked_like_training(inputs):
         expected[injured].reset_index(drop=True),
     )
     assert current.TOP1_INJURED_PLAYER_ID_PTS_BEFORE.isna().all()
+
+
+@pytest.mark.parametrize("array_steps", [True, False], ids=["arrays", "frames"])
+@pytest.mark.parametrize("status", ["out", "questionable", "available"])
+@pytest.mark.parametrize("same_day_row", [False, True])
+@pytest.mark.parametrize("future_debut", [False, True])
+def test_previous_season_member_is_not_lost_from_a_partly_known_roster(
+    monkeypatch, array_steps, status, same_day_row, future_debut
+):
+    monkeypatch.setattr(player_features, "ARRAY_ROSTER_STEPS", array_steps)
+    dates = pd.to_datetime(["2025-11-01", "2025-11-03", "2026-11-01", "2026-11-03"])
+    ids = ["0022500001", "0022500002", "0022600001", "0022600002"]
+    rows = []
+    for game, date in zip(ids, dates, strict=True):
+        year = 2025 if date.year == 2025 else 2026
+        for player, points in (("1", 28.0), ("2", 12.0)):
+            if player == "1" and year == 2026 and not same_day_row:
+                continue  # A veteran who has not debuted this season.
+            row = dict(
+                GAME_ID=game,
+                GAME_DATE=date,
+                TEAM_ID=TEAM,
+                SEASON_ID=f"2{year}",
+                SEASON_YEAR=year,
+                PLAYER_ID=player,
+                PLAYER_NAME=f"Player {player}",
+                MIN=30.0,
+                PTS=points,
+            )
+            if player == "1" and year == 2026:
+                row.update(MIN=0.0, PTS=float("nan"))
+            rows.append(row)
+    if future_debut:
+        # A future debut must not replace the veteran's already known history.
+        rows.append(
+            dict(
+                rows[0],
+                GAME_ID="0022600009",
+                GAME_DATE=pd.Timestamp("2026-12-01"),
+                SEASON_ID="22026",
+                SEASON_YEAR=2026,
+                MIN=40.0,
+                PTS=999.0,
+            )
+        )
+    players = pd.DataFrame(rows)
+    team = players.loc[
+        players.PLAYER_ID.eq("2"),
+        ["GAME_ID", "GAME_DATE", "TEAM_ID", "SEASON_ID", "SEASON_YEAR"],
+    ]
+    current_ids = ids[2:]
+    injuries = pd.DataFrame({"GAME_ID": current_ids, "TEAM_ID": TEAM, "PLAYER_ID": "1"})
+    kwargs = dict(
+        stat_cols=["PTS", "MIN"],
+        report_out_overrides={
+            (g, TEAM): ["1"] if status == "out" else [] for g in current_ids
+        },
+        report_questionable_sets={
+            (g, TEAM): ["1"] if status == "questionable" else [] for g in current_ids
+        },
+    )
+    historical, _, availability = add_player_history_features(
+        team.copy(), players, injuries, return_availability_dict=True, **kwargs
+    )
+    # The same membership supplied by an official roster must produce identical
+    # values, even when other players already have rows in the current season.
+    live, _ = add_player_history_features(
+        team.copy(),
+        players,
+        injuries,
+        **kwargs,
+        current_rosters={
+            (g, TEAM): {"1": "Veteran", "2": "Rotation"} for g in current_ids
+        },
+        current_game_ids=set(current_ids),
+    )
+    group = (
+        "INJURED_"
+        if status == "out"
+        else "QUESTIONABLE_" if status == "questionable" else ""
+    )
+    for game in current_ids:
+        row = historical.loc[historical.GAME_ID.eq(game)].iloc[0]
+        assert row[f"TOP1_{group}PLAYER_ID_PTS_BEFORE"] == "1"
+        assert row[f"TOP1_{group}PLAYER_PTS_BEFORE"] == pytest.approx(28.0)
+        if status != "available":
+            assert row[f"N_{group}PLAYERS_BEFORE"] == 1
+        assert "1" in availability[game][TEAM]["injured"]
+    pd.testing.assert_frame_equal(
+        historical.loc[historical.GAME_ID.isin(current_ids)],
+        live.loc[live.GAME_ID.isin(current_ids)],
+        check_exact=True,
+    )
+
+
+@pytest.mark.parametrize("array_steps", [True, False], ids=["arrays", "frames"])
+@pytest.mark.parametrize("same_day_row", [False, True])
+def test_available_player_reads_all_prior_games_without_a_target_box_score(
+    monkeypatch, array_steps, same_day_row
+):
+    monkeypatch.setattr(player_features, "ARRAY_ROSTER_STEPS", array_steps)
+    from .test_historical_player_availability import TARGET_GAME, _players, _team_rows
+
+    players = _players(target_star_minutes=0.0, target_star_points=None)
+    star = players.PLAYER_ID.eq("star")
+    players.loc[star & players.GAME_ID.eq("0022400001"), ["PTS", "MIN"]] = [10.0, 11.0]
+    players.loc[star & players.GAME_ID.eq("0022400002"), ["PTS", "MIN"]] = [30.0, 40.0]
+    if not same_day_row:
+        players = players.loc[~(star & players.GAME_ID.eq(TARGET_GAME))]
+    injuries = pd.DataFrame([dict(GAME_ID=TARGET_GAME, TEAM_ID=TEAM, PLAYER_ID="star")])
+    # Helpers use a different team; both the source and target must agree.
+    team = _team_rows().assign(TEAM_ID=TEAM)
+    players = players.assign(TEAM_ID=TEAM)
+    kwargs = dict(
+        stat_cols=["PTS", "MIN"], report_out_overrides={(TARGET_GAME, TEAM): []}
+    )
+    historical, _ = add_player_history_features(
+        team.copy(), players, injuries, **kwargs
+    )
+    live, _ = add_player_history_features(
+        team.copy(),
+        players,
+        injuries,
+        **kwargs,
+        current_rosters={(TARGET_GAME, TEAM): {"star": "Star", "rotation": "Rotation"}},
+        current_game_ids={TARGET_GAME},
+    )
+    row = historical.loc[historical.GAME_ID.eq(TARGET_GAME)].iloc[0]
+    weight = 0.5 ** (1 / EWMA_HALFLIFE_GAMES)
+    assert row.TOP1_PLAYER_ID_PTS_BEFORE == "star"
+    assert row.TOP1_PLAYER_PTS_BEFORE == pytest.approx(
+        (30 + weight * 10) / (1 + weight)
+    )
+    pd.testing.assert_frame_equal(
+        historical.loc[historical.GAME_ID.eq(TARGET_GAME)],
+        live.loc[live.GAME_ID.eq(TARGET_GAME)],
+        check_exact=True,
+    )
 
 
 def test_closing_adapter_passes_official_roster_and_report_membership(inputs):

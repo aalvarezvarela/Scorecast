@@ -209,10 +209,12 @@ The major steps are:
    - Creates `IS_OVERTIME`.
    - Preserves raw `PTS`, so `TOTAL_POINTS` remains the actual final score,
      including overtime.
-   - Creates `PTS_PER_40` as `PTS * 200 / MIN` only when
-     `0 < MIN < 240`. For every other minutes value—including missing, zero,
-     negative, non-finite, regulation, and overtime minutes—it keeps raw `PTS`
-     and performs no division.
+   - Creates `PTS_PER_40` as `PTS * 200 / MIN` for every positive, finite
+     `MIN`, including regulation and overtime games. `MIN` is the sum of the
+     five players' minutes, so 200 corresponds to 40 game-clock minutes.
+     For 120 points, aggregate minutes of 239, 240 and 265 produce 100.42,
+     100.00 and 90.57 respectively. Missing, zero, negative or non-finite
+     minutes produce NaN; raw `PTS` is preserved separately.
    - For overtime games only, overwrites additive counting statistics with their
      48-minute regulation equivalents using `value * 240 / MIN`.
    - The normalized allowlist is `FGM`, `FGA`, `FG3M`, `FG3A`, `FTM`, `FTA`,
@@ -304,6 +306,9 @@ Core team stats rolled over recent games include:
   averages, short 1/2/3/10 windows, 5-game weighted moving average,
   season-before average and standard deviation, and 5- and 10-game trend
   slopes (with the 5-minus-10 relative slope).
+  Older datasets normalized only rows below 240 aggregate minutes and retained
+  raw points otherwise; rebuild these histories before training on the corrected
+  per-40-minute definition.
 - Offensive, defensive, and net rating.
 - Effective field goal percentage and true shooting percentage.
 - Pace, possessions, PIE.
@@ -419,26 +424,67 @@ The pipeline computes player features for these stats:
 - `MIN`
 
 For each stat, `precompute_cumulative_avg_stat()` creates a recency-weighted
-player estimate using an EWMA with a 10-game halflife. It is shifted so the
+player estimate using an EWMA with a 15-game halflife (`adjust=True`: each game
+weighted by its age alone, so recent games weigh more without the season's first
+game anchoring the average). It is shifted so the
 current game's stat is excluded. The lookup is grouped by `SEASON_YEAR` and
 `PLAYER_ID`.
+
+It also stores `<stat>_CUM_AVG_AFTER`: the same estimate with the row's own game
+included, i.e. what the player's next row in the season carries. Out/Doubtful
+and Questionable players have no row in the game being predicted, so their state
+is their last row strictly before it, and they are valued with
+`<stat>_CUM_AVG_AFTER` (including the minutes threshold that orders them). Until
+2026-10 they read that row's `_CUM_AVG`, which leaves out their most recent
+game although it was played. Training and live prediction use the same rule.
+
+Available players follow that rule too when their selected row is from an
+earlier game (for example, a late scratch absent from the target box score).
+A same-day row keeps `_CUM_AVG`; only a strictly earlier row uses `_AFTER`,
+including its minutes threshold. Current-game points and minutes never enter
+these estimates.
+
+Earlier-season history is recovered per roster member, not only when the entire
+team has no current-season history. If a known member has no earlier row this
+season, the historical build resolves that game-day roster through the same
+history/state builder as an official live roster. This keeps veterans who have
+not debuted in the injured/questionable groups even while teammates have
+current-season games. A rookie with no earlier appearance keeps missing stats.
 
 For each team-game, the pipeline identifies active and injured players using:
 
 - Historical injury database rows.
 - Player boxscore comments containing injury wording.
 - Scheduled injury-report data for same-day predictions.
-- Roster membership inferred from each player's last team before the game date.
+- The game-day roster (below).
 
-Historical box-score rows establish roster membership only for later games, not
-for the game recorded by that row. This matches same-day prediction, where the
-current game's box score does not exist yet. A current injury report is valid
-pregame assignment evidence and overrides the player's previously known team,
-including on their first game after a trade. Scheduled player placeholders are
-also safe same-day evidence because they are generated from prior player history
-and contain no current-game statistics. Every numeric player feature remains
-shifted, so current-game box-score values are excluded from those calculations.
-No target-game box-score quantity takes part in the roster split at all.
+**Roster membership** (since 2026-10) is the team's roster on game day:
+
+- A stored game: every player with a box-score row for the team-game, minutes
+  or not, plus every player listed for it without one -- the inactive list and
+  the injury report. The box score lists the players dressed for the game, so
+  together they are the roster published before tip, the same whoever ends up
+  playing. A player on the inactive list or the report belongs to the team even
+  without a box-score row. The inactive list is membership evidence only: a late
+  scratch is on it but may be missing from the report, and dropping him would
+  make membership depend on who sat. Who is injured is still decided by the
+  report (or, without one, the inactive list).
+- Tonight's game: the official roster (`CommonTeamRoster`) plus every player
+  the report lists. If the official roster could not be fetched, the team's
+  previous game's roster (its box score plus its inactive list) stands in.
+
+A trade, signing or release therefore counts from the first game it affects.
+Until 2026-10 membership was inferred from each player's last box-score team
+strictly before the game, so every move was recognised one game late and season
+openers fell back to the previous season's rosters. The same rosters feed the
+All-Star candidates and roster continuity (`game_day_rosters` in
+`players/live_roster.py`). Only membership reads the game's box score: every
+numeric player feature remains shifted, so current-game box-score values are
+excluded from those calculations, and no current-game box-score quantity (MIN,
+PTS) takes part in the roster split.
+
+A player with no earlier appearance with minutes, in any loaded season (a
+debut), has no estimate: his averages are NaN, in training and live alike.
 
 Availability is the roster minus the injured/inactive set, and that set is built
 from reasons rather than from minutes. Two sources feed it: the inactive-players
@@ -1024,7 +1070,12 @@ Feature families include:
 - Open-to-close move features when a consensus opener exists.
 - Whether the close line has recently beaten the open line.
 - Cross-book total-line disagreement for the current game and rolling league
-  disagreement.
+  disagreement. Measured over the books' raw closes only
+  (`ODDS_TOTAL_LINE_<book>` with a lower-case slug, `consensus_opener`
+  excluded), with `ddof=0`, and NaN where fewer than two books quote the game.
+  Until 2026-10 the std ran over every `ODDS_TOTAL_LINE_*` column, rolling
+  averages and trends included (~212 columns, values ~100); datasets built
+  before then carry that value.
 
 Column names are suffixed with `_BEFORE`, for example:
 
@@ -1478,14 +1529,24 @@ The final game-level columns are:
 - `TOTAL_KM_IN_LAST_<N>_DAYS_HOME_TEAM`
 - `TOTAL_KM_IN_LAST_<N>_DAYS_AWAY_TEAM`
 
-`create_df_to_predict()` calls this with `log_scale=True`, so the final values
-are `log1p(kilometers)`.
+Both `create_df_to_predict()` and the intermediate base builder call this with
+`log_scale=True`, so these distance columns contain `log1p(kilometers)`.
 
-`add_high_value_features_for_team_points()` later derives fatigue and rest
-compression features such as:
+Before transforming the distances, `compute_travel_features()` also computes
+the fraction of the last 14 days' kilometers traveled in the last 2 days:
 
 - `TRAVEL_RECENCY_RATIO_HOME_2D_OVER_14D_BEFORE`
 - `TRAVEL_RECENCY_RATIO_AWAY_2D_OVER_14D_BEFORE`
+
+These ratios use raw kilometers, so 100/1000 and 1000/10000 both yield 0.10,
+independently of `log_scale`. No travel in the 14-day window leaves the ratio
+NaN (0/0); zero recent travel with positive 14-day travel yields 0. Existing
+datasets that divided the log-transformed distances must be rebuilt before
+training models with the corrected meaning.
+
+`add_high_value_features_for_team_points()` preserves those ratios and adds
+the rest mismatch:
+
 - `REST_DAYS_DIFF_HOME_MINUS_AWAY_BEFORE`
 
 ## Date And Calendar Features

@@ -968,10 +968,11 @@ def _compute_all_rolling_statistics_on(
         total_line_trend_cols = [MAIN_TOTAL_LINE_COL] + [
             c for c in total_line_trend_cols if c != MAIN_TOTAL_LINE_COL
         ]
-    # Computed for every row even with target games: every later column named
-    # ODDS_TOTAL_LINE_* -- these trends included -- is read as one more "book"
-    # by the cross-book line spread of every earlier game in
-    # global_market_features (extract_total_line_books matches the prefix).
+    # Computed for every row even with target games. Until the cross-book fix,
+    # global_market_features read these trends as extra "books" for every
+    # earlier game; extract_total_line_books now matches raw book columns only,
+    # so nothing reads them through that path. Restricting them to target games
+    # is a speed-up to confirm with a tonight-only parity run first.
     for col in tqdm(total_line_trend_cols, desc="Computing total line trends"):
         if col in frame.columns:
             frame.apply(

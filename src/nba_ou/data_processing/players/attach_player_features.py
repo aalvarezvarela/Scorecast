@@ -28,6 +28,7 @@ from nba_ou.data_processing.players.fresh_absence import (
 )
 from nba_ou.data_processing.players.live_roster import live_roster_history
 from nba_ou.data_processing.players.players_statistics import (
+    after_game_column,
     latest_player_states,
     precompute_cumulative_avg_stat,
     rank_player_states,
@@ -302,11 +303,15 @@ def _array_steps_supported(df_players, stat_cols) -> bool:
     ``MIN_CUM_AVG`` rather than a per-row groupby mean.
     """
     columns = [f"{stat}_CUM_AVG" for stat in stat_cols]
+    columns += [after_game_column(c) for c in columns]
     return (
         ARRAY_ROSTER_STEPS
         and "MIN_CUM_AVG" in columns
         and "PLAYER_NAME" in df_players.columns
-        and all(df_players[c].dtype == "float64" for c in columns)
+        and all(
+            c in df_players.columns and df_players[c].dtype == "float64"
+            for c in columns
+        )
         and df_players["GAME_DATE"].dtype == "datetime64[ns]"
     )
 
@@ -314,9 +319,11 @@ def _array_steps_supported(df_players, stat_cols) -> bool:
 def _latest_states_on_roster(roster, group, game_date, *, injured, min_minutes=15):
     """``latest_player_states(roster.frame(group), game_date, injured=...)``.
 
-    Returns ``(positions, meets)``: one roster position per player, in the
-    order the frame version leaves its rows (by ``PLAYER_ID``), and its
-    ``MEETS_MIN_THRESHOLD``. ``None`` where the frame version returns None.
+    Returns ``(positions, meets, use_after)``: one roster position per player, in
+    the order the frame version leaves its rows (by ``PLAYER_ID``), its
+    ``MEETS_MIN_THRESHOLD``, and whether values are read with that last game
+    included (the ``_AFTER`` columns). ``None`` where the frame version returns
+    None.
     """
     if injured:
         min_minutes = min_minutes * 0.8
@@ -336,9 +343,14 @@ def _latest_states_on_roster(roster, group, game_date, *, injured, min_minutes=1
     codes = player_order[ordered]
     # groupby("PLAYER_ID").tail(1): the last row of each player.
     states = ordered[np.append(codes[1:] != codes[:-1], True)]
-    minutes = roster.column("MIN_CUM_AVG")[states]
+    use_after = roster.column("GAME_DATE")[states] < game_date
+    minutes = np.where(
+        use_after,
+        roster.column(after_game_column("MIN_CUM_AVG"))[states],
+        roster.column("MIN_CUM_AVG")[states],
+    )
     meets = (np.where(np.isnan(minutes), 0.0, minutes) >= min_minutes).astype(int)
-    return states, meets
+    return states, meets, use_after
 
 
 def _rank_states_on_roster(roster, states, stat_col, *, lowest=False, n_players=3):
@@ -347,9 +359,13 @@ def _rank_states_on_roster(roster, states, stat_col, *, lowest=False, n_players=
         lowest = True
     if states is None:
         return []
-    positions, meets = states
+    positions, meets, use_after = states
     cum_col = f"{stat_col}_CUM_AVG"
-    values = roster.column(cum_col)[positions]
+    values = np.where(
+        use_after,
+        roster.column(after_game_column(cum_col))[positions],
+        roster.column(cum_col)[positions],
+    )
     order = np.lexsort((values if lowest else -values, -meets.astype("int64")))
     chosen = positions[order[:n_players]]
     # tolist() yields the Python scalars iterating the frame's columns did.
@@ -357,7 +373,7 @@ def _rank_states_on_roster(roster, states, stat_col, *, lowest=False, n_players=
         zip(
             roster.column("PLAYER_ID")[chosen].tolist(),
             roster.column("PLAYER_NAME")[chosen].tolist(),
-            roster.column(cum_col)[chosen].tolist(),
+            values[order[:n_players]].tolist(),
             strict=True,
         )
     )
@@ -803,7 +819,21 @@ def add_player_history_features(
     # Create optimized lookup function (the players' indexes are precomputed).
     # It returns the roster's rows within their bucket rather than a frame.
     lookup_index = prepared_players.lookup_index
-    roster_lookup = lookup_index.lookup_for(membership_dict, rows_only=True)
+    # A stored game's roster is its game-day roster: the box score plus every
+    # player listed for it -- report-listed, and the realized inactive list.
+    # The inactive list is membership evidence only: a late scratch has no
+    # box-score row and may be missing from the report, and leaving him out
+    # would make membership depend on who sat. Who is injured is still decided
+    # by the report (``pregame_index`` below). Tonight's games have no box
+    # score; they read the official roster (``current_rosters``).
+    current_games = frozenset(str(g) for g in (current_game_ids or ()))
+    game_day_listed = union_membership_dicts(membership_dict, injured_dict)
+    roster_lookup = lookup_index.lookup_for(
+        membership_dict,
+        rows_only=True,
+        game_day_listed=game_day_listed,
+        inferred_games=current_games,
+    )
     array_steps = _array_steps_supported(df_players, stat_cols)
     injury_streak_lookup = create_injury_streak_lookup(
         df_team,
@@ -887,6 +917,14 @@ def add_player_history_features(
         )
     ):
         members = (current_rosters or {}).get((str(game_id), str(team_id)))
+        if members is None and str(game_id) not in current_games:
+            members = lookup_index.prior_history_members(
+                season_id,
+                team_id,
+                game_date,
+                game_id,
+                game_day_listed,
+            )
         if members is not None:
             members = dict(members)
             for player in membership_dict.get(str(game_id), {}).get(str(team_id), []):
@@ -932,9 +970,9 @@ def add_player_history_features(
                 stored_update, stored_availability = entry
                 updates_list.append(stored_update)
                 if stored_availability is not None:
-                    availability_dict.setdefault(str(game_id), {})[str(team_id)] = (
-                        stored_availability
-                    )
+                    availability_dict.setdefault(str(game_id), {})[
+                        str(team_id)
+                    ] = stored_availability
                 continue
 
         # Resolve the roster without consulting who logged minutes in this game.
@@ -1050,9 +1088,11 @@ def add_player_history_features(
                 history_id_stats,
                 non_inj_rows,
                 inj_rows,
-                questionable_rows
-                if build_questionable_group and questionable_covered
-                else None,
+                (
+                    questionable_rows
+                    if build_questionable_group and questionable_covered
+                    else None
+                ),
             )
             updates_list.append(history_update)
             if memo_rows is not None:

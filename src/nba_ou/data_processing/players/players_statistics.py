@@ -3,7 +3,22 @@ import pandas as pd
 
 from nba_ou.config.constants import SEASON_TYPE_MAP
 
-EWMA_HALFLIFE_GAMES = 10
+#: A game this many games old weighs half as much as the latest one. With
+#: ``adjust=True`` every game is weighted by its age alone: at 40 games played
+#: the latest weighs 5.4% (2.5% in a plain mean) and the last ten 44% (25%).
+#: Until 2026-10 this was 10 with ``adjust=False``, under which the season's
+#: first game seeded the average and still held 54% of the weight ten games
+#: later, while each new game moved it only 6.7%.
+EWMA_HALFLIFE_GAMES = 15
+
+#: Suffix of the cumulative columns that include the row's own game.
+AFTER_GAME_SUFFIX = "_AFTER"
+
+
+def after_game_column(cum_col: str) -> str:
+    """``PTS_CUM_AVG`` -> ``PTS_CUM_AVG_AFTER``: the value including that game."""
+    return f"{cum_col}{AFTER_GAME_SUFFIX}"
+
 
 #: Season types the previous-season player fallback is allowed to read.
 #: Regular season only, matching the team-level trend fallback in
@@ -109,7 +124,8 @@ def latest_player_states(df, date, *, injured=False, min_minutes=15):
         return None
 
     if injured:
-        # For injured players: last game *before* `date`
+        # For injured players: last game *before* `date`, valued with that game
+        # included (see precompute_cumulative_avg_stat).
         df_inj = df[df["GAME_DATE"] < date].sort_values(["PLAYER_ID", "GAME_DATE"])
         df_last = df_inj.groupby("PLAYER_ID", as_index=False).tail(1).copy()
 
@@ -125,6 +141,14 @@ def latest_player_states(df, date, *, injured=False, min_minutes=15):
 
     if df_last.empty:
         return None
+
+    # The selected row may be an earlier game's state even for an available
+    # player without a target-game box-score row. Include that earlier game;
+    # same-day rows must keep their shifted values to exclude today's outcome.
+    use_after = df_last["GAME_DATE"] < date
+    for after in [c for c in df_last.columns if c.endswith(AFTER_GAME_SUFFIX)]:
+        before = after[: -len(AFTER_GAME_SUFFIX)]
+        df_last[before] = df_last[before].where(~use_after, df_last[after])
 
     # Check if MIN_CUM_AVG already exists (e.g., when stat_col="MIN")
     if "MIN_CUM_AVG" not in df_last.columns:
@@ -198,7 +222,7 @@ def _groupwise_ewm_mean(values: pd.Series, keys: list, halflife) -> pd.Series:
     grouped = (
         values.set_axis(positions)
         .groupby([k.set_axis(positions) for k in keys])
-        .ewm(halflife=halflife, adjust=False, min_periods=1, ignore_na=True)
+        .ewm(halflife=halflife, adjust=True, min_periods=1, ignore_na=True)
         .mean()
     )
     grouped = grouped.droplevel(list(range(len(keys)))).reindex(positions)
@@ -216,7 +240,9 @@ def precompute_cumulative_avg_stat(
 
     - Excludes the current game's stat from the estimate (via shift).
     - Gives slightly higher weight to recent games.
-    - If a player has no prior valid game, the value is 0.
+    - A player who has never had a valid game before the row, in any loaded
+      season, has no estimate: NaN, as tonight's roster gives an unknown
+      player. One with history but none this season or last reads 0.
     - Only considers games where MIN > 0 as valid appearances.
     - Groups by both SEASON_YEAR and PLAYER_ID.
 
@@ -262,6 +288,24 @@ def precompute_cumulative_avg_stat(
     # 0 for their season opener, which then propagated into every TOP-N player
     # column as a missing value.
     previous_season = _previous_regular_season_player_average(out, stat_col, valid_mask)
-    out[f"{stat_col}_CUM_AVG"] = in_season.fillna(previous_season).fillna(0)
+    # Valid appearances so far across every loaded season, this row included.
+    # Rows are in (season, date) order within a player, so this is chronological.
+    appearances = valid_mask.astype("int64").groupby(out["PLAYER_ID"]).cumsum()
+    seen_before = (appearances - valid_mask.astype("int64")).gt(0)
+    out[f"{stat_col}_CUM_AVG"] = (
+        in_season.fillna(previous_season).fillna(0).where(seen_before)
+    )
+
+    # The same estimate with this game included: what the player's next row in
+    # the season carries. An Out/Questionable player has no row in the game being
+    # predicted, so his state is his last row before it, and that row's
+    # ``_CUM_AVG`` -- computed to predict *that* game -- leaves it out although
+    # it was played. ``latest_player_states(injured=True)`` reads this instead.
+    in_season_after = _groupwise_ewm_mean(
+        valid_stat, [out["SEASON_YEAR"], out["PLAYER_ID"]], ewm_halflife_games
+    )
+    out[after_game_column(f"{stat_col}_CUM_AVG")] = (
+        in_season_after.fillna(previous_season).fillna(0).where(appearances.gt(0))
+    )
 
     return out

@@ -68,6 +68,8 @@ from nba_ou.data_processing.players.attach_player_features import (
     prepare_player_history,
 )
 from nba_ou.data_processing.players.live_roster import (
+    game_day_rosters,
+    previous_game_rosters,
     report_membership,
     supplement_rosters,
 )
@@ -334,6 +336,7 @@ def _one_horizon(
     horizon: int | None = None,
     first_current_season: int | None = None,
     injured_players: dict | None = None,
+    stored_rosters: dict | None = None,
 ) -> pd.DataFrame:
     overrides = report_out_overrides(state)
     questionable = report_questionable_sets(state)
@@ -405,7 +408,8 @@ def _one_horizon(
         questionable_dict=nested_status_dict(questionable),
         row_cache=all_star_rows,
         prepared=prepared_all_star,
-        current_rosters=current_rosters,
+        # Stored games' game-day rosters, as the player features read them.
+        current_rosters={**(stored_rosters or {}), **current_rosters},
         target_game_ids=target_game_ids,
     )
     roster_columns = []
@@ -542,6 +546,7 @@ class _HorizonInputs:
     first_current_season: int | None
     injured_players: dict | None = None
     current_rosters: dict | None = None
+    stored_rosters: dict | None = None
 
 
 def _horizon_features(inputs: _HorizonInputs, horizon: int) -> pd.DataFrame:
@@ -567,6 +572,7 @@ def _horizon_features(inputs: _HorizonInputs, horizon: int) -> pd.DataFrame:
         horizon=horizon,
         first_current_season=inputs.first_current_season,
         injured_players=inputs.injured_players,
+        stored_rosters=inputs.stored_rosters,
     )
     features = features.loc[features.GAME_ID.isin(ids)].copy()
     if inputs.targets is not None:
@@ -919,8 +925,28 @@ def add_snapshot_injury_features(
         context.roster_snapshots,
         as_of=context.live_as_of,
     )
+    realized = get_injured_players_dict(injuries, df_players=context.players)
+    if context.scheduled_games is not None and not context.scheduled_games.empty:
+        # No official roster: the previous game's, as the closing prediction.
+        pools.update(
+            previous_game_rosters(
+                context.team_games,
+                context.players,
+                realized,
+                context.scheduled_games["GAME_ID"],
+                rosters=pools,
+            )
+        )
+    scheduled_ids = (
+        set(context.scheduled_games.GAME_ID.astype(str))
+        if context.scheduled_games is not None
+        else set()
+    )
     inputs = _HorizonInputs(
         current_rosters=pools,
+        stored_rosters=game_day_rosters(
+            context.players, realized, exclude_games=scheduled_ids
+        ),
         base=base,
         context=context,
         states=states,
@@ -937,9 +963,7 @@ def add_snapshot_injury_features(
         priors=priors,
         first_current_season=first_current_season,
         # Realized absences: the same at every horizon.
-        injured_players=get_injured_players_dict(
-            injuries, df_players=context.players
-        ),
+        injured_players=realized,
     )
     workers = _horizon_workers(len(states)) if memo is not None else 1
     if workers > 1:

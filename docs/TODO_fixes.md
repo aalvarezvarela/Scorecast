@@ -1,439 +1,287 @@
-# Fixes to schedule
+# 2_5 defect fixes
 
-Known defects found in the `2_5` training and prediction pipelines, consolidated
-from `perf/pipeline-speedup` and `fix/todays_prediction_data` on 2026-10-16.
-Each entry preserves its evidence, impact, proposed fix and validation steps.
-The measurements below are the original findings, not a fresh audit of the
-current databases.
+Defects found in the `2_5` training and prediction pipelines (consolidated
+2026-10-16 from `perf/pipeline-speedup` and `fix/todays_prediction_data`),
+fixed on `fix/training-data-defects`.
 
-**Status: all five fixes are pending.** Consolidating this document does not
-change code, source data, datasets or models. Live prediction retains the
-current statistical behaviour, with one deliberate exception: it already uses
-official roster membership, while training still infers membership (item 5).
+**Status (2026-10-16):** the code fixes are done and tested, and the
+injury store has been reloaded (item 3). The datasets have not been rebuilt
+and no model has been retrained yet.
 
-## Pending fixes found in 2_5
-
-Both closing and intermediate datasets are affected.
-
-| # | Problem | Kind of fix |
+| # | Problem | Status |
 |---|---|---|
-| 1 | Cross-book total std uses rolling columns as well as raw books | Code |
-| 2 | Early-2021 BetMGM totals contain half-game-sized values | Source-data repair or code rule; decision pending |
-| 3 | Injury-report spans use stale game tip-offs | Source-data reload and S3 input-cache refresh |
-| 4 | Injured and questionable player statistics omit their last game | Shared training/live code |
-| 5 | Historical roster membership recognises transactions one game late | Reproducible training/live membership definition |
+| 1 | Cross-book total std computed over rolling columns, not books | Fixed (code) |
+| 2 | Early-2021 BetMGM totals hold half-game-sized values | Fixed (repair rule) |
+| 3 | Injury-report spans use stale game tip-offs | Fixed (store reloaded, cache refreshed) |
+| 4 | Injured and questionable players lose their last game | Fixed (code) |
+| 5 | Roster membership lags transactions by one game | Fixed (game-day roster) |
+| 6 | `engineer_odds_features` counts derived columns as books | Fixed (code) |
+| 7 | Player EWMA weighting | Changed by decision |
+| 8 | Veterans without current-season history vanish from player groups | Fixed (per-member earlier-history fallback) |
+| 9 | Available players without a target box-score row lose their last game | Fixed (date-based `_AFTER` selection) |
+| A | Intermediate `GLOBAL_*` can include results after the snapshot | **Accepted, not fixed** |
 
-## Shared rebuild and validation plan
+## Decisions
 
-- **Schema version.** These are defects *found in* `2_5`, not permission to
-  overwrite the frozen `2_5` base. Under `nba_ou.config.dataset_versions` and
-  CLAUDE.md ("Schema versions are layers"), changing an existing column's
-  values or meaning requires a new base (`3_0`), not an additive layer or an
-  in-place `2_5` rebuild. Confirm the version label before implementation.
-- **Coordinate the work.** Apply the agreed fixes together, then rebuild both
-  closing and intermediate datasets and retrain the affected models. Compare
-  with the current models using the same evaluation protocol. The BetMGM
-  repair rule and the historical roster definition still need decisions.
-- **Caches and references.** Refresh the S3 input cache after source-data
-  repairs. The history memo keys cover package code, pandas/numpy versions and
-  chained input digests; verify the corrected inputs invalidate old entries.
-  Rebuild full reference datasets at the corrected commit before testing the
-  tonight-only path against them.
-- **Validation.** Run the affected unit tests, full-vs-tonight-only parity,
-  point-in-time checks and live replay with identical roster inputs. The live
-  official-roster difference in item 5 is intentional until training adopts
-  the agreed game-day definition.
-- **Feature documentation.** Keep `docs/README_Training Data Processing.md`
-  in sync, including `THIS_GAME_CROSSBOOK_TOTAL_STD_BEFORE` and the changed
-  player/roster semantics.
-- **After retraining.** Regenerate the meta-learner dataset with
-  `scripts/build_meta_learner_training_data.py`.
-- **Reproduce the evidence.** The original measurements used gitignored local
-  builds under `artifacts/`. Appendix A reproduces the market diagnostics for
-  items 1 and 2; Appendix B compares stored tip-offs for item 3. Items 4 and 5
-  retain their player-statistic example and trade scenario below.
+- **Schema version: `2_5` is rebuilt in place.** The usual rule
+  (`nba_ou.config.dataset_versions`, CLAUDE.md) is that changing an existing
+  column's values needs a new base (`3_0`). These are bug fixes to `2_5`, so
+  the base is regenerated under the same label instead. Old `2_5` files and
+  models built on them are not comparable with the new ones; the `2_6`
+  manifests reference their parent's checksum, so `2_6` must be rebuilt from
+  the new `2_5` too.
+- **BetMGM:** a code rule in the closing-line repair (10-point threshold for
+  unpriced totals), not a source-data edit.
+- **Roster membership:** the game-day roster definition in item 5.
+- **EWMA:** recent games weigh more, moderately (item 7).
 
----
+## Remaining steps
 
-## 1. The cross-book total std is computed over rolling columns, not books
-
-### Impact
-
-`THIS_GAME_CROSSBOOK_TOTAL_STD_BEFORE` is meant to be the spread of a game's
-closing total across sportsbooks, typically a fraction of a point. It is
-actually the std over **every** column whose name starts with
-`ODDS_TOTAL_LINE_`. When it is computed, those include each book's rolling
-means, WMAs, season averages and trend columns for both teams: 212 columns in
-the all-season closing build, against 6 books.
-
-All affected columns come from
-`src/nba_ou/data_processing/merged_home_away_data/global_market_features.py`
-(section 8, "Cross-book disagreement features"):
-
-| column | read by enabled models (2026-10-16) |
-|---|---|
-| `THIS_GAME_CROSSBOOK_TOTAL_STD_BEFORE` | no (excluded from intermediate as leaky) |
-| `THIS_GAME_CROSSBOOK_TOTAL_RANGE_BEFORE` | no (excluded from intermediate as leaky) |
-| `GLOBAL_CROSSBOOK_TOTAL_STD_AVG_15G_BEFORE` | **yes**, closing and intermediate |
-| `GLOBAL_CROSSBOOK_TOTAL_STD_AVG_30G_BEFORE` | no |
-| `GLOBAL_CROSSBOOK_TOTAL_STD_AVG_75G_BEFORE` | **yes**, closing and intermediate |
-
-Not affected: the intermediate snapshot columns
-`ODDS_SNAP_{TOT,SPR,ML}_CONSENSUS_CROSSBOOK_{STD,RANGE}`. They come from
-`data_processing/line_history/cross_book.py`, are computed over book ticks,
-and are sub-point as expected.
-
-What the models actually learned from it: the stored value is ~0 in seasons
-without book lines and then tracks the league's average total line. In effect
-it is an era marker and a line-level proxy, not book disagreement. Expect the
-retrained models to lean on it differently.
-
-| season | stored std (mean) | bet365 total line (mean) |
-|---|---|---|
-| 2017-18 | 0.0 | (no lines) |
-| 2018-19 | 2.4 | 216 |
-| 2019-20 | 102.7 | 222 |
-| 2022-23 | 106.4 | 228 |
-| 2025-26 | 107.6 | 230 |
-
-### Evidence
-
-All-season closing build (11,543 games), commit 2944ee5:
-
-- The stored `THIS_GAME_CROSSBOOK_TOTAL_STD_BEFORE` equals the std over all 212
-  `ODDS_TOTAL_LINE_*` columns of the final frame (max difference 2.8e-14).
-- Stored: mean 81.6, median 104.1, max 116.4.
-- Over the 6 closing books instead: mean 0.37, median 0.32, 90th percentile
-  0.55. The range has median 1.0 and 90th percentile 1.5.
-- Correlation between stored and correct values: -0.007.
-- The value depends on which derived columns a build happens to hold. The
-  intermediate 2025-26 build averages 107.8 for the same `GLOBAL_*` columns.
-
-### Root cause
-
-`global_market_features.py`, around line 315:
-
-```python
-total_line_books = extract_total_line_books(out)
-book_lines = pd.DataFrame(
-    {b: pd.to_numeric(out[f"ODDS_TOTAL_LINE_{b}"], errors="coerce")
-     for b in total_line_books if f"ODDS_TOTAL_LINE_{b}" in out.columns}
-)
-crossbook_std = book_lines.std(axis=1, skipna=True, ddof=0)
-```
-
-`extract_total_line_books` (`src/nba_ou/config/odds_columns.py`, line 260)
-accepts any suffix as a book name:
-
-```python
-m = re.match(r"^ODDS_TOTAL_LINE_(.+)$", col)
-```
-
-so `bet365_LAST_ALL_5_MATCHES_BEFORE_TEAM_HOME` counts as a book.
-
-### Proposed fix
-
-1. **Accept lower-case slugs only.** Raw book columns are
-   `ODDS_TOTAL_LINE_<slug>` with a lower-case slug: `bet365`, `betmgm`,
-   `fanduel`, `draftkings`, `fanatics_sportsbook`, `betrivers`,
-   `consensus_opener`. Every derived column carries an upper-case suffix. On
-   the all-season closing build this pattern finds exactly those 7.
-
-   ```python
-   def extract_total_line_books(df: pd.DataFrame) -> list[str]:
-       """Books with a raw total column ``ODDS_TOTAL_LINE_<book>``.
-
-       Derived columns (rolling means, trends, season averages:
-       ``ODDS_TOTAL_LINE_<book>_LAST_..._BEFORE_TEAM_HOME``) carry an
-       upper-case suffix and are not books.
-       """
-       books = set()
-       for col in df.columns:
-           m = re.fullmatch(r"ODDS_TOTAL_LINE_([a-z0-9_]+)", col)
-           if m:
-               books.add(m.group(1))
-       return sorted(books)
-   ```
-
-   This also fixes the function's other caller, `resolve_main_total_line_col`
-   (`odds_columns.py`, line 293). Its fallback runs when the configured book's
-   column is missing, and today it could pick a derived column as the main
-   line.
-
-2. **Leave the opener out, and require two books.** In
-   `global_market_features.py`:
-
-   ```python
-   #: An opening consensus, not a book's close: it would measure line movement.
-   CROSSBOOK_EXCLUDED_BOOKS = ("consensus_opener",)
-
-   total_line_books = [
-       b for b in extract_total_line_books(out) if b not in CROSSBOOK_EXCLUDED_BOOKS
-   ]
-   if len(total_line_books) > 1:
-       book_lines = pd.DataFrame(
-           {b: pd.to_numeric(out[f"ODDS_TOTAL_LINE_{b}"], errors="coerce")
-            for b in total_line_books}
-       )
-       n_books = book_lines.notna().sum(axis=1)
-       crossbook_std = book_lines.std(axis=1, ddof=0).where(n_books >= 2)
-       crossbook_range = (
-           book_lines.max(axis=1) - book_lines.min(axis=1)
-       ).where(n_books >= 2)
-   ```
-
-   Today, with `ddof=0`, a game with a single book gets std 0, which reads as
-   "the books agree". With the fix it gets NaN (14 games in the closing
-   build). `_rolling_game_agg` already skips NaN, so the `GLOBAL_*_AVG_*G`
-   rollups average over the games that have a value.
-
-3. **Test.** For example in `tests/test_global_market_speedups.py`, next to
-   the existing global-market tests. Use a frame with two books plus derived
-   `ODDS_TOTAL_LINE_<book>_LAST_ALL_5_MATCHES_BEFORE_TEAM_HOME` columns.
-   Assert that the std uses only the two books, and test
-   `extract_total_line_books` on the same column names.
-
-### Verification
-
-- After rebuilding, `THIS_GAME_CROSSBOOK_TOTAL_STD_BEFORE` should have a
-  median of about 0.3, and `GLOBAL_CROSSBOOK_TOTAL_STD_AVG_*` should be well
-  under a point, except near the bad rows of item 2. Appendix A computes both.
-- No stored model matches the new values. Retrain every slot that reads
-  `GLOBAL_CROSSBOOK_TOTAL_STD_AVG_15G/75G`.
-- The tonight-only parity checks (`scripts/perf/run_tonight_acceptance.sh` on
-  `perf/pipeline-speedup`) compare against a full build. Their old reference
-  carries the old values, so rebuild a full reference at the fixed commit
-  first.
-- Side note for the tonight-only builds: today, target mode must compute every
-  row's total-line trends, because this std reads them
-  (`data_processing/team/rolling.py`). After the fix nothing reads them
-  through this path. Confirm with a parity run before relying on that. It
-  would only be a speed-up, not a correctness change.
+1. **Rebuild** the closing and intermediate `2_5` datasets, then the `2_6`
+   layer. The history memo keys cover all `nba_ou` source files, so the code
+   changes invalidate old entries automatically.
+2. **Check the rebuild:** Appendix A (cross-book std median about 0.3, ranges
+   above 5 points rare), full-vs-tonight-only parity against a reference built
+   at the fixed commit (old references carry the old values).
+3. **Retrain with Optuna** and compare with the current production models
+   using the `experiments` protocol, then promote.
+4. **Meta-learner:** regenerate its dataset afterwards. Note that
+   `meta_learner_training_data.py` still reads the retired registry layout.
 
 ---
 
-## 2. Early-2021 BetMGM totals hold half-game-sized numbers
+## 1. Cross-book total std computed over rolling columns
 
-### Impact
+**Problem.** `THIS_GAME_CROSSBOOK_TOTAL_STD_BEFORE` was the std over every
+column starting with `ODDS_TOTAL_LINE_`, including each book's rolling means,
+season averages and trends for both teams: 212 columns against 6 books.
+Stored mean 81.6 (median 104.1); over the real books the mean is 0.37 (median
+0.32), and the two correlate at -0.007. In practice the column was an era
+marker plus a line-level proxy. Enabled models read
+`GLOBAL_CROSSBOOK_TOTAL_STD_AVG_15G/75G_BEFORE` (closing and intermediate).
 
-A few 2020-21 BetMGM closing totals sit far from every other book. They feed
-the `ODDS_TOTAL_LINE_betmgm*` features directly, and they inflate item 1's
-corrected cross-book std and range for those games.
+**Root cause.** `extract_total_line_books` accepted any suffix as a book
+(`^ODDS_TOTAL_LINE_(.+)$`).
 
-### Evidence
+**Fix.**
+- `config/odds_columns.py`: `BOOK_SLUG_PATTERN = r"[a-z0-9_]+"`. Raw book
+  columns have a lower-case slug and derived columns an upper-case suffix, so
+  `extract_total_line_books` and `extract_spread_line_home_books` use a
+  `fullmatch` on that pattern. This also fixes the fallback in
+  `resolve_main_total_line_col`.
+- `global_market_features.py`: the opener is excluded
+  (`CROSSBOOK_EXCLUDED_BOOKS`), and a game with fewer than two books gets NaN
+  instead of std 0 (`CROSSBOOK_MIN_BOOKS`).
+- Tests: `tests/test_crossbook_total_std.py`.
 
-With item 1's corrected range over the 6 books, the all-season closing build
-has 7 games above 10 points, 27 above 5, 103 above 3 and 265 above 2. The
-largest:
+**Expected after rebuild.** Std median about 0.3; `GLOBAL_CROSSBOOK_*` well
+under a point. Every model reading these columns must be retrained.
 
-| GAME_ID | date | bet365 | betmgm | fanduel |
-|---|---|---|---|---|
-| 0022000437 | 2021-02-17 | 234.5 | 119.5 | 235.5 |
-| 0022000446 | 2021-02-18 | 230.0 | 114.5 | 230.0 |
-| 0022000454 | 2021-02-19 | 225.5 | 114.5 | 225.5 |
-| 0022000455 | 2021-02-19 | 231.0 | 114.5 | 231.5 |
-| 0022000206 | 2021-01-18 | 215.5 | 190.5 | 216.0 |
-| 0022000355 | 2021-02-06 | 227.0 | 189.5 | 227.5 |
+## 2. Early-2021 BetMGM totals
 
-114.5 and 119.5 look like first-half lines stored as the full-game total. The
-190s are unexplained. All of them survived the closing-line repair's outlier
-nulling (`Closing-line repair (cells): ... outlier_nulled=14` in the build
-log).
+**Problem.** A few 2020-21 BetMGM closing totals sat far from every other book:
+114.5 and 119.5 (first-half lines stored as full-game totals) and some 190s,
+for example `0022000437` (bet365 234.5, BetMGM 119.5, FanDuel 235.5).
 
-### Proposed fix (decision needed)
+**Why the repair missed them.** The other books were verified, so the
+cross-book check could run. The BetMGM cells were *unpriced* (a line without a
+price), and the outlier check compared priced levels only, so these cells were
+never tested.
 
-Choose one of these:
+**Fix** (`data_processing/odds/closing_line_repair.py`, step B):
+- An unpriced totals cell is compared on its raw line against the verified
+  median of the other books, with a 10-point threshold
+  (`UNPRICED_OUTLIER_THRESHOLDS`).
+- An unverified total outside `TOTAL_LINE_BOUNDS` (150–300) is an outlier even
+  without other books to compare against.
+- The anchor book is median-filled only when the other books' median exists.
 
-- Add a rule to the closing-line repair (`postgre_db/odds/merge_odds_data.py`,
-  `_repair_from_line_history`): null a book's close that sits more than N
-  points from the median of the other books. Choose N from the range
-  distribution above.
-- Or correct the stored rows in `odds_sportsbook` at the source.
-
-### Verification
-
-Rerun the range count in Appendix A. Ranges above 5 points should be rare,
-and each should have an explanation.
-
----
+On 2019–2026 the rule nulls exactly 7 more BetMGM 2020-21 cells (21 nulled in
+total, 14 before). A 219 against a 225 median is left alone. Tests: the
+unpriced-total cases in `tests/test_closing_line_repair.py`.
 
 ## 3. Stale tip-offs in the injury-report store
 
-### Impact
+**Problem.** The Aiven `injury_report` store fixes each game's tip-off
+(`ir_game.tipoff_utc`) when a season is loaded, and every status and filing
+span is clamped at it. 2025-26 and two 2021-22 playoff games were loaded before
+later tip-off corrections: 57 games differ, by up to 6 hours. In 37 the stored
+tip-off is later than the real one, so the "at tip" closing features can read
+a report published after the game started (a small in-game leak). In 20 it is
+earlier, so the last pre-game reports are missed. Example: `0022500645` stored
+at 23:00 UTC, real tip-off 17:00. All 57 corrected tip-offs agree with the
+line-history store.
 
-The Aiven `injury_report` store keeps each game's tip-off in
-`injury_report.ir_game.tipoff_utc`, fixed when the season was loaded. Every
-status and filing span is clamped at it (`valid_to <= tipoff_utc`). The
-2025-26 season, and two 2021-22 playoff games, were loaded before later
-tip-off corrections, so their stored tip-offs are wrong:
-
-- **Stored tip-off later than the real one** (37 games): spans run past the
-  real tip-off. The closing "at tip" injury features
-  (`last_status_before_tip`, `filing_at_tip`, `report_age_at_tip` and the
-  status features built on them) can therefore read a report published after
-  the game started. That is a small in-game leak.
-- **Stored tip-off earlier** (20 games): spans stop early, and the last
-  pre-game reports are missing from the closing features. In the intermediate
-  data, snapshots between the stale and the real tip-off see no listed
-  players. The snapshot times themselves are correct: they come from the line
-  history.
-
-### Evidence
-
-Measured 2026-10-16 with the read-only comparison in Appendix B. It compares
-the stored tip-offs with the ones a reload would use today
-(`injury_report_aiven/resolve.py: load_game_dimension`: the schedule feed plus
-the game-time index, with the stale-row correction):
-
-| season | games with a different tip-off | of which stored later than the real tip |
-|---|---|---|
-| 2018-19 to 2020-21 | 0 | 0 |
-| 2021-22 | 2 (playoffs, 30 and 45 min early) | 0 |
-| 2022-23 to 2024-25 | 0 | 0 |
-| 2025-26 | 55 | 37 |
-
-- The differences go up to 6 hours. 21 games are stored at least an hour
-  late and 10 at least an hour early. Example: `0022500645` is stored at
-  2026-01-24 23:00 UTC; the real tip-off is 17:00.
-- All 57 corrected tip-offs agree with the line-history store's
-  `lh_game.tipoff_utc`, and none of the stored ones do.
-- Effect on the spans themselves:
-  `scripts/perf/check_injury_window_ingest.py --first 2026-04-09 --last
-  2026-04-10` (read-only, on `perf/pipeline-speedup`) rebuilds those dates'
-  spans and compares them with the store. Three games differ only in where
-  their spans end: `0022501173` ends at 23:30 instead of 23:00, `0022501178`
-  at 00:00 instead of 01:30, and `0022501182` at 02:00 instead of 01:00.
-
-### Proposed fix
-
-Reload both seasons into the store, then refresh the S3 input cache:
+**Fix.** Reload both seasons from the archived PDFs (S3, or a local copy of
+them with `--local-root`), then refresh the S3 input cache, which the builders
+read for finished seasons:
 
 ```bash
 python scripts/injury_reports/load_injury_reports_to_aiven.py --season 2025-26 --replace-season
 python scripts/injury_reports/load_injury_reports_to_aiven.py --season 2021-22 --replace-season
-python scripts/refresh_input_cache.py
+python scripts/refresh_input_cache.py --seasons 2021 2025
 ```
 
-- `--replace-season` is required. Without it, inserts are `ON CONFLICT DO
-  NOTHING`, and the old spans stay.
-- 131 stored 2025-26 games (playoffs, play-in, NBA Cup) are missing from
-  today's schedule feed. They have `tipoff_source = 'injury_report'`, and the
-  ingest derives their tip-offs from the reports again (`tipoffs_from_reports`
-  in `ingest.py`). Check that the reload summary reports about 131 tip-offs
-  taken from reports and 0 games dropped for want of a tip-off.
-- The cache refresh is needed because the builders read finished seasons'
-  `injury_report.*` queries from S3. 2025-26 is finished, so builds keep the
-  old values until the refresher sees the changed fingerprints and
-  re-uploads them.
-- The tonight-only report-state memo is keyed on the store's fingerprints and
-  invalidates itself.
+`--replace-season` is required; without it inserts are `ON CONFLICT DO
+NOTHING` and the old spans stay. The old rows are deleted only after the whole
+season has been parsed.
 
-### Verification
+**Reload (2026-10-16).** Both seasons were reloaded from a local copy of the
+S3 PDFs; the dry runs and the real loads gave identical summaries:
 
-- The Appendix B comparison reports 0 changed games.
+| season | reports | observations | name resolution | tip-offs from reports | games dropped (no tip-off) |
+|---|---|---|---|---|---|
+| 2021-22 | 6,015 | 345,592 | 99.98% | 0 | 0 |
+| 2025-26 | 18,951 | 1,122,017 | 99.96% | 131 | 0 |
+
+The 131 are the 2025-26 games missing from the schedule feed (playoffs,
+play-in, NBA Cup), as expected.
+
+Rows replaced: 2025-26 had 20,065 status spans and now has 20,090; 2021-22
+keeps 16,485. The filing-span and report counts are unchanged.
+
+**Verification (passed 2026-10-16).**
+- Appendix B: 0 changed games in every season. The 131 report-derived
+  tip-offs, which are not in the schedule feed, all agree with line history.
 - `scripts/perf/check_injury_window_ingest.py --first 2026-04-09 --last
-  2026-04-10` reports `RESULT: EQUAL`.
-
----
+  2026-04-10`: `RESULT: EQUAL` (429 spans and 84 filing spans).
+- `refresh_input_cache.py --seasons 2021 2025` uploaded the changed queries:
+  `last_status_before_tip` and `listed_status_events` for 2025, and
+  `report_age_at_tip` for 2021 and 2025. A second run reports everything
+  unchanged.
 
 ## 4. Injured and questionable players lose their last game
 
-**Found:** 2026-10-16, while checking live-roster parity on
-`fix/todays_prediction_data`.
+**Problem.** `precompute_cumulative_avg_stat` gives each row the EWMA of the
+player's *earlier* games (`shift(1)`), correct for a game he plays. A player
+Out or Questionable tonight has no row, so the injured groups read his last
+row before the game, and that row excludes the game itself. His most recent
+game, already played, was always left out.
 
-**What is wrong.** `precompute_cumulative_avg_stat` gives every row the
-EWMA of the player's *earlier* games (`shift(1)`), which is right for the row
-of the game being predicted. A player who is Out/Doubtful (or Questionable) for
-the target game has no row in it, so `latest_player_states(..., injured=True)`
-and `_latest_states_on_roster(..., injured=True)` take his last row strictly
-before the game. That row's value was computed for predicting *that* game, so
-it excludes it. His most recent game is therefore always left out, although it
-was played and including it leaks nothing.
-
-Example: 10 points, then 30 points, then Out tonight. Training reads 10.0; an
-average that includes the 30-point game reads 11.34 (EWMA with the
-previous-season fill).
-
-**Affected columns:** `TOP*_INJURED_*`, `AVG_INJURED_*`,
-`TOTAL_INJURED_*`, the `QUESTIONABLE` twins, and the minutes threshold
-(`MEETS_MIN_THRESHOLD`) that orders those rankings. Closing and intermediate
-builds both read them.
-
-**Why it was left.** Every trained model learned the current behaviour, and
-live prediction must match training, not be more correct on one side only.
-The live-roster path was aligned with the current rule on purpose.
-
-**How to fix.**
-1. For the injured and questionable groups, use the average updated with the
-   player's last appearance: the value a row after that game would carry. The
-   live roster path's synthetic same-day state already computes this; reuse it
-   for both training and live.
-2. Rebuild the closing and intermediate datasets with the other fixes in this
-   document.
-3. Verify that the player history memo is rebuilt for the corrected code and
-   inputs. Its key covers every `nba_ou` source file, pandas/numpy versions
-   and chained input digests, so these changes invalidate old entries
-   automatically; do not reuse old reference datasets for parity checks.
-4. Retrain and compare with the current models as a normal experiment. The
-   expected effect is small (a one-game lag, and injury information is mostly
-   priced at close), so judge it against the noise floor.
-5. Extend the live-roster parity tests with varying statistics. With constant
-   statistics both rules give the same value and hide the difference.
+**Fix** (`players/players_statistics.py`, `players/attach_player_features.py`).
+Each stat also gets an unshifted `<stat>_AFTER` average: the value a row after
+that game would carry. The injured and questionable groups (`TOP*_INJURED_*`,
+`AVG_INJURED_*`, `TOTAL_INJURED_*`, the `QUESTIONABLE` twins and the minutes
+threshold that orders them) read `_AFTER`. Training and today's prediction use
+the same code. A player with no previous game now gets NaN averages in
+training, as he already did live (previously 0).
 
 ## 5. Roster membership lags transactions by one game
 
-**Found:** 2026-10-16, checking whether live official rosters
-(`CommonTeamRoster`) match training on `fix/todays_prediction_data`.
+**Problem.** Training decided team membership from the player's last box-score
+team *before* the game, plus report-listed players. Every trade, signing,
+release and debut was recognised one game late, and season openers used last
+season's rosters. Live already used the official roster, so training and live
+differed exactly in those cases.
 
-**What is wrong.** Training decides who belongs to a team-game in
-`PlayerLookupIndex.lookup_for` (`past_injuries.py`): the player's last
-box-score team strictly before the game, plus anyone the game's report lists
-Out, Doubtful or Questionable. A season opener falls back to last season's
-assignments. Box scores are the only transaction signal, so every roster move
-is recognised one game late. Verified with the production functions on a
-constructed trade (X traded from A to B after A's game 3):
+**Fix: game-day roster.** The possible players of a team-game are:
+- **Historical:** the game's box-score players plus everyone the injury report
+  lists for that team. A player listed injured but missing from the box score
+  is assumed to belong to the team. The injury reports remain the source of
+  truth for who is injured; the box score only defines who could play.
+- **Today:** the NBA API roster (`CommonTeamRoster`) plus the report-listed
+  players. If the official roster is missing for a team-game, the fallback is
+  the game-day roster of the team's previous game.
 
-| Game | Training | Official roster |
-|---|---|---|
-| A's next game, X gone | X still counted for A | not counted |
-| B's first game with X, X unlisted or Available | X not counted for B | counted |
-| Same, X listed Out/Doubtful/Questionable for B | counted (report) | counted |
-| B's second game with X | counted | counted |
+Code: `PlayerLookupIndex.game_roster` / `lookup_for(game_day_listed=…)` in
+`past_injuries/past_injuries.py`; `game_day_rosters` and
+`previous_game_rosters` in `players/live_roster.py`. The closing builder, the
+intermediate injuries and today's prediction all pass these rosters to the
+player groups, All-Star vote shares and roster continuity.
 
-The same lag hits debuting rookies (not members until their first box score)
-and released players (members of their old team until they play elsewhere).
-The worst case is a season opener, where training uses last season's rosters.
+## 6. `engineer_odds_features` counts derived columns as books
 
-**Affected columns:** everything built on membership: the available, injured
-and questionable groups (`TOP*_PLAYER_*`, `TOP*_INJURED_*`,
-`*_QUESTIONABLE_*`, `AVG_*`, `TOTAL_*`, `N_*` counts), availability effects,
-All-Star vote shares and roster continuity.
+**Problem.** Found in review after item 1: `engineer_odds_features` detected
+books with its own `^ODDS_TOTAL_LINE_(.+)$`. In the `2_5` data that produced
+211 `ODDS_book_total_line_mid_*` columns, of which only 6 are books, and the
+`ODDS_total_line_books_*` and `ODDS_n_books_*` aggregates were computed over
+them.
 
-**Why it was left, and the accepted mismatch.** Models learned the lagged
-membership. Live prediction nevertheless uses the official roster (decided
-2026-10-16), so tonight's predictions reflect trades, signings and releases.
-Until training changes, live rows deliberately differ from training rows in
-exactly the cases in the table above.
+**Fix.** `merged_home_away_data/odds_feature_engeneer.py` reuses
+`extract_total_line_books` and `BOOK_SLUG_PATTERN` for the totals, prices,
+spread and moneyline families. The rebuilt datasets lose the 205 spurious
+per-book columns. Tests: `tests/test_odds_feature_books.py`.
 
-**How to fix.**
-1. Pick a game-day membership definition that training can reproduce for
-   every past game and live can reproduce before tip. Candidate: the game's
-   box-score players plus its inactive list. That is close to the official
-   roster on game day and is roster information, not outcome information; it
-   must not depend on minutes played (see `nba_ou.config.leakage`).
-2. Live uses `CommonTeamRoster` (archived per fetch under
-   `train_data/live_inputs/v1/rosters/`) plus report-listed players. Measure
-   how often it differs from the training definition on archived days before
-   trusting the match.
-3. Season openers then need no prior-season fallback.
-4. Rebuild, verify memo invalidation and retrain together with the other entries
-   in this document.
+## 7. Player EWMA weighting
+
+**Decision.** The player averages used `adjust=False` with a 10-game
+half-life, which gave the latest game a lot of weight (10 then 30 points read
+11.34 once a previous-season fill is included). They now use `adjust=True`
+with a 15-game half-life (`EWMA_HALFLIFE_GAMES`): recent games still weigh
+more, but less sharply.
+
+---
+
+## 8. Veterans without current-season history
+
+**Problem.** A game-day roster could include an injured or questionable veteran
+whose last row was in an earlier season, but the statistic lookup searched only
+the current season. If teammates had history, the whole-roster fallback never
+ran. The veteran disappeared from the ranked groups and their counts. Recorded
+inputs included 595 such report rows in 460 games; Dallas in `0022500133` counted
+one injured player instead of four through the live roster path.
+
+**Fix.** `PlayerLookupIndex.prior_history_members` detects missing earlier rows
+per member. Those historical game-day rosters use `live_roster_history`, exactly
+as an official live roster does, retaining earlier seasons and constructing
+safe pre-game states without changing membership. Rookies still have no invented
+statistics. Regression coverage includes Out, Questionable and available
+veterans, partial current-season rosters, DNP rows, and both array/frame paths.
+
+## 9. Available players without a target box-score row
+
+**Problem.** Out/Questionable groups included the last known game via `_AFTER`,
+but the available group always read the shifted `_CUM_AVG`. A player considered
+available by the report but absent from the target box score lost their last
+game: prior scores 10 and 30 read 10 historically versus 20.23 through serving.
+
+**Fix.** Both the frame and array selectors choose `_AFTER` when the selected
+row is strictly earlier than the target date, including the minutes threshold
+used for ranking. Same-day rows retain `_CUM_AVG` so target-game outcomes stay
+excluded. Regression tests compare historical and official-roster paths.
+
+## Accepted in 2_5 (not fixed)
+
+### A. Intermediate `GLOBAL_*` can include results after the snapshot
+
+**What happens.** `add_global_market_features` computes the league-wide
+indicators (`GLOBAL_*`, `LEAGUE_GAMES_*`) once per game from all games on
+earlier dates, and the intermediate builder copies them to every snapshot of
+the game. A long-horizon snapshot of an early tip-off falls on the previous
+evening, before some of that day's games have finished, yet its features
+already include their results.
+
+Example: `0021900036` tips at 19:30 UTC, so its T-1080 snapshot is at 01:30
+UTC. Its `GLOBAL_MARKET_BIAS_15G_BEFORE` already includes `0021900035`
+(tip-off 02:00 UTC, 252 points).
+
+**Size, intermediate `2_5`, 146,815 rows:**
+- A prior-date game not yet started at the snapshot: 279 rows (229 games),
+  T-960 and T-1080 only.
+- Not yet finished (tip-off + 2.5 h): 961 rows (618 games), T-720 to T-1080.
+- Team features are not affected: no team's own previous game was unfinished
+  at any snapshot.
+
+**Why it is accepted.** It affects about 0.65% of rows at long horizons, and
+the extra information is one or two games inside 15–150-game windows. Today's
+prediction does the same thing (yesterday's results are used for a T-1080
+snapshot taken yesterday evening), so training and serving agree. It only
+flatters the long-horizon backtest slightly.
+
+**If it is fixed later.** After the snapshot join in
+`create_intermediate_line_df`, give each row the `GLOBAL_*` values of the
+latest game date whose earlier games had all finished by the snapshot
+(tip-off + 3 h). `base` already holds every date's values, and `lh_games` has
+the tip-offs. The same code covers training and live. Comparing a full build
+with a date-truncated one does not detect this intraday case.
 
 ---
 
 ## Appendix A: cross-book numbers from a closing build (items 1 and 2)
 
 Point it at any full closing dataset (Parquet) built with `create_df_to_predict`.
+Before the fix `stored` equals the std over all `ODDS_TOTAL_LINE_*` columns;
+after it, `stored` should equal `correct`.
 
 ```python
 import re
@@ -461,9 +309,9 @@ books = d[book_cols]
 n = books.notna().sum(axis=1)
 correct = books.std(axis=1, ddof=0).where(n >= 2)
 spread = (books.max(axis=1) - books.min(axis=1)).where(n >= 2)
+print("stored == correct:", float((stored - correct).abs().max()))
 print("stored :", stored.describe().round(3).to_dict())
 print("correct:", correct.describe().round(3).to_dict())
-print("corr   :", round(stored.corr(correct), 3))
 print(d.assign(correct=correct).groupby("SEASON_YEAR")[
     ["THIS_GAME_CROSSBOOK_TOTAL_STD_BEFORE", "correct"]].mean().round(2))
 for t in (2, 3, 5, 10):

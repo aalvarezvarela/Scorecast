@@ -264,7 +264,11 @@ def test_injury_membership_overrides_a_same_game_roster_row() -> None:
     assert target["N_INJURED_PLAYERS_BEFORE"] == 1
 
 
-def test_same_game_boxscore_does_not_assign_a_healthy_trade_debut() -> None:
+def test_same_game_boxscore_assigns_a_healthy_trade_debut() -> None:
+    # The box score lists the players dressed for the game, so a player traded
+    # in counts for his new team from his first game there -- even a DNP -- as
+    # the official roster counts him before tip. He is ranked by his history
+    # with the old team; nothing from tonight's box score enters the value.
     team_rows = _team_rows()
     players = _players(target_star_minutes=24.0, target_star_points=15.0)
     trade_history = pd.DataFrame(
@@ -298,8 +302,8 @@ def test_same_game_boxscore_does_not_assign_a_healthy_trade_debut() -> None:
     )
     target = out.loc[out["GAME_ID"].eq(TARGET_GAME)].iloc[0]
 
-    top_ids = [target[f"TOP{i}_PLAYER_ID_PTS_BEFORE"] for i in range(1, 7)]
-    assert "new_star" not in top_ids
+    assert target["TOP1_PLAYER_ID_PTS_BEFORE"] == "new_star"
+    assert target["TOP1_PLAYER_PTS_BEFORE"] == 35.0
 
 
 def _traded_player_history() -> pd.DataFrame:

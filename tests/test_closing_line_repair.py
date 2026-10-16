@@ -221,6 +221,56 @@ def test_stale_outlier_is_nulled_for_a_non_anchor_book():
     audit_repaired_closes(repaired, audit)
 
 
+def _unpriced_total(book: str, line: float) -> dict:
+    """An SBR total with a line but no prices, so it has no normalized level."""
+    return {f"total_{book}_line_over": line, f"total_{book}_line_under": line}
+
+
+@pytest.mark.parametrize("line", [114.5, 190.5, 216.5])
+def test_unpriced_total_far_from_the_market_is_nulled(line):
+    # The early-2021 BetMGM shape: other books verified around 228, BetMGM's
+    # SBR cell carries a line and no prices.
+    repaired, audit = repair_closing_lines(
+        wide_row(**_unpriced_total("betmgm", line)), ticks(_consensus_ticks(228.0))
+    )
+
+    assert np.isnan(repaired.iloc[0]["total_betmgm_line_over"])
+    assert np.isnan(repaired.iloc[0]["total_betmgm_line_under"])
+    assert cell(audit, "betmgm")["action"] == ACTION_OUTLIER_NULLED
+    audit_repaired_closes(repaired, audit)
+
+
+def test_unpriced_total_within_the_wider_threshold_is_left_alone():
+    # 9 points off: an outlier for a priced cell (6), not for an unpriced one (10).
+    repaired, audit = repair_closing_lines(
+        wide_row(**_unpriced_total("betmgm", 219.0)), ticks(_consensus_ticks(228.0))
+    )
+
+    assert repaired.iloc[0]["total_betmgm_line_over"] == 219.0
+    assert cell(audit, "betmgm")["action"] == ACTION_UNVERIFIED
+
+
+def test_implausible_unverified_total_is_nulled_without_other_books():
+    repaired, audit = repair_closing_lines(
+        wide_row(**_unpriced_total("betmgm", 114.5)), ticks([tick("bet365", 10)])
+    )
+
+    assert np.isnan(repaired.iloc[0]["total_betmgm_line_over"])
+    assert cell(audit, "betmgm")["action"] == ACTION_OUTLIER_NULLED
+
+
+def test_unpriced_anchor_total_is_filled_with_verified_median():
+    repaired, audit = repair_closing_lines(
+        wide_row(**_unpriced_total("bet365", 114.5)), ticks(_consensus_ticks(228.0))
+    )
+
+    row = repaired.iloc[0]
+    assert row["total_bet365_line_over"] == 228.0
+    assert row["total_bet365_price_over"] == -110.0
+    assert cell(audit, "bet365")["action"] == ACTION_OUTLIER_MEDIAN
+    audit_repaired_closes(repaired, audit)
+
+
 def test_anchor_outlier_is_filled_with_verified_median_at_minus_110():
     df = wide_row(
         spread_bet365_line_away=-10.0,

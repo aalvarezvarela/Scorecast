@@ -2,7 +2,11 @@ import re
 
 import numpy as np
 import pandas as pd
-from nba_ou.config.odds_columns import resolve_main_total_line_col
+from nba_ou.config.odds_columns import (
+    BOOK_SLUG_PATTERN,
+    extract_total_line_books,
+    resolve_main_total_line_col,
+)
 
 # Optional legacy default list (only used when explicitly provided by caller)
 BET_BOOKS: list[str] = []
@@ -112,27 +116,23 @@ def engineer_odds_features(
     new_cols = {}
 
     if books is None:
-        inferred_books = set()
-
+        # Raw per-book columns only. By the time this runs the frame also holds
+        # each book's rolling means, trends and season averages
+        # (``ODDS_TOTAL_LINE_bet365_LAST_ALL_5_MATCHES_BEFORE_TEAM_HOME``);
+        # matching any suffix once read ~205 of them as books, so the books'
+        # consensus, dispersion and coverage ran over ~211 "books" instead of 6.
+        inferred_books = set(extract_total_line_books(out))
+        raw_book_columns = (
+            rf"total_({BOOK_SLUG_PATTERN})_price_(?:over|under)",
+            rf"spread_({BOOK_SLUG_PATTERN})_line_(?:home|away)",
+            rf"ml_({BOOK_SLUG_PATTERN})_price_(?:home|away)",
+        )
         for col in out.columns:
-            m_total = re.match(r"^ODDS_TOTAL_LINE_(.+)$", col)
-            if m_total:
-                inferred_books.add(m_total.group(1))
-                continue
-
-            m_total_price = re.match(r"^total_(.+)_price_(over|under)$", col)
-            if m_total_price:
-                inferred_books.add(m_total_price.group(1))
-                continue
-
-            m_spread = re.match(r"^spread_(.+)_line_(home|away)$", col)
-            if m_spread:
-                inferred_books.add(m_spread.group(1))
-                continue
-
-            m_ml = re.match(r"^ml_(.+)_price_(home|away)$", col)
-            if m_ml:
-                inferred_books.add(m_ml.group(1))
+            for pattern in raw_book_columns:
+                m = re.fullmatch(pattern, col)
+                if m:
+                    inferred_books.add(m.group(1))
+                    break
 
         books = sorted(inferred_books)
     else:
