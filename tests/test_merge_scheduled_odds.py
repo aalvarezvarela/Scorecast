@@ -375,3 +375,20 @@ def test_missing_columns_in_prediction_raises():
             merge_and_validate_scheduled_odds(
                 df_odds, pd.DataFrame(), pd.DataFrame(), strict_mode=2
             )
+
+
+def test_a_stored_row_of_a_scheduled_game_gives_way_to_tonights(monkeypatch):
+    """Replaying a played date: the stored odds already hold its games."""
+    import nba_ou.data_processing.odds.merge_scheduled_odds as mod
+
+    df_odds = _make_historical_odds()
+    stored = df_odds.iloc[[0]].assign(game_id="0052500001", total_betmgm_line_over=1.0)
+    df_odds = pd.concat([df_odds, stored], ignore_index=True)
+    tonight = df_odds.iloc[[0]].assign(game_id="0052500001", total_betmgm_line_over=2.0)
+    monkeypatch.setattr(mod, "merge_yahoo_sportsbook_odds", lambda y, s, **kw: tonight)
+
+    result = merge_and_validate_scheduled_odds(df_odds, None, None, strict_mode=-1)
+
+    rows = result[result["game_id"] == "0052500001"]
+    assert rows["total_betmgm_line_over"].tolist() == [2.0]
+    assert len(result) == len(df_odds)

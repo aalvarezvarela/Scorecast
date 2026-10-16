@@ -118,6 +118,19 @@ def test_narrow_rolling_stage_matches_the_wide_one(seed, exclude_yahoo):
     assert actual.index.name == expected.index.name
 
 
+@pytest.mark.parametrize("exclude_yahoo", [False, True])
+@pytest.mark.parametrize("seed", [0, 1, 4])
+def test_helper_views_match_helpers_on_the_whole_frame(seed, exclude_yahoo):
+    df = team_frame(seed)
+    expected = _compute_all_rolling_statistics_on(
+        df.copy(), exclude_yahoo=exclude_yahoo, whole_frame=True
+    )
+    actual = _compute_all_rolling_statistics_on(df.copy(), exclude_yahoo=exclude_yahoo)
+    assert_identical(actual, expected)
+    assert actual.index.name == expected.index.name
+    assert actual.columns.name == expected.columns.name
+
+
 def test_duplicate_column_names_take_the_wide_path():
     df = team_frame(2)
     df = pd.concat([df, df[["UNRELATED_INT"]]], axis=1)
@@ -183,6 +196,48 @@ def test_trend_slope_columns_match_linregress(monkeypatch, parameter, kwargs):
     assert_identical(actual, expected)
 
 
+def _target_rows(df, seed):
+    """GAME_IDs of a few dates, including a season's first and last days."""
+    rng = np.random.default_rng(seed)
+    dates = np.sort(df["GAME_DATE"].unique())
+    firsts = df.groupby("SEASON_YEAR")["GAME_DATE"].min().to_numpy()
+    lasts = df.groupby("SEASON_YEAR")["GAME_DATE"].max().to_numpy()
+    chosen = set(rng.choice(dates, 6, replace=False)) | {firsts[1], lasts[0]}
+    return set(df.loc[df["GAME_DATE"].isin(chosen), "GAME_ID"].astype(str))
+
+
+@pytest.mark.parametrize("seed", [4, 5])
+@pytest.mark.parametrize("parameter", ["PTS", MAIN_TOTAL_LINE_COL, "PF"])
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"window": 5},
+        {"window": 5, "shift_current_game": False},
+        {"window": 10, "include_home_away_relative": False, "relative_to_window": 5},
+    ],
+)
+def test_targeted_trend_slopes_match_on_target_rows(seed, parameter, kwargs):
+    df = team_frame(seed)
+    targets = _target_rows(df, seed)
+    expected = compute_trend_slope(df.copy(), parameter=parameter, **kwargs)
+    actual = compute_trend_slope(
+        df.copy(), parameter=parameter, target_game_ids=targets, **kwargs
+    )
+    assert actual.index.equals(expected.index)
+    keep = expected["GAME_ID"].astype(str).isin(targets).to_numpy()
+    assert keep.sum() > 0
+    assert_identical(actual[keep], expected[keep])
+
+
+def test_targeted_rolling_stage_matches_on_target_rows():
+    df = team_frame(6)
+    targets = _target_rows(df, 6)
+    expected = compute_all_rolling_statistics(df.copy())
+    actual = compute_all_rolling_statistics(df.copy(), target_game_ids=targets)
+    keep = expected["GAME_ID"].astype(str).isin(targets).to_numpy()
+    assert_identical(actual[keep], expected[keep])
+
+
 def _weighted_moving_average_before(x: pd.Series) -> float:
     n = len(x)
     if x.isna().all():
@@ -234,3 +289,55 @@ def test_weighted_moving_average_matches_the_series_version(param, group_by_seas
         df, param, window=5, group_by_season=group_by_season
     )
     assert_identical(actual, expected)
+
+
+def _transform_before(series, keys, window, how="mean", ddof=1):
+    def op(s):
+        shifted = s.shift(1)
+        w = (
+            shifted.expanding(min_periods=1)
+            if window is None
+            else shifted.rolling(window, min_periods=1)
+        )
+        return w.mean() if how == "mean" else w.std(ddof=ddof)
+
+    return series.groupby(keys).transform(op)
+
+
+@pytest.mark.parametrize("seed", [0, 1, 7])
+@pytest.mark.parametrize(
+    "window,how,ddof",
+    [
+        (1, "mean", 1),
+        (5, "mean", 1),
+        (10, "mean", 1),
+        (None, "mean", 1),
+        (None, "std", 0),
+    ],
+)
+@pytest.mark.parametrize("by", ["team", "team_home", "team_season_home"])
+def test_grouped_windows_match_the_per_group_lambda(seed, window, how, ddof, by):
+    df = team_frame(seed).sort_values(["TEAM_ID", "GAME_DATE", "GAME_ID"])
+    keys = {
+        "team": [df["TEAM_ID"]],
+        "team_home": [df["TEAM_ID"], df["HOME"]],
+        "team_season_home": [df["TEAM_ID"], df["SEASON_YEAR"], df["HOME"]],
+    }[by]
+    for column in ("PTS", "PF", MAIN_TOTAL_LINE_COL):
+        series = pd.to_numeric(df[column], errors="coerce")
+        expected = _transform_before(series, keys, window, how, ddof)
+        actual = statistics._shifted_group_window(
+            series, keys, window=window, how=how, ddof=ddof
+        )
+        assert_identical(actual, expected)
+
+
+def test_grouped_windows_with_missing_keys():
+    df = team_frame(8).sort_values(["TEAM_ID", "GAME_DATE", "GAME_ID"])
+    team = df["TEAM_ID"].astype(float)
+    team.iloc[::17] = np.nan
+    series = pd.to_numeric(df["PTS"], errors="coerce")
+    assert_identical(
+        statistics._shifted_group_window(series, [team], window=5),
+        _transform_before(series, [team], 5),
+    )

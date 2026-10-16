@@ -30,6 +30,8 @@ from datetime import datetime
 import pandas as pd
 import psycopg
 
+from nba_ou.postgre_db.row_order import read_sql_canonical
+
 from .schema import SCHEMA
 
 _STATUS_AS_OF = f"""
@@ -85,7 +87,7 @@ def status_as_of(
     by up to an hour.
     """
     _require_aware(as_of)
-    return pd.read_sql_query(
+    return read_sql_canonical(
         _STATUS_AS_OF, conn, params={"game_ids": list(game_ids), "as_of": as_of}
     )
 
@@ -102,10 +104,10 @@ def coverage_at(
     favourable known.
     """
     _require_aware(as_of)
-    filings = pd.read_sql_query(
+    filings = read_sql_canonical(
         _COVERAGE, conn, params={"game_ids": list(game_ids), "as_of": as_of}
     )
-    last = pd.read_sql_query(_LAST_REPORT, conn, params={"as_of": as_of})
+    last = read_sql_canonical(_LAST_REPORT, conn, params={"as_of": as_of})
     filings.attrs["last_report"] = None if last.empty else last["last_report"].iloc[0]
     return filings
 
@@ -204,9 +206,9 @@ def report_state_at_snapshots(
         "as_of": [value.to_pydatetime() for value in timestamps],
     }
     return (
-        pd.read_sql_query(_STATUS_AT_SNAPSHOTS, conn, params=params),
-        pd.read_sql_query(_FILING_AT_SNAPSHOTS, conn, params=params),
-        pd.read_sql_query(_REPORT_AGE_AT_SNAPSHOTS, conn, params=params),
+        read_sql_canonical(_STATUS_AT_SNAPSHOTS, conn, params=params),
+        read_sql_canonical(_FILING_AT_SNAPSHOTS, conn, params=params),
+        read_sql_canonical(_REPORT_AGE_AT_SNAPSHOTS, conn, params=params),
     )
 
 
@@ -287,6 +289,27 @@ _LISTED_PAIRS = f"""
 """
 
 
+def _season_query(name: str, query: str, params=()):
+    """The query as a ``SeasonQuery``: its season filter as the placeholder."""
+    from nba_ou.postgre_db.season_queries import SeasonQuery
+
+    assert query.count(_SEASON_FILTER) == 1, name
+    return SeasonQuery(
+        dataset=f"injury_report.{name}",
+        template=query.replace(_SEASON_FILTER, "{season_filter}"),
+        season_column="g.season_year",
+        database="aiven",
+        params=params,
+    )
+
+
+def _through_s3(name: str, query: str, conn, season_years, params=()):
+    """The query's result from the S3 input cache where it can serve it."""
+    from nba_ou.postgre_db.season_queries import read_through_query
+
+    return read_through_query(_season_query(name, query, params), season_years, conn)
+
+
 def _season_params(season_years: list[int] | None) -> dict:
     # Plain ints: numpy integers mixed with Python ints cannot be dumped as one
     # Postgres array.
@@ -301,7 +324,12 @@ def last_status_before_tip(
     conn: psycopg.Connection, season_years: list[int] | None = None
 ) -> pd.DataFrame:
     """Each listed player's status on the last report published before tipoff."""
-    return pd.read_sql_query(
+    stored = _through_s3(
+        "last_status_before_tip", _LAST_STATUS_BEFORE_TIP, conn, season_years
+    )
+    if stored is not None:
+        return stored
+    return read_sql_canonical(
         _LAST_STATUS_BEFORE_TIP, conn, params=_season_params(season_years)
     )
 
@@ -313,14 +341,20 @@ def filing_at_tip(
 
     A team-game with no row had no report listing its game before tip.
     """
-    return pd.read_sql_query(_FILING_AT_TIP, conn, params=_season_params(season_years))
+    stored = _through_s3("filing_at_tip", _FILING_AT_TIP, conn, season_years)
+    if stored is not None:
+        return stored
+    return read_sql_canonical(_FILING_AT_TIP, conn, params=_season_params(season_years))
 
 
 def report_age_at_tip(
     conn: psycopg.Connection, season_years: list[int] | None = None
 ) -> pd.DataFrame:
     """Minutes between the last parsed report and each game's tipoff."""
-    return pd.read_sql_query(
+    stored = _through_s3("report_age_at_tip", _REPORT_AGE_AT_TIP, conn, season_years)
+    if stored is not None:
+        return stored
+    return read_sql_canonical(
         _REPORT_AGE_AT_TIP, conn, params=_season_params(season_years)
     )
 
@@ -331,15 +365,27 @@ def listed_status_events(
     statuses: tuple[str, ...] = LISTED_STATUS_CODES,
 ) -> pd.DataFrame:
     """Every game a player held one of ``statuses`` at any point before tip."""
+    stored = _through_s3(
+        "listed_status_events",
+        _LISTED_STATUS_EVENTS,
+        conn,
+        season_years,
+        params=(("statuses", list(statuses)),),
+    )
+    if stored is not None:
+        return stored
     params = _season_params(season_years) | {"statuses": list(statuses)}
-    return pd.read_sql_query(_LISTED_STATUS_EVENTS, conn, params=params)
+    return read_sql_canonical(_LISTED_STATUS_EVENTS, conn, params=params)
 
 
 def listed_pairs(
     conn: psycopg.Connection, season_years: list[int] | None = None
 ) -> pd.DataFrame:
     """Every (game, player) with any pre-tip designation, of any status."""
-    return pd.read_sql_query(_LISTED_PAIRS, conn, params=_season_params(season_years))
+    stored = _through_s3("listed_pairs", _LISTED_PAIRS, conn, season_years)
+    if stored is not None:
+        return stored
+    return read_sql_canonical(_LISTED_PAIRS, conn, params=_season_params(season_years))
 
 
 # --------------------------------------------------------------------------------
@@ -415,21 +461,21 @@ def status_spans(
     A NULL status means the player left the report; it is a change, so it is
     kept rather than filtered out as the as-of reads do.
     """
-    return pd.read_sql_query(_STATUS_SPANS, conn, params=_season_params(season_years))
+    return read_sql_canonical(_STATUS_SPANS, conn, params=_season_params(season_years))
 
 
 def filing_spans(
     conn: psycopg.Connection, season_years: list[int] | None = None
 ) -> pd.DataFrame:
     """Every pre-tip filing span per team-game, with its ``submitted`` flag."""
-    return pd.read_sql_query(_FILING_SPANS, conn, params=_season_params(season_years))
+    return read_sql_canonical(_FILING_SPANS, conn, params=_season_params(season_years))
 
 
 def team_game_schedule(
     conn: psycopg.Connection, season_years: list[int] | None = None
 ) -> pd.DataFrame:
     """One row per (game, team), with the team's previous game by tip-off."""
-    return pd.read_sql_query(
+    return read_sql_canonical(
         _TEAM_GAME_SCHEDULE, conn, params=_season_params(season_years)
     )
 
@@ -440,3 +486,56 @@ def _require_aware(as_of: datetime) -> None:
             "as_of must be timezone-aware; a naive timestamp cannot be ordered "
             "correctly across a DST fall-back"
         )
+
+
+#: Count and row hash of everything the snapshot reads see, per season: the
+#: spans and filings of its games, the games, and the reports published in it
+#: (by publication season, 1 September to 31 August). The dimensions the reads
+#: join come with no season.
+_SEASON_FINGERPRINTS = f"""
+    SELECT g.season_year::int AS season, 'status_span' AS part, count(*) AS n,
+           sum(hashtextextended(s::text, 0))::text AS h
+    FROM {SCHEMA}.ir_status_span s JOIN {SCHEMA}.ir_game g USING (game_id)
+    GROUP BY 1
+    UNION ALL
+    SELECT g.season_year::int, 'filing_span', count(*),
+           sum(hashtextextended(f::text, 0))::text
+    FROM {SCHEMA}.ir_filing_span f JOIN {SCHEMA}.ir_game g USING (game_id)
+    GROUP BY 1
+    UNION ALL
+    SELECT g.season_year::int, 'game', count(*),
+           sum(hashtextextended(g::text, 0))::text
+    FROM {SCHEMA}.ir_game g GROUP BY 1
+    UNION ALL
+    SELECT EXTRACT(YEAR FROM r.observed_at - INTERVAL '8 months')::int, 'report',
+           count(*), sum(hashtextextended(r::text, 0))::text
+    FROM {SCHEMA}.ir_report r GROUP BY 1
+    UNION ALL
+    SELECT NULL, 'dimensions', count(*), sum(hashtextextended(d::text, 0))::text
+    FROM (
+        SELECT t::text AS d FROM {SCHEMA}.ir_team t
+        UNION ALL SELECT r::text FROM {SCHEMA}.ir_reason r
+        UNION ALL SELECT c::text FROM {SCHEMA}.ir_reason_category c
+        UNION ALL SELECT s::text FROM {SCHEMA}.ir_status s
+    ) dims
+"""
+
+
+def report_season_fingerprints(conn: psycopg.Connection) -> dict[int, str]:
+    """A digest per season of every stored row a snapshot read of that season,
+    or of any earlier one, can see -- chained, so a season's digest changes
+    when it or an earlier season does. About a second for every season."""
+    import hashlib
+
+    frame = pd.read_sql_query(_SEASON_FINGERPRINTS, conn)
+    dims = frame.loc[frame["season"].isna(), ["n", "h"]].to_numpy().tolist()
+    parts = frame.dropna(subset=["season"]).astype({"season": int})
+    out = {}
+    chain = hashlib.sha256(repr(dims).encode()).hexdigest()
+    for season in sorted(parts["season"].unique()):
+        rows = parts[parts["season"] == season].sort_values("part")
+        chain = hashlib.sha256(
+            (chain + repr(rows[["part", "n", "h"]].to_numpy().tolist())).encode()
+        ).hexdigest()
+        out[int(season)] = chain
+    return out

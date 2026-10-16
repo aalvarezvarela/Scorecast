@@ -1,6 +1,8 @@
 import pandas as pd
 from nba_ou.postgre_db.config.db_config import connect_nba_db, get_schema_name_refs
 from psycopg import sql
+from nba_ou.postgre_db.row_order import read_sql_canonical
+from nba_ou.postgre_db.season_tables import read_through
 
 
 def _normalize_game_ids(game_ids) -> list[str]:
@@ -42,6 +44,7 @@ def get_refs_data_from_db(seasons=None, extra_game_ids=None):
         conn = connect_nba_db()
 
         where_parts = []
+        season_years = None
         query_params = []
 
         if seasons is not None and len(seasons) > 0:
@@ -70,10 +73,15 @@ def get_refs_data_from_db(seasons=None, extra_game_ids=None):
         )
 
         query = query_obj.as_string(conn)
-        if query_params:
-            df_refs = pd.read_sql_query(query, conn, params=tuple(query_params))
-        else:
-            df_refs = pd.read_sql_query(query, conn)
+        # Past seasons from the S3 input cache, the rest from here; the same
+        # frame either way (``season_tables``).
+        df_refs = read_through(
+            "nba_refs.nba_refs", season_years, normalized_extra_game_ids, conn
+        )
+        if df_refs is None and query_params:
+            df_refs = read_sql_canonical(query, conn, params=tuple(query_params))
+        elif df_refs is None:
+            df_refs = read_sql_canonical(query, conn)
 
         # Convert column names to uppercase to match expected format
         df_refs.columns = df_refs.columns.str.upper()

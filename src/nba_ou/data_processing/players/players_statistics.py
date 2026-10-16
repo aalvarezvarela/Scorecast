@@ -40,7 +40,12 @@ def _previous_regular_season_player_average(out, stat_col, valid_mask):
         # documented "no prior valid game" value instead of guessing.
         return pd.Series(np.nan, index=out.index)
 
-    regular = valid_mask & out["GAME_ID"].map(_is_fallback_season_type)
+    # One call per distinct game rather than per player row; the same values.
+    codes, game_ids = pd.factorize(out["GAME_ID"], use_na_sentinel=False)
+    by_game = np.fromiter(
+        (_is_fallback_season_type(g) for g in game_ids), bool, len(game_ids)
+    )
+    regular = valid_mask & pd.Series(by_game[codes], index=out.index)
     season_means = (
         out.loc[regular]
         .assign(_stat=pd.to_numeric(out.loc[regular, stat_col], errors="coerce"))
@@ -181,6 +186,25 @@ def rank_player_states(states, stat_col="PTS", *, lowest=False, n_players=3):
     return top_or_bottom_n
 
 
+def _groupwise_ewm_mean(values: pd.Series, keys: list, halflife) -> pd.Series:
+    """``values.groupby(keys).transform(lambda s: s.ewm(...).mean())``, exactly.
+
+    ``groupby(...).ewm`` runs the same EWM kernel over each group's rows in
+    their order, restarting at every group, as the per-group lambda does; it
+    just does not call back into Python once per group. Rows whose keys are
+    missing belong to no group and stay NaN, as with ``transform``.
+    """
+    positions = pd.RangeIndex(len(values))
+    grouped = (
+        values.set_axis(positions)
+        .groupby([k.set_axis(positions) for k in keys])
+        .ewm(halflife=halflife, adjust=False, min_periods=1, ignore_na=True)
+        .mean()
+    )
+    grouped = grouped.droplevel(list(range(len(keys)))).reindex(positions)
+    return pd.Series(grouped.to_numpy(dtype="float64"), index=values.index)
+
+
 def precompute_cumulative_avg_stat(
     df_players: pd.DataFrame,
     stat_col: str = "PTS",
@@ -226,16 +250,8 @@ def precompute_cumulative_avg_stat(
     ).shift(1)
 
     # Recency-weighted estimate by player-season.
-    in_season = shifted_valid_stat.groupby(
-        [out["SEASON_YEAR"], out["PLAYER_ID"]],
-        group_keys=False,
-    ).transform(
-        lambda s: s.ewm(
-            halflife=ewm_halflife_games,
-            adjust=False,
-            min_periods=1,
-            ignore_na=True,
-        ).mean()
+    in_season = _groupwise_ewm_mean(
+        shifted_valid_stat, [out["SEASON_YEAR"], out["PLAYER_ID"]], ewm_halflife_games
     )
 
     # Fill order, matching _SEASON_BEFORE_AVG in statistics.compute_rolling_stats:

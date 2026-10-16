@@ -20,7 +20,7 @@ from .legacy_referee_features import compute_referee_features_before
 REFEREES = [f"Referee {name}" for name in "ABCDEFGHIJKL"]
 
 
-def crews_frame(seed: int = 0, n_games: int = 400) -> pd.DataFrame:
+def crews_frame(seed: int = 0, n_games: int = 400, missing=pd.NA) -> pd.DataFrame:
     """Several games per date across two seasons, crews of one to three,
     missing metrics, and rows out of date order."""
     rng = np.random.default_rng(seed)
@@ -38,7 +38,7 @@ def crews_frame(seed: int = 0, n_games: int = 400) -> pd.DataFrame:
     for _ in range(n_games):
         size = rng.choice([3, 3, 3, 2, 1])
         crew = sorted(rng.choice(REFEREES, size, replace=False))
-        crews.append(crew + [pd.NA] * (3 - size))
+        crews.append(crew + [missing] * (3 - size))
     frame = pd.DataFrame(
         {
             "GAME_ID": [f"00{i:08d}" for i in range(n_games)],
@@ -60,9 +60,27 @@ def crews_frame(seed: int = 0, n_games: int = 400) -> pd.DataFrame:
 
 @pytest.mark.parametrize("seed", [0, 1, 2])
 @pytest.mark.parametrize("trio", [False, True])
-def test_referee_features_match_the_previous_implementation(seed, trio):
-    frame = crews_frame(seed)
+# pd.NA takes the pandas comparison; None and NaN the array one.
+@pytest.mark.parametrize("missing", [pd.NA, None, np.nan], ids=["NA", "None", "NaN"])
+def test_referee_features_match_the_previous_implementation(seed, trio, missing):
+    frame = crews_frame(seed, missing=missing)
     expected = compute_referee_features_before(frame, include_ref_trio_features=trio)
     actual = compute_referee_features(frame, include_ref_trio_features=trio)
     assert_identical(actual, expected)
     assert expected["REF_AVG_TOTAL_POINTS_DIFF_BEFORE"].notna().sum() > 100
+
+
+@pytest.mark.parametrize("seed", [0, 1])
+def test_later_games_do_not_change_earlier_rows(seed):
+    """A build that stops at a date gives its games the full build's values.
+
+    The past-game means sum in the frame's sorted order; a date-only unstable
+    sort let later games reorder a date's earlier ones and move the last bits.
+    """
+    frame = crews_frame(seed)
+    full = compute_referee_features(frame, include_ref_trio_features=True)
+    cutoff = frame["GAME_DATE"].sort_values().iloc[len(frame) // 2]
+    early = compute_referee_features(
+        frame[frame["GAME_DATE"] <= cutoff], include_ref_trio_features=True
+    )
+    assert_identical(early, full[full["GAME_DATE"] <= cutoff].reset_index(drop=True))

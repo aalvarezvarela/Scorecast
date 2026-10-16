@@ -5,9 +5,8 @@ from nba_ou.config.odds_columns import spread_col, total_line_col
 from nba_ou.data_processing.historic_games.historic_games_statistics import (
     compute_differences_in_points_conceeded_annotated,
     compute_home_points_conceded_avg,
-    get_last_5_matchup_excluding_current,
+    last_5_matchups_for_frame,
 )
-from tqdm import tqdm
 
 MAIN_TOTAL_LINE_COL = total_line_col()
 MAIN_SPREAD_COL = spread_col()
@@ -205,14 +204,10 @@ def merge_home_away_data(df, todays_prediction=False):
             df_merged[main_total_home] - df_merged[main_total_away]
         )
 
-    tqdm.pandas()
-    # Apply row-by-row, returning a Series of dictionaries
-    results_series = df_merged.progress_apply(
-        lambda row: get_last_5_matchup_excluding_current(row, df_merged), axis=1
+    # One dict per row, as get_last_5_matchup_excluding_current gives it.
+    results_df = pd.DataFrame(
+        last_5_matchups_for_frame(df_merged), index=df_merged.index
     )
-
-    # Convert that Series of dicts into a DataFrame
-    results_df = pd.DataFrame(results_series.tolist(), index=df_merged.index)
 
     # Finally, concatenate the new columns onto df_merged
     df_merged = pd.concat([df_merged, results_df], axis=1)

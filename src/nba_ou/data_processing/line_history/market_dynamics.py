@@ -199,41 +199,99 @@ def _league_mean_before(
     return looked_up.to_numpy(float)
 
 
-def cross_market_features(
+def _gap(
+    reader: LevelReader, game_ids, anchor: str, minutes=None, *, opener=False
+) -> np.ndarray:
+    """Moneyline-implied home margin minus the spread, as of ``minutes``."""
+    if opener:
+        spread = reader.opener(game_ids, MARKET_SPREAD, anchor)
+        probability = reader.opener(game_ids, MARKET_MONEYLINE, anchor)
+    else:
+        spread = reader.at(game_ids, MARKET_SPREAD, anchor, minutes)
+        probability = reader.at(game_ids, MARKET_MONEYLINE, anchor, minutes)
+    return _moneyline_margin(probability) - spread
+
+
+def _consensus_move(reader: LevelReader, game_ids, market: str, minutes) -> np.ndarray:
+    """Median move across books over the ``MOVE_WINDOW_MINUTES`` before ``minutes``."""
+    return _median_move(
+        reader.book_matrix(game_ids, market, minutes),
+        reader.book_matrix(game_ids, market, minutes + MOVE_WINDOW_MINUTES),
+    )
+
+
+#: Per-row values of earlier games that the cross-row parts read: the G3 gap
+#: (the league mean, and the spread Ridge) and each market's 60-minute
+#: consensus move (the news-beta label). See ``snapshot_history_inputs``.
+GAP_COLUMN = "XMKT_GAP"
+GAP_MOVE_COLUMN = "XMKT_GAP_MOVE_60"
+
+
+def consensus_move_column(market: str) -> str:
+    return f"CONSENSUS_MOVE_60_{MARKET_SHORT[market]}"
+
+
+def snapshot_history_inputs(
     reader: LevelReader, rows: pd.DataFrame, *, anchor: str
+) -> pd.DataFrame:
+    """What later games' features read from these rows, by the same reads.
+
+    ``rows``: ``GAME_ID``, ``TIME_TO_MATCH_MIN``. Positionally aligned. Kept
+    per finished game so a tonight-only build can fit on them without the
+    games' ticks; see ``cross_market_features``' and
+    ``news_reaction_features``' ``history``.
+    """
+    game_ids = rows["GAME_ID"].astype(str).to_numpy()
+    minutes = pd.to_numeric(rows["TIME_TO_MATCH_MIN"]).to_numpy(float)
+    now = _gap(reader, game_ids, anchor, minutes)
+    out = pd.DataFrame(index=np.arange(len(rows)))
+    out[GAP_COLUMN] = now
+    out[GAP_MOVE_COLUMN] = now - _gap(
+        reader, game_ids, anchor, minutes + MOVE_WINDOW_MINUTES
+    )
+    for market in MARKET_SHORT:
+        out[consensus_move_column(market)] = _consensus_move(
+            reader, game_ids, market, minutes
+        )
+    return out
+
+
+def cross_market_features(
+    reader: LevelReader,
+    rows: pd.DataFrame,
+    *,
+    anchor: str,
+    history: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
     """G3 per row. ``rows``: ``GAME_ID``, ``TIME_TO_MATCH_MIN``, ``GAME_DATE``.
 
-    Positionally aligned with ``rows``.
+    Positionally aligned with ``rows``. ``history`` -- ``GAME_ID``,
+    ``GAME_DATE`` and ``XMKT_GAP`` (``snapshot_history_inputs``) of the other
+    rows a full build would hold -- joins the league reference, the one value
+    that reads other games.
     """
     game_ids = rows["GAME_ID"].astype(str).to_numpy()
     minutes = pd.to_numeric(rows["TIME_TO_MATCH_MIN"]).to_numpy(float)
     earlier = minutes + MOVE_WINDOW_MINUTES
     prefix = f"ODDS_SNAP_XMKT_{anchor.upper()}_ML_MARGIN_MINUS_SPREAD"
 
-    def gap(market_minutes=None, opener=False) -> np.ndarray:
-        if opener:
-            spread = reader.opener(game_ids, MARKET_SPREAD, anchor)
-            probability = reader.opener(game_ids, MARKET_MONEYLINE, anchor)
-        else:
-            spread = reader.at(game_ids, MARKET_SPREAD, anchor, market_minutes)
-            probability = reader.at(game_ids, MARKET_MONEYLINE, anchor, market_minutes)
-        return _moneyline_margin(probability) - spread
-
-    now = gap(minutes)
+    now = _gap(reader, game_ids, anchor, minutes)
     out = pd.DataFrame(index=np.arange(len(rows)))
     out[prefix] = now
-    out[f"{prefix}_MOVE_60"] = now - gap(earlier)
-    out[f"{prefix}_FROM_OPEN"] = now - gap(opener=True)
-    out[f"{prefix}_VS_LEAGUE"] = now - _league_mean_before(
-        rows["GAME_DATE"], now, game_ids
-    )
+    out[f"{prefix}_MOVE_60"] = now - _gap(reader, game_ids, anchor, earlier)
+    out[f"{prefix}_FROM_OPEN"] = now - _gap(reader, game_ids, anchor, opener=True)
+    if history is None:
+        league = _league_mean_before(rows["GAME_DATE"], now, game_ids)
+    else:
+        league = _league_mean_before(
+            pd.concat([history["GAME_DATE"], rows["GAME_DATE"]], ignore_index=True),
+            np.concatenate([history[GAP_COLUMN].to_numpy(float), now]),
+            np.concatenate([history["GAME_ID"].astype(str).to_numpy(), game_ids]),
+        )[len(history) :]
+    out[f"{prefix}_VS_LEAGUE"] = now - league
 
     consensus = {
-        market: _median_move(
-            reader.book_matrix(game_ids, market, minutes),
-            reader.book_matrix(game_ids, market, earlier),
-        )
+        market: _consensus_move(reader, game_ids, market, minutes)
         for market in (MARKET_TOTALS, MARKET_SPREAD, MARKET_MONEYLINE)
     }
     # Three states: a side market seen moving decides the row (0), all seen
@@ -268,6 +326,60 @@ def _signed_news(home: np.ndarray, away: np.ndarray, market: str) -> np.ndarray:
     return -(home + away)
 
 
+class _RowNews:
+    """Rows' injury-news state at their snapshot times, from ``timeline``.
+
+    ``rows``: ``GAME_ID``, ``SNAPSHOT_TS_UTC``, ``HOME_TEAM_ID``, ``AWAY_TEAM_ID``.
+    """
+
+    def __init__(self, timeline: InjuryNewsTimeline, rows: pd.DataFrame) -> None:
+        self.timeline = timeline
+        self.game_ids = rows["GAME_ID"].astype(str).to_numpy()
+        self.snapshot_ns = (
+            pd.to_datetime(rows["SNAPSHOT_TS_UTC"], utc=True).astype("int64").to_numpy()
+        )
+        self.teams = {
+            "home": rows["HOME_TEAM_ID"].astype(str).to_numpy(),
+            "away": rows["AWAY_TEAM_ID"].astype(str).to_numpy(),
+        }
+        self.covered = np.ones(len(rows), dtype=bool)
+        self.expected_now = {}
+        for side, team_ids in self.teams.items():
+            self.covered &= timeline.covered_at(
+                self.game_ids, team_ids, self.snapshot_ns
+            )
+            self.expected_now[side] = timeline.expected_missing_at(
+                self.game_ids, team_ids, self.snapshot_ns
+            )
+
+    def over(self, start_ns: np.ndarray, market: str) -> np.ndarray:
+        """Signed change in expected missing points from ``start_ns`` to now."""
+        change = {
+            side: self.expected_now[side]
+            - self.timeline.expected_missing_at(self.game_ids, team_ids, start_ns)
+            for side, team_ids in self.teams.items()
+        }
+        signed = _signed_news(change["home"], change["away"], market)
+        return np.where(self.covered, signed, np.nan)
+
+    def beta_window(self, market: str) -> np.ndarray:
+        """The news a beta is fitted on: the ``BETA_WINDOW_MINUTES`` to now."""
+        return self.over(self.snapshot_ns - BETA_WINDOW_MINUTES * _MINUTE_NS, market)
+
+
+def _beta_label(news_window: np.ndarray, consensus_move: np.ndarray) -> np.ndarray:
+    return (
+        np.isfinite(news_window)
+        & (np.abs(np.nan_to_num(news_window)) >= MATERIAL_NEWS_POINTS)
+        & np.isfinite(consensus_move)
+    )
+
+
+#: The full build's row order, for rows joined from ``history``: the fits
+#: break tip-off ties by it. ``news_reaction_features`` and the Ridge read it.
+ORDER_COLUMN = "_ROW_ORDER"
+
+
 def news_reaction_features(
     reader: LevelReader,
     rows: pd.DataFrame,
@@ -275,6 +387,7 @@ def news_reaction_features(
     *,
     anchor: str,
     verbose: bool = False,
+    history: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
     """G2 per row, positionally aligned with ``rows``.
 
@@ -300,6 +413,12 @@ def news_reaction_features(
     by season), so NaN would have the cleaning ``nan_threshold`` drop the whole
     family and make its NaN rate a season indicator. NaN is kept for rows with
     news whose move could not be observed (no quote at one of the instants).
+
+    ``history`` -- the other rows a full build would hold, with their
+    ``snapshot_history_inputs`` consensus moves, the teams, tip-off and
+    snapshot times, and ``ORDER_COLUMN`` (``rows`` need it too) -- joins the
+    beta fit, the one value that reads other games. The news it is fitted on
+    comes from ``timeline``, which must cover those rows.
     """
     n = len(rows)
     game_ids = rows["GAME_ID"].astype(str).to_numpy()
@@ -309,27 +428,34 @@ def news_reaction_features(
     snapshot_ns = (
         pd.to_datetime(rows["SNAPSHOT_TS_UTC"], utc=True).astype("int64").to_numpy()
     )
-    teams = {
-        "home": rows["HOME_TEAM_ID"].astype(str).to_numpy(),
-        "away": rows["AWAY_TEAM_ID"].astype(str).to_numpy(),
-    }
-
-    covered = np.ones(n, dtype=bool)
-    expected_now = {}
-    for side, team_ids in teams.items():
-        covered &= timeline.covered_at(game_ids, team_ids, snapshot_ns)
-        expected_now[side] = timeline.expected_missing_at(
-            game_ids, team_ids, snapshot_ns
+    news = _RowNews(timeline, rows)
+    news_over = news.over
+    if history is not None:
+        history_news = _RowNews(timeline, history)
+        # The fit runs over history and these rows merged, in the full
+        # build's order; ``rows_in_fit`` locates these rows in it.
+        fit_order = np.argsort(
+            np.concatenate(
+                [history[ORDER_COLUMN].to_numpy(), rows[ORDER_COLUMN].to_numpy()]
+            ),
+            kind="stable",
         )
+        rows_in_fit = np.argsort(fit_order, kind="stable")[len(history) :]
 
-    def news_over(start_ns: np.ndarray, market: str) -> np.ndarray:
-        change = {
-            side: expected_now[side]
-            - timeline.expected_missing_at(game_ids, team_ids, start_ns)
-            for side, team_ids in teams.items()
-        }
-        signed = _signed_news(change["home"], change["away"], market)
-        return np.where(covered, signed, np.nan)
+        def in_fit_order(history_values, row_values):
+            return np.concatenate([history_values, row_values])[fit_order]
+
+        fit_game_ids = pd.Series(
+            in_fit_order(history["GAME_ID"].astype(str).to_numpy(), game_ids)
+        )
+        fit_seasons = in_fit_order(
+            pd.to_numeric(history["SEASON_YEAR"]).to_numpy(int), seasons
+        )
+        fit_tip_ns = in_fit_order(
+            pd.to_datetime(history["TIPOFF_UTC"], utc=True).astype("int64").to_numpy(),
+            tip_ns,
+        )
+        fit_snapshot_ns = in_fit_order(history_news.snapshot_ns, snapshot_ns)
 
     news_start = {
         window: snapshot_ns - window * _MINUTE_NS
@@ -348,28 +474,44 @@ def news_reaction_features(
     for market, short in MARKET_SHORT.items():
         books_now = reader.book_matrix(game_ids, market, minutes)
         books_beta = reader.book_matrix(game_ids, market, minutes + BETA_WINDOW_MINUTES)
-        news_beta_window = news_over(news_start[BETA_WINDOW_MINUTES], market)
+        news_beta_window = news.beta_window(market)
         consensus_move = _median_move(books_now, books_beta)
 
-        label = (
-            np.isfinite(news_beta_window)
-            & (np.abs(np.nan_to_num(news_beta_window)) >= MATERIAL_NEWS_POINTS)
-            & np.isfinite(consensus_move)
-        )
-        fit = walk_forward_least_squares(
-            np.nan_to_num(news_beta_window).reshape(-1, 1),
-            np.nan_to_num(consensus_move),
-            game_ids=pd.Series(game_ids),
-            seasons=seasons,
-            tip_ns=tip_ns,
-            snapshot_ns=snapshot_ns,
-            label_mask=label,
-            predict_mask=np.ones(n, dtype=bool),
-            alpha=0.0,
-            min_train_rows=BETA_MIN_TRAIN_ROWS,
-            progress=f"News beta walk-forward ({short})",
-        )
-        beta = np.nan_to_num(fit.coefficients[:, 0], nan=0.0)
+        if history is None:
+            fit = walk_forward_least_squares(
+                np.nan_to_num(news_beta_window).reshape(-1, 1),
+                np.nan_to_num(consensus_move),
+                game_ids=pd.Series(game_ids),
+                seasons=seasons,
+                tip_ns=tip_ns,
+                snapshot_ns=snapshot_ns,
+                label_mask=_beta_label(news_beta_window, consensus_move),
+                predict_mask=np.ones(n, dtype=bool),
+                alpha=0.0,
+                min_train_rows=BETA_MIN_TRAIN_ROWS,
+                progress=f"News beta walk-forward ({short})",
+            )
+            coefficients = fit.coefficients[:, 0]
+        else:
+            fit_news = in_fit_order(history_news.beta_window(market), news_beta_window)
+            fit_move = in_fit_order(
+                history[consensus_move_column(market)].to_numpy(float), consensus_move
+            )
+            fit = walk_forward_least_squares(
+                np.nan_to_num(fit_news).reshape(-1, 1),
+                np.nan_to_num(fit_move),
+                game_ids=fit_game_ids,
+                seasons=fit_seasons,
+                tip_ns=fit_tip_ns,
+                snapshot_ns=fit_snapshot_ns,
+                label_mask=_beta_label(fit_news, fit_move),
+                predict_mask=np.ones(len(fit_order), dtype=bool),
+                alpha=0.0,
+                min_train_rows=BETA_MIN_TRAIN_ROWS,
+                progress=f"News beta walk-forward ({short})",
+            )
+            coefficients = fit.coefficients[rows_in_fit, 0]
+        beta = np.nan_to_num(coefficients, nan=0.0)
         if verbose:
             order = np.argsort(snapshot_ns, kind="stable")
             last = pd.Series(beta[order], index=seasons[order]).groupby(level=0).last()

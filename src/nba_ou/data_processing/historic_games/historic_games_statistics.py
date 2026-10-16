@@ -94,6 +94,72 @@ def get_last_5_matchup_excluding_current(row, df):
     }
 
 
+def last_5_matchups_for_frame(df: pd.DataFrame) -> list[dict]:
+    """``get_last_5_matchup_excluding_current(row, df)`` for every row of ``df``.
+
+    The same values, in the same row order, without filtering the whole frame
+    once per row: each (home, away) pairing's games are sorted by date once,
+    and a row reads the five latest strictly before its own date. A pairing
+    with two games on one date is resolved by the per-row function itself,
+    because the order of tied dates is whatever its sort happens to give.
+    """
+    homes = df["TEAM_ID_TEAM_HOME"].tolist()
+    aways = df["TEAM_ID_TEAM_AWAY"].tolist()
+    dates = pd.to_datetime(df["GAME_DATE"])
+    date_values = dates.to_numpy(dtype="datetime64[ns]").view("int64")
+    has_date = dates.notna().to_numpy()
+    totals = df["TOTAL_POINTS"].tolist()
+
+    by_pair: dict[tuple, list[int]] = {}
+    for i, (home, away) in enumerate(zip(homes, aways)):
+        if has_date[i] and not (pd.isna(home) or pd.isna(away)):
+            by_pair.setdefault((home, away), []).append(i)
+    pairs = {}
+    for pair, rows in by_pair.items():
+        rows = np.asarray(rows)
+        # Latest first; ascending dates for the search.
+        pair_dates = date_values[rows]
+        order = np.argsort(pair_dates, kind="mergesort")
+        ascending = pair_dates[order]
+        tied = bool((np.diff(ascending) == 0).any())
+        pairs[pair] = (ascending, rows[order][::-1], tied)
+
+    out = []
+    for i, (home, away) in enumerate(zip(homes, aways)):
+        found = (
+            pairs.get((home, away))
+            if has_date[i] and not (pd.isna(home) or pd.isna(away))
+            else None
+        )
+        if found is not None and found[2]:
+            out.append(get_last_5_matchup_excluding_current(df.iloc[i], df))
+            continue
+        if found is None:
+            totals_list = []
+        else:
+            ascending, latest_first, _ = found
+            n_before = int(np.searchsorted(ascending, date_values[i], side="left"))
+            # The n_before earliest games, latest first, are the last n_before
+            # entries of latest_first.
+            prior = latest_first[len(latest_first) - n_before :]
+            totals_list = [totals[j] for j in prior[:5]]
+        while len(totals_list) < 5:
+            totals_list.append(np.nan)
+        real_values = [v for v in totals_list if not np.isnan(v)]
+        mean = sum(real_values) / len(real_values) if real_values else np.nan
+        out.append(
+            {
+                "LAST_1_GAMES_TOTAL_POINTS_BEFORE": totals_list[0],
+                "LAST_2_GAMES_TOTAL_POINTS_BEFORE": totals_list[1],
+                "LAST_3_GAMES_TOTAL_POINTS_BEFORE": totals_list[2],
+                "LAST_4_GAMES_TOTAL_POINTS_BEFORE": totals_list[3],
+                "LAST_5_GAMES_TOTAL_POINTS_BEFORE": totals_list[4],
+                "LAST_5_GAMES_TOTAL_POINTS_BEFORE_MEAN": mean,
+            }
+        )
+    return out
+
+
 def compute_home_points_conceded_avg(df):
     """Compute season-to-date points conceded at home and away.
 

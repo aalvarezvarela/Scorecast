@@ -62,7 +62,11 @@ def compute_referee_features_before(
     df["GAME_DATE"] = pd.to_datetime(df["GAME_DATE"])
 
     # Sort by GAME_DATE to ensure chronological order
-    df = df.sort_values("GAME_DATE").reset_index(drop=True)
+    # The order compute_referee_features sorts into (ties by GAME_ID), so the
+    # per-row loop below is compared on the same past-game order.
+    df = df.sort_values(["GAME_DATE", "GAME_ID"], kind="mergesort").reset_index(
+        drop=True
+    )
 
     if include_ref_trio_features:
         # Cache order-invariant trio key per game for faster matching

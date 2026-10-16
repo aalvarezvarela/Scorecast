@@ -75,3 +75,17 @@ jobs:
       - name: Repair SBR closing lines from line history
         run: |
           python scripts/update_databases/repair_sportsbook_closes.py
+
+      # The injury-report store holds a game once it is played: the reports
+      # of the days just finished, downloaded to the S3 archive, then only
+      # those games' spans rebuilt. Tonight's games are read live instead.
+      - name: Store finished days' injury reports
+        run: |
+          python scripts/injury_reports/daily_injury_reports.py
+
+      # Last: it validates every finished season of the tables above (and the
+      # line-history ticks) against the server and re-uploads any that changed,
+      # so the prediction job can read them from S3.
+      - name: Refresh the S3 input cache
+        run: |
+          python scripts/refresh_input_cache.py

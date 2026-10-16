@@ -132,8 +132,35 @@ def _use_previous_player_code(monkeypatch):
         ),
     )
     monkeypatch.setattr(
-        attach_player_features, "create_player_lookup", create_player_lookup_before
+        attach_player_features, "PlayerLookupIndex", _PreviousPlayerLookupIndex
     )
+    # The per-group steps on frames, through the functions patched above.
+    monkeypatch.setattr(attach_player_features, "ARRAY_ROSTER_STEPS", False)
+
+
+class _PreviousPlayerLookupIndex:
+    """``PlayerLookupIndex`` routed through the lookup it replaced."""
+
+    def __init__(self, df_players):
+        self._players = df_players
+
+    def bucket_column(self, df_bucket, column):
+        from nba_ou.data_processing.past_injuries.past_injuries import (
+            bucket_column_values,
+        )
+
+        return bucket_column_values(df_bucket, column)
+
+    def lookup_for(self, injured_dict=None, *, rows_only=False):
+        lookup = create_player_lookup_before(self._players, injured_dict=injured_dict)
+        if not rows_only:
+            return lookup
+
+        def rows_lookup(*args, **kwargs):
+            frame = lookup(*args, **kwargs)
+            return None if frame.empty else (frame, np.arange(len(frame)))
+
+        return rows_lookup
 
 
 def test_player_history_features_match_the_previous_code_path(monkeypatch):
@@ -261,3 +288,54 @@ def test_precomputed_stat_players_change_nothing():
         assert actual[1:] == expected[1:]
     # Shared across calls, so it must never be modified by one.
     assert_identical(stat_players, frozen)
+
+
+# ---- PlayerLookupIndex ----------------------------------------------------------
+
+
+def _lookup_calls(df: pd.DataFrame):
+    games = df[["SEASON_ID", "TEAM_ID", "GAME_DATE", "GAME_ID"]].drop_duplicates()
+    for season_id, team_id, date, game_id in games.itertuples(index=False):
+        for args in (
+            (season_id, team_id, date),
+            (season_id, str(team_id), date + pd.Timedelta(hours=12)),
+            (season_id, team_id, date.to_datetime64()),
+        ):
+            for kwargs in ({"game_id": game_id}, {}):
+                yield args, kwargs
+
+
+@pytest.mark.parametrize("seed", [0, 1])
+def test_one_index_serves_every_injury_dict(seed):
+    """The snapshot builder reuses one index across horizons' injury dicts."""
+    from nba_ou.data_processing.past_injuries.past_injuries import PlayerLookupIndex
+
+    df = players_frame(seed)
+    index = PlayerLookupIndex(df)
+    for injuries in (None, injured_dict(df, seed), injured_dict(df, seed + 7)):
+        shared = index.lookup_for(injuries)
+        fresh = create_player_lookup(df, injured_dict=injuries)
+        for args, kwargs in _lookup_calls(df):
+            assert_identical(shared(*args, **kwargs), fresh(*args, **kwargs))
+
+
+@pytest.mark.parametrize("seed", [0, 1])
+@pytest.mark.parametrize("with_injuries", [False, True])
+def test_ids_only_lookup_builds_the_same_set_in_the_same_order(seed, with_injuries):
+    from nba_ou.data_processing.past_injuries.past_injuries import PlayerLookupIndex
+
+    df = players_frame(seed)
+    injuries = injured_dict(df, seed) if with_injuries else None
+    index = PlayerLookupIndex(df)
+    frames = index.lookup_for(injuries)
+    ids = index.lookup_for(injuries, ids_only=True)
+    non_empty = 0
+    for args, kwargs in _lookup_calls(df):
+        expected = set(frames(*args, **kwargs)["PLAYER_ID"].astype(str))
+        actual = ids(*args, **kwargs)
+        assert actual == expected
+        # Same insertion sequence, so the same iteration order: sums over the
+        # set downstream add the same floats in the same order.
+        assert list(actual) == list(expected)
+        non_empty += bool(expected)
+    assert non_empty > 100

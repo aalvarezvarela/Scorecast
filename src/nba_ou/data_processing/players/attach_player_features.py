@@ -1,8 +1,12 @@
 import re
+from collections.abc import Callable
+from dataclasses import dataclass
 
+import numpy as np
 import pandas as pd
 from tqdm import tqdm
 
+from nba_ou.create_training_data.history_memo import season_of_game_id
 from nba_ou.data_processing.injury_status.report_state import (
     apply_report_out_overrides,
     nested_status_dict,
@@ -12,8 +16,9 @@ from nba_ou.data_processing.past_injuries.past_injuries import (
     N_TOP_PLAYERS_INJURED,
     N_TOP_PLAYERS_NON_INJURED,
     N_TOP_PLAYERS_QUESTIONABLE,
+    PlayerLookupIndex,
+    bucket_column_values,
     create_injury_streak_lookup,
-    create_player_lookup,
     get_injured_players_dict,
 )
 from nba_ou.data_processing.players.feature_profile import ACTIVE_PROFILE
@@ -237,6 +242,126 @@ def _build_prior_roster_lookup(df_players):
     return prior_roster_lookup
 
 
+#: Run the row loop's per-group steps on arrays (``_Roster``) rather than on a
+#: frame per group. The frame path is what the arrays must reproduce exactly;
+#: the tests switch this off to compare the two.
+ARRAY_ROSTER_STEPS = True
+
+
+class _Roster:
+    """One team-game's roster rows, as the row loop reads them.
+
+    Either rows of a lookup bucket (a rows-mode lookup's ``(df_bucket, rows)``,
+    whose columns the lookup index caches) or a frame (the prior-roster
+    fallback). Groups of rows are integer positions into the roster, in roster
+    order. ``frame(positions)`` is the frame the frame path builds for them:
+    the same rows, order, index and values as masking the roster frame.
+    """
+
+    def __init__(self, column, frame, size):
+        self._column = column
+        self._columns = {}
+        self.frame = frame
+        self.size = size
+
+    @classmethod
+    def from_lookup(cls, index, df_bucket, rows):
+        return cls(
+            lambda name: index.bucket_column(df_bucket, name)[rows],
+            lambda positions: df_bucket.iloc[rows[positions]],
+            rows.size,
+        )
+
+    @classmethod
+    def from_frame(cls, df):
+        return cls(
+            lambda name: bucket_column_values(df, name),
+            lambda positions: df.iloc[positions],
+            len(df),
+        )
+
+    def column(self, name):
+        values = self._columns.get(name)
+        if values is None:
+            values = self._column(name)
+            self._columns[name] = values
+        return values
+
+    def n_players(self, positions):
+        """``frame(positions)["PLAYER_ID"].nunique()``."""
+        unique = pd.unique(self.column("PLAYER_ID")[positions])
+        return int(pd.notna(unique).sum())
+
+
+def _array_steps_supported(df_players, stat_cols) -> bool:
+    """Whether the array steps reproduce the frame path for these players.
+
+    They cover the dtypes the pipelines use: float statistics, datetime dates,
+    and ``MIN`` among the statistics, so the minutes threshold reads
+    ``MIN_CUM_AVG`` rather than a per-row groupby mean.
+    """
+    columns = [f"{stat}_CUM_AVG" for stat in stat_cols]
+    return (
+        ARRAY_ROSTER_STEPS
+        and "MIN_CUM_AVG" in columns
+        and "PLAYER_NAME" in df_players.columns
+        and all(df_players[c].dtype == "float64" for c in columns)
+        and df_players["GAME_DATE"].dtype == "datetime64[ns]"
+    )
+
+
+def _latest_states_on_roster(roster, group, game_date, *, injured, min_minutes=15):
+    """``latest_player_states(roster.frame(group), game_date, injured=...)``.
+
+    Returns ``(positions, meets)``: one roster position per player, in the
+    order the frame version leaves its rows (by ``PLAYER_ID``), and its
+    ``MEETS_MIN_THRESHOLD``. ``None`` where the frame version returns None.
+    """
+    if injured:
+        min_minutes = min_minutes * 0.8
+    if group.size == 0:
+        return None
+    dates = roster.column("GAME_DATE")[group]
+    group = group[dates < game_date if injured else dates <= game_date]
+    if group.size == 0:
+        return None
+    # sort_values(["PLAYER_ID", "GAME_DATE"]) is a stable sort on both keys;
+    # np.lexsort is stable too, and PLAYER_ORDER ranks ids as that sort does.
+    player_order = roster.column("PLAYER_ORDER")
+    order = np.lexsort(
+        (roster.column("GAME_DATE")[group].view("int64"), player_order[group])
+    )
+    ordered = group[order]
+    codes = player_order[ordered]
+    # groupby("PLAYER_ID").tail(1): the last row of each player.
+    states = ordered[np.append(codes[1:] != codes[:-1], True)]
+    minutes = roster.column("MIN_CUM_AVG")[states]
+    meets = (np.where(np.isnan(minutes), 0.0, minutes) >= min_minutes).astype(int)
+    return states, meets
+
+
+def _rank_states_on_roster(roster, states, stat_col, *, lowest=False, n_players=3):
+    """``rank_player_states`` on ``_latest_states_on_roster`` output."""
+    if stat_col == "DEF_RATING":
+        lowest = True
+    if states is None:
+        return []
+    positions, meets = states
+    cum_col = f"{stat_col}_CUM_AVG"
+    values = roster.column(cum_col)[positions]
+    order = np.lexsort((values if lowest else -values, -meets.astype("int64")))
+    chosen = positions[order[:n_players]]
+    # tolist() yields the Python scalars iterating the frame's columns did.
+    return list(
+        zip(
+            roster.column("PLAYER_ID")[chosen].tolist(),
+            roster.column("PLAYER_NAME")[chosen].tolist(),
+            roster.column(cum_col)[chosen].tolist(),
+            strict=True,
+        )
+    )
+
+
 def _restrict_snapshot_membership(
     membership_dict: dict,
     snapshot_game_ids: set[str],
@@ -256,7 +381,9 @@ def _restrict_snapshot_membership(
         for game, teams in membership_dict.items()
         if str(game) not in ids
     }
-    out.update({str(game): teams for game, teams in reported.items() if str(game) in ids})
+    out.update(
+        {str(game): teams for game, teams in reported.items() if str(game) in ids}
+    )
     return out
 
 
@@ -289,6 +416,86 @@ def precompute_stat_players(df_players, stat_cols) -> pd.DataFrame:
     return df_players
 
 
+@dataclass(frozen=True)
+class PreparedPlayerHistory:
+    """The players as ``add_player_history_features``' row loop reads them.
+
+    Everything that builder derives from the players alone before its loop: the
+    statistic columns, the sort, the roster lookup's index, and the bench and
+    prior-roster lookups. A caller that runs the builder repeatedly on the same
+    players with different reports (the snapshot builder, once per horizon)
+    prepares it once with :func:`prepare_player_history`. Passing it computes
+    exactly what the builder would compute itself.
+    """
+
+    stat_cols: tuple[str, ...]
+    players: pd.DataFrame
+    lookup_index: PlayerLookupIndex
+    bench_lookup: Callable
+    prior_roster_lookup: Callable
+
+
+def prepare_player_history(
+    df_players, stat_cols, *, stat_players: pd.DataFrame | None = None
+) -> PreparedPlayerHistory:
+    if isinstance(stat_cols, str):
+        stat_cols = [stat_cols]
+    if stat_players is None:
+        stat_players = precompute_stat_players(df_players, stat_cols)
+    # Sort df_players once before the loop for optimal performance
+    players = stat_players.copy()
+    players["GAME_DATE"] = pd.to_datetime(players["GAME_DATE"], errors="coerce")
+    players.sort_values(["PLAYER_ID", "GAME_DATE"], kind="mergesort", inplace=True)
+    return PreparedPlayerHistory(
+        stat_cols=tuple(stat_cols),
+        players=players,
+        lookup_index=PlayerLookupIndex(players),
+        bench_lookup=_build_bench_stats_lookup(players),
+        prior_roster_lookup=_build_prior_roster_lookup(players),
+    )
+
+
+def player_history_memo_name(stat_cols) -> str:
+    """The history-memo name of the player step's history rows."""
+    return f"player_history_rows/{'-'.join(stat_cols)}"
+
+
+def _history_identifiers(
+    states_of, rank, roster, stat_cols, non_inj_rows, inj_rows, questionable_rows
+) -> dict:
+    """The identifier columns of one row, as the full row builder sets them."""
+    row_update = {}
+    groups = [
+        ("", N_TOP_PLAYERS_NON_INJURED, states_of(non_inj_rows, False), non_inj_rows),
+        ("INJURED_", N_TOP_PLAYERS_INJURED, states_of(inj_rows, True), inj_rows),
+    ]
+    if questionable_rows is not None:
+        groups.append(
+            (
+                "QUESTIONABLE_",
+                N_TOP_PLAYERS_QUESTIONABLE,
+                states_of(questionable_rows, True),
+                questionable_rows,
+            )
+        )
+    for stat_col in stat_cols:
+        for prefix, n_slots, states, rows in groups:
+            ranked = rank(states, stat_col, n_players=roster.n_players(rows))
+            top = ranked[:n_slots]
+            while len(top) < n_slots:
+                top.append((None, None, 0))
+            for i in range(n_slots):
+                slot = i + 1
+                if ACTIVE_PROFILE.emits_identifier(stat_col, slot):
+                    row_update[
+                        _with_before_suffix(f"TOP{slot}_{prefix}PLAYER_ID_{stat_col}")
+                    ] = top[i][0]
+                    row_update[
+                        _with_before_suffix(f"TOP{slot}_{prefix}PLAYER_NAME_{stat_col}")
+                    ] = top[i][1]
+    return row_update
+
+
 def add_player_history_features(
     df_team,
     df_players,
@@ -303,6 +510,10 @@ def add_player_history_features(
     snapshot_report_listed_players: dict | None = None,
     row_cache: RowCache | None = None,
     stat_players: pd.DataFrame | None = None,
+    prepared_players: PreparedPlayerHistory | None = None,
+    target_game_ids: set[str] | None = None,
+    history_memo=None,
+    injured_players: dict | None = None,
 ):
     """
     Main function to attach top player statistics and injured player stats to team data.
@@ -351,6 +562,23 @@ def add_player_history_features(
             df_players, stat_cols)``, for callers that run this builder
             repeatedly on the same players. It is exactly what the builder
             would compute itself, so passing it changes no value.
+        prepared_players (PreparedPlayerHistory, optional):
+            ``prepare_player_history(df_players, stat_cols)``, the same for
+            everything the builder derives from the players alone. Replaces
+            ``stat_players``.
+        target_game_ids (set, optional): Games whose rows are needed in full.
+            Every other row is history: it still records its availability
+            and the player identifier columns (which later rows' availability
+            effects read), and its other columns are left empty. Each target
+            row gets exactly the values a build of every row gives it.
+        history_memo (HistoryMemo, optional): With ``target_game_ids``, the
+            history rows of finished seasons are read from it when their
+            season's inputs are unchanged, and written to it otherwise
+            (``create_training_data.history_memo``).
+        injured_players (dict, optional): ``get_injured_players_dict(
+            df_injuries, df_players=df_players)``, for callers that run this
+            builder repeatedly on the same injuries and players. Read, never
+            modified, so passing it changes no value.
 
     Returns:
         pd.DataFrame: Updated df_team with extra columns for top players and injured players
@@ -360,9 +588,13 @@ def add_player_history_features(
             injury-report dictionary.
     """
     # Build injuries lookup
-    injured_dict = get_injured_players_dict(df_injuries, df_players=df_players)
+    if injured_players is None:
+        injured_dict = get_injured_players_dict(df_injuries, df_players=df_players)
+    else:
+        injured_dict = injured_players
 
     if injury_dict_scheduled:
+        injured_dict = dict(injured_dict)
         injured_dict.update(injury_dict_scheduled)
 
     # The third group, keyed the same way. Its members are removed from BOTH the
@@ -407,9 +639,15 @@ def add_player_history_features(
 
     # Collect all column names first to avoid fragmentation
     all_new_cols = []
-    if stat_players is None:
-        stat_players = precompute_stat_players(df_players, stat_cols)
-    df_players = stat_players
+    if prepared_players is None:
+        prepared_players = prepare_player_history(
+            df_players, stat_cols, stat_players=stat_players
+        )
+    elif prepared_players.stat_cols != tuple(stat_cols):
+        raise ValueError(
+            f"prepared_players was built for {prepared_players.stat_cols}, "
+            f"not {tuple(stat_cols)}"
+        )
     for stat_col in stat_cols:
         # 1) Cumulative averages for the chosen stat: precomputed above
 
@@ -553,13 +791,12 @@ def add_player_history_features(
     new_cols_df = pd.DataFrame(None, index=df_team.index, columns=all_new_cols)
     df_team = pd.concat([df_team, new_cols_df], axis=1)
 
-    # Sort df_players once before the loop for optimal performance
-    df_players = df_players.copy()
-    df_players["GAME_DATE"] = pd.to_datetime(df_players["GAME_DATE"], errors="coerce")
-    df_players.sort_values(["PLAYER_ID", "GAME_DATE"], kind="mergesort", inplace=True)
-
-    # Create optimized lookup function (precomputes indexes once)
-    player_lookup = create_player_lookup(df_players, injured_dict=membership_dict)
+    df_players = prepared_players.players
+    # Create optimized lookup function (the players' indexes are precomputed).
+    # It returns the roster's rows within their bucket rather than a frame.
+    lookup_index = prepared_players.lookup_index
+    roster_lookup = lookup_index.lookup_for(membership_dict, rows_only=True)
+    array_steps = _array_steps_supported(df_players, stat_cols)
     injury_streak_lookup = create_injury_streak_lookup(
         df_team,
         injured_dict,
@@ -581,8 +818,8 @@ def add_player_history_features(
         if build_questionable_group
         else None
     )
-    bench_lookup = _build_bench_stats_lookup(df_players)
-    prior_roster_lookup = _build_prior_roster_lookup(df_players)
+    bench_lookup = prepared_players.bench_lookup
+    prior_roster_lookup = prepared_players.prior_roster_lookup
 
     # 3) Iterate over each row in df_team (only needed columns for efficiency)
     cols_needed = ["GAME_ID", "TEAM_ID", "SEASON_ID", "GAME_DATE"]
@@ -602,6 +839,37 @@ def add_player_history_features(
             )
         )
         membership_signatures = _game_membership_signatures(membership_dict)
+
+    # Each group's latest per-player states do not depend on the statistic
+    # being ranked, so they are resolved once per row rather than once per
+    # statistic; ``get_top_n_averages_with_names`` is exactly these two steps.
+    # Both read the loop's current ``roster`` and ``game_date``.
+    if array_steps:
+
+        def states_of(rows, injured):
+            return _latest_states_on_roster(roster, rows, game_date, injured=injured)
+
+        def rank(states, stat_col, *, n_players):
+            return _rank_states_on_roster(roster, states, stat_col, n_players=n_players)
+
+    else:
+
+        def states_of(rows, injured):
+            return latest_player_states(roster.frame(rows), game_date, injured=injured)
+
+        rank = rank_player_states
+
+    if target_game_ids is not None:
+        if row_cache is not None:
+            raise ValueError("target_game_ids and row_cache cannot be combined")
+        target_game_ids = {str(g) for g in target_game_ids}
+    history_id_stats = [
+        s for s in stat_cols if ACTIVE_PROFILE.id_slots_by_stat.get(s, 0) > 0
+    ]
+    # Finished seasons' history rows: (row update, availability) per team-game.
+    memo_name = player_history_memo_name(stat_cols)
+    if history_memo is not None and target_game_ids is None:
+        raise ValueError("history_memo needs target_game_ids")
 
     for _, (game_id, team_id, season_id, game_date) in enumerate(
         tqdm(
@@ -640,20 +908,39 @@ def add_player_history_features(
                 continue
             row_cache.misses += 1
 
+        memo_rows = None
+        if history_memo is not None and str(game_id) not in target_game_ids:
+            memo_rows = history_memo.table(memo_name, season_of_game_id(game_id))
+        if memo_rows is not None:
+            entry = memo_rows.get((str(game_id), str(team_id)))
+            if entry is not None:
+                stored_update, stored_availability = entry
+                updates_list.append(stored_update)
+                if stored_availability is not None:
+                    availability_dict.setdefault(str(game_id), {})[str(team_id)] = (
+                        stored_availability
+                    )
+                continue
+
         # Resolve the roster without consulting who logged minutes in this game.
         # Availability is defined below solely as roster minus injured/inactive.
-        df_roster = player_lookup(season_id, team_id, game_date, game_id=game_id)
-        if df_roster.empty:
+        found = roster_lookup(season_id, team_id, game_date, game_id=game_id)
+        roster = (
+            _Roster.from_lookup(lookup_index, *found) if found is not None else None
+        )
+        if roster is None:
             # At a season opener, fall back to the latest assignments from the
             # prior season without consulting the opener's box-score membership.
             fallback_roster = prior_roster_lookup(team_id, game_date)
-            if fallback_roster is not None:
-                df_roster = fallback_roster
+            if fallback_roster is not None and not fallback_roster.empty:
+                roster = _Roster.from_frame(fallback_roster)
 
-        if df_roster.empty:
+        if roster is None:
             updates_list.append({})
             if row_cache is not None:
                 row_cache.rows[cache_key] = ({}, None)
+            if memo_rows is not None:
+                memo_rows[(str(game_id), str(team_id))] = ({}, None)
             continue
 
         # Who is injured for this game/team? The injury sources already encode
@@ -674,13 +961,17 @@ def add_player_history_features(
         questionable_players = questionable_index.get(str(game_id), {}).get(
             str(team_id), set()
         ) - set(injured_players)
-        player_ids = df_roster["PLAYER_ID"].astype(str)
-
-        df_non_inj = df_roster[
-            ~player_ids.isin(injured_players) & ~player_ids.isin(questionable_players)
-        ]
-        df_inj = df_roster[player_ids.isin(injured_players)]
-        df_questionable = df_roster[player_ids.isin(questionable_players)]
+        player_ids = roster.column("PLAYER_ID_STR")
+        is_injured = np.fromiter(
+            (p in injured_players for p in player_ids), bool, roster.size
+        )
+        is_questionable = np.fromiter(
+            (p in questionable_players for p in player_ids), bool, roster.size
+        )
+        # Roster positions of each group, in roster order.
+        non_inj_rows = np.flatnonzero(~is_injured & ~is_questionable)
+        inj_rows = np.flatnonzero(is_injured)
+        questionable_rows = np.flatnonzero(is_questionable)
 
         # The history map records what actually happened, for later games'
         # present/absent comparisons -- never the pre-game report.
@@ -693,22 +984,43 @@ def add_player_history_features(
 
         row_update = {}
 
-        if include_available_roster_count:
-            recent = df_non_inj[
-                (df_non_inj["GAME_DATE"] < game_date)
-                & (
-                    df_non_inj["GAME_DATE"]
-                    >= game_date - pd.Timedelta(days=AVAILABLE_ROSTER_RECENT_DAYS)
+        if target_game_ids is not None and str(game_id) not in target_game_ids:
+            # A history row: later rows read only its availability (above) and
+            # the player ids the availability effects rank by.
+            history_update = _history_identifiers(
+                states_of,
+                rank,
+                roster,
+                history_id_stats,
+                non_inj_rows,
+                inj_rows,
+                questionable_rows
+                if build_questionable_group and questionable_covered
+                else None,
+            )
+            updates_list.append(history_update)
+            if memo_rows is not None:
+                memo_rows[(str(game_id), str(team_id))] = (
+                    history_update,
+                    availability_dict[str(game_id)][str(team_id)],
                 )
-                & (pd.to_numeric(df_non_inj["MIN"], errors="coerce").fillna(0) > 0)
+            continue
+
+        if include_available_roster_count:
+            dates = roster.column("GAME_DATE")[non_inj_rows]
+            minutes = pd.to_numeric(roster.column("MIN")[non_inj_rows], errors="coerce")
+            recent = non_inj_rows[
+                (dates < game_date)
+                & (dates >= game_date - pd.Timedelta(days=AVAILABLE_ROSTER_RECENT_DAYS))
+                & (np.where(pd.isna(minutes), 0, minutes) > 0)
             ]
-            row_update[_with_before_suffix(N_AVAILABLE_ROSTER_PLAYERS_COL)] = recent[
-                "PLAYER_ID"
-            ].nunique()
+            row_update[_with_before_suffix(N_AVAILABLE_ROSTER_PLAYERS_COL)] = (
+                roster.n_players(recent)
+            )
 
         # Bench player stats (available non-starters with 7-21 avg MIN)
         bench_players = []
-        for pid in df_non_inj["PLAYER_ID"].unique():
+        for pid in pd.unique(roster.column("PLAYER_ID")[non_inj_rows]):
             stats = bench_lookup(pid, game_date)
             if stats is not None:
                 avg_min, pts_per_min, pace = stats
@@ -735,13 +1047,10 @@ def add_player_history_features(
         # own minutes after the per-statistic loop below.
         per_player_values: dict[str, dict] = {}
 
-        # Each group's latest per-player states do not depend on the statistic
-        # being ranked, so they are resolved once per row rather than once per
-        # statistic; ``get_top_n_averages_with_names`` is exactly these two steps.
-        non_inj_states = latest_player_states(df_non_inj, game_date, injured=False)
-        n_non_inj = df_non_inj["PLAYER_ID"].nunique()
-        inj_states = latest_player_states(df_inj, game_date, injured=True)
-        n_inj = df_inj["PLAYER_ID"].nunique()
+        non_inj_states = states_of(non_inj_rows, False)
+        n_non_inj = roster.n_players(non_inj_rows)
+        inj_states = states_of(inj_rows, True)
+        n_inj = roster.n_players(inj_rows)
         # The questionable group, resolved exactly like the injured one:
         # ``injured=True`` reads each player's last game strictly BEFORE this
         # one, so membership and values are both independent of tonight's box
@@ -749,26 +1058,20 @@ def add_player_history_features(
         # that exists only if the player ended up playing.
         rank_questionable = build_questionable_group and questionable_covered
         if rank_questionable:
-            questionable_states = latest_player_states(
-                df_questionable, game_date, injured=True
-            )
-            n_questionable = df_questionable["PLAYER_ID"].nunique()
+            questionable_states = states_of(questionable_rows, True)
+            n_questionable = roster.n_players(questionable_rows)
 
         for stat_col in stat_cols:
             n_players_noninj = N_TOP_PLAYERS_NON_INJURED
             n_players_inj = N_TOP_PLAYERS_INJURED
 
             # Get ALL non-injured players for aggregation
-            all_non_inj = rank_player_states(
-                non_inj_states, stat_col, n_players=n_non_inj
-            )
+            all_non_inj = rank(non_inj_states, stat_col, n_players=n_non_inj)
             # Get ALL injured players for aggregation
-            all_inj = rank_player_states(inj_states, stat_col, n_players=n_inj)
+            all_inj = rank(inj_states, stat_col, n_players=n_inj)
 
             all_questionable = (
-                rank_player_states(
-                    questionable_states, stat_col, n_players=n_questionable
-                )
+                rank(questionable_states, stat_col, n_players=n_questionable)
                 if rank_questionable
                 else []
             )

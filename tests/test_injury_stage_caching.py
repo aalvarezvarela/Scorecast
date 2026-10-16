@@ -122,6 +122,119 @@ def test_team_history_index_matches_the_frame_filter_bit_for_bit():
     assert checked_nonempty > 50, "the sample never exercised the effect branch"
 
 
+def test_team_history_index_memos_match_the_frame_filter_bit_for_bit():
+    """Windows shared across players and memberships reused across dates."""
+    df_hist = _history()
+    index = _TeamHistoryIndex(df_hist)
+    rng = np.random.default_rng(12)
+    all_ids = (
+        pd.to_numeric(df_hist["GAME_ID"], errors="coerce")
+        .dropna()
+        .astype("int64")
+        .unique()
+    )
+    teams = [int(t) for t in df_hist["TEAM_ID"].unique()]
+    players = {}
+    for team in teams:
+        for player in range(8):
+            injured = set(rng.choice(all_ids, int(rng.integers(0, 80)), replace=False))
+            available = (
+                None
+                if player == 0
+                else set(rng.choice(all_ids, int(rng.integers(0, 600)), replace=False))
+            )
+            players[(team, player)] = (injured, available)
+
+    checked_nonempty = 0
+    # Few distinct dates, so windows and memberships are both reused heavily,
+    # and more queries than the window memo holds, so it is also cleared.
+    dates = [
+        pd.Timestamp("2021-10-01") + pd.Timedelta(days=int(d))
+        for d in rng.integers(0, 3 * 365 + 30, 60)
+    ]
+    for _ in range(3 * _TeamHistoryIndex._MAX_WINDOWS):
+        team = int(rng.choice(teams))
+        player = int(rng.integers(0, 8))
+        before = dates[int(rng.integers(0, len(dates)))]
+        season_year = int(rng.integers(2021, 2026))
+        years = (season_year - 1, season_year)
+        injured, available = players[(team, player)]
+        expected = _frame_effect(df_hist, team, years, before, injured, available)
+        actual = index.player_effect(
+            team, years, before, injured, available, player_key=player
+        )
+        assert repr(actual) == repr(expected)
+        checked_nonempty += expected[4] > 0 and expected[5] > 0
+    assert checked_nonempty > 50, "the sample never exercised the effect branch"
+
+
+def test_effect_cache_shared_across_instances_changes_nothing():
+    """The snapshot builder shares one cache across families and horizons."""
+    df_hist = _history()
+    cache = RowCache()
+    rng = np.random.default_rng(13)
+    all_ids = (
+        pd.to_numeric(df_hist["GAME_ID"], errors="coerce")
+        .dropna()
+        .astype("int64")
+        .unique()
+    )
+    teams = [int(t) for t in df_hist["TEAM_ID"].unique()]
+    dates = [
+        pd.Timestamp("2021-10-01") + pd.Timedelta(days=int(d))
+        for d in rng.integers(0, 3 * 365 + 30, 40)
+    ]
+    # Each "horizon" redraws a few players' sets and keeps the rest, as a new
+    # report changes only some memberships.
+    sets = {
+        (team, player): (
+            set(rng.choice(all_ids, int(rng.integers(0, 80)), replace=False)),
+            set(rng.choice(all_ids, int(rng.integers(0, 600)), replace=False)),
+        )
+        for team in teams
+        for player in range(6)
+    }
+    queries = [
+        (
+            int(rng.choice(teams)),
+            int(rng.integers(0, 6)),
+            dates[int(rng.integers(0, 40))],
+        )
+        for _ in range(300)
+    ]
+    for horizon in range(4):
+        for key in list(sets)[horizon::5]:
+            sets[key] = (
+                set(rng.choice(all_ids, int(rng.integers(0, 80)), replace=False)),
+                sets[key][1],
+            )
+        shared = _TeamHistoryIndex(df_hist, cache)
+        plain = _TeamHistoryIndex(df_hist)
+        for team, player, before in queries:
+            injured, available = sets[(team, player)]
+            years = (
+                (before.year - 1, before.year)
+                if before.month < 10
+                else (
+                    before.year,
+                    before.year + 1,
+                )
+            )
+            expected = plain.player_effect(team, years, before, injured, available)
+            actual = shared.player_effect(
+                team, years, before, injured, available, player_key=player
+            )
+            assert repr(actual) == repr(expected)
+    assert cache.hits > 0 and cache.misses > 0
+
+
+def test_effect_cache_refuses_a_different_history():
+    cache = RowCache()
+    _TeamHistoryIndex(_history(seed=3), cache)
+    with pytest.raises(ValueError):
+        _TeamHistoryIndex(_history(seed=4), cache)
+
+
 def test_team_history_index_unknown_team_is_empty():
     index = _TeamHistoryIndex(_history(50))
     result = index.player_effect(1, (2021, 2022), pd.Timestamp("2030-01-01"), {1}, None)

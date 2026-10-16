@@ -5,18 +5,21 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from .status_history import add_status_features
+from .status_history import PreparedBoxHistory, add_status_features
 from .report_state import COVERED_COL, InjuryReportState, report_counter_features
 
 
 def add_injury_report_features(
     df_team: pd.DataFrame,
     state: InjuryReportState,
-    box: pd.DataFrame,
+    box: pd.DataFrame | PreparedBoxHistory,
     *,
     status_top_n: dict[str, int] | None = None,
 ) -> pd.DataFrame:
     """Return ``df_team`` with the report counters and per-status columns.
+
+    ``box`` may be prepared once with ``status_history.prepare_box_and_form``
+    by callers that pass the same box repeatedly.
 
     ``status_top_n`` maps status to the number of per-player slots; default
     ``status_history.DEFAULT_TOP_N`` (Questionable 2, Probable 1, Doubtful 1).

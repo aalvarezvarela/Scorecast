@@ -5,6 +5,8 @@ from nba_ou.postgre_db.config.db_config import (
     get_schema_name_games,
 )
 from psycopg import sql
+from nba_ou.postgre_db.row_order import read_sql_canonical
+from nba_ou.postgre_db.season_tables import read_through
 
 
 def _normalize_game_ids(game_ids) -> list[str]:
@@ -45,6 +47,7 @@ def load_games_from_db(seasons=None, extra_game_ids=None) -> pd.DataFrame | None
     try:
         conn = connect_nba_db()
         where_parts = []
+        season_years = None
         query_params = []
 
         if seasons is not None and len(seasons) > 0:
@@ -73,10 +76,15 @@ def load_games_from_db(seasons=None, extra_game_ids=None) -> pd.DataFrame | None
         )
 
         query = query_obj.as_string(conn)
-        if query_params:
-            df = pd.read_sql_query(query, conn, params=tuple(query_params))
-        else:
-            df = pd.read_sql_query(query, conn)
+        # Past seasons from the S3 input cache, the rest from here; the same
+        # frame either way (``season_tables``).
+        df = read_through(
+            "nba_games.nba_games", season_years, normalized_extra_game_ids, conn
+        )
+        if df is None and query_params:
+            df = read_sql_canonical(query, conn, params=tuple(query_params))
+        elif df is None:
+            df = read_sql_canonical(query, conn)
 
         print(f"Loaded {len(df)} game records from database")
         return df
@@ -194,7 +202,7 @@ def get_historical_game_ids_for_home_away_matchups(
         )
 
         query = query_obj.as_string(conn)
-        rows = pd.read_sql_query(query, conn, params=tuple(query_params))
+        rows = read_sql_canonical(query, conn, params=tuple(query_params))
         game_ids = rows["game_id"].astype(str).tolist() if not rows.empty else []
         print(
             f"Loaded {len(game_ids)} historical game IDs for {len(normalized_pairs)} home/away matchup pairs"

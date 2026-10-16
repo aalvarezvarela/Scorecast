@@ -42,8 +42,12 @@ section 2.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 import numpy as np
 import pandas as pd
+
+from nba_ou.postgre_db.row_order import read_sql_canonical
 
 from .report_state import UNCOUNTED_REASON_CATEGORIES, InjuryReportState
 
@@ -181,6 +185,34 @@ def status_feature_columns(top_n: dict[str, int] | None = None) -> list[str]:
 # --------------------------------------------------------------------------------
 
 
+_BOX_HISTORY_SEASON_FILTER = (
+    "(%(season_years)s::int[] IS NULL OR p.season_year = ANY(%(season_years)s))"
+)
+_BOX_HISTORY_SQL = f"""
+        SELECT p.game_id, p.team_id::text AS team_id, p.player_id::text AS player_id,
+               p.season_year, g.game_date, p.min, p.pts, p.pace_per40
+        FROM nba_players.nba_players p
+        JOIN (SELECT DISTINCT game_id, game_date FROM nba_games.nba_games) g
+          ON g.game_id = p.game_id
+        WHERE left(p.game_id, 3) IN ('002', '004', '005')
+          AND {_BOX_HISTORY_SEASON_FILTER}
+          AND p.season_year >= 2017
+    """
+
+
+def _box_history_query():
+    from nba_ou.postgre_db.season_queries import SeasonQuery
+
+    return SeasonQuery(
+        dataset="nba_players.box_history",
+        template=_BOX_HISTORY_SQL.replace(
+            _BOX_HISTORY_SEASON_FILTER, "{season_filter}"
+        ),
+        season_column="p.season_year",
+        database="supabase",
+    )
+
+
 def load_player_box_history(season_years: list[int] | None = None) -> pd.DataFrame:
     """Box-score rows for regular season, play-in and playoffs, from Supabase.
 
@@ -191,25 +223,18 @@ def load_player_box_history(season_years: list[int] | None = None) -> pd.DataFra
         _parse_minutes_series,
     )
     from nba_ou.postgre_db.config.db_config import connect_nba_db
+    from nba_ou.postgre_db.season_queries import read_through_query
 
-    query = """
-        SELECT p.game_id, p.team_id::text AS team_id, p.player_id::text AS player_id,
-               p.season_year, g.game_date, p.min, p.pts, p.pace_per40
-        FROM nba_players.nba_players p
-        JOIN (SELECT DISTINCT game_id, game_date FROM nba_games.nba_games) g
-          ON g.game_id = p.game_id
-        WHERE left(p.game_id, 3) IN ('002', '004', '005')
-          AND (%(season_years)s::int[] IS NULL OR p.season_year = ANY(%(season_years)s))
-          AND p.season_year >= 2017
-    """
     with connect_nba_db("supabase") as conn:
-        box = pd.read_sql_query(
-            query,
-            conn,
-            params={
-                "season_years": None if season_years is None else list(season_years)
-            },
-        )
+        box = read_through_query(_box_history_query(), season_years, conn)
+        if box is None:
+            box = read_sql_canonical(
+                _BOX_HISTORY_SQL,
+                conn,
+                params={
+                    "season_years": None if season_years is None else list(season_years)
+                },
+            )
     box["MIN"] = _parse_minutes_series(box.pop("min"))
     box["PTS"] = pd.to_numeric(box.pop("pts"), errors="coerce")
     box["PACE_PER40"] = pd.to_numeric(box.pop("pace_per40"), errors="coerce")
@@ -231,6 +256,23 @@ def prepare_box_history(box: pd.DataFrame) -> pd.DataFrame:
 # --------------------------------------------------------------------------------
 # Form
 # --------------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class PreparedBoxHistory:
+    """A box history and its player form, for callers that reuse one box.
+
+    The snapshot builder calls :func:`add_status_features` once per horizon on
+    the same box; preparing it once is exactly what each call would compute.
+    """
+
+    box: pd.DataFrame
+    form: pd.DataFrame
+
+
+def prepare_box_and_form(box: pd.DataFrame) -> PreparedBoxHistory:
+    prepared = prepare_box_history(box)
+    return PreparedBoxHistory(box=prepared, form=build_player_form(prepared))
 
 
 def build_player_form(box: pd.DataFrame) -> pd.DataFrame:
@@ -590,7 +632,7 @@ def status_player_estimates(
 def add_status_features(
     team_games: pd.DataFrame,
     state: InjuryReportState,
-    box: pd.DataFrame,
+    box: pd.DataFrame | PreparedBoxHistory,
     *,
     top_n: dict[str, int] | None = None,
     game_id_col: str = "GAME_ID",
@@ -613,8 +655,9 @@ def add_status_features(
     cleaner drops any column above its NaN threshold (5% by default).
     """
     top_n = DEFAULT_TOP_N if top_n is None else top_n
-    box = prepare_box_history(box)
-    form = build_player_form(box)
+    if not isinstance(box, PreparedBoxHistory):
+        box = prepare_box_and_form(box)
+    box, form = box.box, box.form
     events = build_status_events(state, box, form)
 
     rows = pd.DataFrame(

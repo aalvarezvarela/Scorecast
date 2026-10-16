@@ -477,7 +477,9 @@ def compute_official_tendencies(
         7
     ).astype(int)
     frame["SEASON_YEAR"] = frame["SEASON_YEAR"].fillna(fallback_season).astype(int)
-    frame = frame.sort_values(["OFFICIAL_ID", "GAME_DATE"]).reset_index(drop=True)
+    frame = frame.sort_values(
+        ["OFFICIAL_ID", "GAME_DATE", "GAME_ID"], kind="mergesort"
+    ).reset_index(drop=True)
 
     out_columns = [spec.feature for spec in specs]
     if include_same_season_variants:
@@ -506,9 +508,18 @@ def compute_official_tendencies(
             if include_same_season_variants:
                 masks.append((spec.same_season_feature(), same_season))
             for column, mask in masks:
-                weights = np.where(mask, decay, 0.0)[:, observed]
-                weighted_sum = weights @ y[observed]
-                denominator = weights.sum(axis=1) + spec.shrinkage_k
+                # Summed left to right over the official's games in date
+                # order, every game outside the window an exact +0.0: a row's
+                # sum then reads only its earlier games, however many later
+                # ones are loaded. A matrix product (or numpy's pairwise sum)
+                # over the full row splits the sum by the row's length, which
+                # later games change. ``+ 0.0`` folds a -0.0 sum into 0.0.
+                weights = np.where(mask & observed[None, :], decay, 0.0)
+                terms = np.where(weights > 0.0, weights * np.nan_to_num(y), 0.0)
+                weighted_sum = np.cumsum(terms, axis=1)[:, -1] + 0.0
+                denominator = (
+                    np.cumsum(weights, axis=1)[:, -1] + 0.0 + spec.shrinkage_k
+                )
                 results[column][positions] = np.divide(
                     weighted_sum,
                     denominator,

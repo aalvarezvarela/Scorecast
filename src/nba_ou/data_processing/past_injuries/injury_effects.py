@@ -1,3 +1,4 @@
+import hashlib
 from functools import lru_cache
 from typing import Any
 
@@ -9,6 +10,7 @@ from nba_ou.config.odds_columns import (
     spread_line_home_col,
     total_line_col,
 )
+from nba_ou.utils.row_cache import RowCache
 from tqdm import tqdm
 
 #: Minimum games per group before a standard error is reported. The mean
@@ -183,13 +185,27 @@ class _TeamHistoryIndex:
     hundred rows rather than re-masking the whole team-game history. Rows keep
     the history frame's order, so means and variances sum the same values in
     the same order as a frame filter would.
+
+    Two memos keep repeated queries cheap without changing a value. A query's
+    window (the team's rows before the date) is shared by every player queried
+    for that team-game. A player's injured/available membership over all of
+    the team's rows is computed once per ``player_key``, and a window then
+    selects from it: the same booleans as testing the window's rows directly.
+
+    ``effect_cache`` carries effects across instances built on the same
+    history, such as the snapshot builder's three families at each of its
+    horizons. An effect is a function of the window and the two masks over it,
+    so it is keyed on exactly those, and the cache is bound to a digest of the
+    history arrays: an instance over a different history refuses it.
     """
 
     #: Stands in for an unparseable GAME_ID: never a member of a game-id set,
     #: just as ``isin`` never matches a missing value.
     _MISSING_GAME_ID = np.iinfo("int64").min
 
-    def __init__(self, df_hist: pd.DataFrame) -> None:
+    def __init__(
+        self, df_hist: pd.DataFrame, effect_cache: RowCache | None = None
+    ) -> None:
         # A missing team or season never matches a query, as in the frame masks.
         team_ids = pd.to_numeric(df_hist["TEAM_ID"], errors="coerce").to_numpy(
             dtype="float64", na_value=np.nan
@@ -218,6 +234,61 @@ class _TeamHistoryIndex:
             for group in np.split(order, boundaries)
             if group.size
         }
+        self._windows: dict[tuple, tuple[np.ndarray, np.ndarray]] = {}
+        self._memberships: dict[tuple, tuple[np.ndarray, np.ndarray | None]] = {}
+        self._effect_cache = effect_cache
+        if effect_cache is not None:
+            effect_cache.bind(("_TeamHistoryIndex", self._history_digest(team_ids)))
+
+    def _history_digest(self, team_ids: np.ndarray) -> str:
+        digest = hashlib.sha256()
+        for values in (
+            team_ids,
+            self._season_years,
+            self._dates.view("int64"),
+            self._game_ids,
+            *(self._metrics[metric] for metric in EFFECT_METRICS),
+        ):
+            digest.update(np.ascontiguousarray(values).tobytes())
+        digest.update(repr(EFFECT_METRICS).encode())
+        return digest.hexdigest()
+
+    #: Windows kept at once. Rows are queried game by game, so only the last
+    #: few team-games' windows are ever asked for again.
+    _MAX_WINDOWS = 256
+
+    def _window(self, team_id, positions, season_years, before_date):
+        key = (team_id, season_years, before_date)
+        window = self._windows.get(key)
+        if window is None:
+            in_window = np.isin(self._season_years[positions], season_years) & (
+                self._dates[positions] < np.datetime64(before_date)
+            )
+            window = (in_window, positions[in_window])
+            if len(self._windows) >= self._MAX_WINDOWS:
+                self._windows.clear()
+            self._windows[key] = window
+        return window
+
+    def _membership(
+        self, team_id, positions, injured_games, available_games, player_key
+    ):
+        """Injured and available flags over all of the team's rows."""
+        key = (team_id, player_key)
+        membership = None if player_key is None else self._memberships.get(key)
+        if membership is None:
+            game_ids = self._game_ids[positions]
+            membership = (
+                np.isin(game_ids, np.fromiter(injured_games, "int64")),
+                (
+                    None
+                    if available_games is None
+                    else np.isin(game_ids, np.fromiter(available_games, "int64"))
+                ),
+            )
+            if player_key is not None:
+                self._memberships[key] = membership
+        return membership
 
     def player_effect(
         self,
@@ -226,30 +297,47 @@ class _TeamHistoryIndex:
         before_date: pd.Timestamp,
         injured_games: set,
         available_games: set | None,
+        player_key=None,
     ):
-        positions = self._positions.get(int(team_id))
+        """``player_key``, when given, must identify ``injured_games`` and
+        ``available_games``: every query with that key passes the same sets."""
+        team_id = int(team_id)
+        positions = self._positions.get(team_id)
         if positions is None:
             return _empty_effect_result()
-        in_window = np.isin(self._season_years[positions], season_years) & (
-            self._dates[positions] < np.datetime64(before_date)
-        )
-        rows = positions[in_window]
+        in_window, rows = self._window(team_id, positions, season_years, before_date)
         if rows.size == 0:
             return _empty_effect_result()
 
-        game_ids = self._game_ids[rows]
-        inj_mask = np.isin(game_ids, np.fromiter(injured_games, "int64"))
-        if available_games is None:
+        injured_flags, available_flags = self._membership(
+            team_id, positions, injured_games, available_games, player_key
+        )
+        inj_mask = injured_flags[in_window]
+        if available_flags is None:
             present_mask = ~inj_mask
         else:
-            present_mask = (
-                np.isin(game_ids, np.fromiter(available_games, "int64")) & ~inj_mask
-            )
+            present_mask = available_flags[in_window] & ~inj_mask
         n_inj = int(inj_mask.sum())
         n_present = int(present_mask.sum())
         n_total = n_inj + n_present
         if n_inj == 0 or n_present == 0:
             return _empty_effect_result(n_inj, n_present, n_total)
+
+        if self._effect_cache is not None:
+            # The window is fixed by (team, seasons, date) on a bound history;
+            # the effect then depends only on which of its rows are which.
+            cache_key = (
+                team_id,
+                season_years,
+                before_date,
+                np.packbits(inj_mask).tobytes(),
+                np.packbits(present_mask).tobytes(),
+            )
+            cached = self._effect_cache.rows.get(cache_key)
+            if cached is not None:
+                self._effect_cache.hits += 1
+                return cached
+            self._effect_cache.misses += 1
 
         effects, standard_errors, injured_counts, present_counts = [], [], [], []
         for metric in EFFECT_METRICS:
@@ -270,7 +358,7 @@ class _TeamHistoryIndex:
             injured_counts.append(metric_n_inj)
             present_counts.append(metric_n_present)
 
-        return (
+        result = (
             tuple(effects),
             tuple(standard_errors),
             tuple(injured_counts),
@@ -279,6 +367,16 @@ class _TeamHistoryIndex:
             n_present,
             n_total,
         )
+        if self._effect_cache is not None:
+            self._effect_cache.rows[cache_key] = result
+        return result
+
+
+def availability_memo_name(uses_availability: bool) -> str:
+    """The history-memo name of the raw availability effects."""
+    return "availability_effects/" + (
+        "availability" if uses_availability else "injured"
+    )
 
 
 def _expanding_empirical_bayes_weights(
@@ -288,6 +386,8 @@ def _expanding_empirical_bayes_weights(
     inverse_n: np.ndarray,
     *,
     min_samples: int = MIN_SHRINKAGE_FIT_SAMPLES,
+    prior: tuple[float, float, float, float, float] | None = None,
+    totals_before: int | None = None,
 ) -> tuple[np.ndarray, dict[str, float]]:
     """Per-observation shrinkage weights ``tau2 / (tau2 + se2)``, fitted on history.
 
@@ -314,6 +414,13 @@ def _expanding_empirical_bayes_weights(
     A ``tau2`` of zero is a real answer, not a failure: it says the spread
     between players is fully explained by sampling noise, and the honest
     estimate of every effect is then zero. The returned diagnostics report it.
+
+    ``prior`` -- (count, sum raw, sum raw^2, sum se2, sum sigma2) -- stands for
+    informative observations dated before every one given here: the running
+    sums continue from it, adding these in the same order, so the weights are
+    the ones a fit over all of them gives. ``totals_before`` (a date ordinal)
+    puts those sums over the observations dated before it in the diagnostics
+    (``"totals_before"``), for a later call's ``prior``.
     """
     weights = np.full(raw.shape, np.nan, dtype="float64")
     diagnostics = {"tau2": np.nan, "sigma2": np.nan, "implied_k": np.nan, "n_fit": 0.0}
@@ -324,7 +431,9 @@ def _expanding_empirical_bayes_weights(
         & np.isfinite(inverse_n)
         & (inverse_n > 0)
     )
-    if int(informative.sum()) < min_samples:
+    if prior is None and int(informative.sum()) < min_samples:
+        if totals_before is not None:
+            diagnostics["totals_before"] = None
         return weights, diagnostics
 
     order = np.flatnonzero(informative)
@@ -335,19 +444,49 @@ def _expanding_empirical_bayes_weights(
     # se2 = sigma2 * (1/n_present + 1/n_injured), so this inverts to sigma2.
     fit_sigma2 = fit_se2 / inverse_n[order]
 
-    counts = np.arange(1, fit_raw.size + 1, dtype="float64")
-    cumulative_raw = np.cumsum(fit_raw)
-    cumulative_raw2 = np.cumsum(fit_raw**2)
-    cumulative_se2 = np.cumsum(fit_se2)
-    cumulative_sigma2 = np.cumsum(fit_sigma2)
+    if totals_before is not None:
+        if prior is not None:
+            raise ValueError("totals_before is taken from a fit without a prior")
+        k = int(np.searchsorted(fit_dates, totals_before, side="left"))
+        diagnostics["totals_before"] = (
+            None
+            if k == 0
+            else (
+                float(k),
+                float(np.cumsum(fit_raw)[k - 1]),
+                float(np.cumsum(fit_raw**2)[k - 1]),
+                float(np.cumsum(fit_se2)[k - 1]),
+                float(np.cumsum(fit_sigma2)[k - 1]),
+            )
+        )
 
     # Observations strictly earlier than each row's game date.
     prior_counts = np.searchsorted(fit_dates, date_ordinals, side="left")
-    fittable = prior_counts >= min_samples
+    if prior is None:
+        counts = np.arange(1, fit_raw.size + 1, dtype="float64")
+        cumulative_raw = np.cumsum(fit_raw)
+        cumulative_raw2 = np.cumsum(fit_raw**2)
+        cumulative_se2 = np.cumsum(fit_se2)
+        cumulative_sigma2 = np.cumsum(fit_sigma2)
+        fittable = prior_counts >= min_samples
+        last = prior_counts[fittable] - 1
+    else:
+        # Index j holds the sums over the prior and the first j observations.
+        prior_n, prior_raw, prior_raw2, prior_se2, prior_sigma2 = prior
+
+        def continued(start: float, values: np.ndarray) -> np.ndarray:
+            return np.cumsum(np.concatenate([[start], values]))
+
+        counts = prior_n + np.arange(0, fit_raw.size + 1, dtype="float64")
+        cumulative_raw = continued(prior_raw, fit_raw)
+        cumulative_raw2 = continued(prior_raw2, fit_raw**2)
+        cumulative_se2 = continued(prior_se2, fit_se2)
+        cumulative_sigma2 = continued(prior_sigma2, fit_sigma2)
+        fittable = counts[prior_counts] >= min_samples
+        last = prior_counts[fittable]
     if not fittable.any():
         return weights, diagnostics
 
-    last = prior_counts[fittable] - 1
     n_prior = counts[last]
     mean_raw = cumulative_raw[last] / n_prior
     var_raw = np.maximum(cumulative_raw2[last] / n_prior - mean_raw**2, 0.0)
@@ -366,14 +505,16 @@ def _expanding_empirical_bayes_weights(
 
     final_tau2 = float(tau2[-1])
     final_sigma2 = float(sigma2[-1])
-    diagnostics = {
-        "tau2": final_tau2,
-        "sigma2": final_sigma2,
-        "implied_k": (
-            float(final_sigma2 / final_tau2) if final_tau2 > 0.0 else float("inf")
-        ),
-        "n_fit": float(n_prior[-1]),
-    }
+    diagnostics.update(
+        {
+            "tau2": final_tau2,
+            "sigma2": final_sigma2,
+            "implied_k": (
+                float(final_sigma2 / final_tau2) if final_tau2 > 0.0 else float("inf")
+            ),
+            "n_fit": float(n_prior[-1]),
+        }
+    )
     return weights, diagnostics
 
 
@@ -400,9 +541,35 @@ def add_top3_availability_effect_features_for_columns(
     include_per_player_columns: bool = False,
     include_detailed_sample_size_features: bool = False,
     emit_max_abs_effects: bool = False,
+    effect_cache: RowCache | None = None,
+    history_memo=None,
+    computed_rows: np.ndarray | None = None,
+    shrinkage_prior: dict[str, tuple] | None = None,
+    shrinkage_totals_before: int | None = None,
+    shrinkage_totals: dict | None = None,
+    availability_index: dict | None = None,
 ) -> pd.DataFrame:
     """
     Compute player availability impact features from past games only (< current game date).
+
+    ``effect_cache`` shares raw per-player effects between calls on the same
+    game history (see ``_TeamHistoryIndex``); it changes no value.
+
+    ``computed_rows`` (a boolean mask over the rows) skips every other row:
+    its outputs are left empty. The shrinkage fit then sees only these rows'
+    effects; ``shrinkage_prior`` (per metric, the fit's running sums over the
+    skipped rows' effects, all dated earlier) continues it exactly as over
+    every row. A fit over every row hands those sums out:
+    ``shrinkage_totals_before`` (a date ordinal) fills ``shrinkage_totals``
+    with each metric's sums over the effects dated before it.
+    ``availability_index`` is ``availability_dict`` indexed, when the caller
+    already built it (it is the same for every effect family).
+
+    ``history_memo`` (``create_training_data.history_memo.HistoryMemo``) keeps
+    the raw effects of finished seasons' rows across builds. A raw effect is a
+    function of the team's history before the row's date and the player's
+    availability in it, all inside the seasons the memo's digests cover; it
+    changes no value either.
 
     Changes vs previous version:
       - DIFF_FROM_LINE is always computed against TOTAL_LINE_<main book> selected by
@@ -482,11 +649,11 @@ def add_top3_availability_effect_features_for_columns(
     if missing:
         raise ValueError(f"Missing required columns: {missing}")
 
-    injured_index = _build_injured_games_index(injured_dict)
-    availability_index = (
-        _build_availability_games_index(availability_dict)
-        if availability_dict is not None
-        else None
+    if availability_index is None and availability_dict is not None:
+        availability_index = _build_availability_games_index(availability_dict)
+    # Read only without an availability index.
+    injured_index = (
+        _build_injured_games_index(injured_dict) if availability_index is None else {}
     )
 
     # Build TEAM-game history (two rows per game: one per team)
@@ -533,7 +700,7 @@ def add_top3_availability_effect_features_for_columns(
         df_hist["SEASON_YEAR"], errors="coerce"
     ).astype("Int64")
 
-    team_history = _TeamHistoryIndex(df_hist)
+    team_history = _TeamHistoryIndex(df_hist, effect_cache)
 
     @lru_cache(maxsize=250_000)
     def _cached_effect(
@@ -558,7 +725,25 @@ def add_top3_availability_effect_features_for_columns(
             before_date,
             injured_games_for_player,
             available_games_for_player,
+            player_key=player_id,
         )
+
+    memo_name = availability_memo_name(availability_index is not None)
+
+    def _effect(team_id: int, season_year: int, date_ordinal: int, player_id: int):
+        table = (
+            history_memo.table(memo_name, season_year)
+            if history_memo is not None
+            else None
+        )
+        if table is None:
+            return _cached_effect(team_id, season_year, date_ordinal, player_id)
+        key = (team_id, season_year, date_ordinal, player_id)
+        value = table.get(key)
+        if value is None:
+            value = _cached_effect(team_id, season_year, date_ordinal, player_id)
+            table[key] = value
+        return value
 
     def _out_col(side: str, i: int, metric: str) -> str:
         return f"{out_prefix}_{side}_P{i}_{metric}"
@@ -615,14 +800,30 @@ def add_top3_availability_effect_features_for_columns(
     away_n_present = np.zeros((n, n_away_players), dtype="float64")
     away_n_total = np.zeros((n, n_away_players), dtype="float64")
 
-    # itertuples is faster than apply for 25k rows
+    # itertuples is faster than apply for 25k rows. Only the columns the loop
+    # reads: a tuple per row of a frame ~2,000 columns wide costs more than the
+    # effects themselves, and each column yields the same values either way.
+    loop_columns = list(
+        dict.fromkeys(
+            [
+                game_date_col,
+                season_year_col,
+                home_team_id_col,
+                away_team_id_col,
+                *home_player_cols,
+                *away_player_cols,
+            ]
+        )
+    )
     for i, row in enumerate(
         tqdm(
-            df.itertuples(index=False),
+            df[loop_columns].itertuples(index=False),
             total=len(df),
             desc="Computing availability effects",
         )
     ):
+        if computed_rows is not None and not computed_rows[i]:
+            continue
         date = getattr(row, game_date_col)
         season_year = getattr(row, season_year_col)
         home_team = getattr(row, home_team_id_col)
@@ -667,7 +868,7 @@ def add_top3_availability_effect_features_for_columns(
                 n_inj,
                 n_present,
                 n_total,
-            ) = _cached_effect(home_team_int, season_year_int, date_ord, pid_int)
+            ) = _effect(home_team_int, season_year_int, date_ord, pid_int)
             for metric, raw_effect, standard_error, injured_count, present_count in zip(
                 EFFECT_METRICS,
                 raw_effects,
@@ -706,7 +907,7 @@ def add_top3_availability_effect_features_for_columns(
                 n_inj,
                 n_present,
                 n_total,
-            ) = _cached_effect(away_team_int, season_year_int, date_ord, pid_int)
+            ) = _effect(away_team_int, season_year_int, date_ord, pid_int)
             for metric, raw_effect, standard_error, injured_count, present_count in zip(
                 EFFECT_METRICS,
                 raw_effects,
@@ -777,7 +978,11 @@ def add_top3_availability_effect_features_for_columns(
                     np.concatenate(flat_raw),
                     np.concatenate(flat_se),
                     np.concatenate(flat_inv_n),
+                    prior=(shrinkage_prior or {}).get(metric),
+                    totals_before=shrinkage_totals_before,
                 )
+                if shrinkage_totals is not None and shrinkage_totals_before is not None:
+                    shrinkage_totals[metric] = diagnostics.get("totals_before")
             else:
                 weights = np.full(
                     sum(a.size for a in flat_raw), np.nan, dtype="float64"

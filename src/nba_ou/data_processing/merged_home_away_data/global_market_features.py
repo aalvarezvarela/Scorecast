@@ -70,12 +70,12 @@ def _rolling_game_agg(
     All rows on the same calendar date receive the same value, so same-day games
     can never influence each other.
     """
-    result = pd.Series(np.nan, index=series.index, dtype="float64")
+    result = np.full(len(series), np.nan, dtype="float64")
     date_days = pd.to_datetime(dates, errors="coerce").values.astype("datetime64[D]")
     values = pd.to_numeric(series, errors="coerce").astype("float64").values
 
     if len(result) == 0:
-        return result
+        return pd.Series(result, index=series.index, dtype="float64")
 
     group_starts = np.flatnonzero(
         np.r_[True, date_days[1:] != date_days[:-1]]
@@ -101,9 +101,9 @@ def _rolling_game_agg(
         else:
             raise ValueError(f"Unsupported func: {func}")
 
-        result.iloc[start:end] = agg_value
+        result[start:end] = agg_value
 
-    return result
+    return pd.Series(result, index=series.index, dtype="float64")
 
 
 def _rolling_day_agg(
@@ -116,29 +116,47 @@ def _rolling_day_agg(
     For each row, aggregate *values* from games whose GAME_DATE falls within
     [current_date − window_days, current_date) — strictly before the game.
     """
-    result = pd.Series(np.nan, index=values.index, dtype="float64")
+    result = np.full(len(values), np.nan, dtype="float64")
     dates_arr = dates.values.astype("datetime64[D]")
     vals_arr = values.values.astype("float64")
     delta = np.timedelta64(window_days, "D")
 
+    # The masked rows of a date-sorted array are one contiguous run, in the
+    # same order, so the window is the same array, found by binary search;
+    # and every row of one date has the same window, computed once.
+    in_date_order = not np.isnat(dates_arr).any() and bool(
+        (dates_arr[1:] >= dates_arr[:-1]).all()
+    )
+    by_date: dict = {}
+
     for i in range(len(result)):
         cur_date = dates_arr[i]
-        mask = (dates_arr < cur_date) & (dates_arr >= cur_date - delta)
-        window_vals = vals_arr[mask]
+        if in_date_order:
+            if cur_date in by_date:
+                result[i] = by_date[cur_date]
+                continue
+            lo = np.searchsorted(dates_arr, cur_date - delta, side="left")
+            hi = np.searchsorted(dates_arr, cur_date, side="left")
+            window_vals = vals_arr[lo:hi]
+        else:
+            mask = (dates_arr < cur_date) & (dates_arr >= cur_date - delta)
+            window_vals = vals_arr[mask]
         window_vals = window_vals[~np.isnan(window_vals)]
         if len(window_vals) == 0:
-            continue
-        if func == "mean":
-            result.iat[i] = np.mean(window_vals)
+            pass
+        elif func == "mean":
+            result[i] = np.mean(window_vals)
         elif func == "std":
-            result.iat[i] = np.std(window_vals, ddof=0)
+            result[i] = np.std(window_vals, ddof=0)
         elif func == "median":
-            result.iat[i] = np.median(window_vals)
+            result[i] = np.median(window_vals)
         elif func == "sum":
-            result.iat[i] = np.sum(window_vals)
+            result[i] = np.sum(window_vals)
         elif func == "count":
-            result.iat[i] = float(len(window_vals))
-    return result
+            result[i] = float(len(window_vals))
+        if in_date_order:
+            by_date[cur_date] = result[i]
+    return pd.Series(result, index=values.index, dtype="float64")
 
 
 def _ewm_game_mean(series: pd.Series, dates: pd.Series, span: int) -> pd.Series:

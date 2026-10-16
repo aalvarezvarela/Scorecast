@@ -3,6 +3,8 @@ import os
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
+import pandas as pd
+from nba_ou.config.dataset_versions import BASE_SCHEMA_VERSION
 from nba_ou.config.settings import SETTINGS
 from nba_ou.create_training_data.create_df_to_predict import (
     create_df_to_predict,
@@ -12,14 +14,16 @@ from nba_ou.create_training_data.get_all_info_for_scheduled_games import (
 )
 from nba_ou.create_training_data.schema_layers import (
     CLOSING_LINE,
-    apply_layers,
+    compute_new_columns,
     is_layered,
     newest_version,
 )
 from nba_ou.postgre_db.update_all.update_all_databases import update_all_databases
 from nba_ou.prediction.baseline_predictions import (
+    baseline_history_window,
     load_baseline_predictions_for_nba_games,
 )
+from nba_ou.prediction.intermediate_frame import tonight_intermediate_frame
 from nba_ou.prediction.prediction import (
     load_registry_model_and_predict,
 )
@@ -101,6 +105,14 @@ def predict_nba_games(
     6. Saves results to Excel
     """
     configure_tqdm_for_environment()
+    if run_tabpfn_client:
+        # The feature frame now holds tonight's games only; the TabPFN client
+        # trains on history features, which it would have to read from a
+        # stored training dataset instead. Fail before any work is done.
+        raise SystemExit(
+            "TabPFN needs history features, and the prediction frame carries "
+            "tonight's games only; run with --no-tabpfn."
+        )
 
     date_to_predict = (datetime.now(ZoneInfo("US/Pacific"))).strftime("%Y-%m-%d")
 
@@ -156,13 +168,19 @@ def predict_nba_games(
     # Step 3: Build feature DataFrame for prediction
     print_step_header(3, "Preparing Feature DataFrame")
     try:
-        df_to_predict_total = create_df_to_predict(
+        # Tonight's games only, on the training build's full history: every
+        # row is exactly what a full build would give it, at a fraction of
+        # the work (create_df_to_predict's target_game_ids).
+        tonight_ids = scheduled_data["scheduled_games"]["GAME_ID"].astype(str).tolist()
+        df_to_predict_total, layer_inputs = create_df_to_predict(
             todays_prediction=True,
             scheduled_data=scheduled_data,
             strict_mode=30,
             normalize_total_lines=normalize_total_lines,
             normalize_spread_lines=normalize_spread_lines,
             null_extreme_spread_prices=null_extreme_spread_prices,
+            target_game_ids=tonight_ids,
+            return_layer_inputs=True,
         )
         # The builder produces the base schema. Each slot reads its own
         # feature_names, and newer versions only add columns, so one frame at
@@ -170,11 +188,17 @@ def predict_nba_games(
         frame_version = newest_version(slot.schema_version for slot in configured_slots)
         if is_layered(frame_version):
             print(f"Adding schema layers up to {frame_version} ...")
-            df_to_predict_total = apply_layers(
-                df_to_predict_total,
+            # Layers calibrate on earlier games, so they run over every built
+            # row's inputs; tonight's rows then take their columns.
+            added = compute_new_columns(
+                layer_inputs,
+                from_version=BASE_SCHEMA_VERSION,
                 to_version=frame_version,
                 dataset_type=CLOSING_LINE,
+                existing_columns=df_to_predict_total.columns,
             )
+            added = added.loc[df_to_predict_total.index]
+            df_to_predict_total = pd.concat([df_to_predict_total, added], axis=1)
         df_to_predict = df_to_predict_total[
             df_to_predict_total["GAME_DATE"] == date_to_predict
         ].copy()
@@ -189,6 +213,27 @@ def predict_nba_games(
         raise ValueError("df to predict is empty")
 
     print_status(f"Found {len(df_to_predict)} game(s) to predict")
+
+    # Intermediate slots predict a fixed time before tip-off: tonight's passed
+    # snapshots, built tonight-only from the live line history. A failure here
+    # costs only those slots, never the closing ones.
+    frames = {"closing_line": df_to_predict}
+    if any(slot.horizon_minutes for slot in configured_slots):
+        print_step_header(3, "Preparing Intermediate Snapshot Rows")
+        try:
+            intermediate_df = tonight_intermediate_frame(
+                scheduled_data, game_date=date_to_predict
+            )
+            if intermediate_df.empty:
+                print_status("No snapshot of tonight's games has passed yet")
+            else:
+                frames["intermediate_line"] = intermediate_df
+                print_status(
+                    f"{len(intermediate_df)} passed snapshot row(s) over "
+                    f"{intermediate_df['GAME_ID'].nunique()} game(s)"
+                )
+        except Exception as e:  # noqa: BLE001 -- the closing slots still run
+            print_status(f"Intermediate rows unavailable: {e}", ok=False)
 
     # Initialize S3 client once for all model operations
     s3 = make_s3_client(profile=SETTINGS.s3_aws_profile, region=SETTINGS.s3_aws_region)
@@ -224,6 +269,7 @@ def predict_nba_games(
                 slot=slot,
                 df=df_to_predict,
                 prediction_datetime=prediction_time,
+                frames=frames,
             )
             if predictions_df is None or predictions_df.empty:
                 # The horizon guard found no eligible rows: this model is not
@@ -260,9 +306,11 @@ def predict_nba_games(
     print_step_header(step_number, "Generating Predictions (Baselines)")
     step_number += 1
     try:
+        # The frame holds tonight's games only; the history is every built
+        # game's layer inputs (GAME_DATE, TOTAL_POINTS among them).
         baseline_predictions = load_baseline_predictions_for_nba_games(
             df=df_to_predict,
-            df_history=df_to_predict_total,
+            df_history=baseline_history_window(layer_inputs, date_to_predict),
             prediction_datetime=prediction_time,
         )
         print_status("Baseline predictions generated")
