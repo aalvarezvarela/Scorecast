@@ -1271,6 +1271,161 @@ flags are omitted. They remain available for diagnostics through
 `include_detailed_sample_size_features=True`, but the training and prediction
 pipeline explicitly keeps the compact schema.
 
+## Schema 2_6 Layer: Starter History And Lineup Projection
+
+`create_df_to_predict()` builds the base schema, `2_5`, and nothing newer. The
+columns below belong to schema `2_6` and are added by the 2_6 layer
+(`nba_ou.create_training_data.schema_layers.v2_6`) to a finished 2_5 frame or
+file; see [Schema Versions And Layers](#schema-versions-and-layers). The layer
+reads only each game's `GAME_ID`, `GAME_DATE`, `TEAM_ID_TEAM_HOME/AWAY` and
+`TOTAL_POINTS`, and loads its own inputs: player box scores (the output seasons
+plus one prior season, cleaned exactly as `create_df_to_predict` cleans them),
+the injury report state, the rating cache and the stint store.
+
+### Starter history (both datasets)
+
+Four per side, from `data_processing/players/starter_history.py`. Only box
+scores on dates strictly before the game, with exactly five starters and real
+minutes, enter history; games on the same date are held back together.
+
+| Column (`_TEAM_HOME` / `_TEAM_AWAY`) | Meaning |
+|---|---|
+| `STARTER_OVERLAP_LAST_TWO_GAMES_BEFORE` | starters shared by the team's last two starting fives |
+| `STARTER_UNIQUE_LAST_5_GAMES_BEFORE` | distinct starters over the last five games |
+| `STARTER_REPEAT_RATE_LAST_5_GAMES_BEFORE` | share of consecutive games among the last five that kept the same five |
+| `STARTER_LATEST_FIVE_MINUTES_SHARE_LAST_5_GAMES_BEFORE` | share of the team's minutes over the last five games played by its most recent starting five |
+
+### Lineup projection (closing and intermediate)
+
+Seventeen game-level columns from the bottom-up lineup projection in
+`data_processing/lineups/features.py`, with snapshot adaptation in
+`lineups/intermediate_features.py`. Both datasets receive the same family in
+the experimental 2_6 layer. Closing uses the report before tip; intermediate
+uses the report before each snapshot. The following table describes both;
+the closing cutoff details below are adapted as described in the intermediate
+section.
+
+| Column | Meaning |
+|---|---|
+| `LU_PROJ_TOTAL_BEFORE` | projected total from minutes-weighted player lineup ratings and tonight's availability, calibrated walk-forward per phase |
+| `LU_PROJ_POSS_BEFORE` | projected possessions |
+| `LU_PROJ_AVAILABILITY_TOTAL_SD_BEFORE` | standard deviation of projected totals across availability scenarios only; excludes scoring and model uncertainty |
+| `LU_PROJ_MARGIN_BEFORE` | projected home minus away points |
+| `LU_ABSENCE_IMPACT_PTS_BEFORE` | projected total with tonight's absences minus the same roster at full health |
+| `LU_ABSENCE_IMPACT_POSS_BEFORE` | the same difference in possessions |
+| `LU_ABSENCE_IMPACT_OFF_PTS_BEFORE` | the part of it the absentees would have scored |
+| `LU_ABSENCE_IMPACT_DEF_PTS_BEFORE` | the part they would have prevented (positive: losing a defender adds points) |
+| `LU_ABSENCE_IMPACT_PACE_PTS_BEFORE` | the rest: the possession change; the three channels sum to the impact |
+| `LU_ABSENCE_IMPACT_BENCH_DP_PTS_BEFORE` | the defense + pace points carried by the minutes the healthy bench (6+ by full-health minutes) absorbs from tonight's absentees; a slice of the two columns above, not a fourth channel |
+| `LU_ABSENCE_IMPACT_PTS_BEFORE_TEAM_HOME` / `_TEAM_AWAY` | each side's absences alone, the other at full health |
+| `LU_ABSENCE_IMPACT_MARGIN_BEFORE` | the absences' effect on the home margin |
+| `LU_PROJ_FG3A_RATE_BEFORE_TEAM_HOME` / `_TEAM_AWAY` | expected 3PA/FGA of that side's offense against the other's defense, tonight's rotations (`style_matchup.py`) |
+| `LU_FG3A_NEIGHBOR_RESIDUAL_BEFORE` | mean residual of nearby historical lineup pairs after a linear additive 3PA/FGA baseline; may include nonlinear one-team effects |
+| `LU_ABSENCE_SHIFT_FG3A_RATE_BEFORE` | how much tonight's absences shift the game's expected 3PA/FGA |
+
+Inputs and cutoffs:
+
+- **Rosters and minutes:** box scores on strictly earlier dates; each player's
+  average over his last `RECENT_GAMES` (10) appearances, rescaled to 240.
+- **Availability:** `InjuryReportState.statuses` (last report before tip)
+  through `chance_out`, the same probability the report features use. Both
+  teams must have a filing in `InjuryReportState.covered`; otherwise every
+  `LU_*` column is NaN and that game cannot calibrate later projections. A
+  player unlisted on a covered report is taken as available. A G-League assignment removes the
+  player from that game's roster instead (he is not with the team, and not an
+  absence). Zero-minute box-score rows other than a coach's decision
+  (`DND - Injury/Illness`, `NWT ...`) are absences, not appearances.
+- **Ratings:** `data/lineup_ratings/player_ratings.parquet`, built by
+  `scripts/lineups/build_player_ratings.py`. A game reads the latest cache date
+  on or before its own date; every cache row was fitted on stints strictly
+  before that date. A cache date older than 14 days gives NaN rather than a
+  stale projection. The cache must be rebuilt with solver version 2 after the
+  weighted-ridge intercept correction; older caches are rejected.
+- **Level calibration:** the mean `actual - projected` over the previous 200
+  games of the same phase (regular season or playoffs) on earlier dates;
+  stint possessions are estimated and run high, and playoff games score
+  well below a regular-season projection. The layer orders games by
+  (`GAME_DATE`, `GAME_ID`) first, so when the 200-game window starts in the
+  middle of a date the games kept do not depend on the parent file's row order.
+  Builds made before the layer (`--lineup-features`) cut that boundary by an
+  unstable sort instead, so their `LU_PROJ_TOTAL_BEFORE` can differ by up to
+  ~0.5 points on those dates; every other column is unchanged.
+
+The three-point columns read the stint store (`data/lineup_stints`) directly:
+player style traits and the pool of past lineup pairs are rebuilt on each run
+(~2 minutes), walk-forward, with the similar-pairs model refitted monthly.
+They are NaN when the newest stint evidence is over 180 days old.
+
+The absence columns do not need the calibration: it cancels in the difference.
+The old exploratory sample associated defense and pace impact with the
+closing line's error, but these features were selected after inspecting all
+2021-22 through 2025-26 seasons. No control/treatment XGBoost campaign has run,
+and no betting edge has been established (plan §8.6). The total impact is
+exactly offense + defense + pace impact; pace points and pace possessions are
+nearly redundant as model inputs. All outputs remain for diagnosis, while
+`cleaning.exclude_cols_containing` and `keep_columns` can define a compact
+training subset after validation.
+
+**Coverage.** The corrected local rating cache starts in 2017-18. Missing
+ratings, roster history or either team's filing leave unavailable projections
+as NaN. Choose the training window from measured coverage, including style and
+report history, and check whether cleaning drops season-gated columns.
+
+**Serving.** Closing prediction already applies schema layers according to
+enabled slots. Those slots still use 2_5; serving `LU_*` requires a fresh rating
+cache and stint data in that environment. Daily rating refresh and intermediate
+live/refit integration remain separate work.
+
+Leakage tests: `tests/test_lineup_leakage.py`. Evidence and evaluation:
+`docs/lineup_projection_plan.md` §8.5-8.6, `scripts/lineups/evaluate_game_projection.py`.
+
+### Intermediate snapshot calculation (2_6)
+
+`snapshot_lineup_features()` produces the 17 columns per
+`(GAME_ID, TIME_TO_MATCH_MIN)`. The 2_6 layer resolves UTC cutoffs from embedded
+timestamps, `LayerContext.snapshot_times` (the original scoring sidecar), or
+the authoritative line-history schedule. It validates unique keys, complete
+timestamps and `SNAPSHOT_TS_UTC = TIPOFF_UTC - TIME_TO_MATCH_MIN`.
+
+Report states come from the existing `report_state_at_snapshots` bulk query:
+statuses and submitted filings must exist strictly before the cutoff. Missing
+coverage on either team leaves all `LU_*` NaN and excludes that projection from
+calibration. G-League exclusions apply to both the actual and full-availability
+rosters. The points projection combines availability scenarios; the four style
+columns retain their existing most-likely-state rotation rule.
+
+History uses dates strictly before the earlier of the game date and the
+snapshot's Eastern calendar date, where a cutoff before 05:00 ET belongs to the
+previous date (`DAY_SETTLED_HOUR_ET`). A snapshot on the previous evening, or
+in the small hours of game day, therefore uses older rosters, ratings, starter
+history, calibration and style evidence too. Without box-score publication
+timestamps, the whole cutoff day is conservatively held back, and the previous
+day too until its late (up to 23:00 ET) tip-offs have surely finished. Rosters are shared between horizons with the same history date; all
+snapshots share the style traits, monthly linear fit and neighbour index.
+
+The level offset is computed separately for each horizon and phase from up to
+200 distinct games on dates before that row's history cutoff, and needs at
+least 50 of them (`OFFSET_MIN_GAMES`, closing too): with fewer,
+`LU_PROJ_TOTAL_BEFORE` is NaN rather than a level averaged from a handful of
+games, so the value no longer depends on where the parent file starts. Historical
+residuals retain their actual game dates; extra snapshots do not increase the
+calibration sample. Parent rows and columns are unchanged; both datasets add
+eight starter-history columns and 17 `LU_*` columns over 2_5.
+
+For file upgrades, `build_schema_version.py --to 2_6` automatically reads the
+parent's `_scoring` sidecar (Parquet or CSV) when available. Supply
+`--scoring-path <path>` to use a sidecar with another name/location; its path
+and checksum are recorded in the build manifest, and the sidecar is copied
+beside the output as `<output stem>_scoring` so a later upgrade finds it. If no
+sidecar exists the build fails rather than silently reading the live
+line-history schedule; `--allow-schedule-tipoffs` opts into that fallback. The
+manifest's `build_args` records `snapshot_time_source` (`scoring_sidecar`,
+`embedded` or `line_history_schedule`) and SHA-256 digests of the injury-report
+states read (`snapshot_report_states_sha256`, `injury_report_state_sha256` for
+closing), since the report store is live and can be backfilled. Timestamps are
+context only and are never appended as model features. Behavioural tests are
+in `tests/test_intermediate_lineup_features.py`.
+
 ## Travel And Schedule Features
 
 `compute_travel_features()` converts the game-level table back into a team-game
@@ -1499,9 +1654,51 @@ The pipeline uses several controls to avoid target leakage:
 - Raw original boxscore columns are blocked from final selection unless they are
   static, explicitly allowed, or transformed into `_BEFORE` features.
 
+## Schema Versions And Layers
+
+`2_5` is the frozen **base**: `create_df_to_predict()` and
+`create_intermediate_line_df()` produce exactly it. Every later version is a
+layer in `src/nba_ou/create_training_data/schema_layers/` that **only adds
+columns** to its parent (`2_6` = `2_5` + its columns, `2_7` = `2_6` + its
+columns). The rule is enforced each time a layer runs
+(`schema_layers.contract`): same rows in the same order, exactly the declared
+columns, no existing column overwritten, every name `_BEFORE` and outside the
+known leak families. Changing an existing column's values or meaning is a new
+base (`3_0`), not a layer.
+
+- **Build both:** `create_train_data.py` and
+  `create_intermediate_line_train_data.py` write the 2_5 file, then layer
+  `--schema-version` (default: newest) onto that file.
+- **Upgrade an existing file:**
+  `scripts/create_train_data/build_schema_version.py <2_5 file> --to 2_6`.
+  Only the key columns are read. A Parquet parent is streamed row group by row
+  group, so its columns come out bit-identical; an older CSV parent is loaded
+  and written once. The output is always Parquet
+  (`closing_line_data_2_6_<date>.parquet`), and the parent is never modified.
+  An intermediate file keeps its parent's `_scoring` sidecar.
+- **Which file is which:** the version is in the filename, and
+  `<name>.manifest.json` beside it records the layers applied, the columns each
+  version added, the parent file's checksum and the building commit:
+  `python -m nba_ou.create_training_data.schema_layers describe <file>`;
+  `... diff 2_5 2_6` lists a version's columns; `... versions` lists them all.
+- **Serving and refit:** each `ENABLED_MODELS` row names its schema version.
+  `predict_nba_games.py` layers the frame up to the newest enabled version,
+  which serves every slot; `refit.resolve_training_frame` builds the base once
+  per run and layers it up to each spec's version.
+
 ## Adding Or Modifying Features
 
 Use these guidelines when extending the training data:
+
+0. Add new columns as a new schema layer, never inside the base builders.
+   - Write `schema_layers/vX_Y.py` with one `SchemaLayer` (parent = current
+     newest version), declare its columns per dataset and the parent columns it
+     reads, register it in `schema_layers/registry.py`, bump
+     `TRAINING_DATA_SCHEMA_VERSION` and add a history entry in
+     `nba_ou.config.dataset_versions`.
+   - The feature function itself still lives in `data_processing/`; the layer
+     only feeds it and lines its output up with the parent's rows.
+   - Editing the base builders changes 2_5 under every model trained on it.
 
 1. Decide whether the feature is team-level or game-level.
    - Team-level features should usually be added before `merge_home_away_data()`.
@@ -1545,7 +1742,8 @@ Use these guidelines when extending the training data:
 
 ## Output Shape
 
-The final DataFrame returned by `create_df_to_predict()` is game-level:
+The final DataFrame returned by `create_df_to_predict()` is the base schema
+(`2_5`); newer versions append their layers' columns to it. It is game-level:
 
 - One row per game.
 - Side-specific home and away feature columns.

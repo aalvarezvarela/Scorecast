@@ -12,6 +12,8 @@ a reference the models are measured against, not a competing series.
 
 from __future__ import annotations
 
+import re
+from pathlib import Path
 from typing import Any
 
 import matplotlib.pyplot as plt
@@ -112,6 +114,29 @@ def percent_frame(df: pd.DataFrame, percent: Any = (), decimals: Any = ()) -> An
     return df.style.format(formatters, na_rep="—")
 
 
+#: ``<kind>_line_data_<schema>_<YYYYMMDD>`` -- the same pattern as
+#: ``training_pipeline.registry._SCHEMA_IN_FILENAME``, not imported because the
+#: registry pulls in the serving code.
+_SCHEMA_AND_DATE_IN_FILENAME = re.compile(r"_(\d+)_(\d+)_\d{4}(\d{4})")
+
+
+def _dataset_token(csv_path: Any) -> str:
+    """Schema version and build date of a dataset, e.g. ``2.6-data-1003``.
+
+    Every non-``old_`` file used to read ``2.0-data``, so a 2_5 run and a 2_6
+    run of the same config got identical labels and could not be told apart.
+    The build date (MMDD) separates two generations of one schema version.
+    """
+    path = str(csv_path)
+    if "old_" in path:
+        return "old-data"
+    match = _SCHEMA_AND_DATE_IN_FILENAME.search(Path(path).name)
+    if match is None:
+        return "2.0-data"
+    major, minor, month_day = match.groups()
+    return f"{major}.{minor}-data-{month_day}"
+
+
 #: Config fields that can distinguish one run from another, with how each
 #: renders as a label token. Order here is the order tokens appear.
 #:
@@ -121,7 +146,7 @@ def percent_frame(df: pd.DataFrame, percent: Any = (), decimals: Any = ()) -> An
 #: shared settings -- "line_error · 4500 · na200" reads as "the 4500 cell with
 #: the relaxed row cap", which is the question that cell exists to answer.
 LABEL_FIELDS: tuple[tuple[str, Any], ...] = (
-    ("data.csv_path", lambda v: "old-data" if "old_" in str(v) else "2.0-data"),
+    ("data.csv_path", lambda v: _dataset_token(v)),
     #: Which dataset the run trained on. Without this a closing-line run and an
     #: intermediate-line run of the same strategy and window get IDENTICAL
     #: labels, which is how the snapshot campaign's three cells all read as

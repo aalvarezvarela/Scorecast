@@ -5,6 +5,33 @@ beside the old one instead of overwriting it. Both training pipelines pin their
 ``expected_checksum`` against a specific file, and an in-place overwrite turns
 that guard into a failure at the *next* run rather than a clean, dated artifact.
 
+Base and layers
+---------------
+Up to ``2_5`` every version was a rebuild of the whole dataset by
+``create_df_to_predict`` / ``create_intermediate_line_df``. ``2_5`` is now frozen
+as the **base**: those builders produce exactly the ``2_5`` frame and nothing
+newer. Every later version is a *layer* in
+``nba_ou.create_training_data.schema_layers`` that only adds columns to its
+parent, so ``2_6`` = ``2_5`` + the ``2_6`` columns, ``2_7`` = ``2_6`` + the
+``2_7`` columns, and so on. Any version can be built from an existing file of an
+older one without recomputing it
+(``scripts/create_train_data/build_schema_version.py``).
+
+The rule that makes this work: **a layer may only add columns.** Changing the
+value or meaning of a column that already exists is a new base (``3_0``),
+rebuilt end to end, never a layer. Because of it, one frame of the newest
+version serves every older model slot -- an older model's ``feature_names``
+pick a subset -- and an older file never changes underneath the models trained
+on it. ``schema_layers.contract`` enforces it every time a layer runs.
+
+Which file is which: the version is in the filename
+(``closing_line_data_2_6_20261003.parquet``, read by
+``training_pipeline.registry.parse_schema_version``), and the
+``<name>.manifest.json`` beside it records the layers applied, the columns each
+version added, the parent file's checksum and the building commit.
+``python -m nba_ou.create_training_data.schema_layers describe <file>`` prints
+it; ``... diff 2_5 2_6`` lists what a version added.
+
 History
 -------
 ``2_0``
@@ -194,6 +221,31 @@ History
     * Written as Parquet only (training_pipeline.parquet_dataset). The 2_5 CSVs
       built earlier carry the full Yahoo family and are left in place for the
       configs pinned to them.
+
+``2_6``
+    First layered version, over ``2_5`` (``schema_layers/v2_6.py``).
+
+    * Both datasets: ``STARTER_*_BEFORE_TEAM_{HOME,AWAY}`` -- four strictly
+      prior-game starter-history features per side: overlap of the last two
+      starting fives, unique starters and repeat rate in the last five games,
+      and the recent team-minutes share of the latest five. No target-game
+      starters or minutes are used.
+    * Both datasets: the 17 ``LU_*_BEFORE`` lineup-projection columns,
+      built from rotation stints, the walk-forward player rating cache and
+      availability strictly before the prediction cutoff. Closing reads the
+      last report before tip; intermediate reads each snapshot's report and
+      filing coverage (``data_processing.lineups.intermediate_features``).
+      Games the projection cannot cover, or where either team had not filed a
+      report, are NaN. Calibration uses 50-200 earlier games per phase (and,
+      intermediate, per horizon); with fewer the calibrated total is NaN. All
+      horizons share historical style traits and monthly neighbour fits.
+      Intermediate history excludes the cutoff's Eastern date, and the
+      previous date for a cutoff before 05:00 ET. UTC cutoffs come from the
+      base's scoring sidecar (copied beside each upgraded file); the live
+      line-history schedule is used only when explicitly allowed. Manifests
+      record the time source and digests of the injury-report states read.
+      The intermediate family was completed under the same experimental 2_6
+      label while that version was still being developed.
 """
 
 from __future__ import annotations
@@ -202,8 +254,13 @@ from typing import Literal
 
 import pandas as pd
 
-#: Current schema version for both generated training datasets.
-TRAINING_DATA_SCHEMA_VERSION = "2_5"
+#: What the monolithic builders produce. Frozen: new columns go in a layer.
+BASE_SCHEMA_VERSION = "2_5"
+
+#: Newest version this checkout can build, for both generated datasets. Equals
+#: ``schema_layers.latest_version()`` (checked in the tests); kept as a literal
+#: so importing the config does not import the feature code.
+TRAINING_DATA_SCHEMA_VERSION = "2_6"
 
 
 def training_dataset_filename(
@@ -211,7 +268,7 @@ def training_dataset_filename(
     limit_date: str | pd.Timestamp,
     *,
     variant: str = "",
-    schema_version: str = TRAINING_DATA_SCHEMA_VERSION,
+    schema_version: str = BASE_SCHEMA_VERSION,
 ) -> str:
     """The standard name of a built dataset: kind, schema version, limit date.
 
@@ -220,6 +277,10 @@ def training_dataset_filename(
     not whatever the latest game in the data happens to be. Two builds with the
     same name were asked for the same thing. ``training_pipeline.registry``
     reads the schema version back out of the ``_<schema>_<YYYYMMDD>`` part.
+
+    The default version is the base: only the base builders name a file from
+    scratch. A layered version is named from its parent's file
+    (``training_pipeline.layered_dataset.layered_filename``).
     """
     if kind not in ("closing", "intermediate"):
         raise ValueError(f"kind must be 'closing' or 'intermediate', got {kind!r}")

@@ -27,6 +27,7 @@ from nba_ou.data_processing.injury_status.report_state import (
     nested_status_dict,
     report_out_overrides,
     report_questionable_sets,
+    snapshot_report_states,
 )
 from nba_ou.data_processing.injury_status.status_history import load_player_box_history
 from nba_ou.data_processing.merged_home_away_data.add_features_after_merging import (
@@ -68,26 +69,14 @@ def _states_at_snapshots(cutoffs: pd.DataFrame) -> dict[int, InjuryReportState]:
         events = fetch.listed_status_events(conn)
         listed = fetch.listed_pairs(conn)
 
-    states = {}
-    for horizon in sorted(cutoffs["snapshot_minutes"].unique()):
-
-        def at_horizon(
-            frame: pd.DataFrame, selected_horizon: int = int(horizon)
-        ) -> pd.DataFrame:
-            return (
-                frame.loc[frame["snapshot_minutes"].eq(selected_horizon)]
-                .drop(columns="snapshot_minutes")
-                .reset_index(drop=True)
-            )
-
-        states[int(horizon)] = InjuryReportState(
-            statuses=at_horizon(statuses),
-            filings=at_horizon(filings),
-            report_age=at_horizon(ages),
-            status_events=events,
-            listed_pairs=listed,
-        )
-    return states
+    return snapshot_report_states(
+        statuses,
+        filings,
+        ages,
+        cutoffs["snapshot_minutes"],
+        events=events,
+        listed=listed,
+    )
 
 
 def _wide_team_injury_features(
@@ -170,7 +159,9 @@ def _one_horizon(
         ["game_id", "team_id", "player_id"]
     ].itertuples(index=False, name=None):
         if (game_id, team_id) in state.covered:
-            report_listed.setdefault(game_id, {}).setdefault(team_id, []).append(player_id)
+            report_listed.setdefault(game_id, {}).setdefault(team_id, []).append(
+                player_id
+            )
     original_columns = set(context.team_games.columns)
     team, injured_dict, availability = add_player_history_features(
         context.team_games.copy(),
