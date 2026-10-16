@@ -60,7 +60,9 @@ def main() -> int:
         tonight = frame["GAME_ID"].astype(str).isin(set(live.game_ids))
         built[name] = (
             frame[tonight].reset_index(drop=True),
-            scoring[tonight.to_numpy()].reset_index(drop=True),
+            scoring[
+                scoring["GAME_ID"].astype(str).isin(set(live.game_ids))
+            ].reset_index(drop=True),
         )
         built[name][0].to_parquet(args.out / f"{name}_dataset.parquet")
         built[name][1].to_parquet(args.out / f"{name}_scoring.parquet")

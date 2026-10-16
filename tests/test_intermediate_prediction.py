@@ -30,8 +30,13 @@ def test_only_snapshots_already_passed_are_kept():
     frame, scoring = _rows()
     kept = passed_snapshots(frame, scoring, TIP - pd.Timedelta(minutes=60))
     assert sorted(kept["TIME_TO_MATCH_MIN"].unique()) == [60, 120, 360]
-    with pytest.raises(ValueError, match="aligned"):
-        passed_snapshots(frame, scoring.iloc[::-1], TIP)
+    # Matched on (game, snapshot), not by position.
+    shuffled = passed_snapshots(
+        frame, scoring.iloc[::-1], TIP - pd.Timedelta(minutes=60)
+    )
+    pd.testing.assert_frame_equal(shuffled, kept)
+    with pytest.raises(ValueError, match="lacks"):
+        passed_snapshots(frame, scoring.iloc[1:], TIP)
 
 
 def test_an_intermediate_slot_reads_the_rows_of_its_horizon(monkeypatch):

@@ -28,15 +28,25 @@ def passed_snapshots(
 ) -> pd.DataFrame:
     """``frame``'s rows whose snapshot time is at or before ``as_of``.
 
-    ``scoring`` is the builder's sidecar, row-aligned with ``frame``.
+    ``scoring`` is the builder's sidecar, matched on (game, snapshot): it is
+    sorted by game id, the frame by date first.
     """
-    if not (
-        frame["GAME_ID"].astype(str).to_numpy()
-        == scoring["GAME_ID"].astype(str).to_numpy()
-    ).all():
-        raise ValueError("scoring rows are not aligned with the frame")
-    snapshot = pd.to_datetime(scoring["SNAPSHOT_TS_UTC"], utc=True)
-    passed = (snapshot <= pd.Timestamp(as_of)).to_numpy()
+    keys = ["GAME_ID", "TIME_TO_MATCH_MIN"]
+    snapshot = scoring[keys + ["SNAPSHOT_TS_UTC"]].assign(
+        GAME_ID=lambda rows: rows["GAME_ID"].astype(str)
+    )
+    if snapshot.duplicated(keys).any():
+        raise ValueError("scoring has more than one row per game and snapshot")
+    times = (
+        frame[keys]
+        .assign(GAME_ID=lambda rows: rows["GAME_ID"].astype(str))
+        .merge(snapshot, on=keys, how="left", validate="one_to_one")
+    )
+    if times["SNAPSHOT_TS_UTC"].isna().any():
+        raise ValueError("scoring lacks rows of the frame")
+    passed = (
+        pd.to_datetime(times["SNAPSHOT_TS_UTC"], utc=True) <= pd.Timestamp(as_of)
+    ).to_numpy()
     return frame.loc[passed].reset_index(drop=True)
 
 
