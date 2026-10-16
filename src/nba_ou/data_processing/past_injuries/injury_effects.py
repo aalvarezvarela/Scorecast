@@ -649,9 +649,12 @@ def add_top3_availability_effect_features_for_columns(
     if missing:
         raise ValueError(f"Missing required columns: {missing}")
 
-    injured_index = _build_injured_games_index(injured_dict)
     if availability_index is None and availability_dict is not None:
         availability_index = _build_availability_games_index(availability_dict)
+    # Read only without an availability index.
+    injured_index = (
+        _build_injured_games_index(injured_dict) if availability_index is None else {}
+    )
 
     # Build TEAM-game history (two rows per game: one per team)
     hist_home = df[

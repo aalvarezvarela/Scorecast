@@ -221,8 +221,12 @@ def test_horizons_in_processes_equal_the_horizons_in_turn(monkeypatch, tmp_path)
             prepared_all_star=None, effect_cache=caches[1], targets=None,
             priors={}, first_current_season=2024,
         )
+        calls = []
         if workers > 1:
-            parts = ii._horizons_in_processes(inputs, memo, workers, None)
+            parts = ii._horizons_in_processes(
+                inputs, memo, workers, None, while_waiting=lambda: calls.append(1)
+            )
+            assert calls == [1]
         else:
             parts = [ii._horizon_features(inputs, h) for h in horizons]
         tables = {key: dict(table) for key, table in memo._tables.items()}

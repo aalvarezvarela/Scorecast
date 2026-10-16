@@ -107,6 +107,28 @@ def _fit_seasons(seasons) -> set[int]:
 
 
 def add_intermediate_market_dynamics(
+    snapshots: pd.DataFrame, **kwargs
+) -> pd.DataFrame:
+    """Return ``snapshots`` with the G1, G2 and G3 columns appended.
+
+    Takes ``intermediate_market_dynamics_columns``' arguments.
+    """
+    return attach_market_dynamics(
+        snapshots, intermediate_market_dynamics_columns(snapshots, **kwargs)
+    )
+
+
+def attach_market_dynamics(snapshots: pd.DataFrame, added: pd.DataFrame) -> pd.DataFrame:
+    """``snapshots`` with ``added`` (computed on the same rows, in this order)."""
+    overlap = sorted(set(added.columns) & set(snapshots.columns))
+    if overlap:
+        raise ValueError(f"Market dynamics columns overlap existing columns: {overlap}")
+    if len(added) != len(snapshots):
+        raise ValueError("Market dynamics were computed on other rows")
+    return pd.concat([snapshots, added.set_axis(snapshots.index)], axis=1)
+
+
+def intermediate_market_dynamics_columns(
     snapshots: pd.DataFrame,
     *,
     ticks: pd.DataFrame,
@@ -116,9 +138,10 @@ def add_intermediate_market_dynamics(
     history: pd.DataFrame | None = None,
     live_reports: LiveInjuryReports | None = None,
 ) -> pd.DataFrame:
-    """Return ``snapshots`` with the G1, G2 and G3 columns appended.
+    """The G1, G2 and G3 columns of ``snapshots``' rows, on its index.
 
-    ``snapshots`` is the merged (game, snapshot) frame; ``ticks`` the same
+    They read no injury feature, so they can be computed before those are
+    attached. ``snapshots`` is the merged (game, snapshot) frame; ``ticks`` the same
     pre-game ticks its snapshot panel was built from.
 
     ``history`` holds the other rows a full build would hold, as a
@@ -210,4 +233,4 @@ def add_intermediate_market_dynamics(
         raise ValueError(f"Market dynamics columns overlap existing columns: {overlap}")
     if verbose:
         print(f"✓ Market dynamics: {added.shape[1]} columns (G1 injury news, G2, G3)")
-    return pd.concat([snapshots, added], axis=1)
+    return added

@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import multiprocessing
 import os
+from collections.abc import Callable
 from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass
 
@@ -56,6 +57,9 @@ from nba_ou.data_processing.merged_home_away_data.add_features_after_merging imp
 from nba_ou.data_processing.past_injuries.injury_effects import (
     _build_availability_games_index,
     add_top3_availability_effect_features_for_columns,
+)
+from nba_ou.data_processing.past_injuries.past_injuries import (
+    get_injured_players_dict,
 )
 from nba_ou.data_processing.players.attach_player_features import (
     PreparedPlayerHistory,
@@ -319,6 +323,7 @@ def _one_horizon(
     priors: dict | None = None,
     horizon: int | None = None,
     first_current_season: int | None = None,
+    injured_players: dict | None = None,
 ) -> pd.DataFrame:
     overrides = report_out_overrides(state)
     questionable = report_questionable_sets(state)
@@ -357,6 +362,7 @@ def _one_horizon(
         snapshot_report_listed_players=report_listed,
         row_cache=player_rows,
         prepared_players=prepared_players,
+        injured_players=injured_players,
     )
     if target_game_ids is None:
         team = add_injury_report_features(team, state, box)
@@ -403,6 +409,17 @@ def _one_horizon(
     )
     wide = _wide_team_injury_features(team, feature_columns)
     games = base.merge(wide, on="GAME_ID", how="left", validate="one_to_one")
+    if team_games is not context.team_games:
+        # The games left out above have no rows here, and none is read again:
+        # their effects are not computed and their rows not returned. A build
+        # of every row has one per game, so its integer columns (the coverage
+        # flags) stay integer; they do here too, at 0 on the left-out games.
+        left_out = ~games["GAME_ID"].isin(wide["GAME_ID"])
+        for column in wide.columns:
+            if column != "GAME_ID" and pd.api.types.is_integer_dtype(wide[column]):
+                games[column] = (
+                    games[column].mask(left_out, 0).astype(wide[column].dtype)
+                )
 
     # Every feature depending on the target game's roster is unknown for an
     # unfiled team, even though the closing builder can fall back to a settled
@@ -472,6 +489,7 @@ class _HorizonInputs:
     targets: set[str] | None
     priors: dict | None
     first_current_season: int | None
+    injured_players: dict | None = None
 
 
 def _horizon_features(inputs: _HorizonInputs, horizon: int) -> pd.DataFrame:
@@ -495,6 +513,7 @@ def _horizon_features(inputs: _HorizonInputs, horizon: int) -> pd.DataFrame:
         priors=inputs.priors,
         horizon=horizon,
         first_current_season=inputs.first_current_season,
+        injured_players=inputs.injured_players,
     )
     features = features.loc[features.GAME_ID.isin(ids)].copy()
     if inputs.targets is not None:
@@ -545,11 +564,18 @@ def _forked_horizon(horizon: int):
     return features, added, priors
 
 
+def _stop(pool: ProcessPoolExecutor) -> None:
+    for process in list(getattr(pool, "_processes", {}).values()):
+        process.kill()
+    pool.shutdown(wait=False, cancel_futures=True)
+
+
 def _horizons_in_processes(
     inputs: _HorizonInputs,
     memo: history_memo.HistoryMemo,
     workers: int,
     progress: str | None,
+    while_waiting: Callable[[], None] | None = None,
 ) -> list[pd.DataFrame]:
     """The horizons in forked processes, each the same computation as in turn.
 
@@ -557,7 +583,7 @@ def _horizons_in_processes(
     entries and shrinkage sums it added; the parent merges them, so the memo
     gains what a sequential build would have stored. Horizons are
     independent: a cached row is the row its key computes, whichever
-    process computed it first.
+    process computed it first. ``while_waiting`` runs here meanwhile, once.
     """
     global _FORKED_INPUTS
     memo.wait()
@@ -566,26 +592,40 @@ def _horizons_in_processes(
     pool = ProcessPoolExecutor(
         max_workers=workers, mp_context=multiprocessing.get_context("fork")
     )
+    failure = None
     try:
-        results = list(
-            tqdm(
-                pool.map(_forked_horizon, horizons, timeout=FORKED_TIMEOUT_SECONDS),
-                total=len(horizons),
-                desc=progress,
-                unit="snapshot",
-                disable=progress is None,
+        try:
+            pending = pool.map(
+                _forked_horizon, horizons, timeout=FORKED_TIMEOUT_SECONDS
             )
-        )
-    except Exception as exc:  # noqa: BLE001 -- a stuck or broken worker
-        # A fork of a threaded process can deadlock; the horizons then run in
-        # turn, which costs time, never a value.
-        print(f"Forked injury horizons failed ({exc!r}); running them in turn")
-        for process in list(getattr(pool, "_processes", {}).values()):
-            process.kill()
-        pool.shutdown(wait=False, cancel_futures=True)
-        return [_horizon_features(inputs, horizon) for horizon in horizons]
+        except Exception as exc:  # noqa: BLE001 -- the fork itself failed
+            pending, failure = None, exc
+        if while_waiting is not None:
+            while_waiting()
+        if pending is not None:
+            try:
+                results = list(
+                    tqdm(
+                        pending,
+                        total=len(horizons),
+                        desc=progress,
+                        unit="snapshot",
+                        disable=progress is None,
+                    )
+                )
+            except Exception as exc:  # noqa: BLE001 -- a stuck or broken worker
+                failure = exc
+    except BaseException:
+        _stop(pool)
+        raise
     finally:
         _FORKED_INPUTS = None
+    if failure is not None:
+        # A fork of a threaded process can deadlock; the horizons then run in
+        # turn, which costs time, never a value.
+        print(f"Forked injury horizons failed ({failure!r}); running them in turn")
+        _stop(pool)
+        return [_horizon_features(inputs, horizon) for horizon in horizons]
     pool.shutdown()
     parts = []
     for features, added, priors in results:
@@ -718,6 +758,7 @@ def add_snapshot_injury_features(
     target_game_ids: set[str] | None = None,
     history_cutoffs: pd.DataFrame | None = None,
     live_reports: LiveInjuryReports | None = None,
+    while_waiting: Callable[[], None] | None = None,
 ) -> pd.DataFrame:
     """Attach 2_5 injury features using the latest report before each snapshot.
 
@@ -735,6 +776,9 @@ def add_snapshot_injury_features(
     games' players and availability at that horizon, under their own report;
     but their rows come from the memo (``history_memo.PersistentRowCache``), and
     the report and All-Star features are built for the targets only.
+
+    ``while_waiting`` is other work of the caller's, run once in this process
+    while the horizons run in others (or before them, when they run in turn).
     """
     existing_effects = [
         c for c in base if c.startswith(SNAPSHOT_INJURY_EFFECT_PREFIXES)
@@ -829,11 +873,19 @@ def add_snapshot_injury_features(
         targets=targets if target_game_ids is not None else None,
         priors=priors,
         first_current_season=first_current_season,
+        # Realized absences: the same at every horizon.
+        injured_players=get_injured_players_dict(
+            injuries, df_players=context.players
+        ),
     )
     workers = _horizon_workers(len(states)) if memo is not None else 1
     if workers > 1:
-        parts = _horizons_in_processes(inputs, memo, workers, progress)
+        parts = _horizons_in_processes(
+            inputs, memo, workers, progress, while_waiting=while_waiting
+        )
     else:
+        if while_waiting is not None:
+            while_waiting()
         parts = [
             _horizon_features(inputs, horizon)
             for horizon in tqdm(

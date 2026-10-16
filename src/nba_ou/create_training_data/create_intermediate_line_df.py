@@ -67,7 +67,8 @@ from nba_ou.create_training_data.intermediate_injuries import (
     add_snapshot_injury_features,
 )
 from nba_ou.create_training_data.intermediate_market_dynamics import (
-    add_intermediate_market_dynamics,
+    attach_market_dynamics,
+    intermediate_market_dynamics_columns,
 )
 from nba_ou.create_training_data.intermediate_referees import (
     add_intermediate_referee_features,
@@ -1271,7 +1272,23 @@ def create_intermediate_line_df(
         merged[ORDER_COLUMN] = intermediate_history.order_key(
             merged["GAME_ID"], merged["TIME_TO_MATCH_MIN"], _base_order(base)
         )
+    # Market dynamics read no injury feature: they are computed on these rows
+    # while the injury horizons run, and attached after the injury columns.
+    market: dict[str, pd.DataFrame] = {}
+
+    def market_dynamics(snapshots=merged) -> None:
+        stage("Market dynamics (injury news, cross-market, news betas) ...")
+        market["columns"] = intermediate_market_dynamics_columns(
+            snapshots,
+            ticks=ticks,
+            anchor=anchor,
+            verbose=verbose,
+            history=history_rows,
+            live_reports=live.injury_reports if live is not None else None,
+        )
+
     stage("Snapshot injury features (per horizon) ...")
+    keys_before = merged[["GAME_ID", "TIME_TO_MATCH_MIN"]]
     merged = add_snapshot_injury_features(
         merged,
         injury_base,
@@ -1280,17 +1297,15 @@ def create_intermediate_line_df(
         target_game_ids=targets,
         history_cutoffs=history_rows,
         live_reports=live.injury_reports if live is not None else None,
+        while_waiting=market_dynamics if include_market_dynamics else None,
     )
     if include_market_dynamics:
-        stage("Market dynamics (injury news, cross-market, news betas) ...")
-        merged = add_intermediate_market_dynamics(
-            merged,
-            ticks=ticks,
-            anchor=anchor,
-            verbose=verbose,
-            history=history_rows,
-            live_reports=live.injury_reports if live is not None else None,
-        )
+        if not merged[["GAME_ID", "TIME_TO_MATCH_MIN"]].reset_index(drop=True).equals(
+            keys_before.reset_index(drop=True)
+        ):
+            raise ValueError("Injury features reordered the snapshot rows")
+        merged = attach_market_dynamics(merged, market["columns"])
+        stage("✓ Injury features and market dynamics attached")
     row_order = merged.pop(ORDER_COLUMN) if ORDER_COLUMN in merged else None
     # ---- targets -------------------------------------------------------
     stage("Targets, referee masking and the leakage gate ...")
