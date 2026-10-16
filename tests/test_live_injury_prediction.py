@@ -46,6 +46,9 @@ def report_state(status="questionable", filed=True):
 
 @pytest.fixture
 def scheduled(monkeypatch):
+    monkeypatch.setattr(
+        scheduled_module, "load_live_rosters", lambda games: pd.DataFrame()
+    )
     frame = pd.DataFrame(
         {
             "GAME_ID": [GID],
@@ -130,6 +133,38 @@ def test_scheduled_out_sets_never_include_earlier_games(monkeypatch, scheduled):
     )
     assert result["injury_dict_scheduled"] == {GID: {HOME: ["2544"], AWAY: []}}
     assert (earlier, HOME) in result["injury_report_state"].covered
+
+
+@pytest.mark.parametrize("dataset_type", ["closing_line", "intermediate_line"])
+def test_rosters_are_loaded_before_injury_resolution(
+    monkeypatch, scheduled, dataset_type
+):
+    calls = []
+    rosters = pd.DataFrame({"PLAYER_ID": ["rookie"]})
+
+    def roster_fetch(games):
+        calls.append("rosters")
+        return rosters
+
+    def sync(day, **kwargs):
+        calls.append("sync")
+        assert kwargs["roster_snapshots"] is rosters
+
+    def read(*args):
+        calls.append("read")
+        return report_state()
+
+    monkeypatch.setattr(scheduled_module, "load_live_rosters", roster_fetch)
+    monkeypatch.setattr(scheduled_module, "synchronize_injury_reports", sync)
+    monkeypatch.setattr(scheduled_module, "load_prediction_report_state", read)
+    result = scheduled_module.get_all_info_for_scheduled_games(
+        "2026-10-16",
+        "unused",
+        headless=True,
+        dataset_type=dataset_type,
+    )
+    assert calls == ["rosters", "sync", "read"]
+    assert result["roster_snapshots"] is rosters
 
 
 def test_refresh_failure_uses_previous_aiven_state(monkeypatch, scheduled, caplog):

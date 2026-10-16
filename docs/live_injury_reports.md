@@ -58,6 +58,11 @@ historical ingest does: nba_api's bundled catalog lags each draft class, and one
 unknown rookie must not block every other player's status. Unknown games still
 fail the batch and leave receipts pending.
 
+Live predictions additionally pass official `CommonTeamRoster` names and IDs to
+the resolver before historical matching. These matches are scoped to the
+scheduled team-game, so an opening-night rookie can resolve without a prior box
+score or a bundled catalog entry. See [live rosters](live_rosters.md).
+
 For affected games, existing compressed intervals are expanded at their original
 report instants and combined with the new parsed observations. Completed PDFs
 do not need to be parsed again. Timelines are rebuilt per game, including

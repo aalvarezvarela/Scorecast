@@ -20,6 +20,7 @@ from nba_ou.data_processing.referees.process_refs_scheduled_game import (
     process_scheduled_referee_assignments,
 )
 from nba_ou.fetch_data.injury_reports.sync import synchronize_injury_reports
+from nba_ou.fetch_data.live_rosters import load_live_rosters
 from nba_ou.fetch_data.odds_sportsbook.scrape_sportsbook import scrape_sportsbook_days
 from nba_ou.fetch_data.odds_yahoo.process_yahoo_day import yahoo_one_row_per_game
 from nba_ou.fetch_data.odds_yahoo.scrape_yahoo import scrape_yahoo_days
@@ -321,6 +322,7 @@ def get_all_info_for_scheduled_games(
             "df_odds_sportsbook_scheduled": pd.DataFrame(),
             "games_not_updated": [],
             "games_missing_injury_reports": [],
+            "roster_snapshots": pd.DataFrame(),
         }
 
     # Convert team IDs to team names using TEAM_ID_MAP
@@ -346,10 +348,14 @@ def get_all_info_for_scheduled_games(
     df_referees_scheduled = process_scheduled_referee_assignments(scheduled_games)
     # Reports are synchronized before any feature reads. Aiven is the sole
     # prediction source; a failed refresh may use its previous eligible state.
+    roster_snapshots = load_live_rosters(scheduled_games)
     injury_as_of = pd.Timestamp.now(tz="UTC")
     try:
         synchronize_injury_reports(
-            date_to_predict, scheduled_games=scheduled_games, as_of=injury_as_of
+            date_to_predict,
+            scheduled_games=scheduled_games,
+            as_of=injury_as_of,
+            roster_snapshots=roster_snapshots,
         )
     except Exception as exc:
         logging.getLogger(__name__).warning(
@@ -403,6 +409,7 @@ def get_all_info_for_scheduled_games(
         "injury_dict_scheduled": injury_dict_scheduled,
         "injury_report_state": injury_report_state,
         "injury_as_of_utc": injury_as_of,
+        "roster_snapshots": roster_snapshots,
         "df_odds_yahoo_scheduled": df_odds_yahoo_scheduled,
         "df_odds_sportsbook_scheduled": df_odds_sportsbook_scheduled,
         "games_not_updated": games_not_updated,

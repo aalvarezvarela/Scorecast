@@ -48,6 +48,14 @@ from nba_ou.data_processing.players.attach_player_features import (
     is_player_identifier_column,
     prepare_player_history,
 )
+from nba_ou.data_processing.players.live_roster import (
+    report_membership,
+    supplement_rosters,
+)
+from nba_ou.data_processing.players.roster_continuity import (
+    add_roster_continuity_feature,
+)
+from nba_ou.fetch_data.live_rosters import roster_overrides
 from nba_ou.postgre_db.all_star_voting.fetch_data_from_db.fetch_all_star_voting_from_db import (
     load_all_star_voting_from_db,
 )
@@ -166,6 +174,7 @@ def _one_horizon(
     prepared_players: PreparedPlayerHistory | None = None,
     prepared_all_star: PreparedAllStarInputs | None = None,
     effect_cache: RowCache | None = None,
+    current_rosters: dict | None = None,
 ) -> pd.DataFrame:
     overrides = report_out_overrides(state)
     questionable = report_questionable_sets(state)
@@ -177,6 +186,7 @@ def _one_horizon(
             report_listed.setdefault(game_id, {}).setdefault(team_id, []).append(
                 player_id
             )
+    current_rosters = supplement_rosters(current_rosters, report_membership(state))
     original_columns = set(context.team_games.columns)
     team, injured_dict, availability = add_player_history_features(
         context.team_games.copy(),
@@ -191,6 +201,10 @@ def _one_horizon(
         snapshot_report_listed_players=report_listed,
         row_cache=player_rows,
         prepared_players=prepared_players,
+        current_rosters=current_rosters,
+        current_game_ids=set(context.scheduled_games.GAME_ID.astype(str))
+        if context.scheduled_games is not None
+        else None,
     )
     team = add_injury_report_features(team, state, box)
     team = add_all_star_voting_features(
@@ -201,7 +215,23 @@ def _one_horizon(
         questionable_dict=nested_status_dict(questionable),
         row_cache=all_star_rows,
         prepared=prepared_all_star,
+        current_rosters=current_rosters,
     )
+    roster_columns = []
+    if current_rosters:
+        team = add_roster_continuity_feature(
+            team,
+            context.players,
+            injured_dict=injured_dict,
+            current_rosters=current_rosters,
+            target_game_ids={game for game, _ in current_rosters},
+        )
+        roster_columns = [
+            c for c in team if c.startswith("ROSTER_") and c not in original_columns
+        ]
+        roster_columns.extend(
+            ["ALL_STAR_FAN_VOTE_SHARE_BEFORE", "ALL_STAR_MIN_SCORE_BEFORE"]
+        )
     # When no team has filed at this horizon, the shared All-Star builder has
     # no questionable group to emit. Keep the snapshot schema stable anyway.
     for column in INJURED_ALL_STAR_COLUMNS:
@@ -217,12 +247,15 @@ def _one_horizon(
     feature_columns.extend(
         c for c in INJURED_ALL_STAR_COLUMNS if c not in feature_columns
     )
+    feature_columns = list(dict.fromkeys([*feature_columns, *roster_columns]))
     wide = _wide_team_injury_features(team, feature_columns)
-    games = base.merge(wide, on="GAME_ID", how="left", validate="one_to_one")
+    overlap = (set(wide) & set(base)) - {"GAME_ID"}
+    games = base.drop(columns=list(overlap)).merge(
+        wide, on="GAME_ID", how="left", validate="one_to_one"
+    )
 
-    # Every feature depending on the target game's roster is unknown for an
-    # unfiled team, even though the closing builder can fall back to a settled
-    # inactive list. The coverage flag itself remains 0.
+    # Availability-dependent features remain unknown for an unfiled team.
+    # Official total-roster features do not require an injury filing.
     for side in ("HOME", "AWAY"):
         flag = f"{COVERED_COL}_TEAM_{side}"
         unavailable = games[flag].fillna(0).eq(0)
@@ -230,6 +263,11 @@ def _one_horizon(
             f"{name}_TEAM_{side}"
             for name in feature_columns
             if name != COVERED_COL and f"{name}_TEAM_{side}" in games
+        ]
+        columns = [
+            c
+            for c in columns
+            if not any(c == f"{name}_TEAM_{side}" for name in roster_columns)
         ]
         games.loc[unavailable, columns] = np.nan
 
@@ -263,7 +301,19 @@ def _one_horizon(
         and ("_BEFORE" in c or c.startswith(SNAPSHOT_INJURY_EFFECT_PREFIXES))
     ]
     generated = [c for c in generated if not is_player_identifier_column(c)]
-    return games[["GAME_ID", *generated]]
+    generated = list(dict.fromkeys([*generated, *sorted(overlap)]))
+    result = games[["GAME_ID", *generated]].copy()
+    for home, side in ((True, "HOME"), (False, "AWAY")):
+        eligible = {
+            (str(game), str(team))
+            for game, team in context.team_games.loc[
+                context.team_games.HOME.eq(home), ["GAME_ID", "TEAM_ID"]
+            ].itertuples(index=False, name=None)
+        } & set(current_rosters)
+        result[f"_LIVE_ROSTER_{side}"] = result.GAME_ID.isin(
+            {game for game, _ in eligible}
+        )
+    return result
 
 
 def add_snapshot_injury_features(
@@ -325,6 +375,15 @@ def add_snapshot_injury_features(
     prepared_players = prepare_player_history(context.players.copy(), PLAYER_STATS)
     prepared_all_star = prepare_all_star_inputs(context.players, voting)
     parts = []
+    # One pool for every horizon: the latest same-day official roster known to
+    # this run, as the closing prediction uses. A roster fetched after an
+    # earlier horizon's cutoff still applies to it; only an intraday transaction
+    # between that cutoff and the run would differ, which is accepted.
+    pools = roster_overrides(
+        context.scheduled_games,
+        context.roster_snapshots,
+        as_of=context.live_as_of,
+    )
     for horizon, state in tqdm(
         states.items(),
         total=len(states),
@@ -346,14 +405,29 @@ def add_snapshot_injury_features(
             prepared_players,
             prepared_all_star,
             effect_cache,
+            pools,
         )
         features = features.loc[features.GAME_ID.isin(ids)].copy()
         features["TIME_TO_MATCH_MIN"] = horizon
         parts.append(features)
     injury = pd.concat(parts, ignore_index=True)
     overlap = (set(injury.columns) & set(snapshots.columns)) - set(KEYS)
-    if overlap:
+    replacements = {c for c in overlap if c.startswith(("ALL_STAR_", "ROSTER_"))}
+    if overlap - replacements:
         raise ValueError(
             f"Snapshot injury columns overlap existing columns: {sorted(overlap)}"
         )
-    return snapshots.merge(injury, on=KEYS, how="left", validate="one_to_one")
+    result = snapshots.merge(
+        injury, on=KEYS, how="left", validate="one_to_one", suffixes=("", "_ROSTER")
+    )
+    for column in replacements:
+        side = "HOME" if column.endswith("_TEAM_HOME") else "AWAY"
+        replace = result[f"_LIVE_ROSTER_{side}"].fillna(False).astype(bool)
+        result[column] = result[column].where(~replace, result[f"{column}_ROSTER"])
+    return result.drop(
+        columns=[
+            "_LIVE_ROSTER_HOME",
+            "_LIVE_ROSTER_AWAY",
+            *[f"{c}_ROSTER" for c in replacements],
+        ]
+    )

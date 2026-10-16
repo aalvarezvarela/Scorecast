@@ -20,6 +20,7 @@ from nba_ou.fetch_data.injury_reports.archive.validation import validate
 from nba_ou.fetch_data.injury_reports.get_latest_injury_report import (
     create_robust_session,
 )
+from nba_ou.fetch_data.live_rosters import roster_overrides
 from nba_ou.postgre_db.config.db_config import connect_nba_db
 from nba_ou.postgre_db.injury_report_aiven import documents
 from nba_ou.postgre_db.injury_report_aiven import resolve as R
@@ -125,6 +126,7 @@ def synchronize_injury_reports(
     game_date,
     *,
     scheduled_games: pd.DataFrame | None = None,
+    roster_snapshots: pd.DataFrame | None = None,
     as_of=None,
     delay_s: float = 0.6,
 ) -> SyncResult:
@@ -206,7 +208,15 @@ def synchronize_injury_reports(
                     ).drop_duplicates("game_id", keep="last")
                 conn.commit()  # Explicit root transaction for the atomic writer.
                 ingest_live_reports(
-                    conn, parsed, urls, teams=teams, games=games, rosters=rosters
+                    conn,
+                    parsed,
+                    urls,
+                    teams=teams,
+                    games=games,
+                    rosters=rosters,
+                    current_rosters=roster_overrides(
+                        scheduled_games, roster_snapshots, as_of=as_of
+                    ),
                 )
                 result.ingested = len(parsed)
             except Exception as exc:

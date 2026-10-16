@@ -5,15 +5,19 @@ odds follow, and ``line_history_aiven.ingest.is_finished`` enforces for line
 history). A prediction before tip-off therefore reads them live -- schedule,
 line history so far, referee crews if released -- into a ``LiveGameDay`` that
 ``create_intermediate_line_df(live=...)`` adds to what it reads from the
-database. Nothing here writes anything.
+database. Roster snapshots are archived to S3 and new injury PDFs are synced
+to Aiven before a current prediction; line history remains memory-only.
 """
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 
 import pandas as pd
 
+from nba_ou.fetch_data.injury_reports.sync import synchronize_injury_reports
+from nba_ou.fetch_data.live_rosters import load_live_rosters
 from nba_ou.fetch_data.nba_schedule.fetch_nba_schedule import fetch_schedules
 from nba_ou.postgre_db.line_history_aiven.live import (
     LiveLineHistory,
@@ -21,6 +25,8 @@ from nba_ou.postgre_db.line_history_aiven.live import (
     scheduled_team_games,
 )
 from nba_ou.utils.general_utils import get_season_year_from_date
+
+log = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -31,6 +37,8 @@ class LiveGameDay:
     is the crews frame from ``get_all_info_for_scheduled_games`` (GAME_ID,
     REF_1..REF_3); ``None`` or a missing game means no crew yet, which becomes
     NaN features -- exactly what a pre-09:00-ET snapshot holds in training.
+    ``roster_snapshots`` holds official team membership observations with UTC
+    timestamps; each intermediate horizon selects its own eligible version.
     """
 
     game_date: pd.Timestamp
@@ -38,6 +46,7 @@ class LiveGameDay:
     scheduled_games: pd.DataFrame
     line_history: LiveLineHistory
     df_referees_scheduled: pd.DataFrame | None = None
+    roster_snapshots: pd.DataFrame | None = None
 
     @property
     def history_limit(self) -> pd.Timestamp:
@@ -55,6 +64,7 @@ def fetch_live_game_day(
     scheduled_games: pd.DataFrame,
     df_referees_scheduled: pd.DataFrame | None = None,
     as_of: pd.Timestamp | None = None,
+    roster_snapshots: pd.DataFrame | None = None,
 ) -> LiveGameDay:
     """Read tonight's line history for ``scheduled_games`` and bundle it.
 
@@ -63,7 +73,22 @@ def fetch_live_game_day(
     ``live_replay.replay_scheduled_games`` and the stored crews instead.
     """
     game_date = pd.Timestamp(game_date).normalize()
+    if roster_snapshots is None:
+        roster_snapshots = load_live_rosters(scheduled_games, as_of=as_of)
+    refresh = as_of is None
     as_of = pd.Timestamp.now(tz="UTC") if as_of is None else pd.Timestamp(as_of)
+    if refresh:
+        try:
+            synchronize_injury_reports(
+                game_date,
+                scheduled_games=scheduled_games,
+                roster_snapshots=roster_snapshots,
+                as_of=as_of,
+            )
+        except Exception as exc:
+            log.warning(
+                "Injury report refresh failed; reading existing Aiven state: %s", exc
+            )
     season = int(get_season_year_from_date(game_date))
     line_history = fetch_live_line_history(
         game_date.date(),
@@ -77,4 +102,5 @@ def fetch_live_game_day(
         scheduled_games=scheduled_games,
         line_history=line_history,
         df_referees_scheduled=df_referees_scheduled,
+        roster_snapshots=roster_snapshots,
     )

@@ -33,10 +33,11 @@ def resolve_live_players(
     rows: pd.DataFrame,
     rosters: pd.DataFrame,
     report: R.ResolutionReport | None = None,
+    current_rosters: dict | None = None,
 ) -> pd.DataFrame:
-    """Use historical team rosters, then unique exact NBA names for new signings.
+    """Use current official IDs, historical rosters, then unique NBA names.
 
-    Names neither route resolves are dropped and appended to
+    Names no route resolves are dropped and appended to
     ``report.unresolved``, as the historical ingest does. One unknown name (a
     rookie missing from nba_api's bundled player list, say) must not block
     every other player's report.
@@ -44,7 +45,33 @@ def resolve_live_players(
     rows, rosters = rows.copy(), rosters.copy()
     rows["nba_team_id"] = rows.nba_team_id.astype(str)
     rosters["nba_team_id"] = rosters.nba_team_id.astype(str)
-    resolved = R.resolve_players(rows, rosters, R.ResolutionReport())
+    current = []
+    for (game_id, team_id), players in (current_rosters or {}).items():
+        for player_id, name in players.items():
+            current.append(
+                dict(
+                    game_id=game_id,
+                    nba_team_id=team_id,
+                    norm_name=R.normalise_name(R._flip_flat_name(name)),
+                    player_id=int(player_id),
+                )
+            )
+    if current:
+        names = pd.DataFrame(current).drop_duplicates()
+        keys = ["game_id", "nba_team_id", "norm_name"]
+        names = names.loc[~names.duplicated(keys, keep=False)]
+        rows["norm_name"] = rows.raw_name.map(R.normalise_name)
+        joined = rows.merge(names, on=keys, how="left")
+        resolved = joined.loc[joined.player_id.notna()].copy()
+        resolved["player_id"] = resolved.player_id.astype("int64")
+        resolved["method"] = "live_team_roster"
+        remaining = joined.loc[joined.player_id.isna()].drop(columns="player_id")
+        resolved = pd.concat(
+            [resolved, R.resolve_players(remaining, rosters, R.ResolutionReport())],
+            ignore_index=True,
+        )
+    else:
+        resolved = R.resolve_players(rows, rosters, R.ResolutionReport())
     keys = ["game_id", "raw_team", "raw_name", "observed_at"]
     found = resolved[keys].drop_duplicates().assign(_found=True)
     pending = rows.merge(found, on=keys, how="left")
@@ -183,7 +210,14 @@ def rebuild_timelines(observations, listed, not_filed, report_times, team_map):
 
 
 def ingest_live_reports(
-    conn, parsed: list[_Read], urls: list[str], *, teams, games, rosters
+    conn,
+    parsed: list[_Read],
+    urls: list[str],
+    *,
+    teams,
+    games,
+    rosters,
+    current_rosters: dict | None = None,
 ) -> None:
     """Commit every successful report, affected spans, and its receipt together."""
     if not parsed:
@@ -260,7 +294,9 @@ def ingest_live_reports(
             if observations.nba_team_id.isna().any():
                 raise ValueError("Unknown injury report team")
             unresolved = R.ResolutionReport()
-            observations = resolve_live_players(observations, rosters, unresolved)
+            observations = resolve_live_players(
+                observations, rosters, unresolved, current_rosters
+            )
             observations["team_id"] = observations.raw_team.map(team_map)
             load.record_unresolved(conn, unresolved.unresolved, commit=False)
         # New reports can remove a game entirely; include existing pre-game

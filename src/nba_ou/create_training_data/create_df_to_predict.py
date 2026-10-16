@@ -81,6 +81,10 @@ from nba_ou.data_processing.players.attach_player_features import (
     drop_player_identifier_columns,
     player_history_memo_name,
 )
+from nba_ou.data_processing.players.live_roster import (
+    report_membership,
+    supplement_rosters,
+)
 from nba_ou.data_processing.players.roster_continuity import (
     add_roster_continuity_feature,
 )
@@ -118,6 +122,7 @@ from nba_ou.data_processing.team.style_matchups import (
 )
 from nba_ou.data_processing.team.totals import compute_total_points_features
 from nba_ou.data_processing.travel.travel_processing import compute_travel_features
+from nba_ou.fetch_data.live_rosters import load_live_rosters, roster_overrides
 from nba_ou.postgre_db import load_all_nba_data_from_db
 from nba_ou.postgre_db.all_star_voting.fetch_data_from_db.fetch_all_star_voting_from_db import (
     load_all_star_voting_from_db,
@@ -403,6 +408,8 @@ def process_player_statistics_for_training(
     include_available_roster_count: bool = False,
     target_game_ids=None,
     history_memo=None,
+    current_rosters=None,
+    report_listed_players=None,
 ):
     """
     Process player statistics and prepare for training.
@@ -482,6 +489,14 @@ def process_player_statistics_for_training(
         include_available_roster_count=include_available_roster_count,
         target_game_ids=target_game_ids,
         history_memo=history_memo,
+        current_rosters=current_rosters,
+        snapshot_game_ids=set(scheduled_games.GAME_ID.astype(str))
+        if scheduled_games is not None
+        else None,
+        snapshot_report_listed_players=report_listed_players,
+        current_game_ids=set(scheduled_games.GAME_ID.astype(str))
+        if scheduled_games is not None
+        else None,
     )
 
     if return_players:
@@ -797,6 +812,23 @@ def create_df_to_predict(
         else None
     )
 
+    current_rosters = {}
+    listed_players = (
+        report_membership(injury_report_state) if injury_report_features else {}
+    )
+    if todays_prediction:
+        roster_snapshots = scheduled_data.get("roster_snapshots")
+        if roster_snapshots is None:
+            roster_snapshots = load_live_rosters(scheduled_games)
+        current_rosters = supplement_rosters(
+            roster_overrides(
+                scheduled_games,
+                roster_snapshots,
+                as_of=scheduled_data.get("injury_as_of_utc"),
+            ),
+            listed_players,
+        )
+
     # Add Players Statistics
     print("Processing player statistics...")
     df, injured_dict, df_players, player_availability_dict = (
@@ -808,6 +840,8 @@ def create_df_to_predict(
             recent_limit_to_include,
             scheduled_games=scheduled_games if todays_prediction else None,
             injury_dict_scheduled=injury_dict_scheduled if todays_prediction else None,
+            current_rosters=current_rosters,
+            report_listed_players=listed_players,
             extra_game_ids=extra_game_ids,
             return_players=True,
             player_context_seasons=player_context_seasons,
@@ -825,6 +859,7 @@ def create_df_to_predict(
         injured_dict,
         df_game_context=df_team_player_context,
         scheduled_game_ids=scheduled_game_ids,
+        current_rosters=current_rosters,
         target_game_ids=targets,
     )
     print("✓ Player statistics processed")
@@ -860,6 +895,7 @@ def create_df_to_predict(
         df_players=df_players,
         all_star_voting_df=all_star_voting_df,
         injured_dict=pregame_injured_dict,
+        current_rosters=current_rosters,
         questionable_dict=(
             nested_status_dict(questionable_sets) if questionable_sets else None
         ),

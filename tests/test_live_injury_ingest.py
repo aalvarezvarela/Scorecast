@@ -369,6 +369,26 @@ def test_unknown_player_does_not_drop_resolved_players():
     assert [r["raw_name"] for r in report.unresolved] == ["Unknown, Nobody"]
 
 
+def test_live_roster_resolves_a_rookie_missing_from_static_catalog():
+    rows = pd.DataFrame(
+        {
+            "game_id": [GAME],
+            "raw_team": ["Boston Celtics"],
+            "raw_name": ["Rookie, New"],
+            "observed_at": [pd.Timestamp("2026-10-16T14:00Z")],
+            "nba_team_id": [1610612738],
+            "season_year": [2026],
+        }
+    )
+    report = live.R.ResolutionReport()
+    resolved = live.resolve_live_players(
+        rows, ROSTER.iloc[:0], report, {(GAME, "1610612738"): {"9999999": "New Rookie"}}
+    )
+    assert resolved.player_id.tolist() == [9999999]
+    assert resolved.method.tolist() == ["live_team_roster"]
+    assert not report.unresolved
+
+
 @pytest.mark.parametrize("vanished,nys", [(True, False), (False, True)])
 def test_first_report_without_players_is_still_recorded(conn, vanished, nys):
     ingest(conn, report("14:00", None, vanished=vanished, nys=nys))

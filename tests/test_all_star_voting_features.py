@@ -58,6 +58,32 @@ def test_all_star_season_year_for_game_date_sanity_cases():
     assert all_star_season_year_for_game_date("2024-03-01") == 2023
 
 
+def test_live_roster_moves_votes_without_waiting_for_new_box_scores():
+    votes = _all_star_df(
+        [
+            [2025, "p1", "Boston Celtics", 40, 1.5],
+            [2025, "p2", "Los Angeles Lakers", 60, 2.5],
+        ]
+    )
+    players = _players_df([["old", "p1", BOS_ID, "22025", 2025, "2026-01-10", 30, 20]])
+    result = add_all_star_voting_features(
+        _team_row(NYK_ID),
+        players,
+        votes,
+        {},
+        current_rosters={("predict", NYK_ID): {"p1": "New player"}},
+    )
+    assert result.ALL_STAR_FAN_VOTE_SHARE_BEFORE.item() == pytest.approx(0.4)
+    departed = add_all_star_voting_features(
+        _team_row(BOS_ID),
+        players,
+        votes,
+        {},
+        current_rosters={("predict", BOS_ID): {"rookie": "Rookie"}},
+    )
+    assert departed.ALL_STAR_FAN_VOTE_SHARE_BEFORE.item() == 0
+
+
 def test_trade_out_removes_all_star_player_from_old_team():
     all_star = _all_star_df(
         [
@@ -419,19 +445,27 @@ def test_a_covered_team_game_with_nobody_questionable_is_neutral_not_nan():
     # of team-games, and NaN there would put the column over the cleaner's
     # threshold. Uncovered team-games stay NaN.
     all_star = _all_star_df([[2025, "p1", "Boston Celtics", 40, 1.5]])
-    players = _players_df(
-        [["g1", "p1", BOS_ID, "22025", 2025, "2026-01-10", 30, 20]]
-    )
+    players = _players_df([["g1", "p1", BOS_ID, "22025", 2025, "2026-01-10", 30, 20]])
     empty = add_all_star_voting_features(
-        _team_row(BOS_ID), players, all_star, {}, questionable_dict={"predict": {BOS_ID: []}}
+        _team_row(BOS_ID),
+        players,
+        all_star,
+        {},
+        questionable_dict={"predict": {BOS_ID: []}},
     ).iloc[0]
     assert empty["ALL_STAR_MAX_QUESTIONABLE_FAN_VOTE_SHARE_BEFORE"] == 0.0
-    assert empty["ALL_STAR_MIN_QUESTIONABLE_SCORE_BEFORE"] == NO_CANDIDATE_IN_GROUP_SCORE
+    assert (
+        empty["ALL_STAR_MIN_QUESTIONABLE_SCORE_BEFORE"] == NO_CANDIDATE_IN_GROUP_SCORE
+    )
     # ... and worse than any real player's score, which is what a tree reads.
     assert NO_CANDIDATE_IN_GROUP_SCORE > 178.8
 
     uncovered = add_all_star_voting_features(
-        _team_row(BOS_ID), players, all_star, {}, questionable_dict={"other": {BOS_ID: []}}
+        _team_row(BOS_ID),
+        players,
+        all_star,
+        {},
+        questionable_dict={"other": {BOS_ID: []}},
     ).iloc[0]
     assert pd.isna(uncovered["ALL_STAR_MIN_QUESTIONABLE_SCORE_BEFORE"])
     assert pd.isna(uncovered["ALL_STAR_MAX_QUESTIONABLE_FAN_VOTE_SHARE_BEFORE"])
@@ -439,7 +473,9 @@ def test_a_covered_team_game_with_nobody_questionable_is_neutral_not_nan():
 
 def test_without_a_questionable_dict_no_questionable_columns_appear():
     all_star = _all_star_df([[2025, "p1", "Boston Celtics", 40, 1.5]])
-    result = add_all_star_voting_features(_team_row(BOS_ID), _players_df(), all_star, {})
+    result = add_all_star_voting_features(
+        _team_row(BOS_ID), _players_df(), all_star, {}
+    )
     assert not [c for c in result.columns if "QUESTIONABLE" in c]
 
 

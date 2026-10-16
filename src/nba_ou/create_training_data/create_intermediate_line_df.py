@@ -102,6 +102,8 @@ from nba_ou.data_processing.odds.book_combination import resolve_combine_books
 from nba_ou.data_processing.referees.referee_tendencies import (
     DEFAULT_REFEREE_HISTORY_SEASONS,
 )
+from nba_ou.fetch_data.live_rosters import load_live_rosters
+from nba_ou.postgre_db.input_cache import input_cache_enabled
 from nba_ou.postgre_db.line_history_aiven.fetch import (
     MARKET_MONEYLINE,
     MARKET_SPREAD,
@@ -111,7 +113,6 @@ from nba_ou.postgre_db.line_history_aiven.fetch import (
     fetch_games,
     fetch_pregame_ticks,
 )
-from nba_ou.postgre_db.input_cache import input_cache_enabled
 from nba_ou.postgre_db.line_history_aiven.live import LiveLineHistory
 
 MARKET_SHORT = {MARKET_TOTALS: "TOT", MARKET_SPREAD: "SPR", MARKET_MONEYLINE: "ML"}
@@ -352,7 +353,7 @@ def _resolve_target_line(panel: pd.DataFrame, *, anchor: str) -> pd.DataFrame:
     rows = panel[panel["market"].eq(MARKET_TOTALS) & panel["book"].eq(anchor)]
     if rows.empty:
         raise ValueError(
-            f"Anchor book {anchor!r} has no totals quotes in the line-history " "store."
+            f"Anchor book {anchor!r} has no totals quotes in the line-history store."
         )
     return rows[["game_id", "snapshot_minutes", "norm_line"]].rename(
         columns={"norm_line": "target_line"}
@@ -690,7 +691,10 @@ def create_intermediate_line_df(
     snapshot_wide = _merge_wide_parts(wide_parts)
     del wide_parts, consensus
     snapshot_wide = snapshot_wide.merge(
-        anchor_path, on=["game_id", "snapshot_minutes"], how="left", validate="one_to_one"
+        anchor_path,
+        on=["game_id", "snapshot_minutes"],
+        how="left",
+        validate="one_to_one",
     )
 
     target_line = _resolve_target_line(panel, anchor=anchor)
@@ -758,6 +762,9 @@ def create_intermediate_line_df(
             "they lengthen the build without warming any odds rollup."
         )
     stage("Creating base game features (closing pipeline) ...")
+    roster_snapshots = live.roster_snapshots if live is not None else None
+    if live is not None and roster_snapshots is None:
+        roster_snapshots = load_live_rosters(live.scheduled_games, as_of=live.as_of)
     base, injury_context = create_base_game_features(
         recent_limit_to_include=recent_limit_to_include,
         season_start_date=pd.Timestamp(year=base_start_year, month=10, day=1),
@@ -769,6 +776,8 @@ def create_intermediate_line_df(
         combine_fanatics_and_caesars=combine_books,
         return_injury_context=True,
         scheduled_games=live.scheduled_games if live is not None else None,
+        roster_snapshots=roster_snapshots,
+        live_as_of=live.as_of if live is not None else None,
         verbose=verbose,
     )
     base["GAME_ID"] = base["GAME_ID"].astype(str)

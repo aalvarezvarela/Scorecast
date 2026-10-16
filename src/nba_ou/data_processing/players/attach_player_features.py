@@ -26,6 +26,7 @@ from nba_ou.data_processing.players.fresh_absence import (
     STREAK_STAT_COLS,
     add_fresh_absence_features,
 )
+from nba_ou.data_processing.players.live_roster import live_roster_history
 from nba_ou.data_processing.players.players_statistics import (
     latest_player_states,
     precompute_cumulative_avg_stat,
@@ -513,6 +514,8 @@ def add_player_history_features(
     prepared_players: PreparedPlayerHistory | None = None,
     target_game_ids: set[str] | None = None,
     history_memo=None,
+    current_rosters: dict | None = None,
+    current_game_ids: set[str] | None = None,
 ):
     """
     Main function to attach top player statistics and injured player stats to team data.
@@ -544,6 +547,11 @@ def add_player_history_features(
         include_available_roster_count (bool): Emit
             ``N_AVAILABLE_ROSTER_PLAYERS_BEFORE``. Off by default for builds
             without injury-report features.
+        current_rosters (dict, optional): Official ``(game, team) -> {id: name}``
+            membership for upcoming games. Replaces inferred membership and is
+            supplemented by the as-of report; missing player history stays NaN.
+        current_game_ids (set, optional): Upcoming games allowed to retain
+            report-only rookies even if the official roster fetch failed.
         snapshot_game_ids (set, optional): Current games whose roster
             supplementation may use only the as-of report. Settled injuries
             remain available as history for later games.
@@ -869,6 +877,11 @@ def add_player_history_features(
             desc="Adding players data",
         )
     ):
+        members = (current_rosters or {}).get((str(game_id), str(team_id)))
+        if members is not None:
+            members = dict(members)
+            for player in membership_dict.get(str(game_id), {}).get(str(team_id), []):
+                members.setdefault(str(player), str(player))
         if row_cache is not None:
             # Everything the row reads that can differ between calls: its own
             # game's roster membership, out, questionable and realized sets.
@@ -884,6 +897,8 @@ def add_player_history_features(
                 team_key in game_questionable,
                 frozenset(game_questionable.get(team_key, ())),
                 frozenset(realized_index.get(game_key, {}).get(team_key, ())),
+                frozenset(members.items()) if members is not None else None,
+                str(game_id) in (current_game_ids or set()),
             )
             cached = row_cache.rows.get(cache_key)
             if cached is not None:
@@ -919,12 +934,53 @@ def add_player_history_features(
         roster = (
             _Roster.from_lookup(lookup_index, *found) if found is not None else None
         )
+        is_live_roster = members is not None
+        if is_live_roster:
+            roster = _Roster.from_frame(
+                live_roster_history(
+                    prepared_players.players,
+                    members,
+                    game_id=game_id,
+                    team_id=team_id,
+                    season_id=season_id,
+                    game_date=game_date,
+                    stat_cols=stat_cols,
+                )
+            )
         if roster is None:
             # At a season opener, fall back to the latest assignments from the
             # prior season without consulting the opener's box-score membership.
             fallback_roster = prior_roster_lookup(team_id, game_date)
             if fallback_roster is not None and not fallback_roster.empty:
                 roster = _Roster.from_frame(fallback_roster)
+
+        if members is None and str(game_id) in (current_game_ids or set()):
+            listed = membership_dict.get(str(game_id), {}).get(str(team_id), [])
+            inferred = (
+                {}
+                if roster is None
+                else dict(
+                    zip(
+                        roster.column("PLAYER_ID_STR"),
+                        roster.column("PLAYER_NAME"),
+                        strict=True,
+                    )
+                )
+            )
+            if set(listed) - set(inferred):
+                inferred.update({str(p): inferred.get(str(p), str(p)) for p in listed})
+                is_live_roster = True
+                roster = _Roster.from_frame(
+                    live_roster_history(
+                        prepared_players.players,
+                        inferred,
+                        game_id=game_id,
+                        team_id=team_id,
+                        season_id=season_id,
+                        game_date=game_date,
+                        stat_cols=stat_cols,
+                    )
+                )
 
         if roster is None:
             updates_list.append({})
@@ -1066,7 +1122,6 @@ def add_player_history_features(
                 if rank_questionable
                 else []
             )
-
             # Top 3 are the first N from the sorted lists
             topn_non_inj = all_non_inj[:n_players_noninj]
             topn_inj = all_inj[:n_players_inj]
