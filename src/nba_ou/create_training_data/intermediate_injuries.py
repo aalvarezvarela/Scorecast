@@ -50,6 +50,7 @@ from nba_ou.data_processing.merged_home_away_data.add_features_after_merging imp
     add_fresh_absence_sums,
 )
 from nba_ou.data_processing.past_injuries.injury_effects import (
+    _build_availability_games_index,
     add_top3_availability_effect_features_for_columns,
 )
 from nba_ou.data_processing.players.attach_player_features import (
@@ -67,6 +68,7 @@ from nba_ou.postgre_db.injuries_refs.fetch_injury_db.get_injury_data_from_db imp
 )
 from nba_ou.postgre_db.injury_report_aiven import fetch, live
 from nba_ou.postgre_db.injury_report_aiven.live import LiveInjuryReports
+from nba_ou.postgre_db.row_order import canonical_row_order
 from nba_ou.utils.row_cache import RowCache
 
 KEYS = ["GAME_ID", "TIME_TO_MATCH_MIN"]
@@ -78,16 +80,83 @@ INJURED_ALL_STAR_COLUMNS = (
 )
 
 
+#: Memo table of the earlier games' report states at their snapshots.
+REPORT_STATES_MEMO = "intermediate_report_states"
+
+
+def _stored_report_states(
+    conn, cutoffs: pd.DataFrame, targets: set[str]
+) -> tuple[list[tuple], pd.DataFrame]:
+    """The earlier games' report reads, season by season from the memo.
+
+    A season's entry is keyed on its cutoffs and on the chained fingerprint of
+    every stored report row up to it (``fetch.report_season_fingerprints``);
+    a season whose key does not match is read and stored. Returns the parts
+    read so far and the cutoffs still to read (tonight's).
+    """
+    backend = history_memo.default_backend()
+    games = cutoffs["game_id"].astype(str)
+    later = cutoffs[games.isin(targets)]
+    earlier = cutoffs[~games.isin(targets)]
+    if backend is None or earlier.empty:
+        return [], cutoffs
+    seasons = pd.Series(
+        history_memo.season_of_game_ids(earlier["game_id"]), index=earlier.index
+    )
+    fingerprints = fetch.report_season_fingerprints(conn)
+    digests = {}
+    for season in sorted(seasons.unique()):
+        known = [s for s in fingerprints if s <= season]
+        chain = fingerprints[max(known)] if known else "none"
+        rows = earlier[seasons.eq(season)].sort_values(["game_id", "snapshot_minutes"])
+        digest = hashlib.sha256(chain.encode())
+        digest.update(history_memo._frame_digest(rows.reset_index(drop=True)))
+        digests[int(season)] = digest.hexdigest()
+    memo = history_memo.HistoryMemo(backend, digests, max(digests))
+    memo.prefetch([REPORT_STATES_MEMO])
+    parts = []
+    for season in sorted(digests):
+        table = memo.table(REPORT_STATES_MEMO, season)
+        stored = table.get("value") if table is not None else None
+        if stored is None:
+            stored = fetch.report_state_at_snapshots(conn, earlier[seasons.eq(season)])
+            if table is not None:
+                table["value"] = stored
+        parts.append(stored)
+    memo.flush()
+    return parts, later
+
+
 def _states_at_snapshots(
-    cutoffs: pd.DataFrame, live_reports: LiveInjuryReports | None = None
+    cutoffs: pd.DataFrame,
+    live_reports: LiveInjuryReports | None = None,
+    target_game_ids: set[str] | None = None,
 ) -> dict[int, InjuryReportState]:
     """Bulk-read report spans at the exact timestamps used by market snapshots.
 
     Tonight's games, which the store does not hold, read ``live_reports``.
+    With ``target_game_ids`` every other game's reads come from the memo
+    (``_stored_report_states``); the parts are put in the order one read over
+    every cutoff gives -- the canonical order is a function of the rows.
     """
     with connect_nba_db("aiven") as conn:
-        statuses, filings, ages = live.report_state_at_snapshots(
-            conn, cutoffs, live_reports
+        parts, remaining = (
+            _stored_report_states(conn, cutoffs, target_game_ids)
+            if target_game_ids is not None
+            else ([], cutoffs)
+        )
+        if not remaining.empty or not parts:
+            parts.append(live.report_state_at_snapshots(conn, remaining, live_reports))
+        statuses, filings, ages = (
+            parts[0][i]
+            if len(parts) == 1
+            else canonical_row_order(
+                pd.concat(
+                    [part[i] for part in parts if not part[i].empty] or [parts[0][i]],
+                    ignore_index=True,
+                )
+            )
+            for i in range(3)
         )
         # These two frames serve history estimators. They use earlier game dates
         # only, so the current game's later report cannot enter its own features.
@@ -123,7 +192,31 @@ def _add_availability_effects(
     *,
     book: str,
     effect_cache: RowCache | None = None,
+    priors: dict | None = None,
+    horizon: int | None = None,
+    first_current_season: int | None = None,
 ) -> pd.DataFrame:
+    """The three availability-effect families of one horizon.
+
+    ``priors`` (tonight-only builds) holds, per (horizon, family), the
+    shrinkage fit's running sums over the games of the seasons before
+    ``first_current_season``: with them only the later games' effects are
+    computed, and the fit continues from the sums exactly; without them every
+    game's are, and the sums are stored for the next build.
+    """
+    availability_index = (
+        _build_availability_games_index(availability_dict)
+        if availability_dict is not None
+        else None
+    )
+    computed_rows = before = None
+    if priors is not None:
+        seasons = pd.to_numeric(games["SEASON_YEAR"], errors="coerce")
+        computed_rows = (seasons >= first_current_season).to_numpy()
+        current_dates = pd.to_datetime(games.loc[computed_rows, "GAME_DATE"])
+        before = current_dates.min().toordinal() if len(current_dates) else None
+        if before is None or not (~computed_rows).any():
+            priors = None
     families = (
         (
             "TOP3_AVAILABILITY_EFFECT",
@@ -153,6 +246,8 @@ def _add_availability_effects(
         ),
     )
     for prefix, names in families:
+        stored = priors.get((horizon, prefix)) if priors is not None else None
+        totals = {} if priors is not None and stored is None else None
         games = add_top3_availability_effect_features_for_columns(
             games,
             injured_dict,
@@ -166,7 +261,14 @@ def _add_availability_effects(
             include_per_player_columns=False,
             include_detailed_sample_size_features=False,
             effect_cache=effect_cache,
+            availability_index=availability_index,
+            computed_rows=computed_rows if stored is not None else None,
+            shrinkage_prior=stored,
+            shrinkage_totals_before=before if totals is not None else None,
+            shrinkage_totals=totals,
         )
+        if totals is not None:
+            priors[(horizon, prefix)] = totals
         games = mask_uncovered_group_columns(games, prefix)
     return games
 
@@ -185,6 +287,9 @@ def _one_horizon(
     prepared_all_star: PreparedAllStarInputs | None = None,
     effect_cache: RowCache | None = None,
     target_game_ids: set[str] | None = None,
+    priors: dict | None = None,
+    horizon: int | None = None,
+    first_current_season: int | None = None,
 ) -> pd.DataFrame:
     overrides = report_out_overrides(state)
     questionable = report_questionable_sets(state)
@@ -277,6 +382,9 @@ def _one_horizon(
         availability,
         book=get_main_book(),
         effect_cache=effect_cache,
+        priors=priors,
+        horizon=horizon,
+        first_current_season=first_current_season,
     )
 
     # The closing merge derives these from player columns after the team merge.
@@ -369,6 +477,48 @@ def _injury_history_memo(
     return memo
 
 
+#: Memo table of the shrinkage fits' running sums over finished seasons.
+EFFECT_PRIORS_MEMO = "intermediate_injury_effect_priors"
+
+
+def _effect_prior_table(
+    memo: history_memo.HistoryMemo, cutoffs: pd.DataFrame, targets: set[str]
+) -> tuple[history_memo.HistoryMemo | None, dict | None, int | None]:
+    """The stored shrinkage sums over every season before the targets'.
+
+    Per (horizon, family) and metric, the sums the availability-effect fit has
+    run up over the finished seasons' games. They depend on those games'
+    players and history (the injury memo's digest of the last finished
+    season), their reports (the chained report fingerprint) and their
+    snapshots (the cutoffs), and the entry is keyed on all three.
+    """
+    seasons = [history_memo.season_of_game_id(g) for g in targets]
+    seasons = [s for s in seasons if s is not None]
+    if not seasons:
+        return None, None, None
+    first_current = min(seasons)
+    last_finished = first_current - 1
+    if last_finished not in memo.digests:
+        return None, None, None
+    with connect_nba_db("aiven") as conn:
+        reports = fetch.report_season_fingerprints(conn)
+    known = [s for s in reports if s <= last_finished]
+    finished = cutoffs[
+        history_memo.season_of_game_ids(cutoffs["game_id"]) <= last_finished
+    ].sort_values(["game_id", "snapshot_minutes"])
+    digest = hashlib.sha256(
+        f"{memo.digests[last_finished]}|{reports[max(known)] if known else 'none'}".encode()
+    )
+    digest.update(history_memo._frame_digest(finished.reset_index(drop=True)))
+    prior_memo = history_memo.HistoryMemo(
+        memo.backend, {last_finished: digest.hexdigest()}, last_finished
+    )
+    table = prior_memo.table(EFFECT_PRIORS_MEMO, last_finished)
+    if table is None:
+        return None, None, None
+    return prior_memo, table, first_current
+
+
 def add_snapshot_injury_features(
     snapshots: pd.DataFrame,
     base: pd.DataFrame,
@@ -417,7 +567,13 @@ def add_snapshot_injury_features(
             "SNAPSHOT_TS_UTC": "as_of",
         }
     )
-    states = _states_at_snapshots(cutoffs, live_reports)
+    states = _states_at_snapshots(
+        cutoffs,
+        live_reports,
+        target_game_ids=(
+            None if target_game_ids is None else {str(g) for g in target_game_ids}
+        ),
+    )
     injuries = get_injury_data_from_db(context.player_context_seasons)
     # Normalised and turned into player form once: the same for every horizon.
     box = prepare_box_and_form(load_player_box_history())
@@ -436,7 +592,7 @@ def add_snapshot_injury_features(
     # Raw availability effects, shared by the three families and every horizon:
     # the game history they read is the same, only the availability changes.
     effect_cache = RowCache()
-    memo = None
+    memo = prior_memo = priors = first_current_season = None
     if target_game_ids is not None:
         targets = {str(g) for g in target_game_ids}
         all_star_rows = None  # built for the targets alone
@@ -459,6 +615,9 @@ def add_snapshot_injury_features(
                 EFFECTS_MEMO,
                 season_of=lambda key: max(key[1]),
                 size_positions=(1,),
+            )
+            prior_memo, priors, first_current_season = _effect_prior_table(
+                memo, cutoffs, targets
             )
     # The same for every horizon: the players' cumulative statistics, sort
     # and lookup indexes, and the All-Star votes, do not depend on the report.
@@ -487,6 +646,9 @@ def add_snapshot_injury_features(
             prepared_all_star,
             effect_cache,
             target_game_ids=targets if target_game_ids is not None else None,
+            priors=priors,
+            horizon=horizon,
+            first_current_season=first_current_season,
         )
         features = features.loc[features.GAME_ID.isin(ids)].copy()
         if target_game_ids is not None:
@@ -495,6 +657,8 @@ def add_snapshot_injury_features(
         parts.append(features)
     if memo is not None:
         memo.flush()
+    if prior_memo is not None:
+        prior_memo.flush()
     injury = pd.concat(parts, ignore_index=True)
     overlap = (set(injury.columns) & set(snapshots.columns)) - set(KEYS)
     if overlap:
