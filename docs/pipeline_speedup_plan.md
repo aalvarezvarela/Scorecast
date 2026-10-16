@@ -433,6 +433,84 @@ with the history memo cold, warm and off.
 | plus a warm history memo, replayed | 201 s |
 | live on this machine, cold memo (empty local caches, as on a runner) | 257 s |
 
+**Progress, 2026-10-16 (tonight only, both pipelines).** The requirement:
+tonight's rows must be exactly what the full build gives them, in one to two
+minutes. Three parity checks, all in `scripts/perf/`:
+
+- `point_in_time_parity.py`: a build that stops at date D gives D's games the
+  full build's values -- the property every prediction and every memo relies
+  on. Column order is ignored (a build stopping before 2020 creates Yahoo's
+  columns at another point; models select by name).
+- the same script with `--limit`: a tonight-only build (`--targets`) against a
+  full build over the same span (target parity).
+- `live_replay_parity.py` / `closing_prediction_parity.py`: a replayed date
+  through the live path, tonight-only against nothing skipped.
+
+Point-in-time fixes (they change data at rounding level, nothing else):
+- 2981074: the legacy referee loop sorted with pandas' unstable date sort, so
+  a date's games came out in an order that depends on later games; ties now go
+  by GAME_ID (`REF_*_TOTAL_PF_*`, up to 4e-14).
+- e9df0f0: referee tendencies summed through a matrix product over the
+  official's whole game list; now left to right over earlier games
+  (`REF_CREW_*`, up to 2e-14).
+Closing point-in-time: EQUAL on 8 dates 2019-2026 (2020-08-17 hits the crew
+coverage guard: a build stopping in the bubble has 2.3% of games without a crew).
+Intermediate point-in-time: EQUAL on 6 dates of 2025-26, dataset and scoring.
+
+Intermediate tonight-only (`create_intermediate_line_df(target_game_ids=...)`,
+d233c06 and after):
+- the snapshot side runs on tonight's ticks only (`_build_snapshot_side`); a
+  schema of the earlier games' (market, book) pairs gives the wide frame the
+  full build's columns, order and dtypes.
+- everything later games read from earlier ones is stored per season
+  (`intermediate_history`, keyed on the code, settings and the season's tick
+  fingerprint): Ridge design columns and closing lines, per-row cross-market
+  gap and consensus moves, per-game line dynamics. The league reference, news
+  beta and Ridge fit over those rows merged with tonight's in the full build's
+  order (`ORDER_COLUMN`).
+- injuries: the effects read earlier games' availability under their own
+  report, so each horizon still runs earlier team-games, from
+  `PersistentRowCache` tables. Report states of earlier snapshots and the
+  shrinkage fit's sums over finished seasons are stored (3577ddf); with those
+  sums only the current season's effects are computed, and each reads its
+  season and the one before, so each horizon runs those two seasons'
+  team-games only (c4c5464). The horizons run in forked processes (b6b0f4a;
+  on this 2+8-core laptop chip they scale ~2.5x, more workers are slower),
+  and the parent computes the market dynamics meanwhile: they read no
+  injury feature (8c4c1b5).
+- finished seasons of pre-game ticks are in the S3 input cache (86190df).
+Target parity: EQUAL on 6 dates of 2025-26, dataset and scoring.
+
+Tonight-only timings at 8c4c1b5, live, on this machine (i7-1365U), memo in
+S3. Warm = the memo already holds this day's entries; a new day's first run
+recomputes the current season's history rows (its inputs gained a day).
+
+| build (2026-04-10 targets unless noted) | seconds |
+|---|---|
+| closing, first run at the commit / warm | 93 / 71 |
+| intermediate, every line-history season, warm | 117-137 |
+| intermediate, first run of a new day (2026-04-09) | 164 |
+| intermediate, first run at a new commit (everything recomputed) | 494 |
+
+Warm intermediate stages: base features 38 s, referees 15 s, injury setup
+(report states, player history, box scores, memo reads) ~30 s, injury
+horizons with the market dynamics alongside ~32 s. Tried and dropped:
+`gc.freeze()` before the fork (no change), 10 workers (slower than 8).
+
+Closing prediction parity (a replayed date through `create_df_to_predict`'s
+prediction mode) first found no rows: the stored odds of the played date and
+its replayed scheduled odds gave each game two rows, which doubled its team
+rows into the incomplete-entries filter. Scheduled odds now replace a stored
+row of the same game (2944ee5); live, the stored odds never hold tonight's
+games, so prediction output is unchanged. Equal on 2026-04-10's 15 games.
+
+Live serving (step 4.4 of `docs/live_intermediate_prediction_plan.md`):
+tonight's injury reports are parsed in memory and read with the store's own
+SQL (`injury_report_aiven.live`; equal to the stored reads at all 192 passed
+snapshots of 2026-04-10), the days just finished are stored daily
+(`scripts/injury_reports/daily_injury_reports.py`), and the prediction job
+serves each intermediate slot its horizon's passed snapshot.
+
 ### Phase 5 — Incremental daily datasets (both pipelines)
 
 With 0.4 passing, a game's row depends only on data before it. Then:
