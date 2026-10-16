@@ -5,11 +5,11 @@ tonight's data, without ever storing a partial game.
 
 ## The rule
 
-**A game is stored only once it is finished.** Tonight's line history, injury
-reports and referee assignments are read into memory for the prediction and
-written the day after, whole. This is the rule the closing-odds tables already
-follow (`get_all_info_for_scheduled_games` scrapes today's odds into
-`scheduled_data`; nothing is inserted).
+**Box scores and complete line history are stored only once a game is finished.**
+Published injury reports are now an explicit exception: they are archived in S3
+and ingested into Aiven before prediction. The database is their prediction
+source at every time cutoff. Referee assignments use a separate S3 cache.
+See [live injury reports](live_injury_reports.md).
 
 ## The design: exact rows for every horizon already passed
 
@@ -117,11 +117,11 @@ require the rows to equal the training dataset's for those games.
 
 1. ~~Base features for scheduled games.~~ Done above.
 2. ~~Referees.~~ Done above.
-3. **Injuries per horizon.** `add_snapshot_injury_features` reads the report
-   timeline from the Aiven injury store, which is loaded season-at-a-time from
-   archived PDFs by a manual script -- nothing updates it daily. Needs (a) a
-   daily ingest of finished days' reports (same finished-only rule) and (b) a
-   live, in-memory parse of today's reports published so far.
+3. **Injuries per horizon: ingestion implemented.** The scheduled-data path
+   synchronizes yesterday's and today's published PDFs into S3 and Aiven.
+   `add_snapshot_injury_features` reads that timeline at each horizon's strict
+   publication cutoff; it does not need an in-memory PDF overlay. Direct live
+   callers must run the synchronizer before building snapshots.
 4. **Market dynamics and ridge move-to-close** over history plus tonight; the
    ridge stays fitted on completed games only.
 5. **Leakage gate and targets**: tonight's rows carry no outcome and must
@@ -149,15 +149,11 @@ tested by replaying past dates.
 
 ## To take care of (deferred, not forgotten)
 
-- [ ] **Daily NBA injury-report ingest.** The Aiven injury store is loaded
-      season-at-a-time from archived PDFs by
-      `scripts/injury_reports/load_injury_reports_to_aiven.py`; nothing updates
-      it daily, so in-season it goes stale and the per-horizon injury features
-      (`INJ_SNAP_*`, market dynamics) lose their recent reports. Add a daily job
-      that stores *finished* days' reports (same rule as line history) --
-      mind that spans are built from contiguous runs of reports per season.
-- [ ] **Live injury reports** for tonight's games: parse the reports published
-      so far into spans in memory, never stored (stage 3 above).
+- [x] **Game-day injury-report ingest.** The prediction scheduled-data path
+      archives new immutable PDFs in S3 and atomically updates affected Aiven
+      game timelines, including empty/unchanged reports and retry receipts.
+- [x] **Live injury-report source.** Aiven supplies current and historical
+      snapshot states; there is no separate live PDF overlay. See stage 3 above.
 - [ ] **Referees on the prediction side** can be missing (assignments are
       released ~9am ET). Missing means NaN, exactly as training masks them
       before release -- never a fallback value.

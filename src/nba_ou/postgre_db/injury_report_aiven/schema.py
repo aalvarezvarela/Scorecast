@@ -201,7 +201,7 @@ INDEX_STATEMENTS: tuple[str, ...] = (
     "ALTER TABLE {schema}.ir_player_alias ALTER COLUMN player_id TYPE BIGINT",
     "CREATE INDEX IF NOT EXISTS ir_report_season_idx "
     "ON {schema}.ir_report (season_year, observed_at)",
-    "CREATE INDEX IF NOT EXISTS ir_game_date_idx " "ON {schema}.ir_game (game_date)",
+    "CREATE INDEX IF NOT EXISTS ir_game_date_idx ON {schema}.ir_game (game_date)",
 )
 
 
@@ -229,7 +229,9 @@ def partition_name(table: str, season_year: int) -> str:
     return f"{table}_{season_year}"
 
 
-def create_season_partition(conn: psycopg.Connection, season_year: int) -> None:
+def create_season_partition(
+    conn: psycopg.Connection, season_year: int, *, commit: bool = True
+) -> None:
     """Create the season partition of both fact tables if absent."""
     # Partition bounds are DDL and cannot be parameterised, so the (integer)
     # season is embedded as a literal.
@@ -247,7 +249,8 @@ def create_season_partition(conn: psycopg.Connection, season_year: int) -> None:
                     sql.Literal(int(season_year)),
                 )
             )
-    conn.commit()
+    if commit:
+        conn.commit()
 
 
 def drop_schema(conn: psycopg.Connection) -> None:

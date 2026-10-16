@@ -167,19 +167,24 @@ def test_a_line_error_model_is_unaffected_by_the_spread_branches(captured_upload
         PREDICTION_TARGET_SPREAD_ERROR,
     ],
 )
-def test_predictions_continue_with_nan_referee_features(captured_uploads, target):
-    referee_feature = "REF_CREW_FTA_TENDENCY_BEFORE"
-    features = [referee_feature, "FEAT_B"]
-    training = _frame(32).rename(columns={"FEAT_A": referee_feature})
+@pytest.mark.parametrize(
+    "missing_feature",
+    ["REF_CREW_FTA_TENDENCY_BEFORE", "N_REPORT_OUT_PLAYERS_BEFORE_TEAM_HOME"],
+)
+def test_predictions_continue_with_nan_live_features(
+    captured_uploads, target, missing_feature
+):
+    features = [missing_feature, "FEAT_B"]
+    training = _frame(32).rename(columns={"FEAT_A": missing_feature})
     model = XGBRegressor(n_estimators=6, max_depth=2, verbosity=0)
-    model.fit(training[features], training[referee_feature] * 2 - training.FEAT_B)
-    frame = _frame().rename(columns={"FEAT_A": referee_feature})
-    frame[referee_feature] = np.nan
+    model.fit(training[features], training[missing_feature] * 2 - training.FEAT_B)
+    frame = _frame().rename(columns={"FEAT_A": missing_feature})
+    frame[missing_feature] = np.nan
 
     result = load_and_predict_model_for_nba_games(
         df=frame,
         regressor=model,
-        model_name="missing_referees",
+        model_name="missing_live_features",
         model_type="test",
         model_version="test",
         required_features=features,
@@ -190,5 +195,5 @@ def test_predictions_continue_with_nan_referee_features(captured_uploads, target
 
     assert len(result) == len(frame)
     assert result.NA_COLUMNS_COUNT.eq(1).all()
-    assert result.NA_COLUMNS_NAMES.eq(referee_feature).all()
+    assert result.NA_COLUMNS_NAMES.eq(missing_feature).all()
     assert len(captured_uploads[0]) == len(frame)

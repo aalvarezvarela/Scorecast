@@ -95,7 +95,9 @@ def test_report_states_are_partitioned_by_snapshot_horizon(monkeypatch):
     )
     monkeypatch.setattr(injuries, "connect_nba_db", lambda *_: nullcontext(object()))
     monkeypatch.setattr(
-        injuries.fetch, "report_state_at_snapshots", lambda *_: (statuses, filings, ages)
+        injuries.fetch,
+        "report_state_at_snapshots",
+        lambda *_: (statuses, filings, ages),
     )
     monkeypatch.setattr(
         injuries.fetch,
@@ -114,7 +116,10 @@ def test_report_states_are_partitioned_by_snapshot_horizon(monkeypatch):
     assert states[120].report_age["report_age_minutes"].tolist() == [15.0]
 
 
-def test_unfiled_side_has_nan_injury_features_even_with_legacy_values(monkeypatch):
+@pytest.mark.parametrize("home_filed", [True, False])
+def test_unfiled_side_has_nan_injury_features_even_with_legacy_values(
+    monkeypatch, home_filed
+):
     game = "g1"
     home, away = "h", "a"
     team = pd.DataFrame(
@@ -137,7 +142,7 @@ def test_unfiled_side_has_nan_injury_features_even_with_legacy_values(monkeypatc
     )
     state = InjuryReportState.empty()
     state.filings = pd.DataFrame(
-        {"game_id": [game], "team_id": [home], "submitted": [True]}
+        {"game_id": [game], "team_id": [home], "submitted": [home_filed]}
     )
 
     def fake_player_features(team_frame, *_args, **_kwargs):
@@ -149,7 +154,7 @@ def test_unfiled_side_has_nan_injury_features_even_with_legacy_values(monkeypatc
 
     def fake_report_features(team_frame, *_args):
         result = team_frame.copy()
-        result["INJURY_REPORT_COVERED_BEFORE"] = [1, 0]
+        result["INJURY_REPORT_COVERED_BEFORE"] = [int(home_filed), 0]
         result["LAST_STATUS_REPORT_AGE_MIN_BEFORE"] = [20.0, 20.0]
         return result
 
@@ -168,9 +173,13 @@ def test_unfiled_side_has_nan_injury_features_even_with_legacy_values(monkeypatc
     result = injuries._one_horizon(
         base, context, state, pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), {game}
     ).iloc[0]
-    assert result["INJURY_REPORT_COVERED_BEFORE_TEAM_HOME"] == 1
+    assert result["INJURY_REPORT_COVERED_BEFORE_TEAM_HOME"] == int(home_filed)
     assert result["INJURY_REPORT_COVERED_BEFORE_TEAM_AWAY"] == 0
-    assert result["TOP1_INJURED_PLAYER_PTS_BEFORE_TEAM_HOME"] == 10.0
+    if home_filed:
+        assert result["TOP1_INJURED_PLAYER_PTS_BEFORE_TEAM_HOME"] == 10.0
+    else:
+        assert pd.isna(result["TOP1_INJURED_PLAYER_PTS_BEFORE_TEAM_HOME"])
+        assert pd.isna(result["LAST_STATUS_REPORT_AGE_MIN_BEFORE_TEAM_HOME"])
     assert pd.isna(result["TOP1_INJURED_PLAYER_PTS_BEFORE_TEAM_AWAY"])
     assert pd.isna(result["LAST_STATUS_REPORT_AGE_MIN_BEFORE_TEAM_AWAY"])
     assert pd.isna(result["INJ_FRESH_OUT_PTS_SUM_BEFORE"])

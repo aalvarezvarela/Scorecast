@@ -361,7 +361,9 @@ def load_rosters(conn: psycopg.Connection, season_years: list[int]) -> pd.DataFr
         query, conn, params={"seasons": sorted(set(season_years))}
     )
     if frame.empty:
-        return frame.assign(norm_name=pd.Series(dtype=str))
+        return frame.assign(
+            norm_name=pd.Series(dtype=str), norm_initial=pd.Series(dtype=str)
+        )
 
     family = frame["familyname"].fillna("").astype(str)
     given = frame["firstname"].fillna("").astype(str)

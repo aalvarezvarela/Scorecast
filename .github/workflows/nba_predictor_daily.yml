@@ -34,6 +34,7 @@ jobs:
             DB_ENV: supabase
             SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
             SUPABASE_DB_PASSWORD: ${{ secrets.SUPABASE_DB_PASSWORD }}
+            AIVEN_DB_URL: ${{ secrets.AIVEN_DB_URL }}
             ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
             S3_AWS_PROFILE: ""
 

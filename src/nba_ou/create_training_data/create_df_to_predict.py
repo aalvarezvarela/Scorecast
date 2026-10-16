@@ -763,7 +763,23 @@ def create_df_to_predict(
         print("Loading last injury reports before tipoff...")
         if injury_report_state is None:
             # Every loaded season: history features need more than this window.
-            injury_report_state = load_injury_report_state()
+            injury_report_state = (
+                scheduled_data.get("injury_report_state") if todays_prediction else None
+            )
+            if injury_report_state is None:
+                if todays_prediction:
+                    from nba_ou.data_processing.injury_status.report_state import (
+                        load_prediction_report_state,
+                    )
+
+                    injury_report_state = load_prediction_report_state(
+                        scheduled_games.GAME_ID.astype(str).tolist(),
+                        scheduled_data.get(
+                            "injury_as_of_utc", pd.Timestamp.now(tz="UTC")
+                        ),
+                    )
+                else:
+                    injury_report_state = load_injury_report_state()
         overrides = report_out_overrides(injury_report_state)
         questionable_sets = report_questionable_sets(injury_report_state)
         print(f"✓ {len(injury_report_state.covered):,} team-games covered by a report")
