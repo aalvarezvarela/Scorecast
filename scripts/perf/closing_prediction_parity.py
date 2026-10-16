@@ -14,12 +14,15 @@ the date's rows exactly. Read-only (the history memo aside).
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
-sys.path[:0] = [str(ROOT / "src"), str(Path(__file__).parent)]
+#: The checkout whose code is built, e.g. a worktree pinned to one commit.
+CODE_ROOT = Path(os.environ.get("NBA_OU_CODE_ROOT", ROOT)).resolve()
+sys.path[:0] = [str(CODE_ROOT / "src"), str(Path(__file__).parent)]
 
 import pandas as pd  # noqa: E402
 from compare_builds import compare  # noqa: E402

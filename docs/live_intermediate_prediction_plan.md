@@ -117,30 +117,29 @@ require the rows to equal the training dataset's for those games.
 
 1. ~~Base features for scheduled games.~~ Done above.
 2. ~~Referees.~~ Done above.
-3. **Injuries per horizon.** `add_snapshot_injury_features` reads the report
-   timeline from the Aiven injury store, which is loaded season-at-a-time from
-   archived PDFs by a manual script -- nothing updates it daily. Needs (a) a
-   daily ingest of finished days' reports (same finished-only rule) and (b) a
-   live, in-memory parse of today's reports published so far.
-4. **Market dynamics and ridge move-to-close** over history plus tonight; the
-   ridge stays fitted on completed games only.
-5. **Leakage gate and targets**: tonight's rows carry no outcome and must
-   survive the target step without being dropped.
-6. **Prediction job**: build the intermediate frame for passed horizons, select
-   each slot's row, add `"intermediate_line"` to
-   `nba_ou.prediction.prediction.SERVABLE_DATASET_TYPES`, add the active flag
-   and the recorded fields above; run every 30-60 minutes on game days.
-   - **Keep only passed horizons** (`TIPOFF_UTC - TIME_TO_MATCH_MIN <= as_of`).
-     The builder also emits rows for horizons still ahead; those are built from
-     the latest ticks so far, not from the real snapshot, and must never be
-     predicted from or recorded.
-   - **Runtime.** A live build recomputes the whole season's history (base
-     features, prior-game line dynamics, the walk-forward ridge) to produce a
-     handful of rows -- too slow to repeat every 30 minutes. Cache the
-     history-only parts once a day (they cannot change until tonight's games
-     are stored) and rebuild only tonight's rows per run; the replay test
-     guards that the cached path still matches.
-7. **Parity test** end to end on replayed dates.
+3. ~~Injuries per horizon~~ -- done 2026-10-16 (37dcac3, 2ff222c):
+   (a) `scripts/injury_reports/daily_injury_reports.py` stores the days just
+   finished (download to the S3 archive, then only those games' spans rebuilt,
+   `ingest_season(write_game_dates=...)`); in `update_database_daily.yml`.
+   (b) `injury_report_aiven.live` parses tonight's reports published so far
+   (from the day before: most spans start then) with the ingest's own code in
+   a dry run, and reads them with the store's own SQL, tonight's rows passed as
+   arrays. `check_live_injury_reports.py`: 2026-04-10 as of 22:00 UTC, every
+   passed snapshot's status, filing and report age equals the stored read.
+4. ~~Market dynamics and ridge~~ -- done (d233c06): fitted over the stored
+   history rows merged with tonight's in the full build's order.
+5. ~~Leakage gate and targets~~ -- tonight's rows pass (NaN outcomes kept).
+6. ~~Prediction job~~ -- done (4de9d8e): `prediction.intermediate_frame`
+   builds tonight's rows tonight-only and keeps the passed snapshots; an
+   intermediate slot predicts the rows of its own horizon
+   (`load_registry_model_and_predict(frames=...)`). Runtime: the tonight-only
+   mode (`create_intermediate_line_df(target_game_ids=...)`) computes only
+   tonight's rows; every earlier game comes from per-season stored history
+   (`intermediate_history`, `PersistentRowCache`), see
+   `docs/pipeline_speedup_plan.md`.
+7. ~~Parity test~~ -- `point_in_time_parity.py --kind intermediate --targets`
+   (tonight-only build == full build rows, dataset and scoring) and
+   `live_replay_parity.py` (live tonight-only == live full, replayed date).
 8. **Daily intermediate refit** (`docs/model_registry_reorg_plan.md` section 5):
    rebuild from the store, which now only ever holds finished games.
 
@@ -149,14 +148,14 @@ tested by replaying past dates.
 
 ## To take care of (deferred, not forgotten)
 
-- [ ] **Daily NBA injury-report ingest.** The Aiven injury store is loaded
+- [x] **Daily NBA injury-report ingest.** (2ff222c) The Aiven injury store is loaded
       season-at-a-time from archived PDFs by
       `scripts/injury_reports/load_injury_reports_to_aiven.py`; nothing updates
       it daily, so in-season it goes stale and the per-horizon injury features
       (`INJ_SNAP_*`, market dynamics) lose their recent reports. Add a daily job
       that stores *finished* days' reports (same rule as line history) --
       mind that spans are built from contiguous runs of reports per season.
-- [ ] **Live injury reports** for tonight's games: parse the reports published
+- [x] **Live injury reports** (37dcac3) for tonight's games: parse the reports published
       so far into spans in memory, never stored (stage 3 above).
 - [ ] **Referees on the prediction side** can be missing (assignments are
       released ~9am ET). Missing means NaN, exactly as training masks them
