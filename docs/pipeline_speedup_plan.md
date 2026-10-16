@@ -504,6 +504,17 @@ rows into the incomplete-entries filter. Scheduled odds now replace a stored
 row of the same game (2944ee5); live, the stored odds never hold tonight's
 games, so prediction output is unchanged. Equal on 2026-04-10's 15 games.
 
+Acceptance at 2944ee5 (`scripts/perf/run_tonight_acceptance.sh`, output in
+`artifacts/perf/accept_2944ee5/`), every comparison exact unless noted:
+closing full build against 5a29ad9 equal at rtol 1e-12, exact differences in
+the 16 referee-derived columns of the two point-in-time fixes only (<= 1.1e-13);
+closing point-in-time and tonight-only parity equal on 9 dates 2019-2026;
+closing prediction replay equal (2026-04-10); intermediate 2025-26
+tonight-only parity and point-in-time equal on 4 dates, dataset and scoring;
+live replay equal (2026-03-01, dataset and scoring); intermediate tonight-only
+parity over every line-history season equal on 2024-04-16 and 2026-04-10;
+2,476 tests pass.
+
 Live serving (step 4.4 of `docs/live_intermediate_prediction_plan.md`):
 tonight's injury reports are parsed in memory and read with the store's own
 SQL (`injury_report_aiven.live`; equal to the stored reads at all 192 passed
