@@ -58,6 +58,9 @@ def main() -> int:
         return frame, layer_inputs
 
     target, layer_inputs = build(tonight)
+    if target.empty:
+        print("RESULT: DIFFERENT (the tonight-only build has no rows for the date)")
+        return 1
     everything = sorted(set(layer_inputs["GAME_ID"].astype(str)) | set(tonight))
     full, _ = build(everything)
     full = full[full["GAME_ID"].astype(str).isin(set(tonight))]
