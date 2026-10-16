@@ -3,6 +3,10 @@
 from __future__ import annotations
 
 import hashlib
+import multiprocessing
+import os
+from concurrent.futures import ProcessPoolExecutor
+from dataclasses import dataclass
 
 import numpy as np
 import pandas as pd
@@ -411,6 +415,154 @@ def _one_horizon(
     return games[["GAME_ID", *generated]]
 
 
+@dataclass
+class _HorizonInputs:
+    """What every horizon of ``add_snapshot_injury_features`` reads."""
+
+    base: pd.DataFrame
+    context: BaseInjuryContext
+    states: dict[int, InjuryReportState]
+    cutoffs: pd.DataFrame
+    injuries: pd.DataFrame
+    box: PreparedBoxHistory
+    voting: pd.DataFrame
+    player_rows: RowCache | None
+    all_star_rows: RowCache | None
+    prepared_players: PreparedPlayerHistory
+    prepared_all_star: PreparedAllStarInputs
+    effect_cache: RowCache | None
+    targets: set[str] | None
+    priors: dict | None
+    first_current_season: int | None
+
+
+def _horizon_features(inputs: _HorizonInputs, horizon: int) -> pd.DataFrame:
+    """One horizon's injury rows, for the games with a snapshot there."""
+    cutoffs = inputs.cutoffs
+    ids = set(cutoffs.loc[cutoffs.snapshot_minutes.eq(horizon), "game_id"])
+    features = _one_horizon(
+        inputs.base,
+        inputs.context,
+        inputs.states[horizon],
+        inputs.injuries,
+        inputs.box,
+        inputs.voting,
+        ids,
+        inputs.player_rows,
+        inputs.all_star_rows,
+        inputs.prepared_players,
+        inputs.prepared_all_star,
+        inputs.effect_cache,
+        target_game_ids=inputs.targets,
+        priors=inputs.priors,
+        horizon=horizon,
+        first_current_season=inputs.first_current_season,
+    )
+    features = features.loc[features.GAME_ID.isin(ids)].copy()
+    if inputs.targets is not None:
+        features = features.loc[features.GAME_ID.astype(str).isin(inputs.targets)]
+    features["TIME_TO_MATCH_MIN"] = horizon
+    return features
+
+
+def _horizon_workers(n_horizons: int) -> int:
+    """Processes for the horizons: ``NBA_OU_INJURY_WORKERS``, else up to 8.
+
+    One core is left free; 1 (or fork being unavailable) runs them in turn.
+    """
+    if "fork" not in multiprocessing.get_all_start_methods():
+        return 1
+    configured = os.environ.get("NBA_OU_INJURY_WORKERS")
+    if configured:
+        return max(1, min(int(configured), n_horizons))
+    cores = len(os.sched_getaffinity(0)) if hasattr(os, "sched_getaffinity") else 1
+    return max(1, min(8, cores - 1, n_horizons))
+
+
+#: Past this, the forked horizons are abandoned and run in turn.
+FORKED_TIMEOUT_SECONDS = 600
+
+#: The forked workers' inputs: set in the parent just before the fork, so
+#: every worker reads them from the copied memory instead of a pickle.
+_FORKED_INPUTS: _HorizonInputs | None = None
+
+
+def _forked_horizon(horizon: int):
+    inputs = _FORKED_INPUTS
+    priors_before = set(inputs.priors) if inputs.priors is not None else set()
+    features = _horizon_features(inputs, horizon)
+    added = {
+        name: cache.added_entries()
+        for name, cache in (
+            ("players", inputs.player_rows),
+            ("effects", inputs.effect_cache),
+        )
+        if isinstance(cache, history_memo.PersistentRowCache)
+    }
+    priors = (
+        {k: v for k, v in inputs.priors.items() if k not in priors_before}
+        if inputs.priors is not None
+        else {}
+    )
+    return features, added, priors
+
+
+def _horizons_in_processes(
+    inputs: _HorizonInputs,
+    memo: history_memo.HistoryMemo,
+    workers: int,
+    progress: str | None,
+) -> list[pd.DataFrame]:
+    """The horizons in forked processes, each the same computation as in turn.
+
+    Each worker starts from the parent's caches and returns the season
+    entries and shrinkage sums it added; the parent merges them, so the memo
+    gains what a sequential build would have stored. Horizons are
+    independent: a cached row is the row its key computes, whichever
+    process computed it first.
+    """
+    global _FORKED_INPUTS
+    memo.wait()
+    _FORKED_INPUTS = inputs
+    horizons = list(inputs.states)
+    pool = ProcessPoolExecutor(
+        max_workers=workers, mp_context=multiprocessing.get_context("fork")
+    )
+    try:
+        results = list(
+            tqdm(
+                pool.map(_forked_horizon, horizons, timeout=FORKED_TIMEOUT_SECONDS),
+                total=len(horizons),
+                desc=progress,
+                unit="snapshot",
+                disable=progress is None,
+            )
+        )
+    except Exception as exc:  # noqa: BLE001 -- a stuck or broken worker
+        # A fork of a threaded process can deadlock; the horizons then run in
+        # turn, which costs time, never a value.
+        print(f"Forked injury horizons failed ({exc!r}); running them in turn")
+        for process in list(getattr(pool, "_processes", {}).values()):
+            process.kill()
+        pool.shutdown(wait=False, cancel_futures=True)
+        return [_horizon_features(inputs, horizon) for horizon in horizons]
+    finally:
+        _FORKED_INPUTS = None
+    pool.shutdown()
+    parts = []
+    for features, added, priors in results:
+        for name, cache in (
+            ("players", inputs.player_rows),
+            ("effects", inputs.effect_cache),
+        ):
+            if name in added:
+                cache.merge_entries(added[name])
+        if inputs.priors is not None:
+            inputs.priors.update(priors)
+        parts.append(features)
+    return parts
+
+
 #: Memo tables of the tonight-only mode (``add_snapshot_injury_features``).
 PLAYER_ROWS_MEMO = "intermediate_injury_player_rows/" + "-".join(PLAYER_STATS)
 EFFECTS_MEMO = "intermediate_injury_effects"
@@ -623,38 +775,37 @@ def add_snapshot_injury_features(
     # and lookup indexes, and the All-Star votes, do not depend on the report.
     prepared_players = prepare_player_history(context.players.copy(), PLAYER_STATS)
     prepared_all_star = prepare_all_star_inputs(context.players, voting)
-    parts = []
-    for horizon, state in tqdm(
-        states.items(),
-        total=len(states),
-        desc=progress,
-        unit="snapshot",
-        disable=progress is None,
-    ):
-        ids = set(cutoffs.loc[cutoffs.snapshot_minutes.eq(horizon), "game_id"])
-        features = _one_horizon(
-            base,
-            context,
-            state,
-            injuries,
-            box,
-            voting,
-            ids,
-            player_rows,
-            all_star_rows,
-            prepared_players,
-            prepared_all_star,
-            effect_cache,
-            target_game_ids=targets if target_game_ids is not None else None,
-            priors=priors,
-            horizon=horizon,
-            first_current_season=first_current_season,
-        )
-        features = features.loc[features.GAME_ID.isin(ids)].copy()
-        if target_game_ids is not None:
-            features = features.loc[features.GAME_ID.astype(str).isin(targets)]
-        features["TIME_TO_MATCH_MIN"] = horizon
-        parts.append(features)
+    inputs = _HorizonInputs(
+        base=base,
+        context=context,
+        states=states,
+        cutoffs=cutoffs,
+        injuries=injuries,
+        box=box,
+        voting=voting,
+        player_rows=player_rows,
+        all_star_rows=all_star_rows,
+        prepared_players=prepared_players,
+        prepared_all_star=prepared_all_star,
+        effect_cache=effect_cache,
+        targets=targets if target_game_ids is not None else None,
+        priors=priors,
+        first_current_season=first_current_season,
+    )
+    workers = _horizon_workers(len(states)) if memo is not None else 1
+    if workers > 1:
+        parts = _horizons_in_processes(inputs, memo, workers, progress)
+    else:
+        parts = [
+            _horizon_features(inputs, horizon)
+            for horizon in tqdm(
+                states,
+                total=len(states),
+                desc=progress,
+                unit="snapshot",
+                disable=progress is None,
+            )
+        ]
     if memo is not None:
         memo.flush()
     if prior_memo is not None:

@@ -196,6 +196,15 @@ class HistoryMemo:
             self._pending[key] = pool.submit(self.load, *key)
         pool.shutdown(wait=False)
 
+    def wait(self) -> None:
+        """Finish every prefetch, so the tables are in memory before a fork.
+
+        A forked process has none of the download threads: a table still
+        pending in it would never arrive.
+        """
+        for key in list(self._pending):
+            self.table(*key)
+
     def table(self, name: str, season) -> dict | None:
         """The season's entries as a dict to read and add to; None if unusable.
 
@@ -286,6 +295,8 @@ class _SeasonRows:
         self.memo, self.name = memo, name
         self.season_of, self.persist = season_of, persist
         self.local: dict = {}
+        #: Entries this process added to the season tables, by season.
+        self.added: dict[int, dict] = {}
 
     def _table(self, key):
         if not self.persist(key):
@@ -302,7 +313,11 @@ class _SeasonRows:
 
     def __setitem__(self, key, value) -> None:
         table = self._table(key)
-        (self.local if table is None else table)[key] = value
+        if table is None:
+            self.local[key] = value
+        else:
+            table[key] = value
+            self.added.setdefault(int(self.season_of(key)), {})[key] = value
 
 
 class PersistentRowCache:
@@ -333,6 +348,17 @@ class PersistentRowCache:
         self.misses = 0
         self._size_positions = size_positions
         self._signature = None
+
+    def added_entries(self) -> dict[int, dict]:
+        """The season entries this process computed (for a parent to merge)."""
+        return self.rows.added
+
+    def merge_entries(self, entries: dict[int, dict]) -> None:
+        """Add entries another process computed under the same memo."""
+        for season, rows in entries.items():
+            table = self.rows.memo.table(self.rows.name, season)
+            if table is not None:
+                table.update(rows)
 
     def bind(self, signature: tuple) -> None:
         kept = tuple(
