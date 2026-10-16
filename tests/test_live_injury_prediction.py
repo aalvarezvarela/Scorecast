@@ -101,6 +101,37 @@ def test_schedule_syncs_before_reading_aiven_and_never_saves_locally(
     assert not destination.exists()
 
 
+def test_scheduled_out_sets_never_include_earlier_games(monkeypatch, scheduled):
+    # The prediction state carries every covered game since the reports
+    # began. Merged into the realized-absence history, an earlier game's
+    # pre-game report would replace who actually missed it.
+    state = report_state("out")
+    earlier = "0022500999"
+    state = states.InjuryReportState(
+        statuses=pd.concat(
+            [state.statuses, state.statuses.assign(game_id=earlier, player_id="1")],
+            ignore_index=True,
+        ),
+        filings=pd.concat(
+            [state.filings, state.filings.assign(game_id=earlier)], ignore_index=True
+        ),
+        report_age=state.report_age,
+        status_events=state.status_events,
+        listed_pairs=state.listed_pairs,
+    )
+    monkeypatch.setattr(
+        scheduled_module, "synchronize_injury_reports", lambda *a, **kw: None
+    )
+    monkeypatch.setattr(
+        scheduled_module, "load_prediction_report_state", lambda *a: state
+    )
+    result = scheduled_module.get_all_info_for_scheduled_games(
+        "2026-10-16", "unused", headless=True
+    )
+    assert result["injury_dict_scheduled"] == {GID: {HOME: ["2544"], AWAY: []}}
+    assert (earlier, HOME) in result["injury_report_state"].covered
+
+
 def test_refresh_failure_uses_previous_aiven_state(monkeypatch, scheduled, caplog):
     def fail(*a, **kw):
         raise OSError("NBA unavailable")

@@ -87,6 +87,7 @@ class MemoryConnection:
             "labels": {},
             "spans": pd.DataFrame(columns=SPAN_COLUMNS),
             "filings": pd.DataFrame(columns=FILING_COLUMNS),
+            "unresolved": [],
         }
         self.fail_insert = False
         self.calls = []
@@ -254,6 +255,12 @@ def conn(monkeypatch):
     monkeypatch.setattr(live.load, "upsert_reasons", reasons)
     monkeypatch.setattr(live.load, "insert_spans", spans)
     monkeypatch.setattr(live.load, "insert_filing_spans", filings)
+
+    def unresolved(conn, rows, *, commit):
+        assert not commit
+        conn.state["unresolved"].extend(rows)
+
+    monkeypatch.setattr(live.load, "record_unresolved", unresolved)
     monkeypatch.setattr(
         live.documents, "mark_ingested", lambda c, urls: c.state["done"].update(urls)
     )
@@ -335,11 +342,31 @@ def test_exact_nba_name_resolves_before_first_box_score(conn):
     assert conn.state["spans"].player_id.tolist() == [2544]
 
 
-def test_unknown_player_does_not_mark_report_complete(conn):
-    with pytest.raises(ValueError, match="Unresolved live injury players"):
-        ingest(conn, report("14:00", name="Unknown, Nobody"))
-    assert not conn.state["done"]
-    assert not conn.state["reports"]
+def test_unknown_player_is_recorded_and_does_not_block_the_report(conn):
+    # As in the historical ingest: the name is dropped and recorded, and the
+    # report (filings included) still completes.
+    ingest(conn, report("14:00", name="Unknown, Nobody"))
+    assert len(conn.state["reports"]) == len(conn.state["done"]) == 1
+    assert conn.state["spans"].empty
+    assert not conn.state["filings"].empty
+    assert [r["raw_name"] for r in conn.state["unresolved"]] == ["Unknown, Nobody"]
+
+
+def test_unknown_player_does_not_drop_resolved_players():
+    rows = pd.DataFrame(
+        {
+            "game_id": [GAME, GAME],
+            "raw_team": ["Boston Celtics"] * 2,
+            "raw_name": ["James, LeBron", "Unknown, Nobody"],
+            "observed_at": [pd.Timestamp("2026-10-16T14:00Z")] * 2,
+            "nba_team_id": [1610612738] * 2,
+            "season_year": [2026] * 2,
+        }
+    )
+    report = live.R.ResolutionReport()
+    resolved = live.resolve_live_players(rows, ROSTER.iloc[:0], report)
+    assert resolved.player_id.tolist() == [2544]
+    assert [r["raw_name"] for r in report.unresolved] == ["Unknown, Nobody"]
 
 
 @pytest.mark.parametrize("vanished,nys", [(True, False), (False, True)])

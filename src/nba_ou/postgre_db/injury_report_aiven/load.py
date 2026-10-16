@@ -243,7 +243,9 @@ def insert_filing_spans(
     return len(rows)
 
 
-def record_unresolved(conn: psycopg.Connection, unresolved: list[dict]) -> int:
+def record_unresolved(
+    conn: psycopg.Connection, unresolved: list[dict], *, commit: bool = True
+) -> int:
     """Persist every name that did not resolve, with an occurrence count."""
     if not unresolved:
         return 0
@@ -269,7 +271,8 @@ def record_unresolved(conn: psycopg.Connection, unresolved: list[dict]) -> int:
                 ),
                 (name, team, season, n),
             )
-    conn.commit()
+    if commit:
+        conn.commit()
     return len(counts)
 
 

@@ -52,8 +52,11 @@ missing objects. A failed S3 write prevents that document from being ingested.
 `postgre_db.injury_report_aiven.live_ingest` resolves upcoming games from the
 schedule, supplemented by the fresh scoreboard. Player matching uses historical
 team rosters followed by unique exact names from the NBA player catalog for
-new signings and opening-night rosters. Unknown names or games fail the batch
-and leave receipts pending; they are not silently discarded.
+new signings and opening-night rosters. A name neither route resolves is
+dropped, logged and recorded in `ir_unresolved` in the same transaction, as the
+historical ingest does: nba_api's bundled catalog lags each draft class, and one
+unknown rookie must not block every other player's status. Unknown games still
+fail the batch and leave receipts pending.
 
 For affected games, existing compressed intervals are expanded at their original
 report instants and combined with the new parsed observations. Completed PDFs

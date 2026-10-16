@@ -358,8 +358,16 @@ def get_all_info_for_scheduled_games(
     injury_report_state = load_prediction_report_state(
         scheduled_games.GAME_ID.astype(str).tolist(), injury_as_of
     )
+    # Tonight's games only. The state also holds every earlier covered game,
+    # and this dict is merged into the realized-absence history, which must
+    # keep what actually happened in those games, not their pre-game reports.
+    tonight_ids = set(scheduled_games.GAME_ID.astype(str))
     injury_dict_scheduled = nested_status_dict(
-        report_out_overrides(injury_report_state)
+        {
+            key: players
+            for key, players in report_out_overrides(injury_report_state).items()
+            if key[0] in tonight_ids
+        }
     )
     # Intermediate training keeps unknown availability as NaN, so it must not
     # inherit the closing job's filing requirement. Keep diagnostics separate

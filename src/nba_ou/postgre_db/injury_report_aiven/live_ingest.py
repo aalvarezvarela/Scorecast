@@ -7,6 +7,8 @@ PDFs are never downloaded or parsed again, including for late-arriving reports.
 
 from __future__ import annotations
 
+import logging
+
 import pandas as pd
 from nba_api.stats.static import players as nba_players
 
@@ -24,9 +26,21 @@ from nba_ou.postgre_db.injury_report_aiven.schema import create_season_partition
 from nba_ou.postgre_db.injury_report_aiven.spans import build_filing_spans, build_spans
 from nba_ou.postgre_db.row_order import read_sql_canonical
 
+log = logging.getLogger(__name__)
 
-def resolve_live_players(rows: pd.DataFrame, rosters: pd.DataFrame) -> pd.DataFrame:
-    """Use historical team rosters, then unique exact NBA names for new signings."""
+
+def resolve_live_players(
+    rows: pd.DataFrame,
+    rosters: pd.DataFrame,
+    report: R.ResolutionReport | None = None,
+) -> pd.DataFrame:
+    """Use historical team rosters, then unique exact NBA names for new signings.
+
+    Names neither route resolves are dropped and appended to
+    ``report.unresolved``, as the historical ingest does. One unknown name (a
+    rookie missing from nba_api's bundled player list, say) must not block
+    every other player's report.
+    """
     rows, rosters = rows.copy(), rosters.copy()
     rows["nba_team_id"] = rows.nba_team_id.astype(str)
     rosters["nba_team_id"] = rosters.nba_team_id.astype(str)
@@ -51,11 +65,20 @@ def resolve_live_players(rows: pd.DataFrame, rosters: pd.DataFrame) -> pd.DataFr
         pending["norm_name"] = pending.raw_name.map(R.normalise_name)
         pending = pending.merge(names, on="norm_name", how="left")
         pending["player_id"] = pending.player_id.fillna(pending.norm_name.map(aliases))
-        if pending.player_id.isna().any():
-            missing = (
-                pending.loc[pending.player_id.isna(), "raw_name"].unique().tolist()
+        unknown = pending.player_id.isna()
+        if unknown.any():
+            if report is not None:
+                report.unresolved.extend(
+                    pending.loc[unknown]
+                    .reindex(columns=["raw_name", "raw_team", "season_year"])
+                    .to_dict("records")
+                )
+            log.warning(
+                "Unresolved live injury players dropped: %s",
+                sorted(pending.loc[unknown, "raw_name"].unique()),
             )
-            raise ValueError(f"Unresolved live injury players: {missing}")
+            pending = pending.loc[~unknown].copy()
+            pending["player_id"] = pending.player_id.astype("int64")
         pending["method"] = "nba_exact_name"
         resolved = pd.concat([resolved, pending], ignore_index=True)
     return resolved
@@ -236,8 +259,10 @@ def ingest_live_reports(
             )
             if observations.nba_team_id.isna().any():
                 raise ValueError("Unknown injury report team")
-            observations = resolve_live_players(observations, rosters)
+            unresolved = R.ResolutionReport()
+            observations = resolve_live_players(observations, rosters, unresolved)
             observations["team_id"] = observations.raw_team.map(team_map)
+            load.record_unresolved(conn, unresolved.unresolved, commit=False)
         # New reports can remove a game entirely; include existing pre-game
         # timelines affected by any newly inserted publication time too.
         with conn.cursor() as cur:
