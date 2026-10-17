@@ -20,8 +20,7 @@ random_state: 16
 data:
   csv_path: data/train_data/intermediate_line_data_2_5_20261016.parquet
   data_version: 20261016-intermediate-2.5-defect-fixes
-  expected_checksum: 'UNPINNED: run scripts/prepare_retrain_2_5_campaigns.py --pin after the intermediate
-    build finishes'
+  expected_checksum: 'sha256:5a0f4798828b7018'
   dataset_type: intermediate_line
   snapshot_minutes: 1080
   scoring_csv_path: data/train_data/intermediate_line_data_2_5_20261016_scoring.parquet
