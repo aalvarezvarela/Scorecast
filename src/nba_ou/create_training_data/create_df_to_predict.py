@@ -312,7 +312,11 @@ def _history_memo_for(targets, *, games, players, odds, injuries, report_state):
             inputs[f"report_{name}"] = (frame, game_id_column(frame))
     max_season = min(target_seasons) - 1
     digests = memo.season_input_digests(inputs, range(2000, max_season + 1))
-    history_memo = memo.HistoryMemo(backend, digests, max_season)
+    # Every input reaches the memoised rows through this builder, so its
+    # closure is their code.
+    history_memo = memo.HistoryMemo(
+        backend, digests, max_season, code=memo.code_key(__name__)
+    )
     history_memo.prefetch(
         [
             player_history_memo_name(list(PLAYER_HISTORY_STATS)),

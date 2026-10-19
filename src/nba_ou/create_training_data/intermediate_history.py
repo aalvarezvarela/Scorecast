@@ -164,8 +164,8 @@ def load_season_histories(
 ) -> dict[int, SeasonSnapshotHistory]:
     """Every season's entry: from the memo where its digest matches, else built.
 
-    A season's digest covers the code (the memo's own key), ``settings`` and
-    the server fingerprint of its ticks. Without a memo store every season is
+    A season's digest covers ``settings`` and the server fingerprint of its
+    ticks; the memo's code key covers the builder's code. Without a memo store every season is
     built, which gives the same values, only slower.
     """
     digests = {
@@ -176,7 +176,13 @@ def load_season_histories(
     }
     backend = memo.default_backend()
     history_memo = (
-        memo.HistoryMemo(backend, digests, max(seasons))
+        memo.HistoryMemo(
+            backend,
+            digests,
+            max(seasons),
+            # ``build_side`` and the ticks come from the builder.
+            code=memo.code_key(memo.INTERMEDIATE_BUILDER),
+        )
         if backend is not None
         else None
     )
