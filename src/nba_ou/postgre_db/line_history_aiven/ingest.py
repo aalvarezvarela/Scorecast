@@ -35,6 +35,7 @@ from nba_ou.postgre_db.odds_sportsbook_line_history.process_sportsbook_line_hist
 from . import load as loader
 from . import schema as schema_mod
 from .schema import SCHEMA
+from .tipoff_corrections import retime_games
 from .transform import (
     GAME_DIM_COLUMNS,
     OUTPUT_COLUMNS,
@@ -50,6 +51,19 @@ from .transform import (
 TIPOFF_TOLERANCE_MINUTES = 15
 
 
+def is_finished(game: ScrapedGame) -> bool:
+    """Whether SBR reports the game as over ("Final", "Final/OT", ...).
+
+    Only finished games are stored. A game still to be played -- or being
+    played -- has a partial line history: the store would hold it until a later
+    refresh topped it up, and anything built in between would read a history
+    that is not the one it will finally have. Tonight's games are read live, in
+    memory, by the prediction job (``live.fetch_live_line_history``) and land
+    here the day after, complete -- the same rule the closing-odds tables follow.
+    """
+    return game.status_text.strip().lower().startswith("final")
+
+
 @dataclass
 class IngestStats:
     scraped_games: int = 0
@@ -60,6 +74,7 @@ class IngestStats:
     inserted_games: int = 0
     unmatched_games: list[str] = field(default_factory=list)
     tipoff_disagreements: list[str] = field(default_factory=list)
+    retimed_games: list[str] = field(default_factory=list)
     dropped: dict[str, int] = field(default_factory=dict)
     repaired: dict[str, int] = field(default_factory=dict)
 
@@ -419,6 +434,44 @@ def insert_games(conn: psycopg.Connection, game_dim: pd.DataFrame) -> int:
     return inserted
 
 
+def retime_to_page_tipoffs(conn: psycopg.Connection, game_dim: pd.DataFrame) -> list[str]:
+    """Move stored games onto the page tipoff where the two disagree.
+
+    New ticks are timed against the page's tipoff. A game stored earlier may
+    carry another one (the bulk load used the schedule feed, which keeps the
+    original slot of a moved game), and inserting the new ticks as they are
+    would leave two books of one game on two clocks. The page tipoff matched
+    the NBA scoreboard on all 66 disagreements checked on 2026-09-17, so the
+    stored game is retimed -- tipoff and every existing tick -- before the new
+    ticks go in.
+    """
+    if game_dim.empty:
+        return []
+    page = game_dim.drop_duplicates("game_id").set_index(
+        game_dim.drop_duplicates("game_id")["game_id"].astype(str)
+    )["tipoff_utc"]
+    page = pd.to_datetime(page, utc=True)
+    with conn.cursor() as cur:
+        cur.execute(
+            sql.SQL(
+                "SELECT game_id, tipoff_utc FROM {}.lh_game WHERE game_id = ANY(%s)"
+            ).format(sql.Identifier(SCHEMA)),
+            (page.index.tolist(),),
+        )
+        stored = {
+            str(game_id): pd.Timestamp(tipoff).tz_convert("UTC")
+            for game_id, tipoff in cur.fetchall()
+        }
+    moved = {
+        game_id: tipoff
+        for game_id, tipoff in page.items()
+        if game_id in stored and stored[game_id] != tipoff
+    }
+    if moved:
+        retime_games(conn, moved)
+    return sorted(moved)
+
+
 def ingest_scraped_games(
     conn: psycopg.Connection,
     games: Sequence[ScrapedGame],
@@ -427,8 +480,16 @@ def ingest_scraped_games(
     schedule: pd.DataFrame | None = None,
     dry_run: bool = False,
 ) -> IngestStats:
-    """Resolve, encode and insert a batch of scraped games. Safe to re-run."""
+    """Resolve, encode and insert a batch of scraped games. Safe to re-run.
+
+    Games that are not finished are never written (see ``is_finished``): they
+    are counted under ``dropped["unfinished_game"]`` and picked up by a later
+    run once they are final.
+    """
     stats = IngestStats()
+    finished = [game for game in games if is_finished(game)]
+    stats.drop("unfinished_game", len(games) - len(finished))
+    games = finished
     if not games:
         return stats
 
@@ -454,6 +515,7 @@ def ingest_scraped_games(
         schema_mod.create_season_partition(conn, int(season_year))
 
     stats.inserted_games = insert_games(conn, game_dim)
+    stats.retimed_games = retime_to_page_tipoffs(conn, game_dim)
 
     # Staged per season: the merge targets one partition at a time, which keeps
     # the write off the 1 GB instance's WAL in a single spike.

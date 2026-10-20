@@ -6,12 +6,47 @@ from nba_ou.config.constants import (
     TEAM_NAME_STANDARDIZATION,
 )
 from nba_ou.config.odds_columns import moneyline_col, spread_col, total_line_col
+from nba_ou.config.yahoo_features import is_yahoo_percentage_column
 from nba_ou.utils.general_utils import _with_before_suffix
 from pandas.tseries.holiday import USFederalHolidayCalendar
 
 MAIN_TOTAL_LINE_COL = total_line_col()
 MAIN_SPREAD_COL = spread_col()
 MAIN_MONEYLINE_COL = moneyline_col()
+
+
+def add_fresh_absence_sums(df: pd.DataFrame) -> pd.DataFrame:
+    """Create HOME + AWAY **sums** for the fresh-absence features.
+
+    The betting rollups below get a home-minus-away difference because they
+    measure relative strength. Absences on a totals market are the opposite
+    case: a star missing on either side moves the same total, so the two sides
+    add rather than cancel, and a difference would net them to zero in exactly
+    the games where the news is biggest (both teams missing someone).
+
+    Emits ``<name>_SUM_BEFORE`` for every fresh-absence column that has both a
+    ``_TEAM_HOME`` and a ``_TEAM_AWAY`` side. Idempotent: an existing sum column
+    is refreshed in place.
+    """
+    new_features = {}
+    for home_col in [col for col in df.columns if col.endswith("_BEFORE_TEAM_HOME")]:
+        if not home_col.startswith("INJ_"):
+            continue
+        away_col = home_col.replace("_TEAM_HOME", "_TEAM_AWAY")
+        if away_col not in df.columns:
+            continue
+        sum_col = home_col.replace("_BEFORE_TEAM_HOME", "_SUM_BEFORE")
+        new_features[sum_col] = df[home_col] + df[away_col]
+
+    if not new_features:
+        return df
+
+    cols_to_drop = [col for col in new_features if col in df.columns]
+    if cols_to_drop:
+        df = df.drop(columns=cols_to_drop)
+    df = pd.concat([df, pd.DataFrame(new_features, index=df.index)], axis=1)
+    print(f"Created {len(new_features)} fresh-absence sum feature(s)")
+    return df
 
 
 def add_betting_stats_differences(df: pd.DataFrame) -> pd.DataFrame:
@@ -32,20 +67,20 @@ def add_betting_stats_differences(df: pd.DataFrame) -> pd.DataFrame:
         DataFrame with additional difference columns (suffix _DIFF_BEFORE)
 
     Example:
-        TOTAL_LINE_<book>_LAST_ALL_5_MATCHES_BEFORE_TEAM_HOME -
-        TOTAL_LINE_<book>_LAST_ALL_5_MATCHES_BEFORE_TEAM_AWAY =
-        TOTAL_LINE_<book>_LAST_ALL_5_MATCHES_DIFF_BEFORE
+        ODDS_TOTAL_LINE_<book>_LAST_ALL_5_MATCHES_BEFORE_TEAM_HOME -
+        ODDS_TOTAL_LINE_<book>_LAST_ALL_5_MATCHES_BEFORE_TEAM_AWAY =
+        ODDS_TOTAL_LINE_<book>_LAST_ALL_5_MATCHES_DIFF_BEFORE
     """
     # Patterns that identify betting-related stats
     betting_patterns = [
         MAIN_TOTAL_LINE_COL,
-        "TOTAL_LINE_",
+        "ODDS_TOTAL_LINE_",
         "DIFF_FROM_",
         "IS_OVER_",
         MAIN_MONEYLINE_COL,
         MAIN_SPREAD_COL,
-        "MONEYLINE_",
-        "SPREAD_",
+        "ODDS_MONEYLINE_",
+        "ODDS_SPREAD_",
         "_pct_bets_",
         "_pct_money_",
         "consensus_pct_",
@@ -70,6 +105,10 @@ def add_betting_stats_differences(df: pd.DataFrame) -> pd.DataFrame:
     updated_features = {}
 
     for home_col in home_cols:
+        # The compact Yahoo contract keeps each team's mean/trend directly.
+        # Do not expand those inputs back into home-minus-away derivatives.
+        if is_yahoo_percentage_column(home_col):
+            continue
         # Check if this is a betting stat with rolling window/derived stat
         is_betting_stat = any(pattern in home_col for pattern in betting_patterns)
         is_rolling_stat = any(pattern in home_col for pattern in rolling_patterns)
@@ -334,7 +373,7 @@ def add_high_value_features_for_team_points(df: pd.DataFrame) -> pd.DataFrame:
     # ---------------------------------------------------------------------
     # 1) Market-derived: implied team totals (strong, non-leaky)
     # ---------------------------------------------------------------------
-    # Uses game-level main TOTAL_LINE_<book> and SPREAD (assumes spread is from
+    # Uses game-level main ODDS_TOTAL_LINE_<book> and SPREAD (assumes spread is from
     # HOME perspective: home - away). If your spread sign is opposite, flip it.
     # Prefer main close spread from the configured book; fallback to consensus opener.
     spread_col = None
@@ -354,7 +393,7 @@ def add_high_value_features_for_team_points(df: pd.DataFrame) -> pd.DataFrame:
             (out[MAIN_TOTAL_LINE_COL] / 2.0) + (spread_val / 2.0),
         )
         # NOTE: Do NOT add implied sum/diff checks: they are algebraic restatements of
-        # main TOTAL_LINE_<book> and spread, hence redundant.
+        # main ODDS_TOTAL_LINE_<book> and spread, hence redundant.
 
     # ---------------------------------------------------------------------
     # 2) Offense-vs-defense interaction (often better than raw ratings)
@@ -455,29 +494,11 @@ def add_high_value_features_for_team_points(df: pd.DataFrame) -> pd.DataFrame:
         )
 
     # ---------------------------------------------------------------------
-    # 4) Fatigue and travel compression
+    # 4) Rest mismatch
     # ---------------------------------------------------------------------
 
-    # Travel intensity: concentration of travel in last 2 vs 14 days
-    if _has(
-        ["TOTAL_KM_IN_LAST_2_DAYS_HOME_TEAM", "TOTAL_KM_IN_LAST_14_DAYS_HOME_TEAM"]
-    ):
-        ratio = _safe_div(
-            out["TOTAL_KM_IN_LAST_2_DAYS_HOME_TEAM"],
-            out["TOTAL_KM_IN_LAST_14_DAYS_HOME_TEAM"],
-        )
-        _add("TRAVEL_RECENCY_RATIO_HOME_2D_OVER_14D", ratio)
-
-    if _has(
-        ["TOTAL_KM_IN_LAST_2_DAYS_AWAY_TEAM", "TOTAL_KM_IN_LAST_14_DAYS_AWAY_TEAM"]
-    ):
-        ratio = _safe_div(
-            out["TOTAL_KM_IN_LAST_2_DAYS_AWAY_TEAM"],
-            out["TOTAL_KM_IN_LAST_14_DAYS_AWAY_TEAM"],
-        )
-        _add("TRAVEL_RECENCY_RATIO_AWAY_2D_OVER_14D", ratio)
-
-    # Rest mismatch
+    # Travel-recency ratios are already computed by compute_travel_features
+    # from raw kilometers, before the distance columns become log1p(km).
     if _has(["REST_DAYS_BEFORE_MATCH_TEAM_HOME", "REST_DAYS_BEFORE_MATCH_TEAM_AWAY"]):
         _add(
             "REST_DAYS_DIFF_HOME_MINUS_AWAY",

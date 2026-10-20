@@ -88,7 +88,8 @@ something"*. That distinction determines what is worth building.
 So that round 2 does not rebuild it: snapshot state (raw/normalised line,
 prices, devigged probabilities, overround, line age, books quoting); cross-book
 consensus, std, range, per-book deviation, steam counts over 60 min; movement
-from open, windowed moves/velocity over 60/180/360/720 with `HAS_` flags,
+from open, windowed moves/velocity over 15/30/60/120/180/360/720 with `HAS_`
+flags,
 acceleration; counts (moves, price-only ticks, distinct levels, reversals,
 moves per hour); path shape (max/min/range/position-in-range); and prior-game
 open→close dynamics rolled up per team and league-wide.
@@ -204,8 +205,21 @@ settle it.
 
 - **Sharp-book identification / per-book lead scores.** Measured at ≤ 0.096
   (§1d). The convergence story explains the data better.
-- **Sub-30-minute windows.** Tick sparsity makes them mostly zero; measured
-  median staleness at the 30-min snapshot is already 32 minutes.
+- ~~**Sub-30-minute windows.**~~ **Built anyway, deliberately.** The original
+  reasoning still holds on the data -- a book moves in the trailing 60 minutes
+  on only 32% of (row, book), and 37% of rows have no book moving at all, so
+  `move_last_15` is zero far more often than not. It was added because "mostly
+  zero" is not the same as "no signal": the rows where a book *does* move
+  fifteen minutes out are exactly the late-money rows, and they were previously
+  indistinguishable from a quiet market. `has_window_15` separates "did not
+  move" from "no history". Judge it on measured importance, and drop it if it
+  earns nothing -- windows are cheap to remove and expensive to add back.
+
+  One consequence worth knowing: steam is **pinned** to `STEAM_WINDOW_MINUTES`
+  (60) rather than "the shortest configured window", because cross-book
+  agreement needs books to have moved. At 15 minutes steam would be a
+  near-constant zero, and adding a window would silently have redefined an
+  existing feature family.
 - **Full feature families for every book.** Width for little gain; the reduced
   per-book set plus a leave-one-out consensus captures the cross-sectional
   signal.

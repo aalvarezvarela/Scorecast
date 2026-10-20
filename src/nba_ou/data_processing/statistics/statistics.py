@@ -9,6 +9,43 @@ import numpy as np
 import pandas as pd
 
 
+def _shifted_group_window(
+    series: pd.Series,
+    keys: list,
+    *,
+    window: int | None,
+    how: str = "mean",
+    ddof: int = 1,
+) -> pd.Series:
+    """``series.groupby(keys).transform(lambda s: s.shift(1).<window>.<how>())``.
+
+    ``window`` is a row count for ``rolling(window, min_periods=1)`` or None
+    for ``expanding(min_periods=1)``; ``how`` is ``"mean"`` or ``"std"``.
+
+    ``groupby(...).rolling``/``expanding`` run the same window kernel over
+    the groups laid end to end, and the kernel restarts its running sums at
+    every group's first row, because that window starts where the previous
+    one ended -- exactly the state a per-group call starts from. So each value
+    is the same float, without one Python call per group. Rows whose keys are
+    missing belong to no group and stay NaN, as with ``transform``.
+    """
+    positions = pd.RangeIndex(len(series))
+    values = series.set_axis(positions)
+    group_keys = [k.set_axis(positions) for k in keys]
+    shifted = values.groupby(group_keys).shift(1)
+    grouped = shifted.groupby(group_keys)
+    windows = (
+        grouped.expanding(min_periods=1)
+        if window is None
+        else grouped.rolling(window, min_periods=1)
+    )
+    result = windows.mean() if how == "mean" else windows.std(ddof=ddof)
+    result = result.droplevel(list(range(len(keys)))).reindex(positions)
+    return pd.Series(
+        result.to_numpy(dtype="float64"), index=series.index, name=series.name
+    )
+
+
 def compute_rolling_stats(
     df: pd.DataFrame,
     param: str = "PTS",
@@ -19,8 +56,7 @@ def compute_rolling_stats(
     include_home_away_relative: bool = True,
     relative_to_window: int | None = None,
 ) -> pd.DataFrame:
-    """
-    Computes rolling averages for a given `param`, excluding the current row's game.
+    """Computes rolling averages for a given `param`, excluding the current row's game.
 
     Creates:
       - f"{param}_LAST_ALL_{window}_MATCHES_BEFORE"
@@ -54,6 +90,9 @@ def compute_rolling_stats(
         and (TEAM_ID, SEASON_YEAR, HOME) for home/away split when needed.
       - When group_by_season=False: computes rolling within (TEAM_ID) for "ANY"
         and (TEAM_ID, HOME) for home/away split when needed, allowing previous seasons.
+      - Season averages group by (TEAM_ID, SEASON_YEAR, HOME). Missing values
+        fall back to the previous season's mean for the same team/location, then
+        the strict rolling average. Without any history they remain NaN.
       - Keeps final sort by GAME_DATE descending to match your pipeline style
     """
     if param not in df.columns:
@@ -95,9 +134,7 @@ def compute_rolling_stats(
         group_keys_homeaway = [out["TEAM_ID"], out["HOME"]]
 
     # 1) Last N games (ANY), excluding current game
-    out[last_n_avg_col] = series.groupby(group_keys_any).transform(
-        lambda s: s.shift(1).rolling(window, min_periods=1).mean()
-    )
+    out[last_n_avg_col] = _shifted_group_window(series, group_keys_any, window=window)
 
     # Optional relative column
     if add_relative_column:
@@ -105,8 +142,8 @@ def compute_rolling_stats(
             # Keep legacy column name but store relative value:
             # (last same-home/away N) - (last strict N)
             last_n_homeaway_col = f"{param}_LAST_HOME_AWAY_{window}_MATCHES_BEFORE"
-            homeaway_roll = series.groupby(group_keys_homeaway).transform(
-                lambda s: s.shift(1).rolling(window, min_periods=1).mean()
+            homeaway_roll = _shifted_group_window(
+                series, group_keys_homeaway, window=window
             )
             out[last_n_homeaway_col] = homeaway_roll - out[last_n_avg_col]
         elif relative_to_window is not None:
@@ -120,10 +157,8 @@ def compute_rolling_stats(
             if ref_col in out.columns:
                 ref_roll = pd.to_numeric(out[ref_col], errors="coerce")
             else:
-                ref_roll = series.groupby(group_keys_any).transform(
-                    lambda s: (
-                        s.shift(1).rolling(relative_to_window, min_periods=1).mean()
-                    )
+                ref_roll = _shifted_group_window(
+                    series, group_keys_any, window=relative_to_window
                 )
 
             out[relative_col] = ref_roll - out[last_n_avg_col]
@@ -131,9 +166,9 @@ def compute_rolling_stats(
     # 3) Season-to-date average (within season and home/away), excluding current game
     if add_extra_season_avg:
         # Season average always groups by season (even if group_by_season=False for rolling)
-        out[season_avg_col] = series.groupby(
-            [out["TEAM_ID"], out["SEASON_YEAR"], out["HOME"]]
-        ).transform(lambda s: s.shift(1).expanding(min_periods=1).mean())
+        out[season_avg_col] = _shifted_group_window(
+            series, [out["TEAM_ID"], out["SEASON_YEAR"], out["HOME"]], window=None
+        )
 
         # Additionally, fill missing season averages using previous season's mean
         # to handle cases where no prior games exist in the current season.
@@ -206,9 +241,13 @@ def compute_season_std(df, param="PTS"):
     df[param] = df[param].fillna(np.nan).astype(float)
 
     # Compute expanding standard deviation after shifting by 1 to exclude the current game.
-    df[season_std_col] = df.groupby(["TEAM_ID", "SEASON_YEAR", "HOME"])[
-        param
-    ].transform(lambda s: s.shift(1).expanding(min_periods=1).std(ddof=0))
+    df[season_std_col] = _shifted_group_window(
+        df[param],
+        [df["TEAM_ID"], df["SEASON_YEAR"], df["HOME"]],
+        window=None,
+        how="std",
+        ddof=0,
+    )
 
     # Compute previous season's STD as fallback for missing values
     prev_season_std = (
@@ -286,21 +325,25 @@ def compute_rolling_weighted_stats(
 
     series = pd.to_numeric(out[param], errors="coerce")
 
-    def weighted_moving_average(x: pd.Series) -> float:
+    def weighted_moving_average(x: np.ndarray) -> float:
         """
         Compute weighted moving average with consistent relative weighting.
         Uses exponential-like weights that scale properly for any window size.
+
+        Takes the raw window (``raw=True``): the same float64 values and the
+        same numpy reductions as the Series version it replaced, without
+        building a Series for every window.
         """
         n = len(x)
-        if x.isna().all():
+        mask = ~np.isnan(x)
+        if not mask.any():
             return np.nan
 
         # Generate weights for the actual window size (1 to n)
         # This ensures consistent relative weighting regardless of window size
         w = np.arange(1, n + 1, dtype=float)
 
-        mask = ~x.isna()
-        return float((x[mask] * w[mask.to_numpy()]).sum() / w[mask.to_numpy()].sum())
+        return float((x[mask] * w[mask]).sum() / w[mask].sum())
 
     # Build groupby keys
     if group_by_season:
@@ -315,7 +358,7 @@ def compute_rolling_weighted_stats(
         lambda s: (
             s.shift(1)
             .rolling(window, min_periods=1)
-            .apply(weighted_moving_average, raw=False)
+            .apply(weighted_moving_average, raw=True)
         )
     )
 
@@ -329,7 +372,7 @@ def compute_rolling_weighted_stats(
                 lambda s: (
                     s.shift(1)
                     .rolling(window, min_periods=1)
-                    .apply(weighted_moving_average, raw=False)
+                    .apply(weighted_moving_average, raw=True)
                 )
             )
             out[last_n_split_col] = split_wma - out[last_n_wma_col]
@@ -348,7 +391,7 @@ def compute_rolling_weighted_stats(
                     lambda s: (
                         s.shift(1)
                         .rolling(relative_to_window, min_periods=1)
-                        .apply(weighted_moving_average, raw=False)
+                        .apply(weighted_moving_average, raw=True)
                     )
                 )
             out[relative_col] = ref_wma - out[last_n_wma_col]

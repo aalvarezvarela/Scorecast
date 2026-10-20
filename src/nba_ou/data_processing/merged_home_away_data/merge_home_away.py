@@ -1,12 +1,12 @@
 import numpy as np
 import pandas as pd
+from nba_ou.config.market_columns import HOME_MARGIN_COL
 from nba_ou.config.odds_columns import spread_col, total_line_col
 from nba_ou.data_processing.historic_games.historic_games_statistics import (
     compute_differences_in_points_conceeded_annotated,
     compute_home_points_conceded_avg,
-    get_last_5_matchup_excluding_current,
+    last_5_matchups_for_frame,
 )
-from tqdm import tqdm
 
 MAIN_TOTAL_LINE_COL = total_line_col()
 MAIN_SPREAD_COL = spread_col()
@@ -51,7 +51,7 @@ def deduplicate_game_level_columns(df_merged):
 
             # Check if this should be deduplicated
             # 1. Must be a total line column
-            is_total_line = base_col.startswith("TOTAL_LINE_")
+            is_total_line = base_col.startswith("ODDS_TOTAL_LINE_")
 
             # 2. Must NOT contain team-specific keywords
             is_team_specific = any(
@@ -87,9 +87,7 @@ def merge_home_away_data(df, todays_prediction=False):
     # Rename columns that start with 'TOP' by adding '_BEFORE' at the end
     df.rename(
         columns=lambda x: (
-            f"{x}_BEFORE"
-            if x.startswith("TOP") and not x.endswith("_BEFORE")
-            else x
+            f"{x}_BEFORE" if x.startswith("TOP") and not x.endswith("_BEFORE") else x
         ),
         inplace=True,
     )
@@ -113,13 +111,15 @@ def merge_home_away_data(df, todays_prediction=False):
         inplace=True,
     )
 
-    den = df["OFF_RATING_SEASON_BEFORE_AVG"].replace(0, np.nan)
-    df["STAR_OFFENSIVE_RATIO_IMPROVEMENT_BEFORE"] = (
-        df["TOP1_PLAYER_OFF_RATING_BEFORE"] / den
-    )
-    df["STAR_OFFENSIVE_RATIO_IMPROVEMENT_BEFORE"] = df[
-        "STAR_OFFENSIVE_RATIO_IMPROVEMENT_BEFORE"
-    ].fillna(0)
+    # The per-slot OFF_RATING value only exists under the legacy player profile;
+    # the reduced profile replaces rate slots with minutes-weighted aggregates
+    # (see players/feature_profile.py), so the ratio is derived only when its
+    # input was emitted.
+    if "TOP1_PLAYER_OFF_RATING_BEFORE" in df.columns:
+        den = df["OFF_RATING_SEASON_BEFORE_AVG"].replace(0, np.nan)
+        df["STAR_OFFENSIVE_RATIO_IMPROVEMENT_BEFORE"] = (
+            df["TOP1_PLAYER_OFF_RATING_BEFORE"] / den
+        ).fillna(0)
 
     df["STAR_PTS_PERCENTAGE_BEFORE"] = (
         df["TOP1_PLAYER_PTS_BEFORE"] / df["PTS_SEASON_BEFORE_AVG"]
@@ -172,6 +172,14 @@ def merge_home_away_data(df, todays_prediction=False):
     df_merged["TOTAL_POINTS"] = df_merged.PTS_TEAM_HOME + df_merged.PTS_TEAM_AWAY
     df_merged["TOTAL_PF"] = df_merged.PF_TEAM_HOME + df_merged.PF_TEAM_AWAY
 
+    # The spread market's outcome, derived at the one point where both teams'
+    # final scores exist side by side. PTS_TEAM_HOME/PTS_TEAM_AWAY themselves are
+    # carried onward from here by select_training_columns so this stays
+    # reproducible downstream; both they and HOME_MARGIN are outcome facts and
+    # are blocked from every feature matrix (see training_pipeline.config
+    # LEAKING_TARGET_COLUMNS).
+    df_merged[HOME_MARGIN_COL] = df_merged.PTS_TEAM_HOME - df_merged.PTS_TEAM_AWAY
+
     # IS_PLAYOFF_GAME based on SEASON_TYPE
     df_merged["IS_PLAYOFF_GAME_BEFORE"] = (
         df_merged["SEASON_TYPE"].str.contains("Playoff", case=False, na=False)
@@ -196,14 +204,10 @@ def merge_home_away_data(df, todays_prediction=False):
             df_merged[main_total_home] - df_merged[main_total_away]
         )
 
-    tqdm.pandas()
-    # Apply row-by-row, returning a Series of dictionaries
-    results_series = df_merged.progress_apply(
-        lambda row: get_last_5_matchup_excluding_current(row, df_merged), axis=1
+    # One dict per row, as get_last_5_matchup_excluding_current gives it.
+    results_df = pd.DataFrame(
+        last_5_matchups_for_frame(df_merged), index=df_merged.index
     )
-
-    # Convert that Series of dicts into a DataFrame
-    results_df = pd.DataFrame(results_series.tolist(), index=df_merged.index)
 
     # Finally, concatenate the new columns onto df_merged
     df_merged = pd.concat([df_merged, results_df], axis=1)

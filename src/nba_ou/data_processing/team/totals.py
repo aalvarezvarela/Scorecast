@@ -16,7 +16,7 @@ def compute_total_points_features(df: pd.DataFrame) -> pd.DataFrame:
     # Identify all totals line columns
     total_line_cols: list[str] = []
 
-    total_line_cols.extend([c for c in df.columns if c.startswith("TOTAL_LINE_")])
+    total_line_cols.extend([c for c in df.columns if c.startswith("ODDS_TOTAL_LINE_")])
 
     # De-dup while preserving order
     seen = set()

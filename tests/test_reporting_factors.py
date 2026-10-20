@@ -174,6 +174,28 @@ def test_contrast_isolates_a_single_factor(tmp_path):
     assert table["contrast"].nunique() == 1
 
 
+def test_referee_exclusion_cells_are_distinct_experiments(tmp_path):
+    """The referee campaign varies only exclude_cols_containing. Without a
+    factor for it every cell matched as a replicate of every other."""
+    runs = runs_frame(tmp_path, {
+        "no_refs": {"exclude_cols": ("REF_AVG_", "REF_CREW_")},
+        "legacy": {"exclude_cols": ("REF_CREW_",)},
+        "everything": {"exclude_cols": ()},
+    })
+    design = factors.design_matrix(runs).set_index("run_name")
+    assert design["design"].nunique() == 3
+    assert design.loc["everything", "referee_features"] == "all"
+    assert factors.contrasts(runs, "referee_features")["run_name"].nunique() == 3
+
+
+def test_referee_factor_leaves_consensus_contrasts_intact(tmp_path):
+    runs = runs_frame(tmp_path, {
+        "base": {"exclude_cols": ("fanatics_sportsbook",)},
+        "no_consensus": {"exclude_cols": ("fanatics_sportsbook", "consensus_pct")},
+    })
+    assert set(factors.contrasts(runs, "drop_consensus")["run_name"]) == {"base", "no_consensus"}
+
+
 def test_run_changing_two_things_at_once_forms_no_contrast(tmp_path):
     """The whole guarantee. A cell that moved two knobs cannot answer for
     either of them, and must not be quietly attributed to one."""
@@ -278,3 +300,65 @@ def test_labels_stay_unique_for_identical_configurations(tmp_path):
     runs = runs_frame(tmp_path, {"a": {}, "b": {}})
     labels = factors.describe_labels(runs)["label"]
     assert labels.nunique() == 2
+
+
+# ---------------------------------------------------------------------------
+# reading runs that have no seed data at all
+# ---------------------------------------------------------------------------
+
+
+def _runs_frame(with_seeds: bool):
+    import pandas as pd
+
+    frame = pd.DataFrame(
+        {
+            "label": ["a", "b"],
+            "roi": [0.02, -0.03],
+            "prediction_strategy": ["line_error_regressor"] * 2,
+            "holdout_start": ["2026-02-19"] * 2,
+            "holdout_end": ["2026-04-17"] * 2,
+        }
+    )
+    if with_seeds:
+        frame["seed_roi_range"] = [0.05, 0.06]
+    return frame
+
+
+def test_seed_narrative_survives_a_frame_with_no_seed_column():
+    """Single seed is the default, so seed_roi_range is usually absent from the
+    frame ENTIRELY -- not merely NaN. dropna(subset=[...]) raises KeyError on a
+    missing column, which turns "these runs have no error bars" into "the whole
+    report failed to render"."""
+    from training_pipeline.reporting import narrative
+
+    assert narrative.seed_noise(_runs_frame(with_seeds=False)) == []
+
+
+def test_strategy_spread_survives_a_frame_with_no_seed_column():
+    import pandas as pd
+
+    from training_pipeline.reporting import narrative
+
+    summary = pd.DataFrame({"mean_roi": [0.1, 0.2]})
+
+    assert narrative.strategy_spread(summary, _runs_frame(with_seeds=False)) == []
+
+
+def test_seed_narrative_still_speaks_when_the_data_is_there():
+    """Guards the guard: archived runs DO carry seed ranges and must keep
+    getting the commentary."""
+    from training_pipeline.reporting import narrative
+
+    assert narrative.seed_noise(_runs_frame(with_seeds=True))
+
+
+def test_the_roi_chart_renders_without_seed_ranges():
+    """It degrades to plain bars, and must not promise an error bar it is not
+    drawing."""
+    import matplotlib
+
+    matplotlib.use("Agg")
+    from training_pipeline.reporting import charts
+
+    charts.plot_roi_with_seed_noise(_runs_frame(with_seeds=False))
+    charts.plot_roi_with_seed_noise(_runs_frame(with_seeds=True))

@@ -1,0 +1,65 @@
+experiment_name: nest_probe_legacy_total_tuned_rounds
+prediction_strategy: total_points_regressor
+line_col: ODDS_TOTAL_LINE_bet365
+training_version: "2.0-legacy-csv-current-code-20260906"
+comparison_group: n_estimators_probe_legacy_total
+hypothesis: >
+  Same historical CSV and protocol as the legacy early-stopping replay, changing
+  only tune_n_estimators to true.
+tags: [n_estimators_probe, legacy_csv, historical_protocol, total_points, tuned_rounds]
+
+device: cuda
+random_state: 16
+
+data:
+  csv_path: artifacts/derived_data/training_data_2_0_20260704_odds_prefixed.csv
+  data_version: "20260704-2.0-header-normalized-only"
+  expected_checksum: "sha256:3af52081c3517c92"
+  dataset_type: closing_line
+  season_year_floor: 2021
+  extend_history_dropping_season_gated_columns: false
+  exclude_overtime_from_training: false
+  exclude_playoffs: true
+  allowed_season_types: ["Regular Season", "Play-In Tournament"]
+
+cleaning:
+  nan_threshold: 50
+  corr_threshold: 0.995
+  corr_threshold_overrides: null
+  max_na_per_row: 80
+  exclude_cols_containing: ["fanatics_sportsbook"]
+
+holdout: {test_size: null, test_games: null, test_days: 60}
+
+walk_forward:
+  strategy: test_anchored
+  test_games: 50
+  step_games_between_tests: 60
+  train_games: 3750
+  train_games_choices: null
+  min_train_games: 1250
+  max_folds: 12
+  fold_selection: latest
+  exclude_test_months: [5, 6]
+  require_same_season_test: true
+  eval_span_games: null
+  min_validation_games: null
+
+sample_weight: {enabled: false, lambda_: null, tune_lambda: false, allow_unweighted: false}
+refit: {use_lexicographic_selection: true}
+
+optuna:
+  n_trials: 50
+  timeout: null
+  mae_tolerance_abs: 0.1
+  tie_tolerance: fixed
+  tune_n_estimators: true
+  objective_aggregation: mean
+  pruner_warmup_steps: 5
+
+betting:
+  edge_thresholds: [0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0]
+  primary_edge_threshold: 2.0
+
+holdout_evaluation: daily_walk_forward
+evaluation_seeds: []

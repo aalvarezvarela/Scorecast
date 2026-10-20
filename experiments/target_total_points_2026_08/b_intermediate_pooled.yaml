@@ -1,0 +1,31 @@
+experiment_name: target_total_points_intermediate_pooled
+prediction_strategy: total_points_regressor
+line_col: ODDS_TOTAL_LINE_bet365
+training_version: "2.1-target-snapshot-campaign"
+comparison_group: target_snapshot_2026_08
+hypothesis: >
+  One total-points model trained on all ten pre-game snapshots can match a model
+  dedicated to six hours before tip-off. Paired with the pooled line-error run,
+  it also tests the target formulation on identical snapshot rows.
+tags: [total_points, intermediate_line, pooled_snapshots]
+
+device: cuda
+
+data:
+  csv_path: data/train_data/intermediate_line_data_10snap.csv
+  data_version: "20260820-intermediate-line-10-snapshots"
+  dataset_type: intermediate_line
+  snapshot_minutes: null
+  scoring_csv_path: data/train_data/intermediate_line_data_10snap_scoring.csv
+  expected_checksum: "sha256:1e3ca3fe18d2bbe8"
+  season_year_floor: 2021
+  extend_history_dropping_season_gated_columns: false
+
+betting:
+  comparison_line_cols: ["ODDS_CLOSING_TOTAL_LINE_bet365"]
+
+optuna:
+  n_trials: 200
+  timeout: null
+
+evaluation_seeds: []

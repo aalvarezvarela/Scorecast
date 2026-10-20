@@ -79,25 +79,36 @@ Within 3%. A per-snapshot slice is a structural drop-in.
 None of these raise. All of them produce a plausible-looking number that is
 wrong.
 
-### 3.1 Row-counted windows shrink the training set 6x
+### 3.1 Row-counted windows shrink the training set 6x -- FIXED
 
-Every `*_games` setting in `experiments/_base.yaml` counts **rows**
-(`train_pool.tail(train_games)`). Left at base defaults on a six-snapshot
-dataset, each fold trains on ~417 games while the closing-line model trains on
-2,500. Any accuracy difference then measures dataset *size*, not dataset
-*quality* — and the intermediate model loses for a reason that has nothing to
-do with the hypothesis.
+Every `*_games` setting used to count **rows** (`train_pool.tail(train_games)`).
+Left at base defaults on a six-snapshot dataset each fold trained on ~417 games
+while the closing-line model trained on 2,500, so any accuracy difference
+measured dataset *size* rather than dataset *quality*. The campaign worked
+around it by multiplying every knob by the snapshot count in a YAML comment --
+a correction no test could check, and one that stops being right the moment the
+grid changes (it did: the grid is ten horizons now, not six).
 
-| setting | base | needs |
-|---|---|---|
-| `walk_forward.train_games` | 2500 | 15000 |
-| `walk_forward.min_train_games` | 1250 | 7500 |
-| `walk_forward.test_games` | 50 | 300 |
-| `walk_forward.step_games_between_tests` | 60 | 360 |
-| `backtest.test_games` | 300 | 1800 |
-| `holdout.test_days` | 60 | 60 (calendar — correct as-is) |
+They count **games** now. `training_pipeline.splits` resolves a per-row game key
+from `GAME_ID` and every window, span and floor is expressed over distinct
+games; `nba_ou.modeling.modeling.tail_n_games` does the same for the daily
+walk-forward, and `training_pipeline.data.rolling_window_index` for the refit.
+Whole games only -- a window never keeps four of a game's ten snapshots.
 
-### 3.2 Confidence intervals become ~2.4x too narrow
+`train_games: 3500` therefore means the same history on both datasets, and the
+pooled arm and its single-horizon control land on identical fold layouts. On a
+one-row-per-game frame the game key resolves to `None` and the original tail
+slice runs unchanged, so the closing-line path is untouched by construction.
+
+`holdout.test_days` never needed rescaling: it is calendar-based, which is what
+gives both datasets the identical evaluation window.
+
+A pooled frame may no longer be split by `test_anchored` or `last_n_seasons` at
+all. Those come from `nba_ou.modeling` and describe a fold as a block of N rows;
+the config layer refuses the combination rather than silently scoring a tenth of
+what the numbers say.
+
+### 3.2 Confidence intervals become ~2.4x too narrow -- FIXED
 
 `evaluate_betting` and `wilson_interval` (`betting.py:48-71`, `132-260`) are
 purely row-wise. Nothing in `training_pipeline` groups by `GAME_ID` anywhere.
@@ -111,7 +122,19 @@ This matters more here than it would elsewhere, because `_base.yaml` already
 documents the honest position: *"At -110 a true 55% win rate needs ~1400 bets
 before its interval clears break-even."* A 6x-inflated `n_bets` would appear to
 clear that bar on a sixth of the real evidence. It would make an inconclusive
-result look conclusive — the single most expensive error available here.
+result look conclusive -- the single most expensive error available here.
+
+**Handled, and no longer opt-in.** `training_pipeline.snapshot_scoring` regroups
+finished predictions one horizon at a time, where there really is one row per
+game, and blanks the pooled row's interval and significance verdict rather than
+printing a corrected one it cannot justify (the true factor is not `sqrt(N)`:
+horizon coverage varies and the min-edge filter selects differently at each).
+
+`run_experiment` now builds that report itself for any frame with several rows
+per game, writes `snapshot_{cv,holdout}_metrics.csv` beside the other
+artifacts, and the CLI prints it under a header saying the pooled row is not a
+bet count. It used to require launching a separate wrapper script; the plain
+CLI printed the inflated number with nothing saying so.
 
 The same applies to `betting.evaluate_cv_folds` and to every `n_bets` on the
 leaderboard.
@@ -131,13 +154,35 @@ games in different market conditions. `_base.yaml` chose `test_days` precisely
 so that *"two datasets then get the IDENTICAL calendar window"* — that only
 holds when both end on the same day, and here they do not.
 
-### 3.4 Optuna selects on an inflated effective n
+### 3.4 Optuna selects on an inflated effective n -- STILL OPEN
 
-The objective averages fold metrics over rows. With six correlated rows per
+The objective averages fold metrics over rows. With ten correlated rows per
 game, `subsample`/`colsample` bootstraps draw near-duplicates, and early
 stopping tunes its round count against a validation fold whose effective size
-is a sixth of its row count. The search will systematically prefer less
+is a tenth of its row count. The search will systematically prefer less
 regularisation than the data supports.
+
+This is the one item in §3 that is **not** fixed, and it is worth being precise
+about what changed around it. The fold *layout* is now game-aware: `train_games`
+and `min_validation_games` count distinct games, and the pooled arm and its
+single-horizon control score identical cohorts. But under
+`objective_aggregation: pooled` the objective still weights each ROW equally, so
+a game with ten horizons contributes ten times and one with six contributes six.
+That is not merely an inflated `n` -- it is an uneven weighting across games.
+
+The obvious correction is a per-row weight of `1/snapshots`. That was built once,
+shipped in the scoring sidecar as `SNAPSHOT_WEIGHT`, read by nothing, and has now
+been deleted rather than wired in: the pipeline's `sample_weight` machinery is
+recency-only, so using it means multiplying two weight sources, and it would fix
+only the training side -- `evaluate_betting` has no weight parameter at all.
+
+Two honest ways to live with it:
+
+- **Read the single-horizon control as the primary number.** One row per game,
+  so the objective weighting question does not arise. This is the strongest
+  argument for running that arm.
+- **Treat pooled CV as a ranking device only**, which is what §2 already says
+  about CV generally, and let the per-horizon holdout tables carry the estimate.
 
 ---
 
@@ -212,13 +257,17 @@ complexity?" If the pooled model cannot beat a model trained solely on 12h rows
 reconsidered. One run, and it also gives a clean read on whether there is signal
 at the longest horizon at all.
 
-Filter the CSV to a single `TIME_TO_MATCH_MIN` and run it exactly like the
-closing-line dataset.
+Set `data.snapshot_minutes: 720` and run it exactly like the closing-line
+dataset. This is a config knob, not a file transform: the arm and its control
+read the same bytes, so one `expected_checksum` covers both and they cannot
+drift apart. (It replaces `slice_intermediate_snapshot.py`, which made the
+control by writing a second ~187MB CSV.)
 
 What it buys, all of it as a measuring instrument rather than a deliverable:
 
-- **§3.1 disappears.** `train_games: 2500` means 2,500 games again. No rescale,
-  no divergence from the tuned search space's assumptions.
+- **§3.1 is moot here** -- and fixed for the pooled arm too, so this is no
+  longer a reason to prefer the control. `train_games: 2500` means 2,500 games
+  on both.
 - **§3.2 disappears.** One row per game, so `n_bets` is games and the Wilson
   interval is honest without any slicing step.
 - **§3.4 disappears.** No correlated rows inside a fold.
@@ -236,12 +285,17 @@ case. If 12 hours out works, the shorter horizons are strictly easier.
 
 ### Why not "just weight the rows 1/6"
 
-The scoring sidecar already carries `SNAPSHOT_WEIGHT = 1/snapshots`. But the
-pipeline's `sample_weight` machinery is recency-only
-(`build_recency_sample_weights`), so wiring this in means extending the config
-and multiplying two weight sources together. More importantly it fixes only the
-*training* side — `evaluate_betting` has no weight parameter at all, so §3.2
-would survive untouched. Weighting is a stage-2 refinement, not the fix.
+Tried and removed. The sidecar used to carry `SNAPSHOT_WEIGHT = 1/snapshots`,
+and nothing ever read it. Wiring it in would mean extending the config and
+multiplying two weight sources together, because the pipeline's `sample_weight`
+machinery is recency-only (`build_recency_sample_weights`). More importantly it
+fixes only the *training* side: `evaluate_betting` has no weight parameter at
+all, so the pooled-bet-count problem would survive untouched.
+
+The correction that shipped instead is `training_pipeline.snapshot_scoring`,
+which regroups finished predictions one horizon at a time. Within a horizon
+there is exactly one row per game, so the binomial maths is correct again
+without weighting anything.
 
 ---
 

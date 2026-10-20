@@ -12,6 +12,8 @@ a reference the models are measured against, not a competing series.
 
 from __future__ import annotations
 
+import re
+from pathlib import Path
 from typing import Any
 
 import matplotlib.pyplot as plt
@@ -112,6 +114,29 @@ def percent_frame(df: pd.DataFrame, percent: Any = (), decimals: Any = ()) -> An
     return df.style.format(formatters, na_rep="—")
 
 
+#: ``<kind>_line_data_<schema>_<YYYYMMDD>`` -- the same pattern as
+#: ``training_pipeline.registry._SCHEMA_IN_FILENAME``, not imported because the
+#: registry pulls in the serving code.
+_SCHEMA_AND_DATE_IN_FILENAME = re.compile(r"_(\d+)_(\d+)_\d{4}(\d{4})")
+
+
+def _dataset_token(csv_path: Any) -> str:
+    """Schema version and build date of a dataset, e.g. ``2.6-data-1003``.
+
+    Every non-``old_`` file used to read ``2.0-data``, so a 2_5 run and a 2_6
+    run of the same config got identical labels and could not be told apart.
+    The build date (MMDD) separates two generations of one schema version.
+    """
+    path = str(csv_path)
+    if "old_" in path:
+        return "old-data"
+    match = _SCHEMA_AND_DATE_IN_FILENAME.search(Path(path).name)
+    if match is None:
+        return "2.0-data"
+    major, minor, month_day = match.groups()
+    return f"{major}.{minor}-data-{month_day}"
+
+
 #: Config fields that can distinguish one run from another, with how each
 #: renders as a label token. Order here is the order tokens appear.
 #:
@@ -121,29 +146,64 @@ def percent_frame(df: pd.DataFrame, percent: Any = (), decimals: Any = ()) -> An
 #: shared settings -- "line_error · 4500 · na200" reads as "the 4500 cell with
 #: the relaxed row cap", which is the question that cell exists to answer.
 LABEL_FIELDS: tuple[tuple[str, Any], ...] = (
-    ("data.csv_path", lambda v: "old-data" if "old_" in str(v) else "2.0-data"),
+    ("data.csv_path", lambda v: _dataset_token(v)),
+    #: Which dataset the run trained on. Without this a closing-line run and an
+    #: intermediate-line run of the same strategy and window get IDENTICAL
+    #: labels, which is how the snapshot campaign's three cells all read as
+    #: "line_error - 3500" and became impossible to tell apart on a chart.
+    #: factors.py has carried this since the campaign was designed; the label
+    #: did not, so the notebooks matched on it and then hid it.
+    ("data.dataset_type", lambda v: str(v).replace("_line", "")),
+    #: Pooled over every pre-game snapshot (null) versus one model dedicated to
+    #: a single horizon. Different training grain, different question.
+    ("data.snapshot_minutes", lambda v: "pooled" if v is None else f"T-{v:g}"),
+    ("data.season_year_floor", lambda v: f"from{v:.0f}"),
     ("data.exclude_overtime_from_training", lambda v: "no-OT" if v else "with-OT"),
     ("data.exclude_playoffs", lambda v: "no-playoffs" if v else "+playoffs"),
     ("cleaning.max_na_per_row", lambda v: f"na{v}"),
     ("cleaning.exclude_cols_containing",
-     lambda v: "no-consensus" if v and "consensus_pct" in str(v) else "std-cols"),
+     lambda v: "no-consensus" if v and "consensus_pct" in str(v)
+     else "no-global" if v and "GLOBAL_" in str(v).upper()
+     else "std-cols"),
     ("cleaning.nan_threshold", lambda v: f"nanthr{v:g}"),
     ("optuna.n_trials", lambda v: f"{v}trials"),
 )
+
+
+#: Fields where ``null`` is a CHOICE rather than a missing value, so it has to
+#: count towards whether the field discriminates between runs.
+#:
+#: Everywhere else ``None`` means "this run's config does not mention the
+#: field", and treating that as a value would put a token on runs that never
+#: made the choice. ``data.snapshot_minutes`` is the opposite: null IS the
+#: pooled-over-every-horizon setting. Because closing-line runs also leave it
+#: null, the old rule saw a single non-null value (360), decided the field was
+#: not a discriminator, and dropped it -- so the pooled and T-360 cells of the
+#: snapshot campaign carried the same label while being different experiments.
+NONE_IS_A_VALUE: frozenset[str] = frozenset({"data.snapshot_minutes"})
 
 
 def _label_tokens(configs: dict[str, dict[str, Any]]) -> dict[str, list[str]]:
     """Per run, the tokens describing how it departs from the common setup."""
     tokens: dict[str, list[str]] = {name: [] for name in configs}
     for field, render in LABEL_FIELDS:
+        meaningful_null = field in NONE_IS_A_VALUE
         values = {name: cfg.get(field) for name, cfg in configs.items()}
-        present = {v for v in values.values() if v is not None}
+        if meaningful_null:
+            # Only for runs that actually carry the key: a run whose config
+            # predates the field is still genuinely missing it.
+            values = {
+                name: value
+                for name, value in values.items()
+                if field in configs[name]
+            }
+        present = {v for v in values.values() if meaningful_null or v is not None}
         if len(present) < 2:
             continue  # not a discriminator among these runs
         counts = pd.Series([str(v) for v in values.values()]).value_counts()
         baseline = counts.index[0]
         for name, value in values.items():
-            if value is not None and str(value) != baseline:
+            if (meaningful_null or value is not None) and str(value) != baseline:
                 tokens[name].append(str(render(value)))
     return tokens
 
@@ -201,3 +261,101 @@ def prepare_runs(runs: pd.DataFrame, *, describe: bool = True) -> pd.DataFrame:
     return runs.sort_values(
         ["prediction_strategy", "train_games", "created_at"]
     ).reset_index(drop=True)
+
+
+#: What each strategy is actually being asked to predict. Used to replace the
+#: terse artifact name with the question the run answers, so a reader who has
+#: not memorised the strategy names can still read the chart.
+STRATEGY_DESCRIPTIONS: dict[str, str] = {
+    "line_error_regressor": "Predicts error vs bookmaker line",
+    "total_points_regressor": "Predicts final total points",
+    "over_under_classifier": "Predicts over/under probability",
+}
+
+
+def describe_runs(runs: pd.DataFrame) -> pd.DataFrame:
+    """Add the identity columns a report needs on top of ``prepare_runs``.
+
+    Three of them, and they are different lengths on purpose:
+
+    ``panel_label``   the compact form from :func:`prepare_runs`, minus the
+                      campaign-folder suffix. Short enough for a chart panel.
+    ``label``         the same information written out as prose, for tables and
+                      headings where there is room for it.
+    ``dataset_type`` / ``snapshot_minutes`` / ``rows_per_game``
+                      read from each run's ``metadata.json``. ``rows_per_game``
+                      in particular decides whether a binomial interval may be
+                      reported at all, so it is a column rather than a lookup
+                      every caller has to remember to do.
+    """
+    from training_pipeline.reporting import loaders
+
+    runs = runs.copy()
+    runs["panel_label"] = runs["label"]
+    if runs["source_root"].nunique() > 1:
+        runs["panel_label"] = [
+            str(label).removesuffix(f" · {root}")
+            for label, root in zip(runs["label"], runs["source_root"], strict=True)
+        ]
+
+    metadata = {
+        str(row["label"]): loaders.load_metadata(row) for _, row in runs.iterrows()
+    }
+    runs["dataset_type"] = runs["label"].map(
+        lambda label: metadata.get(label, {}).get("dataset_type")
+    )
+    runs["snapshot_minutes"] = runs["label"].map(
+        lambda label: metadata.get(label, {}).get("snapshot_minutes")
+    )
+    runs["rows_per_game"] = runs["label"].map(
+        lambda label: float(metadata.get(label, {}).get("rows_per_game", 1.0) or 1.0)
+    )
+
+    runs["label"] = [_describe(row) for _, row in runs.iterrows()]
+    return runs
+
+
+def _describe(run: Any) -> str:
+    """One run as prose: what it predicts, on how much history, plus its
+    distinguishing tokens."""
+    window_raw = (
+        str(int(run["train_games"])) if pd.notna(run["train_games"]) else "<NA>"
+    )
+    prefix = f"{run['strategy_short']} · {window_raw}"
+    existing = str(run["label"])
+    suffix = existing[len(prefix):] if existing.startswith(prefix) else ""
+    description = STRATEGY_DESCRIPTIONS.get(
+        run["prediction_strategy"],
+        str(run["prediction_strategy"]).replace("_", " "),
+    )
+    return f"{description} · {window_text(run)}{suffix}"
+
+
+def window_text(run: Any) -> str:
+    if pd.isna(run["train_games"]):
+        return "full-history window"
+    return f"{int(run['train_games']):,}-game window"
+
+
+def horizon_text(run: Any) -> str:
+    """Closing line, pooled over every snapshot, or one named horizon.
+
+    Read from the run's recorded ``dataset_type`` and ``snapshot_minutes``
+    rather than from its name: a null ``snapshot_minutes`` means "pooled" on
+    the intermediate dataset and "not applicable" on the closing one, and only
+    the pair distinguishes them.
+    """
+    if run.get("dataset_type") == "closing_line":
+        return "closing"
+    snapshot = run.get("snapshot_minutes")
+    return "pooled snapshots" if pd.isna(snapshot) else f"T-{snapshot:g}"
+
+
+def run_spec(run: Any) -> str:
+    """The few facts that tell one run from another, on one line."""
+    rows_per_game = float(run.get("rows_per_game", 1.0) or 1.0)
+    repeats = f" · {rows_per_game:.0f} rows/game" if rows_per_game > 1.05 else ""
+    return (
+        f"{run['strategy_short']} · {window_text(run)} · "
+        f"{horizon_text(run)}{repeats}"
+    )

@@ -28,17 +28,17 @@ def test_overtime_keeps_raw_points_and_actual_total():
             "TEAM_ID": ["home", "away"],
             "MIN": [265, 265],
             "PTS": [120, 110],
-            "TOTAL_LINE_bet365": [220.0, 220.0],
+            "ODDS_TOTAL_LINE_bet365": [220.0, 220.0],
         }
     )
 
     result = compute_total_points_features(adjust_overtime(df)).set_index("TEAM_ID")
 
     assert result["PTS"].to_dict() == {"home": 120, "away": 110}
-    assert result.loc["home", PTS_PER_40_COLUMN] == 120
-    assert result.loc["away", PTS_PER_40_COLUMN] == 110
+    assert result.loc["home", PTS_PER_40_COLUMN] == pytest.approx(120 * 200 / 265)
+    assert result.loc["away", PTS_PER_40_COLUMN] == pytest.approx(110 * 200 / 265)
     assert result["TOTAL_POINTS"].eq(230).all()
-    assert result["DIFF_FROM_LINE_bet365"].eq(10.0).all()
+    assert result["DIFF_FROM_ODDS_LINE_bet365"].eq(10.0).all()
 
 
 def test_overtime_normalizes_only_allowlisted_additive_statistics():
@@ -64,7 +64,7 @@ def test_overtime_normalizes_only_allowlisted_additive_statistics():
         assert result[column] == pytest.approx(original_value * factor)
 
     assert result["PTS"] == 120
-    assert result[PTS_PER_40_COLUMN] == 120
+    assert result[PTS_PER_40_COLUMN] == pytest.approx(120 * 200 / 265)
 
 
 @pytest.mark.parametrize(
@@ -135,12 +135,12 @@ def test_regulation_game_keeps_points_without_rescaling_counts():
 
     assert result["IS_OVERTIME"] == 0
     assert result["PTS"] == 120
-    assert result[PTS_PER_40_COLUMN] == 120
+    assert result[PTS_PER_40_COLUMN] == pytest.approx(100.0)
     assert result["FGM"] == 45
     assert result["POSS"] == 100.5
 
 
-def test_points_per_40_adjusts_only_valid_minutes_below_regulation():
+def test_points_per_40_requires_positive_finite_minutes():
     df = pd.DataFrame(
         {
             "GAME_ID": [
@@ -158,17 +158,34 @@ def test_points_per_40_adjusts_only_valid_minutes_below_regulation():
         }
     )
 
+    original_points = df.set_index("GAME_ID")["PTS"].to_dict()
     result = adjust_overtime(df).set_index("GAME_ID")
 
     assert result.loc["short", PTS_PER_40_COLUMN] == pytest.approx(
         100 * TEAM_MINUTES_PER_40 / 160
     )
-    assert result.loc["zero", PTS_PER_40_COLUMN] == 101
-    assert result.loc["negative", PTS_PER_40_COLUMN] == 102
-    assert result.loc["missing", PTS_PER_40_COLUMN] == 103
-    assert result.loc["infinite", PTS_PER_40_COLUMN] == 104
-    assert result.loc["regulation", PTS_PER_40_COLUMN] == 105
+    assert (
+        result.loc[["zero", "negative", "missing", "infinite"], PTS_PER_40_COLUMN]
+        .isna()
+        .all()
+    )
+    assert result.loc["regulation", PTS_PER_40_COLUMN] == pytest.approx(87.5)
+    assert result["PTS"].to_dict() == original_points
     assert not np.isinf(result[PTS_PER_40_COLUMN]).any()
+
+
+@pytest.mark.parametrize("minutes", [160.0, 239.0, 240.0, 265.0, 290.0])
+def test_points_per_40_preserves_the_same_scoring_rate_at_every_duration(minutes):
+    # MIN sums the five players' minutes. A 2.5 points/game-minute rate is
+    # always 100 points per 40 minutes, including regulation and overtime.
+    points = 2.5 * minutes / 5
+    df = pd.DataFrame({"GAME_DATE": ["2026-01-01"], "MIN": [minutes], "PTS": [points]})
+
+    result = adjust_overtime(df).iloc[0]
+
+    assert result[PTS_PER_40_COLUMN] == pytest.approx(100.0)
+    assert result["PTS"] == points
+    assert result["MIN"] == minutes
 
 
 def test_overtime_flag_and_normalization_share_one_threshold():
@@ -224,15 +241,15 @@ def test_overtime_history_is_prior_only_and_season_frequency_resets():
     assert result.loc["g2", OVERTIME_FREQUENCY_SEASON_YEAR_BEFORE] == 0
 
     assert result.loc["g3", IS_OVERTIME_LAST_GAME_BEFORE] == 1
-    assert result.loc[
-        "g3", OVERTIME_FREQUENCY_LAST_5_GAMES_BEFORE
-    ] == pytest.approx(0.5)
+    assert result.loc["g3", OVERTIME_FREQUENCY_LAST_5_GAMES_BEFORE] == pytest.approx(
+        0.5
+    )
     assert result.loc["g3", OVERTIME_FREQUENCY_SEASON_YEAR_BEFORE] == 0
 
     assert result.loc["g4", IS_OVERTIME_LAST_GAME_BEFORE] == 1
-    assert result.loc[
-        "g4", OVERTIME_FREQUENCY_LAST_5_GAMES_BEFORE
-    ] == pytest.approx(2 / 3)
+    assert result.loc["g4", OVERTIME_FREQUENCY_LAST_5_GAMES_BEFORE] == pytest.approx(
+        2 / 3
+    )
     assert result.loc["g4", OVERTIME_FREQUENCY_SEASON_YEAR_BEFORE] == 1
 
     for game_id in ("g5", "g6"):
@@ -258,9 +275,9 @@ def test_overtime_last_five_uses_only_five_completed_games():
 
     result = add_overtime_history_features(df).set_index("GAME_ID")
 
-    assert result.loc[
-        "g7", OVERTIME_FREQUENCY_LAST_5_GAMES_BEFORE
-    ] == pytest.approx(0.4)
+    assert result.loc["g7", OVERTIME_FREQUENCY_LAST_5_GAMES_BEFORE] == pytest.approx(
+        0.4
+    )
 
 
 def test_overtime_history_does_not_mix_teams():

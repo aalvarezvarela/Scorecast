@@ -16,7 +16,7 @@ def _config(**overrides) -> ExperimentConfig:
     kwargs = {
         "experiment_name": "naming_test",
         "target_family": TargetFamily.TOTAL_POINTS,
-        "line_col": "TOTAL_LINE_bet365",
+        "line_col": "ODDS_TOTAL_LINE_bet365",
         "data": DataConfig(csv_path="data/train_data/example.csv"),
         "window_name_label": "three_seasons",
         "window_dir_label": "3_seasons",
@@ -73,6 +73,44 @@ def test_model_bundle_falls_back_to_default_tag_when_version_unset():
 def test_resolve_model_output_dir_follows_repo_convention():
     out_dir = resolve_model_output_dir(_config())
     assert out_dir.as_posix().endswith("models/total_points/3_seasons")
+
+
+def _intermediate_config(snapshot_minutes: int) -> ExperimentConfig:
+    return _config(
+        data=DataConfig(
+            csv_path="data/train_data/example.csv",
+            dataset_type="intermediate_line",
+            snapshot_minutes=snapshot_minutes,
+        ),
+    )
+
+
+def test_intermediate_horizons_on_the_same_window_get_distinct_bundles():
+    """Regression: T-30 and T-60, both at 6,275 games and trained to the same
+    date, resolved to one bundle path, so promoting the second horizon was
+    refused -- or with overwrite would have replaced the first.
+    """
+    as_of = date(2026, 4, 17)
+    t30, t60 = _intermediate_config(30), _intermediate_config(60)
+
+    assert resolve_model_output_dir(t30) != resolve_model_output_dir(t60)
+    assert build_model_name(t30, as_of=as_of) != build_model_name(t60, as_of=as_of)
+    assert resolve_model_output_dir(t60).as_posix().endswith(
+        "models/total_points/t0060/3_seasons"
+    )
+    assert build_model_name(t60, as_of=as_of) == (
+        "three_seasons_t0060_xgb_total_points_17_04_26"
+    )
+
+
+def test_closing_line_bundle_paths_are_unchanged_by_the_horizon_label():
+    config = _config()
+    assert resolve_model_output_dir(config).as_posix().endswith(
+        "models/total_points/3_seasons"
+    )
+    assert build_model_name(config, as_of=date(2026, 4, 17)) == (
+        "three_seasons_xgb_total_points_17_04_26"
+    )
 
 
 def test_assert_model_bundle_is_writable_passes_when_nothing_exists(tmp_path):

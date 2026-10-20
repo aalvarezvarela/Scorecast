@@ -1,7 +1,83 @@
 import numpy as np
 import pandas as pd
 
-EWMA_HALFLIFE_GAMES = 10
+from nba_ou.config.constants import SEASON_TYPE_MAP
+
+#: A game this many games old weighs half as much as the latest one. With
+#: ``adjust=True`` every game is weighted by its age alone: at 40 games played
+#: the latest weighs 5.4% (2.5% in a plain mean) and the last ten 44% (25%).
+#: Until 2026-10 this was 10 with ``adjust=False``, under which the season's
+#: first game seeded the average and still held 54% of the weight ten games
+#: later, while each new game moved it only 6.7%.
+EWMA_HALFLIFE_GAMES = 15
+
+#: Suffix of the cumulative columns that include the row's own game.
+AFTER_GAME_SUFFIX = "_AFTER"
+
+
+def after_game_column(cum_col: str) -> str:
+    """``PTS_CUM_AVG`` -> ``PTS_CUM_AVG_AFTER``: the value including that game."""
+    return f"{cum_col}{AFTER_GAME_SUFFIX}"
+
+
+#: Season types the previous-season player fallback is allowed to read.
+#: Regular season only, matching the team-level trend fallback in
+#: ``data_processing.team.rolling``: this model targets regular-season games, and
+#: only 16 teams play a postseason, so sourcing the carried-over average from
+#: whatever a player happened to play last would make it mean something different
+#: depending on how far their team went.
+PLAYER_FALLBACK_SEASON_TYPES: frozenset[str] = frozenset({"Regular Season"})
+
+
+def _is_fallback_season_type(game_id) -> bool:
+    """Season type from the game id, using the repository's canonical mapping."""
+    if pd.isna(game_id):
+        return False
+    return (
+        SEASON_TYPE_MAP.get(str(game_id).zfill(10)[:3], "Unknown")
+        in PLAYER_FALLBACK_SEASON_TYPES
+    )
+
+
+def _previous_regular_season_player_average(out, stat_col, valid_mask):
+    """Each player's average ``stat_col`` in their PREVIOUS regular season.
+
+    Mirrors the ``_SEASON_BEFORE_AVG`` fallback in
+    ``statistics.compute_rolling_stats`` and the trend-slope fallback in
+    ``team.rolling``: a player-season that has no history yet inherits what the
+    player actually did last year rather than starting from nothing.
+
+    Returns a Series aligned to ``out``'s row order (positional), so a duplicated
+    index cannot misalign the fill.
+    """
+    if "GAME_ID" not in out.columns:
+        # Nothing to derive the season type from; the caller falls through to the
+        # documented "no prior valid game" value instead of guessing.
+        return pd.Series(np.nan, index=out.index)
+
+    # One call per distinct game rather than per player row; the same values.
+    codes, game_ids = pd.factorize(out["GAME_ID"], use_na_sentinel=False)
+    by_game = np.fromiter(
+        (_is_fallback_season_type(g) for g in game_ids), bool, len(game_ids)
+    )
+    regular = valid_mask & pd.Series(by_game[codes], index=out.index)
+    season_means = (
+        out.loc[regular]
+        .assign(_stat=pd.to_numeric(out.loc[regular, stat_col], errors="coerce"))
+        .groupby(["PLAYER_ID", "SEASON_YEAR"], as_index=False)["_stat"]
+        .mean()
+    )
+    if season_means.empty:
+        return pd.Series(np.nan, index=out.index)
+
+    # Carry each season's average into the season that follows it.
+    season_means["SEASON_YEAR"] = season_means["SEASON_YEAR"] + 1
+    season_means = season_means.rename(columns={"_stat": "_previous_season_stat"})
+
+    merged = out[["PLAYER_ID", "SEASON_YEAR"]].merge(
+        season_means, on=["PLAYER_ID", "SEASON_YEAR"], how="left"
+    )
+    return pd.Series(merged["_previous_season_stat"].to_numpy(), index=out.index)
 
 
 def get_top_n_averages_with_names(
@@ -15,10 +91,11 @@ def get_top_n_averages_with_names(
         df (pd.DataFrame): DataFrame with player stats including cumulative averages
         date (datetime or str): The target date (usually the current game date)
         stat_col (str): The stat column (e.g., "PTS") for cumulative average lookup
-        injured (bool): If False, consider players who played on `date`.
-                       If there are no same-day rows (e.g., scheduled games),
-                       fallback to each player's latest game prior to `date`.
-                       If True, consider last game prior to `date`.
+        injured (bool): If False, consider every player in the available-roster
+                       frame and use their latest state at or before `date`.
+                       Same-day rows carry shifted, pre-game cumulative values;
+                       current-game MIN/PTS are never used for selection.
+                       If True, consider the last state strictly before `date`.
         lowest (bool): If False (default), return highest averages (descending).
                       If True, return lowest averages (ascending)
         n_players (int): Number of players to return
@@ -27,33 +104,51 @@ def get_top_n_averages_with_names(
     Returns:
         list: List of tuples (player_id, player_name, cumulative_average)
     """
-    if stat_col == "DEF_RATING":
-        lowest = True
+    states = latest_player_states(df, date, injured=injured, min_minutes=min_minutes)
+    return rank_player_states(states, stat_col, lowest=lowest, n_players=n_players)
 
+
+def latest_player_states(df, date, *, injured=False, min_minutes=15):
+    """The statistic-independent half of ``get_top_n_averages_with_names``.
+
+    One row per player -- their latest state as of ``date`` -- with the
+    minutes-threshold flag the ranking sorts on. Nothing here depends on which
+    statistic is ranked, so a caller ranking the same players by several
+    statistics computes it once and passes it to ``rank_player_states``.
+    Returns None where the ranking would be empty.
+    """
     if injured:
         min_minutes = min_minutes * 0.8
 
     if df.empty:
-        return []
+        return None
 
     if injured:
-        # For injured players: last game *before* `date`
+        # For injured players: last game *before* `date`, valued with that game
+        # included (see precompute_cumulative_avg_stat).
         df_inj = df[df["GAME_DATE"] < date].sort_values(["PLAYER_ID", "GAME_DATE"])
         df_last = df_inj.groupby("PLAYER_ID", as_index=False).tail(1).copy()
 
     else:
-        # For non-injured players, keep existing behavior for historical rows.
-        # For scheduled games (no same-day player boxscore yet), fallback to each
-        # player's latest game before `date`.
-        df_same_day = df[df["GAME_DATE"] == date].copy()
-        if df_same_day.empty:
-            df_prior = df[df["GAME_DATE"] < date]
-            df_last = df_prior.groupby("PLAYER_ID", as_index=False).tail(1).copy()
-        else:
-            df_last = df_same_day
+        # Availability is roster membership minus the injury/inactive set.  Take
+        # one state per available player instead of selecting only players who
+        # logged minutes in this game.  The same-day cumulative value is safe:
+        # precompute_cumulative_avg_stat shifts the raw stat before calculating it.
+        df_available = df[df["GAME_DATE"] <= date].sort_values(
+            ["PLAYER_ID", "GAME_DATE"], kind="mergesort"
+        )
+        df_last = df_available.groupby("PLAYER_ID", as_index=False).tail(1).copy()
 
     if df_last.empty:
-        return []
+        return None
+
+    # The selected row may be an earlier game's state even for an available
+    # player without a target-game box-score row. Include that earlier game;
+    # same-day rows must keep their shifted values to exclude today's outcome.
+    use_after = df_last["GAME_DATE"] < date
+    for after in [c for c in df_last.columns if c.endswith(AFTER_GAME_SUFFIX)]:
+        before = after[: -len(AFTER_GAME_SUFFIX)]
+        df_last[before] = df_last[before].where(~use_after, df_last[after])
 
     # Check if MIN_CUM_AVG already exists (e.g., when stat_col="MIN")
     if "MIN_CUM_AVG" not in df_last.columns:
@@ -72,26 +167,66 @@ def get_top_n_averages_with_names(
         # Merge the cumulative average minutes into the selected game rows
         df_last = df_last.merge(df_cum_min, on="PLAYER_ID", how="left")
 
-    cum_col = f"{stat_col}_CUM_AVG"
-
     # Create extra variable to check if player meets the minimum threshold
     df_last.loc[:, "MEETS_MIN_THRESHOLD"] = (
         df_last["MIN_CUM_AVG"].fillna(0) >= min_minutes
     ).astype(int)
+    return df_last
 
-    # Sort by the cumulative average column
-    df_sorted = df_last.sort_values(
-        by=["MEETS_MIN_THRESHOLD", cum_col], ascending=[False, lowest]
-    )
 
-    # Extract the top n (or bottom n) players
-    chosen = df_sorted.head(n_players)
+def rank_player_states(states, stat_col="PTS", *, lowest=False, n_players=3):
+    """The per-statistic half of ``get_top_n_averages_with_names``."""
+    if stat_col == "DEF_RATING":
+        lowest = True
+
+    if states is None:
+        return []
+
+    cum_col = f"{stat_col}_CUM_AVG"
+
+    meets = states["MEETS_MIN_THRESHOLD"].to_numpy()
+    values = states[cum_col].to_numpy()
+    if meets.dtype.kind in "iub" and values.dtype.kind == "f":
+        # ``sort_values(by=[MEETS_MIN_THRESHOLD, cum_col], ascending=[False,
+        # lowest])`` without its per-call Categorical encoding: a stable sort,
+        # ties in row order, NaN last in either direction -- as np.lexsort
+        # orders negated keys. Same rows, same order.
+        order = np.lexsort((values if lowest else -values, -meets.astype("int64")))
+        # Extract the top n (or bottom n) players
+        chosen = states.take(order[:n_players])
+    else:
+        # Sort by the cumulative average column
+        df_sorted = states.sort_values(
+            by=["MEETS_MIN_THRESHOLD", cum_col], ascending=[False, lowest]
+        )
+
+        # Extract the top n (or bottom n) players
+        chosen = df_sorted.head(n_players)
 
     top_or_bottom_n = list(
         zip(chosen["PLAYER_ID"], chosen["PLAYER_NAME"], chosen[cum_col], strict=True)
     )
 
     return top_or_bottom_n
+
+
+def _groupwise_ewm_mean(values: pd.Series, keys: list, halflife) -> pd.Series:
+    """``values.groupby(keys).transform(lambda s: s.ewm(...).mean())``, exactly.
+
+    ``groupby(...).ewm`` runs the same EWM kernel over each group's rows in
+    their order, restarting at every group, as the per-group lambda does; it
+    just does not call back into Python once per group. Rows whose keys are
+    missing belong to no group and stay NaN, as with ``transform``.
+    """
+    positions = pd.RangeIndex(len(values))
+    grouped = (
+        values.set_axis(positions)
+        .groupby([k.set_axis(positions) for k in keys])
+        .ewm(halflife=halflife, adjust=True, min_periods=1, ignore_na=True)
+        .mean()
+    )
+    grouped = grouped.droplevel(list(range(len(keys)))).reindex(positions)
+    return pd.Series(grouped.to_numpy(dtype="float64"), index=values.index)
 
 
 def precompute_cumulative_avg_stat(
@@ -105,7 +240,9 @@ def precompute_cumulative_avg_stat(
 
     - Excludes the current game's stat from the estimate (via shift).
     - Gives slightly higher weight to recent games.
-    - If a player has no prior valid game, the value is 0.
+    - A player who has never had a valid game before the row, in any loaded
+      season, has no estimate: NaN, as tonight's roster gives an unknown
+      player. One with history but none this season or last reads 0.
     - Only considers games where MIN > 0 as valid appearances.
     - Groups by both SEASON_YEAR and PLAYER_ID.
 
@@ -139,18 +276,36 @@ def precompute_cumulative_avg_stat(
     ).shift(1)
 
     # Recency-weighted estimate by player-season.
+    in_season = _groupwise_ewm_mean(
+        shifted_valid_stat, [out["SEASON_YEAR"], out["PLAYER_ID"]], ewm_halflife_games
+    )
+
+    # Fill order, matching _SEASON_BEFORE_AVG in statistics.compute_rolling_stats:
+    #   1) this season to date (preferred)
+    #   2) the player's previous REGULAR season average
+    #   3) 0, for a player with no prior season at all
+    # Without step 2 the grouping by (SEASON_YEAR, PLAYER_ID) left every player at
+    # 0 for their season opener, which then propagated into every TOP-N player
+    # column as a missing value.
+    previous_season = _previous_regular_season_player_average(out, stat_col, valid_mask)
+    # Valid appearances so far across every loaded season, this row included.
+    # Rows are in (season, date) order within a player, so this is chronological.
+    appearances = valid_mask.astype("int64").groupby(out["PLAYER_ID"]).cumsum()
+    seen_before = (appearances - valid_mask.astype("int64")).gt(0)
     out[f"{stat_col}_CUM_AVG"] = (
-        shifted_valid_stat.groupby(
-            [out["SEASON_YEAR"], out["PLAYER_ID"]],
-            group_keys=False,
-        ).transform(
-            lambda s: s.ewm(
-                halflife=ewm_halflife_games,
-                adjust=False,
-                min_periods=1,
-                ignore_na=True,
-            ).mean()
-        )
-    ).fillna(0)
+        in_season.fillna(previous_season).fillna(0).where(seen_before)
+    )
+
+    # The same estimate with this game included: what the player's next row in
+    # the season carries. An Out/Questionable player has no row in the game being
+    # predicted, so his state is his last row before it, and that row's
+    # ``_CUM_AVG`` -- computed to predict *that* game -- leaves it out although
+    # it was played. ``latest_player_states(injured=True)`` reads this instead.
+    in_season_after = _groupwise_ewm_mean(
+        valid_stat, [out["SEASON_YEAR"], out["PLAYER_ID"]], ewm_halflife_games
+    )
+    out[after_game_column(f"{stat_col}_CUM_AVG")] = (
+        in_season_after.fillna(previous_season).fillna(0).where(appearances.gt(0))
+    )
 
     return out

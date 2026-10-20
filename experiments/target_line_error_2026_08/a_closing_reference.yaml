@@ -1,0 +1,25 @@
+experiment_name: target_line_error_closing_reference
+prediction_strategy: line_error_regressor
+training_version: "2.1-target-snapshot-campaign"
+comparison_group: target_snapshot_2026_08
+hypothesis: >
+  Closing-line reference for the line-error target. It measures the target with
+  the freshest market information and provides context for the executable
+  six-hour models; it is not itself an early-betting strategy.
+tags: [line_error, closing_line, reference]
+
+device: cuda
+
+data:
+  csv_path: data/train_data/training_data_2_0_20260819.csv
+  data_version: "20260819-training-2.0"
+  dataset_type: closing_line
+  expected_checksum: "sha256:27a291de0ae78165"
+  season_year_floor: 2021
+  extend_history_dropping_season_gated_columns: false
+
+optuna:
+  n_trials: 200
+  timeout: null
+
+evaluation_seeds: []

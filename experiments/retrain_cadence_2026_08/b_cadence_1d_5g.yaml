@@ -1,0 +1,114 @@
+experiment_name: cadence_line_error_t360_1d_5g
+prediction_strategy: line_error_regressor
+training_version: "2.4-retrain-cadence"
+comparison_group: retrain_cadence_2026_08
+hypothesis: >
+  THE TREATMENT, and the campaign's only deliberate difference: a one-game-day
+  rolling origin with a 5-game floor instead of the default 4 days / 25 games.
+  retrain_every_days: 1 reproduces the daily walk-forward exactly, so this cell
+  selects its hyperparameters under the same protocol the holdout is scored
+  under. Cell A carries the full statement of what the campaign asks and how to
+  read it; read that first.
+
+  MORE FOLDS IS A CONSEQUENCE, NOT A SECOND VARIABLE. The validation region is
+  pinned to the same eval_span_games: 850 as cell A, so both cells are scored on
+  the same ~850 validation games over the same calendar span. Cutting that
+  region one game-day at a time instead of four simply yields ~4x as many folds
+  of ~1/4 the size. max_folds stays null in both, so nothing is trimmed. This is
+  why the two cells' CV numbers are comparable at all -- had the region been
+  allowed to change, the comparison would be measuring two different sets of
+  games.
+
+  WHAT IT COSTS, and it is not small: ~4x the model fits per trial for the same
+  150 trials, which is the whole reason the default is 4. The base config chose
+  4 on the argument that daily retraining "would cost 4x the fits to buy" no
+  measurable gain -- but that measurement was about staleness at PREDICTION
+  time. This cell pays the 4x once to find out whether it buys anything at
+  SELECTION time. If it does not, the question is closed and the default stands
+  on evidence rather than on inference from a different measurement.
+
+  THE FAILURE MODE TO CHECK FIRST, before reading any result: min_validation_
+  games: 5 is a floor, not a target, and a floor this low re-admits the tiny
+  folds it was introduced to remove. Under objective_aggregation: pooled a
+  5-game fold is harmless in the OBJECTIVE -- it carries 5/850 of the weight,
+  which is correct -- but MedianPruner reads a RUNNING metric whose early steps
+  are those folds. pruner_warmup_steps is null and pruner_warmup_fraction 0.25,
+  so warmup scales with the realised fold count and should hold; VERIFY it in
+  metadata.json rather than assuming. If this cell's completed-trial count is
+  far below cell A's, the two cells did not receive equal search and the
+  comparison is void regardless of which ROI is higher.
+
+  Confirm cv_n_validation_games in metadata.json matches cell A's before
+  comparing anything. If it does not, the cells are not scored on the same
+  cohort and nothing below it is readable.
+
+  evaluation_seeds is OFF in both cells, so neither has an error bar; cell A
+  carries the full statement of what that costs and why CV is the number to
+  read first here.
+tags: [line_error, intermediate_line, single_snapshot, t360, retrain_cadence, daily_origin, corr995]
+
+device: cuda
+
+data:
+  csv_path: data/train_data/intermediate_line_data_10snap.csv
+  data_version: "20260820-intermediate-line-10-snapshots-t360"
+  dataset_type: intermediate_line
+  snapshot_minutes: 360
+  scoring_csv_path: data/train_data/intermediate_line_data_10snap_scoring.csv
+  expected_checksum: "sha256:1e3ca3fe18d2bbe8"
+  # Identical to cell A, which records why 2021 is the full extent of this
+  # dataset rather than a truncation of it.
+  season_year_floor: 2021
+  extend_history_dropping_season_gated_columns: false
+
+cleaning:
+  # Identical to cell A.
+  corr_threshold_overrides:
+    ODDS_: 0.995
+
+walk_forward:
+  # THE VARIABLE. One game-day per origin, with the fold floor dropped from 25
+  # to 5 so the floor cannot silently absorb extra days and turn a "1-day"
+  # cadence back into a multi-day one. Counted in days that CONTAIN games, so a
+  # dark date is skipped rather than eating a window.
+  retrain_every_days: 1
+  min_validation_games: 5
+  # Pinned to cell A's value. Same region, same games, only the cutting differs.
+  eval_span_games: 850
+  # Explicitly null: a cap here would trim the extra folds this cell exists to
+  # produce and quietly deliver a fraction of the validation volume.
+  max_folds: null
+  train_games_choices: [2500, 3000, 3500, 4000]
+
+optuna:
+  # Identical to cell A. Do not "compensate" cell B for its higher per-trial
+  # cost by lowering this -- unequal search is a second variable and would make
+  # the pair unreadable.
+  n_trials: 150
+  timeout: null
+
+betting:
+  comparison_line_cols: ["ODDS_CLOSING_TOTAL_LINE_bet365"]
+
+# OFF, campaign-wide, and the consequence has to be stated plainly because
+# nothing else in this campaign will state it: THERE IS NO ERROR BAR ON EITHER
+# CELL. Every holdout number below is one seed. In a sweep the shape across
+# cells stands in for an error bar; a two-cell campaign has no shape, so
+# nothing stands in for one here.
+#
+# What that costs, measured on this project: the single-seed holdout ROI spread
+# on ONE FIXED configuration is 4.9-12.0 points. A holdout ROI difference
+# between these two cells smaller than about ten points is therefore consistent
+# with changing nothing at all, and must be reported as "no measurable effect"
+# rather than as a direction.
+#
+# So read CV FIRST here, not the holdout. Both cells are scored on the SAME 850
+# validation games -- verified in the pre-flight -- which makes the CV
+# comparison the tighter of the two despite being the optimistically biased
+# one, since that bias applies to both cells alike. The holdout's job in this
+# campaign is only to show that the CV number is not a fantasy.
+#
+# Switch these on ([101, 202]) before acting on whatever this pair shows. They
+# are excluded from the config fingerprint, so doing that reuses the existing
+# Optuna study and costs only the re-evaluations.
+evaluation_seeds: []

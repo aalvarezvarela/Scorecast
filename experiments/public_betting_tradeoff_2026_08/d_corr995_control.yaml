@@ -1,0 +1,84 @@
+# CELL D -- diagnostic control, NOT part of the original three-cell design.
+#
+# WHY THIS EXISTS. Cell A's holdout MAE is 14.5186 against a line of 14.5036:
+# it LOSES to the bookmaker. Every comparable archived run on the same 416-game
+# holdout BEAT the line -- 14.3332 to 14.4934, i.e. edges of +0.01 to +0.17.
+# MAE is far less noisy than ROI, so unlike the ROI spread this is a real
+# regression rather than seed noise, and it wants explaining.
+#
+# Four things changed between those runs and cell A: the CSV (20260704 ->
+# 20260819), the CV strategy (test_anchored 12 folds -> rolling_origin 30),
+# n_trials (50 -> 120), and cleaning.corr_threshold (0.995 -> 0.95 with an
+# ODDS_ 0.99 override). Attribution of the lost features is measured, not
+# guessed: of the 300 features the archived model had and cell A does not,
+#
+#     150  present in the new CSV, pruned by correlated_columns
+#     146  absent from the new CSV entirely (the feature rework)
+#       4  absolute_value_match
+#
+# so the cleaning change accounts for half of them. The other half is NOT
+# recoverable and there is deliberately no cell trying: 93 of the 146 are
+# DIFF_FROM_LINE_caesars_*, removed by the Caesars book merge, and the
+# 20260704 CSV cannot be read by today's code at all -- it predates the ODDS_
+# prefix unification and has zero ODDS_ columns, so total_line_col() would not
+# resolve. Cleaning is the only one of the four factors that is free to undo.
+#
+# (Both halves were re-derived from the saved feature schemas after an earlier
+# count normalised only a LEADING "ODDS_". The rename inserted it mid-name too
+# -- DIFF_FROM_LINE_x -> DIFF_FROM_ODDS_LINE_x -- so substring normalisation is
+# required, and the 150/146/4 split is identical across all 12 archived
+# line_error runs on that CSV.)
+#
+# THIS CELL CHANGES EXACTLY ONE THING against cell A: the correlation
+# thresholds go back to the archived 0.995-everywhere. Same CSV, same checksum,
+# same floor, same windows, same trial budget, same seed, same holdout. If MAE
+# returns to ~14.43 and beats the line again, the depuration cost accuracy and
+# the thresholds should be loosened. If it does not, the cause is the data
+# rework or the CV change, and this cell rules the cleaning out.
+#
+# Read against pubbet_a_keep_columns, nothing else.
+
+experiment_name: pubbet_d_corr995_control
+prediction_strategy: line_error_regressor
+training_version: "2.1-public-betting-tradeoff"
+comparison_group: public_betting_tradeoff_2026_08
+hypothesis: >
+  Cell A's loss of accuracy against the line is caused by the tighter
+  correlation pruning rather than by the data rework or the CV change.
+  Restoring corr_threshold 0.995 with no per-substring override returns roughly
+  150 features and should recover holdout MAE to the archived ~14.43, back
+  under the line's 14.5036. A null result here points at the CSV or
+  rolling_origin instead, which is equally useful and cannot be undone as
+  cheaply.
+tags: [line_error, diagnostic, cleaning, corr_threshold]
+
+device: cuda
+
+data:
+  csv_path: data/train_data/training_data_2_0_20260819.csv
+  data_version: "20260819-training-2.0"
+  expected_checksum: "sha256:27a291de0ae78165"
+  dataset_type: closing_line
+  season_year_floor: 2021
+  extend_history_dropping_season_gated_columns: false
+
+cleaning:
+  # The archived setting: 0.995 for EVERYTHING, which is what those runs used.
+  #
+  # `{}` is "no per-substring overrides", and is NOT the same as null -- the
+  # cleaning function reads None as "use DEFAULT_CORR_THRESHOLD_OVERRIDES",
+  # which is the ODDS_ 0.99 this cell exists to remove. Writing `{}` here also
+  # used to be a silent no-op: the deep merge walked mappings key-by-key, so an
+  # empty one merged with _base.yaml's `{ODDS_: 0.99}` and yielded
+  # `{ODDS_: 0.99}`, making the first draft of this file a two-factor cell that
+  # looked like a control. deep_merge now replaces on an empty mapping, with
+  # tests in test_training_pipeline_cli_config.py covering exactly this config.
+  corr_threshold: 0.995
+  corr_threshold_overrides: {}
+
+walk_forward:
+  train_games_choices: [2500, 3000, 3500, 4000, 4500]
+
+optuna:
+  n_trials: 120
+  timeout: null

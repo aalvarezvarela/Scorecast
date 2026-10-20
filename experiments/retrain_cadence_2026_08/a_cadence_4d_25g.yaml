@@ -1,0 +1,132 @@
+experiment_name: cadence_line_error_t360_4d_25g
+prediction_strategy: line_error_regressor
+training_version: "2.4-retrain-cadence"
+comparison_group: retrain_cadence_2026_08
+hypothesis: >
+  CONTROL. The current default rolling-origin cadence: each CV origin trains to
+  a date, predicts the next 4 game-days (absorbing whole days until the fold
+  holds at least 25 games), then advances. Line error at the six-hour snapshot,
+  the horizon this project actually bets at.
+
+  WHAT THE CAMPAIGN IS ASKING, stated once here and referenced from cell B.
+  retrain_every_days does NOT change the holdout. The holdout is scored under
+  holdout_evaluation: daily_walk_forward in BOTH cells -- one refit per test
+  game-day, always. What it changes is the protocol the HYPERPARAMETERS are
+  chosen under. So the question is not "does retraining daily win money", which
+  this campaign cannot answer; it is "does selecting hyperparameters under a
+  validation protocol that mirrors production exactly transfer better to the
+  holdout than selecting them under a cheaper, 4-day-stale one". Cell B is the
+  daily version. Everything else is held identical.
+
+  The prior is that it will NOT help. The base config's own measurement, pooled
+  over 36 runs, found betting win rate by day-into-the-fold at
+  53.4 / 51.5 / 50.2 / 51.6% for days 0-3 -- no decay, with days 0-1 (52.1%) if
+  anything slightly worse than days 2+ (53.4%). That is a statement about
+  staleness at PREDICTION time; this campaign tests staleness at SELECTION
+  time, which is a different and untested thing. A null result is the expected
+  outcome and is worth having, because it retires the question for the price of
+  two runs.
+
+  TWO CELLS IS NOT A CURVE, the holdout is ~410 games / ~166 bets, and
+  evaluation_seeds is OFF -- so there is no error bar of any kind on the
+  holdout number, and a Wilson interval on that bet count cannot clear the
+  52.38% break-even at -110 whatever it shows. Both facts point the same way:
+  READ CV FIRST. The pre-flight confirms both cells score the SAME 850
+  validation games over the same 117 game-days, so the CV comparison is the
+  tighter one here even though it is the optimistically biased one -- the bias
+  applies to both cells alike. Treat a holdout ROI gap below ~10 points as
+  nothing, that being this project's measured single-seed spread on a fixed
+  config. If CV and holdout disagree in direction, the answer is "no measurable
+  effect", not whichever number is prettier.
+tags: [line_error, intermediate_line, single_snapshot, t360, retrain_cadence, control, corr995]
+
+device: cuda
+
+data:
+  csv_path: data/train_data/intermediate_line_data_10snap.csv
+  data_version: "20260820-intermediate-line-10-snapshots-t360"
+  dataset_type: intermediate_line
+  snapshot_minutes: 360
+  scoring_csv_path: data/train_data/intermediate_line_data_10snap_scoring.csv
+  expected_checksum: "sha256:1e3ca3fe18d2bbe8"
+  # The FULL extent of this dataset, not a truncation of it. Measured on
+  # intermediate_line_data_10snap.csv at the T-360 snapshot: it holds seasons
+  # 2021-2025 and nothing earlier, 1305-1322 games each. There is no history
+  # below this floor to admit, which is also why
+  # extend_history_dropping_season_gated_columns cannot buy seasons here the way
+  # it does on the closing dataset.
+  #
+  # And the completeness runs the opposite way to the obvious guess. Mean NaN%
+  # by season on this file:
+  #
+  #                      2021  2022  2023  2024  2025
+  #   consensus %         1.3   0.0   7.7   0.0   0.0
+  #   public betting %    1.6   1.0   5.5   0.9   0.8
+  #   per-book odds       1.0   1.5   1.8   0.7   0.1
+  #   median NaN per row  2     2     10     2     2
+  #
+  # 2023 is the WORST season in the file, not the start of a clean era; 2021 and
+  # 2022 are as complete as 2024-2025. Raising this floor would discard 2,633
+  # complete games to avoid nothing, and would silently break
+  # train_games_choices below -- the earliest fold would have ~2,700 games of
+  # history, so the 3000/3500/4000 options would tail() short without erroring.
+  season_year_floor: 2021
+  extend_history_dropping_season_gated_columns: false
+
+cleaning:
+  # Carried unchanged from horizon_*_2026_08 and grid_*_2026_08 so this cell is
+  # readable against the existing T-360 line-error runs. Odds columns held to
+  # 0.995; everything not matching "ODDS_" stays at cleaning.corr_threshold.
+  corr_threshold_overrides:
+    ODDS_: 0.995
+
+walk_forward:
+  # THE VARIABLE, stated explicitly here rather than inherited, so that the one
+  # difference between the two cells is visible in both files without opening
+  # _base.yaml. These are the base defaults.
+  retrain_every_days: 4
+  min_validation_games: 25
+  # Held identical to cell B. The validation REGION is the same ~850 games and
+  # the same calendar span in both cells; only how it is cut into folds differs,
+  # so both are scored on the same games.
+  eval_span_games: 850
+  max_folds: null
+  # The four values the horizon and grid campaigns used for line error. They
+  # selected 3000-3500 and never approached the edge, so the grid is unchanged
+  # and these runs stay comparable to those.
+  train_games_choices: [2500, 3000, 3500, 4000]
+
+optuna:
+  # Identical in both cells, which is the point: cell B pays ~4x the fits per
+  # trial for the same trial budget, and that cost IS the thing being weighed
+  # against whatever it buys. Matching n_trials rather than matching wall-clock
+  # keeps the search effort equal; a timeout would make trial count a function
+  # of the machine and silently un-match the pair.
+  n_trials: 150
+  timeout: null
+
+betting:
+  comparison_line_cols: ["ODDS_CLOSING_TOTAL_LINE_bet365"]
+
+# OFF, campaign-wide, and the consequence has to be stated plainly because
+# nothing else in this campaign will state it: THERE IS NO ERROR BAR ON EITHER
+# CELL. Every holdout number below is one seed. In a sweep the shape across
+# cells stands in for an error bar; a two-cell campaign has no shape, so
+# nothing stands in for one here.
+#
+# What that costs, measured on this project: the single-seed holdout ROI spread
+# on ONE FIXED configuration is 4.9-12.0 points. A holdout ROI difference
+# between these two cells smaller than about ten points is therefore consistent
+# with changing nothing at all, and must be reported as "no measurable effect"
+# rather than as a direction.
+#
+# So read CV FIRST here, not the holdout. Both cells are scored on the SAME 850
+# validation games -- verified in the pre-flight -- which makes the CV
+# comparison the tighter of the two despite being the optimistically biased
+# one, since that bias applies to both cells alike. The holdout's job in this
+# campaign is only to show that the CV number is not a fantasy.
+#
+# Switch these on ([101, 202]) before acting on whatever this pair shows. They
+# are excluded from the config fingerprint, so doing that reuses the existing
+# Optuna study and costs only the re-evaluations.
+evaluation_seeds: []

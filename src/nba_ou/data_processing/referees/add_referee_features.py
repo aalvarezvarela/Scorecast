@@ -6,6 +6,7 @@ including computing referee-specific features based on historical performance.
 """
 
 import re
+import warnings
 
 import numpy as np
 import pandas as pd
@@ -23,7 +24,7 @@ REFEREE_METRICS = [
 ]
 
 
-def _canonicalize_referee_name(name: str) -> str:
+def canonicalize_referee_name(name: str) -> str:
     """Normalize referee names so scheduled and historical sources match."""
     if pd.isna(name):
         return pd.NA
@@ -32,6 +33,9 @@ def _canonicalize_referee_name(name: str) -> str:
     name = name.replace(".", "")
     name = re.sub(r"\s+", " ", name)
     return name or pd.NA
+
+
+_canonicalize_referee_name = canonicalize_referee_name
 
 
 def _normalize_referee_slots(refs) -> pd.Series:
@@ -63,7 +67,9 @@ def _normalize_referee_slots(refs) -> pd.Series:
 
 
 def compute_referee_features(
-    df_refs_pivot: pd.DataFrame, include_ref_trio_features: bool = False
+    df_refs_pivot: pd.DataFrame,
+    include_ref_trio_features: bool = False,
+    target_game_ids: set[str] | None = None,
 ):
     """
     Compute aggregate referee features for each game based on historical performance.
@@ -90,6 +96,9 @@ def compute_referee_features(
             - DIFF_FROM_LINE: TOTAL_POINTS - TOTAL_LINE_<main_book>
         include_ref_trio_features (bool): Whether to compute exact-referee-trio
             features. Defaults to False.
+        target_game_ids (set, optional): Compute only these games' rows. A
+            row reads only the past games' crews and metrics, never another
+            row's features, so its values do not change; other rows stay NaN.
 
     Returns:
         pd.DataFrame: Original DataFrame with additional columns:
@@ -111,8 +120,14 @@ def compute_referee_features(
     df = df_refs_pivot.copy()
     df["GAME_DATE"] = pd.to_datetime(df["GAME_DATE"])
 
-    # Sort by GAME_DATE to ensure chronological order
-    df = df.sort_values("GAME_DATE").reset_index(drop=True)
+    # Chronological order, ties by GAME_ID. The past-game means below sum in
+    # this order, so it must not depend on which later games were loaded: an
+    # unstable date-only sort orders a date's games by the whole array, and a
+    # build that stops at a date then summed its past games in another order
+    # (1e-15 differences against the full build).
+    df = df.sort_values(["GAME_DATE", "GAME_ID"], kind="mergesort").reset_index(
+        drop=True
+    )
 
     if include_ref_trio_features:
         # Cache order-invariant trio key per game for faster matching
@@ -138,25 +153,6 @@ def compute_referee_features(
         prev_season = df[df["SEASON_YEAR"] == current_season - 1].copy()
         return same_season, prev_season
 
-    def _select_games_for_ref(
-        past_same_season: pd.DataFrame,
-        past_prev_season: pd.DataFrame,
-        ref_name: str,
-    ) -> tuple[pd.DataFrame, pd.DataFrame]:
-        for past_games in (past_same_season, past_prev_season):
-            if past_games.empty:
-                continue
-            ref_participated = (
-                (past_games["REF_1"] == ref_name)
-                | (past_games["REF_2"] == ref_name)
-                | (past_games["REF_3"] == ref_name)
-            )
-            games_with_ref = past_games[ref_participated]
-            games_without_ref = past_games[~ref_participated]
-            if len(games_with_ref) > 0 and len(games_without_ref) > 0:
-                return games_with_ref, games_without_ref
-        return pd.DataFrame(), pd.DataFrame()
-
     def _select_games_for_trio(
         past_games: pd.DataFrame,
         trio_key: frozenset,
@@ -170,15 +166,82 @@ def compute_referee_features(
             return games_with_trio, games_without_trio
         return pd.DataFrame(), pd.DataFrame()
 
+    ref_columns = ["REF_1", "REF_2", "REF_3"]
+
+    def _crew_view(past_games: pd.DataFrame):
+        """A past-games frame as the per-referee selection reads it."""
+        crews = past_games[ref_columns].to_numpy()
+        try:
+            # A missing slot held as pd.NA has no truth value; numpy cannot
+            # compare it, so such a frame uses pandas' comparison instead.
+            comparable = (crews == "").dtype == bool
+        except TypeError:
+            comparable = False
+        return (
+            crews if comparable else None,
+            [past_games[ref] for ref in ref_columns],
+            {metric: past_games[metric] for metric in REFEREE_METRICS},
+        )
+
+    def _ref_participated(view, ref_name: str) -> np.ndarray:
+        """``REF_1 == ref | REF_2 == ref | REF_3 == ref`` over a ``_crew_view``."""
+        crews, slots, _ = view
+        if crews is not None:
+            return (crews == ref_name).any(axis=1)
+        # pandas' comparison, which reads a missing slot as not the referee.
+        return (
+            (slots[0] == ref_name) | (slots[1] == ref_name) | (slots[2] == ref_name)
+        ).to_numpy(dtype=bool)
+
+    def _ref_diffs_for(views, ref_name: str) -> dict[str, float | None]:
+        """Per metric, the referee's mean with minus mean without, or None.
+
+        The first of this season's and last season's past games in which the
+        referee has games both with and without is used. The referee's games
+        are located once for all metrics, and each mean is taken over the same
+        values, in the same order, as masking the frame would select.
+        """
+        for view in views:
+            if view is None:
+                continue
+            participated = _ref_participated(view, ref_name)
+            n_with = int(participated.sum())
+            if 0 < n_with < len(participated):
+                return {
+                    metric: values[participated].mean() - values[~participated].mean()
+                    for metric, values in view[2].items()
+                }
+        return dict.fromkeys(REFEREE_METRICS)
+
+    # Games on the same date and season see exactly the same past games, and
+    # none of the columns read from them (crews, metrics, date, season) are
+    # written by this loop. Rows are in date order, so only the current
+    # (date, season)'s split and per-referee deltas are kept.
+    split_key = None
+    split = None
+    split_views = None
+    ref_diffs: dict[str, dict[str, float | None]] = {}
+
+    if target_game_ids is not None:
+        target_game_ids = {str(g) for g in target_game_ids}
+        row_game_ids = df["GAME_ID"].astype(str).tolist()
+
     # Process each game
     for idx in tqdm(range(len(df)), desc="Computing referee features"):
+        if target_game_ids is not None and row_game_ids[idx] not in target_game_ids:
+            continue
         current_game = df.iloc[idx]
         current_date = current_game["GAME_DATE"]
         current_season = current_game["SEASON_YEAR"]
 
-        past_games_same_season, past_games_prev_season = _split_past_games_by_season(
-            current_date, current_season
-        )
+        if split is None or split_key != (current_date, current_season):
+            split_key = (current_date, current_season)
+            split = _split_past_games_by_season(current_date, current_season)
+            split_views = tuple(
+                None if part.empty else _crew_view(part) for part in split
+            )
+            ref_diffs = {}
+        past_games_same_season, past_games_prev_season = split
         past_games = (
             past_games_same_season
             if not past_games_same_season.empty
@@ -195,14 +258,11 @@ def compute_referee_features(
         for metric in REFEREE_METRICS:
             per_ref_diffs = []
             for ref_name in current_refs:
-                games_with_ref, games_without_ref = _select_games_for_ref(
-                    past_games_same_season, past_games_prev_season, ref_name
-                )
-
-                if len(games_with_ref) > 0 and len(games_without_ref) > 0:
-                    per_ref_diffs.append(
-                        games_with_ref[metric].mean() - games_without_ref[metric].mean()
-                    )
+                if ref_name not in ref_diffs:
+                    ref_diffs[ref_name] = _ref_diffs_for(split_views, ref_name)
+                ref_diff = ref_diffs[ref_name][metric]
+                if ref_diff is not None:
+                    per_ref_diffs.append(ref_diff)
 
             if per_ref_diffs:
                 per_ref_diffs_series = pd.Series(per_ref_diffs, dtype="float64")
@@ -248,18 +308,27 @@ def process_referee_data_for_training(
     df_referees_scheduled=None,
     extra_game_ids=None,
     include_ref_trio_features: bool = False,
+    target_game_ids: set[str] | None = None,
 ):
-    """
-    Load referee data from database, transform it, merge with training data,
-    and compute referee-specific features.
+    """Load assignments and compute historical referee features.
 
     Args:
-        seasons (list): List of seasons to load (e.g., ["2023-24", "2022-23"])
-        df_merged (pd.DataFrame): Training DataFrame with GAME_ID, GAME_DATE, SEASON_YEAR,
-                                TOTAL_POINTS, and TOTAL_LINE_<main_book> columns
-        new_ref_data (pd.DataFrame, optional): New referee data from scheduled games
+        seasons (list[str]): Seasons to load, such as ["2023-24", "2022-23"].
+        df_merged (pd.DataFrame): Game rows with GAME_ID, GAME_DATE, SEASON_YEAR,
+            TOTAL_POINTS, TOTAL_PF, and a resolvable main-book total-line column.
+        df_referees_scheduled (pd.DataFrame, optional): Scheduled assignments
+            with GAME_ID, REF_1, REF_2, and REF_3; preferred over stored assignments.
+        extra_game_ids (list, optional): Assignment game IDs included in addition
+            to the selected seasons.
+        include_ref_trio_features (bool): Also compute crew-trio features when
+            True. Defaults to False.
+
     Returns:
-        pd.DataFrame: DataFrame with referee features, or None if no referee data available
+        pd.DataFrame | None: Assignment rows joined to game context and referee
+            features, or None when no historical assignments are available.
+
+    Raises:
+        ValueError: If a main-book total-line column cannot be resolved.
     """
     df_refs = get_refs_data_from_db(seasons, extra_game_ids=extra_game_ids)
 
@@ -308,13 +377,17 @@ def process_referee_data_for_training(
                 refs = df_refs_pivot[ref_col].dropna().unique()
                 historical_refs.update(refs)
 
-            # Check for referees without historical data
+            # A referee without history (a rookie, a G League call-up) must not
+            # stop the day's predictions: the per-referee loop already skips
+            # officials with no prior games, and the REF_CREW_* tendency
+            # features give them the neutral value plus an unknown count.
             unmatched_refs = scheduled_refs - historical_refs
             if unmatched_refs:
                 unmatched_list = sorted(list(unmatched_refs))
-                raise ValueError(
+                warnings.warn(
                     f"Scheduled referee(s) not found in historical data: {unmatched_list}. "
-                    f"These referees have no prior games to compute features from."
+                    "They contribute nothing to the legacy REF_AVG/STD/SUM features.",
+                    stacklevel=2,
                 )
 
             # Append new referee data to df_refs_pivot
@@ -366,7 +439,9 @@ def process_referee_data_for_training(
 
         # Compute referee features
         df_refs_pivot = compute_referee_features(
-            df_refs_pivot, include_ref_trio_features=include_ref_trio_features
+            df_refs_pivot,
+            include_ref_trio_features=include_ref_trio_features,
+            target_game_ids=target_game_ids,
         )
 
         return df_refs_pivot
@@ -382,16 +457,26 @@ def add_referee_features_to_training_data(
     df_referees_scheduled=None,
     extra_game_ids=None,
     include_ref_trio_features: bool = False,
+    target_game_ids: set[str] | None = None,
 ):
-    """
-    Add referee-specific features to the training DataFrame.
+    """Add historical referee features to the training DataFrame.
 
     Args:
-        seasons (list): List of seasons to load (e.g., ["2023-24", "2022-23"])
-        df_merged (pd.DataFrame): Training DataFrame with GAME_ID, GAME_DATE, SEASON_YEAR,
-                                TOTAL_POINTS, and TOTAL_LINE_<main_book> columns
+        seasons (list[str]): Seasons to load, such as ["2023-24", "2022-23"].
+        df_merged (pd.DataFrame): Game rows with GAME_ID, GAME_DATE, SEASON_YEAR,
+            TOTAL_POINTS, TOTAL_PF, and a resolvable main-book total-line column.
+        df_referees_scheduled (pd.DataFrame, optional): Scheduled assignments
+            with GAME_ID, REF_1, REF_2, and REF_3; preferred over stored assignments.
+        extra_game_ids (list, optional): Assignment game IDs included in addition
+            to the selected seasons.
+        include_ref_trio_features (bool): Also compute crew-trio features when
+            True. Defaults to False.
+        target_game_ids (set, optional): Games whose features are needed; the
+            others are left NaN (see ``compute_referee_features``).
+
     Returns:
-        pd.DataFrame: Training DataFrame with added referee features
+        pd.DataFrame: Game rows with referee features merged by GAME_ID, or the
+            input frame when no historical assignments are available.
     """
     df_refs_pivot = process_referee_data_for_training(
         seasons,
@@ -399,6 +484,7 @@ def add_referee_features_to_training_data(
         df_referees_scheduled=df_referees_scheduled,
         extra_game_ids=extra_game_ids,
         include_ref_trio_features=include_ref_trio_features,
+        target_game_ids=target_game_ids,
     )
 
     # Merge referee features into training data

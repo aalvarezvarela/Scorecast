@@ -148,7 +148,16 @@ def threshold_units(runs: pd.DataFrame) -> list[str]:
 
 
 def seed_noise(runs: pd.DataFrame) -> list[str]:
+    """Error-bar commentary, for the runs that happen to have one.
+
+    Single-seed is the default, so ``seed_roi_range`` is usually absent from the
+    frame ENTIRELY -- not merely NaN. dropna(subset=[...]) raises KeyError on a
+    missing column, which is how a helper like this turns "no error bars" into
+    "the whole report failed to render".
+    """
     messages: list[str] = []
+    if "seed_roi_range" not in runs.columns:
+        return messages
     seeded = runs.dropna(subset=["seed_roi_range"])
     if len(runs) >= 2 and not seeded.empty:
         between = runs["roi"].max() - runs["roi"].min()
@@ -173,12 +182,15 @@ def seed_noise(runs: pd.DataFrame) -> list[str]:
             f"which is {verdict}{caveat}"
         )
 
+    # Only worth saying when the selection is MIXED: with every run single-seed
+    # (the default) this would just restate the protocol on every report.
     missing = runs[runs["seed_roi_range"].isna()]
-    if not missing.empty:
+    if not missing.empty and not seeded.empty:
         messages.append(
             f"_{len(missing)} run(s) have no seed data and no error bar: "
             + ", ".join(f"`{name}`" for name in missing["label"])
-            + ". Add `evaluation_seeds: [101, 202]` and rerun to qualify them._"
+            + ". Compare them on holdout MAE, which is far less noisy than ROI, "
+            "or set `evaluation_seeds: [101, 202]` and rerun to give them one._"
         )
     return messages
 
@@ -215,7 +227,10 @@ def cv_agreement(agreement: pd.DataFrame) -> list[str]:
 
 
 def strategy_spread(summary: pd.DataFrame, runs: pd.DataFrame) -> list[str]:
-    if not runs["seed_roi_range"].notna().any() or summary.empty:
+    # Absent column, not just absent values: single-seed runs never write one.
+    if "seed_roi_range" not in runs.columns or summary.empty:
+        return []
+    if not runs["seed_roi_range"].notna().any():
         return []
     noise = runs["seed_roi_range"].max()
     spread = summary["mean_roi"].max() - summary["mean_roi"].min()
@@ -336,3 +351,67 @@ def config_differences(substantive: pd.DataFrame, n_runs: int) -> list[str]:
         "than one differs between any two runs, their difference in outcome cannot be attributed "
         "to a single cause._"
     ]
+
+
+def tuned_window(window_table: pd.DataFrame, *, tolerance: float = 1.05) -> list[str]:
+    """What tuning did with the training window, and what to distrust about it.
+
+    Three separate warnings, because they call for different actions: a window
+    that was never tuned needs a config change, one that hit the edge of its
+    grid needs a wider grid, and a run with several rows per game needs its
+    confidence intervals suppressed rather than believed.
+    """
+    if window_table.empty:
+        return ["_No runs to report._"]
+
+    messages: list[str] = []
+    untuned = window_table.loc[~window_table["tuned"], "label"].tolist()
+    if untuned:
+        messages.append(
+            "**The training window was NOT tuned** for: "
+            + ", ".join(f"`{name}`" for name in untuned)
+            + ". Set `walk_forward.train_games_choices` in the campaign YAML (at "
+            "least two distinct values) and re-run, or the reported window is "
+            "just the inherited default."
+        )
+    else:
+        messages.append(
+            "`train_games` was tuned by Optuna in every run above. `selected` is "
+            "the value the reported trial actually used, read from "
+            "`metadata.json` -- not `walk_forward.train_games` in `config.json`, "
+            "which on a tuned run is only the fallback."
+        )
+
+    at_edge = window_table[window_table["at_grid_edge"]]
+    if not at_edge.empty:
+        messages.append(
+            "**Censored by the search grid.** "
+            + ", ".join(
+                f"`{row['label']}` chose {row['selected']:,} from [{row['choices']}]"
+                for _, row in at_edge.iterrows()
+            )
+            + ". A run that lands on the smallest or largest offered window did "
+            "not find an optimum, it ran out of choices -- the better window may "
+            "lie outside the grid. Widen `walk_forward.train_games_choices` and "
+            "confirm the new values fit with `scripts/preflight_campaign.py`, "
+            "which reports the real per-fold training size rather than an "
+            "arithmetic guess."
+        )
+
+    pooled = window_table[window_table["rows_per_game"] > tolerance]
+    if not pooled.empty:
+        messages.append(
+            "**Several rows per game** in: "
+            + ", ".join(
+                f"`{row['label']}` ({row['rows_per_game']:.1f} rows/game)"
+                for _, row in pooled.iterrows()
+            )
+            + ". One game appears once per pre-game snapshot and those rows share "
+            "a single outcome, so binomial intervals over them would be far too "
+            "narrow. Following `training_pipeline.snapshot_scoring`, every "
+            "interval and significance verdict for these runs is **suppressed** "
+            "below rather than corrected -- an honest interval needs "
+            "game-clustered inference. Their per-horizon numbers live in each "
+            "run's `snapshot_holdout_metrics.csv`."
+        )
+    return messages

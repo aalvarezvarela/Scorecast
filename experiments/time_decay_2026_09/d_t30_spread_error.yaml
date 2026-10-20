@@ -1,0 +1,32 @@
+experiment_name: intermediate_t30_spread_error_2_2_no_decay_20260901
+prediction_strategy: spread_error_regressor
+training_version: "2.2-no-decay-20260901"
+comparison_group: intermediate_spread_no_decay_2026_09
+hypothesis: Measure unweighted spread-error prediction 30 minutes before tip-off.
+tags: [no_decay, spread_error, spread, intermediate_line, t30, schema_2_2]
+
+device: cuda
+
+data:
+  csv_path: data/train_data/intermediate_line_data_2_2_20260901.csv
+  data_version: "20260901-intermediate-line-2.2-normalized-t30"
+  expected_checksum: "sha256:d9c134f4d04eb566"
+  dataset_type: intermediate_line
+  snapshot_minutes: 30
+  scoring_csv_path: data/train_data/intermediate_line_data_2_2_20260901_scoring.csv
+  season_year_floor: 2021
+  extend_history_dropping_season_gated_columns: false
+
+sample_weight:
+  enabled: false
+  lambda_: null
+  tune_lambda: false
+  allow_unweighted: false
+
+betting:
+  # NORM_LINE is a synthetic even-price line; settle both sides at -110.
+  flat_decimal_odds: 1.9090909090909092
+  comparison_line_cols: ["ODDS_CLOSING_SPREAD_LINE_HOME_bet365"]
+
+optuna: {n_trials: 150, timeout: null}
+evaluation_seeds: [17, 42]

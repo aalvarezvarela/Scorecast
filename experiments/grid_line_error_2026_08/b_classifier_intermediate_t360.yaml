@@ -1,0 +1,89 @@
+experiment_name: grid_classifier_intermediate_t360
+prediction_strategy: over_under_classifier
+line_col: ODDS_TOTAL_LINE_bet365
+training_version: "2.3-horizon-grid"
+comparison_group: horizon_grid_2026_08
+hypothesis: >
+  The classifier at T-360: one of FOUR points on the horizon curve this
+  campaign is really asking about -- 0, 120, 360 and 720 minutes, chosen to span
+  the range rather than to resolve it. The previous campaign ran this strategy at
+  exactly two points, closing and T-360, and both looked good on their primary
+  seed (+5.9%, +6.9% ROI) while their 3-seed means fell to +3.5% and +1.1%. So
+  the question is not "is the classifier good" but "does its standing depend on
+  when the bet is placed".
+  FOUR POINTS CANNOT DRAW A CURVE, and that is accepted here: this is a coarse
+  scan to find out whether the horizon matters at all, at a quarter of the GPU
+  cost of the ten-point version. If two adjacent points disagree by more than
+  the campaign's scatter, the answer is "run the full grid", not "T-360 is
+  the best horizon". T-360 doubles as a replicate of the horizon campaign's cell
+  at the same snapshot, which -- with seeds off everywhere -- is the only
+  whole-pipeline noise estimate this campaign produces. Read it first.
+  Read this cell ONLY against the other three classifier cells across BOTH
+  streams. The two runners are a GPU-slot split, not a comparison group.
+  COHORT WARNING, and it cannot be configured away: the classifier's label is
+  "did the total beat this line", so a game landing exactly on the line has no
+  label and is dropped at the data level. Its holdout is therefore not the same
+  cohort as the regressor cells at the same horizon -- a caveat on that
+  comparison, not a reason to avoid it.
+tags: [classifier, intermediate_line, single_snapshot, t360, horizon_grid, corr995]
+
+device: cuda
+
+data:
+  csv_path: data/train_data/intermediate_line_data_10snap.csv
+  data_version: "20260820-intermediate-line-10-snapshots-t360"
+  dataset_type: intermediate_line
+  snapshot_minutes: 360
+  scoring_csv_path: data/train_data/intermediate_line_data_10snap_scoring.csv
+  expected_checksum: "sha256:1e3ca3fe18d2bbe8"
+  season_year_floor: 2021
+  extend_history_dropping_season_gated_columns: false
+
+cleaning:
+  # Carried unchanged from horizon_*_2026_08 so the two campaigns' cells are
+  # readable against each other. Odds columns are held to 0.995; everything not
+  # matching "ODDS_" stays at cleaning.corr_threshold (0.95).
+  corr_threshold_overrides:
+    ODDS_: 0.995
+
+walk_forward:
+  # 4200 added for the CLASSIFIER cells only. The horizon campaign's single
+  # intermediate classifier cell selected 4000 -- the top of its grid -- which
+  # is not an optimum, it is the wall of the search space, and every conclusion
+  # drawn from a cell at the edge is really a statement about the grid. The
+  # regressor cells are left on the original four values: they picked 3000-3500
+  # and never came near the edge, so widening theirs would only cost trials and
+  # break comparability with horizon_*_2026_08.
+  #
+  # 4200 rather than 4500 because the preflight measures the real ceiling on
+  # this dataset at 4372-4487 games depending on snapshot. A choice above the
+  # ceiling does not error -- tail(n) silently returns fewer rows and the folds
+  # shrink -- so the grid stops short of it deliberately.
+  train_games_choices: [2500, 3000, 3500, 4000, 4200]
+
+optuna:
+  # 150, down from the 300 the horizon campaign used. Measured on those 20 runs:
+  # the best objective reachable in the first 150 trials was IDENTICAL to the
+  # 300-trial best in 13 of 20 cells, median gap 0.000 MAE, worst 0.026 -- and
+  # 0.026 sits inside that campaign's own seed MAE spread of 0.017-0.110. The
+  # extra 150 trials bought less than the evaluation's own noise.
+  #
+  # Note also that pruning means 300 REQUESTED was only 84-172 completed for a
+  # regressor; the classifier's pruner barely fires, so 150 there is ~148
+  # completed and roughly halves an 8h cell.
+  n_trials: 150
+  timeout: null
+
+betting:
+  comparison_line_cols: ["ODDS_CLOSING_TOTAL_LINE_bet365"]
+
+# OFF, campaign-wide, matching the base default. The consequence, stated plainly
+# because nothing else in this campaign will state it: there is no error bar on
+# any single cell. What stands in for one is the SHAPE of the horizon curve --
+# six regressor cells per family and four classifier cells, differing only in
+# snapshot_minutes, plus the T-360 classifier replicate of the horizon
+# campaign's cell at that snapshot. A curve that wanders by more
+# than its own scatter is not a horizon effect, and the horizon campaign's
+# measured single-seed ROI spread on one fixed config was 0.9-11.4 points.
+# Read no single cell on its own.
+evaluation_seeds: []

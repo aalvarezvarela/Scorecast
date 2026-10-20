@@ -183,7 +183,9 @@ def merge_odds_percentages_and_prices_by_game_id(
                     )
 
     # Spread prices: assign based on home/away
-    spread_books = list(
+    # Sorted: set order depends on the per-process hash seed, which made the
+    # output column order differ between otherwise identical builds.
+    spread_books = sorted(
         set(
             [
                 c.replace("spread_", "")
@@ -204,7 +206,9 @@ def merge_odds_percentages_and_prices_by_game_id(
             df_merged = df_merged.drop(columns=[home_col, away_col], errors="ignore")
 
     # ML prices: assign based on home/away
-    ml_books = list(
+    # Sorted: set order depends on the per-process hash seed, which made the
+    # output column order differ between otherwise identical builds.
+    ml_books = sorted(
         set(
             [
                 c.replace("ml_", "")
@@ -358,6 +362,7 @@ def merge_total_spread_moneyline_by_game_id(
         ("bet365", "total_bet365_line_over"),
         ("draftkings", "total_draftkings_line_over"),
         ("fanatics_sportsbook", "total_fanatics_sportsbook_line_over"),
+        ("betrivers", "total_betrivers_line_over"),
     ]
 
     total_selected_col = f"total_{total_line_book}_line_over"
@@ -367,8 +372,15 @@ def merge_total_spread_moneyline_by_game_id(
 
     elif total_lines_mode == "all":
         required_cols.append(total_selected_col)
+        # Only require sources actually present in df_odds -- a book can be
+        # legitimately absent (e.g. Caesars, once excluded/merged upstream via
+        # combine_caesars_and_fanatics) without that being an error.
         required_cols.extend(
-            [col for _, col in known_total_sources if col != total_selected_col]
+            [
+                col
+                for _, col in known_total_sources
+                if col != total_selected_col and col in df_odds.columns
+            ]
         )
 
     # Check required columns exist
@@ -548,10 +560,11 @@ def merge_remaining_odds_by_game_id(
             "bet365",
             "draftkings",
             "fanatics_sportsbook",
+            "betrivers",
         ]
         for book in known_total_sources:
             # Check if the uppercase version already exists in df_merged
-            uppercase_col = f"TOTAL_LINE_{book}"
+            uppercase_col = total_line_col(book)
             if uppercase_col in df_merged.columns:
                 # Only exclude if it was already merged
                 columns_to_exclude.update(

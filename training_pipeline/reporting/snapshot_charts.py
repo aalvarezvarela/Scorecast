@@ -25,7 +25,10 @@ import pandas as pd
 
 from training_pipeline.reporting import loaders, theme
 
-#: Written by scripts/run_intermediate_snapshot_experiment.py.
+#: Written by run_experiment() itself, for any dataset holding several rows
+#: per game. Runs in artifacts/experiments/ from before that was automatic
+#: carry the same filenames, written by the retired
+#: scripts/run_intermediate_snapshot_experiment.py wrapper, so they still load.
 SNAPSHOT_FILES = {"cv": "snapshot_cv_metrics.csv", "holdout": "snapshot_holdout_metrics.csv"}
 
 #: The pooled row. Excluded from every chart: its interval and significance are

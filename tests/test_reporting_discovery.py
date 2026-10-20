@@ -40,7 +40,7 @@ def _config(folder, filename: str, experiment_name: str):
     path.write_text(yaml.safe_dump({
         "experiment_name": experiment_name,
         "target_family": "total_points",
-        "line_col": "TOTAL_LINE_bet365",
+        "line_col": "ODDS_TOTAL_LINE_bet365",
     }))
     return path
 

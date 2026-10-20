@@ -7,11 +7,27 @@ This module provides functions to:
 - Fill missing BetMGM values with Yahoo data
 """
 
+from collections.abc import Callable
+
 import numpy as np
 import pandas as pd
+from nba_ou.data_processing.odds.book_combination import (
+    combine_caesars_and_fanatics,
+    resolve_combine_books,
+)
+from nba_ou.data_processing.odds.closing_line_repair import (
+    audit_repaired_closes,
+    print_repair_summary,
+    repair_closing_lines,
+)
+from nba_ou.data_processing.odds.normalize_spread_lines import (
+    normalize_spread_lines_inplace,
+)
 from nba_ou.data_processing.odds.normalize_total_lines import (
     normalize_total_lines_inplace,
 )
+from nba_ou.postgre_db.input_cache import input_cache_enabled
+from nba_ou.postgre_db.line_history_aiven.fetch import fetch_closing_ticks
 from nba_ou.postgre_db.odds_sportsbook.fetch_data_from_db.fetch_data_from_odds_sportsbook_db import (
     load_odds_sportsbook_from_db,
 )
@@ -24,6 +40,9 @@ def merge_yahoo_sportsbook_odds(
     df_yahoo: pd.DataFrame,
     df_sportsbook: pd.DataFrame,
     normalize_total_lines: bool = True,
+    normalize_spread_lines: bool = True,
+    null_extreme_spread_prices: bool = True,
+    closing_line_repair: Callable[[pd.DataFrame], pd.DataFrame] | None = None,
 ) -> pd.DataFrame:
     """
     Merge Yahoo and Sportsbook odds data.
@@ -43,6 +62,13 @@ def merge_yahoo_sportsbook_odds(
         df_sportsbook (pd.DataFrame): Sportsbook odds data
         normalize_total_lines (bool): If True, replace asymmetrically priced
             total markets with their estimated 50/50 line and -110/-110 prices.
+        normalize_spread_lines (bool): If True, replace asymmetrically priced
+            spread markets with their estimated 50/50 line and -110/-110 prices.
+        null_extreme_spread_prices (bool): If True, set implausibly extreme
+            spread price cells to NaN before spread centering.
+        closing_line_repair: Applied to the merged frame while prices are
+            still American, after the Yahoo fill and before centering, so a
+            Yahoo-filled value is verified like any other.
 
     Returns:
         pd.DataFrame: Merged odds dataframe
@@ -52,16 +78,22 @@ def merge_yahoo_sportsbook_odds(
 
     if df_yahoo.empty:
         print("Yahoo odds data is empty, returning sportsbook data only")
-        return _convert_prices_and_normalize_totals(
+        return _convert_prices_and_normalize_markets(
             df_sportsbook.copy(),
             normalize_total_lines=normalize_total_lines,
+            normalize_spread_lines=normalize_spread_lines,
+            null_extreme_spread_prices=null_extreme_spread_prices,
+            closing_line_repair=closing_line_repair,
         )
 
     if df_sportsbook.empty:
         print("Sportsbook odds data is empty, returning yahoo data only")
-        return _convert_prices_and_normalize_totals(
+        return _convert_prices_and_normalize_markets(
             df_yahoo.copy(),
             normalize_total_lines=normalize_total_lines,
+            normalize_spread_lines=normalize_spread_lines,
+            null_extreme_spread_prices=null_extreme_spread_prices,
+            closing_line_repair=closing_line_repair,
         )
 
     # Select all relevant columns from yahoo for merging
@@ -190,9 +222,12 @@ def merge_yahoo_sportsbook_odds(
     if cols_to_drop_existing:
         df_merged = df_merged.drop(columns=cols_to_drop_existing)
 
-    return _convert_prices_and_normalize_totals(
+    return _convert_prices_and_normalize_markets(
         df_merged,
         normalize_total_lines=normalize_total_lines,
+        normalize_spread_lines=normalize_spread_lines,
+        null_extreme_spread_prices=null_extreme_spread_prices,
+        closing_line_repair=closing_line_repair,
     )
 
 
@@ -215,12 +250,17 @@ def american_to_decimal_series(odds: pd.Series) -> pd.Series:
     return pd.Series(dec, index=odds.index)
 
 
-def _convert_prices_and_normalize_totals(
+def _convert_prices_and_normalize_markets(
     df_odds: pd.DataFrame,
     *,
     normalize_total_lines: bool,
+    normalize_spread_lines: bool,
+    null_extreme_spread_prices: bool,
+    closing_line_repair: Callable[[pd.DataFrame], pd.DataFrame] | None = None,
 ) -> pd.DataFrame:
-    """Convert raw American prices, then optionally center total markets."""
+    """Convert raw American prices, then optionally center total/spread markets."""
+    if closing_line_repair is not None:
+        df_odds = closing_line_repair(df_odds)
     price_cols = [column for column in df_odds.columns if "_price" in column]
     for column in price_cols:
         df_odds[column] = american_to_decimal_series(df_odds[column])
@@ -230,6 +270,12 @@ def _convert_prices_and_normalize_totals(
         enabled=normalize_total_lines,
         odds_format="decimal",
     )
+    normalize_spread_lines_inplace(
+        df_odds,
+        enabled=normalize_spread_lines,
+        null_extreme_prices=null_extreme_spread_prices,
+        odds_format="decimal",
+    )
     return df_odds
 
 
@@ -237,9 +283,13 @@ def load_and_merge_odds_yahoo_sportsbookreview(
     season_years: list[str] | None = None,
     extra_game_ids=None,
     normalize_total_lines: bool = True,
+    normalize_spread_lines: bool = True,
+    null_extreme_spread_prices: bool = True,
+    exclude_caesars: bool = False,
+    combine_fanatics_and_caesars: bool | None = None,
+    repair_closing_lines_from_history: bool = True,
 ) -> pd.DataFrame:
-    """
-    Load odds data from Yahoo and Sportsbook databases, merge them, and merge with games.
+    """Load odds data from Yahoo and Sportsbook databases, merge them, and merge with games.
 
     This function:
     1. Loads Yahoo odds data
@@ -250,8 +300,29 @@ def load_and_merge_odds_yahoo_sportsbookreview(
 
     Args:
         season_years (list[str], optional): List of seasons to load (e.g., ["2023-24", "2024-25"])
+        extra_game_ids (list, optional): Game IDs loaded in addition to the
+            selected seasons for odds and game metadata. With None or empty
+            season_years, these IDs restrict the database queries.
         normalize_total_lines (bool): Whether to center asymmetrically priced
             total markets. Defaults to True.
+        normalize_spread_lines (bool): Whether to center asymmetrically priced
+            spread markets. Defaults to True.
+        null_extreme_spread_prices (bool): Whether to set implausibly extreme
+            spread prices to NaN before centering. Defaults to True.
+        exclude_caesars (bool): If True, drop all Caesars-named odds columns.
+            Default False.
+        combine_fanatics_and_caesars (bool | None): Coalesce fanatics_sportsbook
+            columns with Caesars (fanatics kept where present, Caesars fills
+            NaNs) and drop the standalone Caesars columns. Defaults to None,
+            which means "combine unless an exclusion was explicitly asked for"
+            -- see resolve_combine_books in
+            nba_ou.data_processing.odds.book_combination.
+        repair_closing_lines_from_history (bool): Replace every per-book close
+            with the last valid pre-tip quote in the Aiven line history, then
+            clear cross-book outliers. SBR stores in-play values as closes for
+            27% of games, so turning this off reintroduces that leak; it needs
+            a line-history connection. See
+            nba_ou.data_processing.odds.closing_line_repair. Default True.
 
     Returns:
         pd.DataFrame: Complete merged odds dataframe with game_id, all odds columns
@@ -282,11 +353,147 @@ def load_and_merge_odds_yahoo_sportsbookreview(
         df_yahoo,
         df_sportsbook,
         normalize_total_lines=normalize_total_lines,
+        normalize_spread_lines=normalize_spread_lines,
+        null_extreme_spread_prices=null_extreme_spread_prices,
+        closing_line_repair=(
+            _repair_from_line_history if repair_closing_lines_from_history else None
+        ),
+    )
+
+    df_odds_merged = combine_caesars_and_fanatics(
+        df_odds_merged,
+        exclude_caesars=exclude_caesars,
+        combine_with_fanatics=resolve_combine_books(
+            combine=combine_fanatics_and_caesars, exclude_caesars=exclude_caesars
+        ),
     )
 
     print(f"Final merged odds: {len(df_odds_merged)} rows")
 
     return df_odds_merged
+
+
+def _repair_from_line_history(df_odds: pd.DataFrame) -> pd.DataFrame:
+    """Fetch closing ticks for the frame's seasons and apply the repair."""
+    if df_odds.empty or "game_id" not in df_odds.columns:
+        return df_odds
+    frame = df_odds.reset_index(drop=True)
+    seasons = sorted(
+        int(season)
+        for season in pd.to_numeric(frame["season_year"], errors="coerce")
+        .dropna()
+        .unique()
+    )
+    # Finished seasons rarely change, and each costs 10-30 s of server time;
+    # the input cache reuses them while their server fingerprint is unchanged.
+    ticks = fetch_closing_ticks(season_years=seasons, use_cache=input_cache_enabled())
+
+    def repair(rows: pd.DataFrame):
+        # The whole ticks frame either way: a cell only ever matches its own
+        # game's ticks, so another season's ticks change nothing.
+        return repair_closing_lines(
+            rows,
+            ticks,
+            game_tick_loader=lambda game_ids: fetch_closing_ticks(
+                game_ids=game_ids, last_n=None
+            ),
+        )
+
+    repaired, audit = _repair_by_season(
+        frame, seasons, ticks.attrs.get("season_fingerprints", {}), repair
+    )
+    audit_repaired_closes(repaired, audit)
+    print_repair_summary(audit)
+    return repaired
+
+
+#: History-memo entry of one finished season's repaired rows and audit.
+REPAIR_MEMO_NAME = "closing_line_repair"
+
+
+def _repair_by_season(frame, seasons, fingerprints, repair):
+    """``repair(frame)``, reusing finished seasons' repairs from the history memo.
+
+    The repair is per game: a game's repaired cells read only its own rows,
+    its own ticks and, for outlier candidates, every tick of that game. So a
+    finished season's repaired rows are a function of its rows here and of
+    its line history, which ``fingerprints`` (the season's server fingerprint,
+    as the S3 input cache validated it) covers entirely. A season is reused
+    only when both match; the others are repaired here, together, and stored.
+
+    The pieces are put back in the frame's row order. If any piece's dtypes
+    differ from the frame's, nothing is reused and the whole frame is repaired
+    at once, as without a memo.
+    """
+    from nba_ou.create_training_data import history_memo as memo_module
+    from nba_ou.postgre_db import season_tables
+
+    backend = memo_module.default_backend()
+    current = season_tables.current_season_year()
+    season_of_rows = pd.to_numeric(frame["season_year"], errors="coerce")
+    memoisable = [s for s in seasons if s < current and s in fingerprints]
+    if backend is None or not memoisable:
+        return repair(frame)
+
+    digests = {}
+    for season in memoisable:
+        digest = memo_module.hashlib.sha256(
+            memo_module._frame_digest(frame[season_of_rows == season])
+        )
+        digest.update(repr(fingerprints[season]).encode())
+        digests[season] = digest.hexdigest()
+    memo = memo_module.HistoryMemo(
+        backend,
+        digests,
+        max_season=current - 1,
+        code=memo_module.code_key(__name__),
+    )
+    # One table per frame layout: the closing builder and the intermediate base
+    # repair differently shaped odds frames (books combined or not), and under
+    # one name each would invalidate the other's entries on every build.
+    layout = memo_module.hashlib.sha256(
+        repr([(str(c), str(t)) for c, t in frame.dtypes.items()]).encode()
+    ).hexdigest()[:12]
+    name = f"{REPAIR_MEMO_NAME}/{layout}"
+    memo.prefetch([name])
+    tables = {s: memo.table(name, s) for s in memoisable}
+    reused = [s for s in memoisable if "season" in tables[s]]
+    rest = ~season_of_rows.isin(reused)
+
+    pieces, audits = [], []
+    if rest.any():
+        repaired_rest, audit_rest = repair(frame[rest])
+        pieces.append(repaired_rest)
+        audits.append(audit_rest)
+    for season in reused:
+        stored_rows, stored_audit = tables[season]["season"]
+        pieces.append(stored_rows.set_axis(frame.index[season_of_rows == season]))
+        audits.append(stored_audit)
+    if any(not piece.dtypes.equals(frame.dtypes) for piece in pieces):
+        print("Closing-line repair: piece dtypes differ, repairing every season")
+        return repair(frame)
+
+    repaired = pd.concat(pieces).sort_index() if len(pieces) > 1 else pieces[0]
+    if not repaired.index.equals(frame.index):
+        raise AssertionError("closing-line repair pieces do not cover the frame")
+    # The frame's own index object (a RangeIndex here), as a whole repair keeps it.
+    repaired.index = frame.index
+    audit = pd.concat(audits, ignore_index=True) if len(audits) > 1 else audits[0]
+    if rest.any():
+        repaired_rest_seasons = pd.to_numeric(
+            repaired_rest["season_year"], errors="coerce"
+        )
+        audit_seasons = pd.to_numeric(audit_rest["season_year"], errors="coerce")
+        for season in memoisable:
+            if season in reused or not (repaired_rest_seasons == season).any():
+                continue
+            tables[season]["season"] = (
+                repaired_rest[repaired_rest_seasons == season].reset_index(drop=True),
+                audit_rest[audit_seasons == season].reset_index(drop=True),
+            )
+        memo.flush()
+    print(f"Closing-line repair: {len(reused)} season(s) from the history memo")
+    return repaired, audit
 
 
 if __name__ == "__main__":

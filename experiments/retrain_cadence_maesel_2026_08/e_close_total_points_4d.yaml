@@ -1,0 +1,60 @@
+experiment_name: maesel_cadence_total_points_close_4d
+prediction_strategy: total_points_regressor
+line_col: ODDS_TOTAL_LINE_bet365
+training_version: "2.5-mae-selection"
+comparison_group: retrain_cadence_maesel_2026_08
+hypothesis: >
+  CONTROL of pair 3: the same cadence question again, same closing dataset as
+  pair 2, but predicting the GAME TOTAL rather than the line error. Cell A of
+  this campaign carries the campaign-wide statement and the validity gates.
+
+  WHY A SECOND TARGET. Pair 2 and pair 3 differ in one thing only, the target,
+  so together they answer whether any cadence effect is a property of the
+  validation protocol or of one particular model's loss surface. It is a real
+  possibility rather than a formality here: total_points spends most of its
+  capacity reproducing the line, which the model can already read off its
+  features, so its MAE is dominated by a nuisance component that the line-error
+  target subtracts out. A selection rule that now ranks purely on MAE
+  (refit.use_lexicographic_selection: false, campaign-wide) is therefore ranking
+  a different thing in this pair than in pairs 1 and 2 -- and that is precisely
+  why the cadence gap should be read as a SIGN repeated across pairs, never as
+  three ROI numbers to be averaged.
+
+  WHAT IS NOT COMPARABLE. MAE across pairs 2 and 3 is meaningless -- the two
+  targets are on different scales. ROI, win rate and bet volume are the only
+  measures comparable across targets, and only their cadence GAP is comparable
+  across pairs.
+tags: [total_points, closing_line, retrain_cadence, control, mae_selection, corr995]
+
+device: cuda
+
+data:
+  # Identical to pair 2, so pairs 2 and 3 differ in target alone.
+  csv_path: data/train_data/training_data_2_0_20260819.csv
+  data_version: "20260819-training-2.0"
+  dataset_type: closing_line
+  expected_checksum: "sha256:27a291de0ae78165"
+  season_year_floor: 2021
+  extend_history_dropping_season_gated_columns: false
+
+cleaning:
+  corr_threshold_overrides:
+    ODDS_: 0.995
+
+walk_forward:
+  # THE VARIABLE, stated explicitly. Base defaults.
+  retrain_every_days: 4
+  min_validation_games: 25
+  # Held identical to cell F.
+  eval_span_games: 850
+  max_folds: null
+  # Same grid as pair 2 and as horizon_total_points_closing_reference, which ran
+  # it on this dataset and selected 3500.
+  train_games_choices: [2500, 3000, 3500, 4000, 4500]
+
+optuna:
+  # 150, matching every other cell in this campaign.
+  n_trials: 150
+  timeout: null
+
+evaluation_seeds: [101, 202]

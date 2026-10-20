@@ -1,0 +1,26 @@
+experiment_name: target_total_points_closing_reference
+prediction_strategy: total_points_regressor
+line_col: ODDS_TOTAL_LINE_bet365
+training_version: "2.1-target-snapshot-campaign"
+comparison_group: target_snapshot_2026_08
+hypothesis: >
+  Closing-line reference for the total-points target. Paired with the matching
+  line-error reference, it isolates whether subtracting the market line makes
+  the weak betting signal easier to learn.
+tags: [total_points, closing_line, reference]
+
+device: cuda
+
+data:
+  csv_path: data/train_data/training_data_2_0_20260819.csv
+  data_version: "20260819-training-2.0"
+  dataset_type: closing_line
+  expected_checksum: "sha256:27a291de0ae78165"
+  season_year_floor: 2021
+  extend_history_dropping_season_gated_columns: false
+
+optuna:
+  n_trials: 200
+  timeout: null
+
+evaluation_seeds: []

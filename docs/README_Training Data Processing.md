@@ -131,9 +131,35 @@ The active sportsbook is configured through `nba_ou.config.odds_columns`.
 it falls back to `consensus_opener`. The configured book controls canonical
 column names such as:
 
-- `TOTAL_LINE_<book>`
-- `SPREAD_<book>`
-- `MONEYLINE_<book>`
+- `ODDS_TOTAL_LINE_<book>`
+- `ODDS_SPREAD_<book>`
+- `ODDS_MONEYLINE_<book>`
+
+`fanatics_sportsbook` only exists from the 2025 season, and the odds-fetching
+pipeline no longer scrapes the now-discontinued Caesars, so left alone
+fanatics_sportsbook is a de facto season indicator. `create_df_to_predict()`
+and `create_intermediate_line_df()` both take `exclude_caesars`,
+`exclude_fanatics`, and `combine_fanatics_and_caesars` to reconcile this -- see
+`nba_ou.data_processing.odds.book_combination` (wide, per-book columns) and
+`nba_ou.data_processing.line_history.book_merge` (tidy Aiven ticks).
+
+Combining is the **default**: it folds Caesars into fanatics_sportsbook
+(fanatics values kept where present, Caesars fills the gap), giving one
+continuously-covered book instead of two disjoint, season-correlated ones. It
+is the only option that fixes the season-leak without discarding a book's data.
+
+`combine_fanatics_and_caesars` is tri-state so that "default on" cannot turn an
+explicit exclusion into an error (`resolve_combine_books`):
+
+- `None` (default) -- combine, unless `exclude_caesars` or `exclude_fanatics`
+  was explicitly asked for, in which case the exclusion wins.
+- `True` -- combine, and reject a simultaneous exclusion as the genuine
+  contradiction it is: there is no standalone book left to exclude.
+- `False` -- leave both books as they are.
+
+The intermediate CLI follows the same default: `--exclude-fanatics` and
+`--exclude-caesars` are escape hatches, and running the script with no flags
+produces the merged book.
 
 ## Same-Day Prediction Inputs
 
@@ -183,10 +209,12 @@ The major steps are:
    - Creates `IS_OVERTIME`.
    - Preserves raw `PTS`, so `TOTAL_POINTS` remains the actual final score,
      including overtime.
-   - Creates `PTS_PER_40` as `PTS * 200 / MIN` only when
-     `0 < MIN < 240`. For every other minutes value—including missing, zero,
-     negative, non-finite, regulation, and overtime minutes—it keeps raw `PTS`
-     and performs no division.
+   - Creates `PTS_PER_40` as `PTS * 200 / MIN` for every positive, finite
+     `MIN`, including regulation and overtime games. `MIN` is the sum of the
+     five players' minutes, so 200 corresponds to 40 game-clock minutes.
+     For 120 points, aggregate minutes of 239, 240 and 265 produce 100.42,
+     100.00 and 90.57 respectively. Missing, zero, negative or non-finite
+     minutes produce NaN; raw `PTS` is preserved separately.
    - For overtime games only, overwrites additive counting statistics with their
      48-minute regulation equivalents using `value * 240 / MIN`.
    - The normalized allowlist is `FGM`, `FGA`, `FG3M`, `FG3A`, `FTM`, `FTA`,
@@ -199,14 +227,14 @@ The major steps are:
 3. `merge_total_spread_moneyline_by_game_id()`
    - Merges the selected book's spread and moneyline by `GAME_ID`.
    - Merges total lines for all known total sources when `total_lines_mode="all"`.
-   - Creates canonical columns such as `TOTAL_LINE_betmgm`, `TOTAL_LINE_bet365`,
-     `SPREAD_<book>`, and `MONEYLINE_<book>`.
+   - Creates canonical columns such as `ODDS_TOTAL_LINE_betmgm`,
+     `ODDS_TOTAL_LINE_bet365`, `ODDS_SPREAD_<book>`, and `ODDS_MONEYLINE_<book>`.
    - Assigns spread and moneyline from the current team's perspective.
 
 4. `compute_total_points_features()`
    - Creates `TOTAL_POINTS` as home plus away points, repeated on both team rows.
-   - For each `TOTAL_LINE_*` column, creates `DIFF_FROM_LINE_<book>` as actual
-     total points minus that line.
+   - For each `ODDS_TOTAL_LINE_*` column, creates `DIFF_FROM_LINE_<book>` as
+     actual total points minus that line.
 
 5. `filter_valid_games()`
    - Keeps only games with exactly two team entries.
@@ -278,6 +306,9 @@ Core team stats rolled over recent games include:
   averages, short 1/2/3/10 windows, 5-game weighted moving average,
   season-before average and standard deviation, and 5- and 10-game trend
   slopes (with the 5-minus-10 relative slope).
+  Older datasets normalized only rows below 240 aggregate minutes and retained
+  raw points otherwise; rebuild these histories before training on the corrected
+  per-40-minute definition.
 - Offensive, defensive, and net rating.
 - Effective field goal percentage and true shooting percentage.
 - Pace, possessions, PIE.
@@ -315,7 +346,7 @@ Feature patterns include:
 - `*_TREND_SLOPE_LAST_10_GAMES_BEFORE` and
   `*_TREND_SLOPE_LAST_5_MINUS_LAST_10_GAMES_BEFORE`: trend comparison features.
 
-`compute_all_rolling_statistics()` dynamically discovers new `TOTAL_LINE_*`,
+`compute_all_rolling_statistics()` dynamically discovers new `ODDS_TOTAL_LINE_*`,
 `DIFF_FROM_*`, percentage, consensus, and eligible spread/moneyline price
 columns, so adding a new book can automatically expand the rolling feature set
 when the column naming convention matches the existing patterns. Total-market
@@ -352,7 +383,9 @@ each team's season-before offensive tendency with the opponent's season-before
 allowed tendency. It creates expected home and away rates for threes, free
 throws, turnovers, and offensive rebounds; game-level expected counts scaled
 by `EXPECTED_POSS_FROM_PACE_BEFORE`; and a free-throw-rate interaction with
-`REF_AVG_TOTAL_PF_DIFF_BEFORE`.
+`REF_AVG_TOTAL_PF_DIFF_BEFORE`. The newer crew-tendency combinations with these
+expected values are added separately by `add_referee_interaction_features()`
+(see Referee Crew Tendency Features).
 
 The home/away historical source columns are removed after those interactions
 are built. Only the 13 compact matchup features remain in the final model
@@ -391,25 +424,114 @@ The pipeline computes player features for these stats:
 - `MIN`
 
 For each stat, `precompute_cumulative_avg_stat()` creates a recency-weighted
-player estimate using an EWMA with a 10-game halflife. It is shifted so the
+player estimate using an EWMA with a 15-game halflife (`adjust=True`: each game
+weighted by its age alone, so recent games weigh more without the season's first
+game anchoring the average). It is shifted so the
 current game's stat is excluded. The lookup is grouped by `SEASON_YEAR` and
 `PLAYER_ID`.
+
+It also stores `<stat>_CUM_AVG_AFTER`: the same estimate with the row's own game
+included, i.e. what the player's next row in the season carries. Out/Doubtful
+and Questionable players have no row in the game being predicted, so their state
+is their last row strictly before it, and they are valued with
+`<stat>_CUM_AVG_AFTER` (including the minutes threshold that orders them). Until
+2026-10 they read that row's `_CUM_AVG`, which leaves out their most recent
+game although it was played. Training and live prediction use the same rule.
+
+Available players follow that rule too when their selected row is from an
+earlier game (for example, a late scratch absent from the target box score).
+A same-day row keeps `_CUM_AVG`; only a strictly earlier row uses `_AFTER`,
+including its minutes threshold. Current-game points and minutes never enter
+these estimates.
+
+Earlier-season history is recovered per roster member, not only when the entire
+team has no current-season history. If a known member has no earlier row this
+season, the historical build resolves that game-day roster through the same
+history/state builder as an official live roster. This keeps veterans who have
+not debuted in the injured/questionable groups even while teammates have
+current-season games. A rookie with no earlier appearance keeps missing stats.
 
 For each team-game, the pipeline identifies active and injured players using:
 
 - Historical injury database rows.
 - Player boxscore comments containing injury wording.
 - Scheduled injury-report data for same-day predictions.
-- Roster membership inferred from each player's last team before the game date.
+- The game-day roster (below).
+
+**Roster membership** (since 2026-10) is the team's roster on game day:
+
+- A stored game: every player with a box-score row for the team-game, minutes
+  or not, plus every player listed for it without one -- the inactive list and
+  the injury report. The box score lists the players dressed for the game, so
+  together they are the roster published before tip, the same whoever ends up
+  playing. A player on the inactive list or the report belongs to the team even
+  without a box-score row. The inactive list is membership evidence only: a late
+  scratch is on it but may be missing from the report, and dropping him would
+  make membership depend on who sat. Who is injured is still decided by the
+  report (or, without one, the inactive list).
+- Tonight's game: the official roster (`CommonTeamRoster`) plus every player
+  the report lists. If the official roster could not be fetched, the team's
+  previous game's roster (its box score plus its inactive list) stands in.
+
+A trade, signing or release therefore counts from the first game it affects.
+Until 2026-10 membership was inferred from each player's last box-score team
+strictly before the game, so every move was recognised one game late and season
+openers fell back to the previous season's rosters. The same rosters feed the
+All-Star candidates and roster continuity (`game_day_rosters` in
+`players/live_roster.py`). Only membership reads the game's box score: every
+numeric player feature remains shifted, so current-game box-score values are
+excluded from those calculations, and no current-game box-score quantity (MIN,
+PTS) takes part in the roster split.
+
+A player with no earlier appearance with minutes, in any loaded season (a
+debut), has no estimate: his averages are NaN, in training and live alike.
+
+Availability is the roster minus the injured/inactive set, and that set is built
+from reasons rather than from minutes. Two sources feed it: the inactive-players
+table published with the box score, and the box-score `COMMENT` field whenever it
+names an absence reason that the pre-game NBA injury report would also have
+carried. `UNAVAILABLE_COMMENT_PATTERN` holds that list: Injury/Illness, Rest,
+Personal Reasons, suspensions, Trade Pending, and G League assignments.
+
+`DNP - Coach's Decision` is deliberately excluded and leaves the player
+available. This is the selection rule for the whole family: a category counts
+only if the same absence would have been visible on the pre-game report, because
+anything else teaches the model to react to information that is not available at
+prediction time.
+
+Target-game `MIN` is not consulted. Minutes cannot distinguish a late scratch
+from a coach's decision, so a minutes rule buys label coverage at the cost of
+making roster membership a function of the game being predicted -- the failure
+recorded in `nba_ou.config.leakage` and re-checked by
+`test_target_game_minutes_cannot_move_a_player_between_buckets`.
+
+> The remaining gap is the source, not the rule: training reads the box score
+> while production reads the pre-game injury report PDF. Archiving those reports
+> is what closes it, and it is the prerequisite for using `Questionable` and
+> `Doubtful` statuses rather than the current `Out`/`Doubtful` set.
+
+Which of these columns are emitted is set by `ACTIVE_PROFILE` in
+`players/feature_profile.py` — see
+[The Player Feature Profile](#the-player-feature-profile) for what the reduced
+set keeps and why.
 
 Feature families added at the team row level include:
 
-- Top six active-player IDs, names, and prior averages by stat.
-- Top four injured-player IDs, names, and prior averages by stat.
-- Average top-injured-player value by stat.
-- Total active-player and injured-player prior value by stat.
-- Number of active and injured players.
-- Injury streak features for injured players by points.
+- Top three active-player prior averages, for PTS and MIN.
+- Top four injured-player prior averages, for PTS and MIN.
+- IDs and names for the PTS ranking and the top MIN player (bookkeeping, dropped
+  before training).
+- Minutes-weighted OFF_RATING and PACE_PER40 for the active and the injured set,
+  replacing the per-slot rate columns.
+- Average top-injured-player value, for PTS and MIN.
+- Total injured-player prior value, for PTS and MIN (counting statistics only).
+- Number of injured players.
+- Injury streak features for injured players, by points **and by minutes**
+  (`STREAK_STAT_COLS` in `players/fresh_absence.py`). The two rank different
+  players: PTS finds the scorer, MIN the starter whose absence changes the
+  possession count. Streaks are deliberately not emitted for the remaining
+  stats, which would repeat the same absence over a differently sorted list.
+- Fresh-absence features — see [Fresh-Absence Features](#fresh-absence-features).
 - Bench scoring and pace features from players averaging roughly 7 to 21 minutes.
 
 After home/away merging, player columns are suffixed by side, for example:
@@ -417,7 +539,167 @@ After home/away merging, player columns are suffixed by side, for example:
 - `TOP1_PLAYER_PTS_BEFORE_TEAM_HOME`
 - `TOP1_INJURED_PLAYER_PTS_BEFORE_TEAM_AWAY`
 - `TOTAL_INJURED_PLAYER_PTS_BEFORE_TEAM_HOME`
-- `N_ACTIVE_PLAYERS_BEFORE_TEAM_AWAY`
+- `N_INJURED_PLAYERS_BEFORE_TEAM_AWAY`
+
+> **Removed from newly generated data: `N_ACTIVE_PLAYERS_*` and
+> `TOTAL_NON_INJURED_PLAYER_*`.** In legacy datasets both
+> aggregated over the *non-injured* player set, which
+> `get_top_n_averages_with_names` resolves as `df[df["GAME_DATE"] == date]` for
+> a game already played — that is, the players who logged minutes in the game
+> being predicted. The count therefore tracked rotation depth: it correlates
+> **+0.55 with `|HOME_MARGIN|`** (bench-emptying in blowouts) and runs from 9.7
+> for games decided by ≤5 points to 12.3 for games decided by >30. A
+> `spread_error` regressor given these 14 columns scored 66.7% against the
+> closing spread on a 609-game holdout; without them, 52.4%. The per-player
+> *values* were correctly lagged — only the membership of the set leaked, which
+> is why the `_BEFORE_` naming looked right. `TOTAL_INJURED_PLAYER_*` and
+> `N_INJURED_PLAYERS_*` are unaffected: they resolve each player's last game
+> *strictly before* this one. The individual top-player and bench families now
+> use roster-minus-injured membership and are safe. Old CSVs stay usable —
+> `clean_dataframe_for_training` drops the legacy aggregate columns if it finds
+> them (see `nba_ou.config.leakage`).
+
+Each top-N statistic also produces an id and a name column
+(`TOP1_PLAYER_ID_PTS_BEFORE`, `TOP1_PLAYER_NAME_PTS_BEFORE`). **These are
+bookkeeping, not features.** They exist so
+`add_top3_availability_effect_features_for_columns()` can locate each team's
+leading players; an id is meaningless as a numeric input (player 1610612747 is
+not "greater than" player 201939) and a name is a string. Both are removed at the
+end of the pipeline by `drop_player_identifier_columns()`, which must run *after*
+the availability-effect features have consumed the id columns.
+
+### The Player Feature Profile
+
+`players/feature_profile.py` decides which player/availability columns exist.
+The block had grown to **216 columns (12% of the dataset)** by taking the cross
+product of 6 statistics × 4–6 top-N slots × 2 sides for both the available and
+the injured roster, then adding per-team averages and sums. `ACTIVE_PROFILE`
+(currently `REDUCED_PROFILE`) cuts that to **94, a 55% reduction**.
+
+The cut is about redundancy, not usefulness: by XGBoost gain the block is 11.4%
+of columns and 12.7% of importance, so it pays its way in aggregate. What it does
+not do is need this many columns to say it. The measurements:
+
+| Finding | Evidence | Action |
+|---|---|---|
+| Summing a **rate** is not a quantity | `TOTAL_INJURED_PLAYER_DEF_RATING` correlates **0.98** with `N_INJURED_PLAYERS` — it re-counts who is out | sums kept for PTS and MIN only |
+| Per-slot rate columns repeat each other | `TOP2_PLAYER_PACE_PER40` ~ `TOP3_PLAYER_PACE_PER40` at **0.97** | replaced by one minutes-weighted aggregate per side |
+| Deep slots are padding | injured slot 3 empty in 27% of games, slot 4 in **50%** | active slots cut to 3; injured stays 4 (see below) |
+| Most of this never reached a model | at `corr_threshold: 0.95`, 216 columns became 96 — only **4 of 72** active-player and **1 of 12** `AVG_INJURED` survived | generate what survives |
+
+**The minutes-weighted aggregates** (`ACTIVE_WEIGHTED_<stat>_BEFORE`,
+`INJURED_WEIGHTED_<stat>_BEFORE`) are the join that does the work: instead of
+eight per-slot rate columns, one number per side weighting each player's rate by
+their own minutes. It says what the per-slot columns were reaching for, and
+stays defined when a slot is empty. `0` means nobody on that side of the split,
+which `N_INJURED_PLAYERS` disambiguates.
+
+**Two things the cut was not allowed to break:**
+
+1. `add_top3_availability_effect_features_for_columns` finds players through the
+   **id** columns, so the PTS ranking and `TOP1_PLAYER_ID_MIN` keep being
+   produced. Ids are dropped before training either way, so trimming them
+   further would only cost debugging visibility.
+2. The fresh-absence features sum over **all four** injured slots, so those keep
+   their PTS and MIN value columns. Cutting slots would silently redefine a
+   feature rather than remove one.
+
+**`LEGACY_PROFILE` reproduces the old schema.** This matters operationally:
+serving reads each model bundle's feature schema and **raises** on a missing
+feature (`prediction.py`). A model trained before the reduction cannot score a
+reduced frame, so pin `ACTIVE_PROFILE = LEGACY_PROFILE` to keep the daily
+prediction job running until all six production models have been retrained and
+promoted on a regenerated dataset. The availability-effect `MAX_ABS` columns
+are governed separately by `emit_max_abs_effects` on the effect function.
+
+### Fresh-Absence Features
+
+`add_fresh_absence_features()` (`players/fresh_absence.py`, called at the end of
+`add_player_history_features()`) crosses two families the pipeline already emits
+separately: *how good* an injured player is (`TOP1_INJURED_PLAYER_PTS_BEFORE`)
+and *how long they have been out* (`TOP1_INJURED_STREAK_PTS_BEFORE`). The
+interaction is the feature; neither factor alone carries it.
+
+Per statistic in `STREAK_STAT_COLS` (`PTS`, `MIN`), at the team row level:
+
+| Column | Meaning |
+|---|---|
+| `INJ_FRESH_OUT_<stat>_BEFORE` | summed stat of every top-N injured player whose **first** game out this is — the size of tonight's news |
+| `INJ_TOP1_FIRST_GAME_OUT_<stat>_BEFORE` | the leading injured player's stat when tonight is their first game out, else 0 |
+| `INJ_KEY_PLAYER_FIRST_GAME_OUT_<stat>_BEFORE` | 1 when that player clears `KEY_PLAYER_THRESHOLDS` (PTS 18, MIN 30) |
+| `INJ_KEY_PLAYER_SECOND_GAME_OUT_<stat>_BEFORE` | the same for their second game out |
+
+After the merge, `add_fresh_absence_sums()` adds `<name>_SUM_BEFORE` =
+home + away for each. Note this is a **sum, not a `_DIFF_BEFORE`**: on a totals
+market an absence on either side moves the same number, so the sides add, and a
+difference would net to zero in exactly the games where the news is biggest.
+
+**Why these exist.** Measured on `training_data_2_3_20260909` (regular season
+2019-2025, bet365 closing totals, 8,232 games), splitting each game into how far
+the closing total moved from the two teams' recent baseline versus how far actual
+scoring moved:
+
+| | line vs baseline | scoring vs baseline | OVER rate |
+|---|---|---|---|
+| key player's **first** game out | −1.47 | −0.13 | **53.2%** [50.6, 55.7] |
+| the same player's **second** game | −1.15 | −0.98 | 48.4% |
+
+On the first game out the market cuts the total by about a point and a half
+while scoring barely falls — usage redistributes and pace does not drop. By the
+second game the adjustment is correct. The effect held in 6 of 7 seasons and is
+stronger for the away team (54.8% OVER). Thresholds were picked by sweeping
+(PTS peaked at 18, MIN at 30); the continuous `INJ_TOP1_*` columns are emitted
+alongside the flags so the model is not forced through one cut-off.
+
+**This is a hypothesis in the feature set, not a settled result.** That interval
+does not clear the 52.38% break-even, and an explicit-feature walk-forward moved
+the model the right way (+0.7pp on the affected games) with an interval spanning
+zero. It is here so a campaign can measure it properly.
+
+**Temporal correctness.** Every input is a `_BEFORE` column, and a streak counts
+team games up to and including the current one — knowable pre-tip, since the
+inactive list is set before the game. The standing availability caveat applies:
+history is built from the settled post-game inactive list while production reads
+the pre-game report, so late scratches and questionable-then-rested players are
+labelled differently than they would have been at bet time. Both of those
+mislabellings make the market look like it *under*-reacted, so neither can
+manufacture this effect.
+
+### Season Openers
+
+Three subsystems used to reset at the season boundary and leave a team's opening
+games empty. All three now follow the same fallback chain — **current season →
+previous REGULAR season → a defined no-history value** — restricted to regular
+season because that is the regime these models target and because only 16 teams
+play a postseason, which would otherwise make the carried-over value mean
+something different per team:
+
+- `compute_trend_slope()` (`team/rolling.py`) grouped by `(TEAM_ID, SEASON_YEAR)`
+  with `min_periods=2`, leaving every slope column empty for the first two games
+  of a season. It now falls back to the trend the team ended its previous regular
+  season with, then to `0` (which is also what `calculate_slope` returns for
+  insufficient data).
+- `precompute_cumulative_avg_stat()` (`players/players_statistics.py`) grouped its
+  EWMA by `(SEASON_YEAR, PLAYER_ID)`. It now seeds from the player's previous
+  regular season average, then `0`.
+- `create_player_lookup()` (`past_injuries/past_injuries.py`) resolves a roster by
+  asking who last played for the team *earlier in the same season*, so it returned
+  nobody at an opener and every top-N player column stayed missing.
+  `add_player_history_features()` now falls back to the game's own roster in that
+  case — no new lookahead, since the primary path already selects on
+  `GAME_DATE == date`, and every value attached is a prior-season average.
+
+The availability-effect aggregates are the one place a plain `0` is correct:
+`_shrink_effect` computes `raw * n/(n+k)`, whose value at `n=0` is `0`, so a row
+with no evidence has a fully shrunk estimate of zero rather than an unknown. The
+fill is applied to the aggregates only, never to per-player values, so rows where
+some players do have evidence keep the mean over those players.
+
+Filling the *level* features (ratings, TS%, pace, minutes, counts) with `0` would
+be wrong, not merely lossy: `OFF_RATING` runs 87–165 and `TS_PCT` 0.38–1.33 in
+real data, so `0` is an extreme that never occurs and a tree would read a season
+opener as the worst offense on record. That is why they get a previous-season
+value instead.
 
 ### Minutes-Weighted Roster Continuity
 
@@ -666,8 +948,8 @@ During this stage, the pipeline also:
 - Creates star contribution features, such as
   `STAR_OFFENSIVE_RATIO_IMPROVEMENT_BEFORE` and
   `STAR_PTS_PERCENTAGE_BEFORE`.
-- Deduplicates game-level `TOTAL_LINE_*` columns that were duplicated by the
-  home/away merge.
+- Deduplicates game-level `ODDS_TOTAL_LINE_*` columns that were duplicated by
+  the home/away merge.
 - Creates game-level `TOTAL_POINTS` and `TOTAL_PF`.
 - Adds `IS_PLAYOFF_GAME_BEFORE`.
 - Computes home/away points-conceded features and historical matchup features.
@@ -726,7 +1008,7 @@ unchanged. Set `normalize_total_lines=False` to preserve the source values; the
 live prediction script exposes the same choice as
 `--no-normalize-total-lines`.
 
-`engineer_odds_features()` creates `odds_*` features, including:
+`engineer_odds_features()` creates `ODDS_*` features, including:
 
 - Per-book total line midpoints.
 - Cross-book total line mean, median, standard deviation, range, IQR, and MAD.
@@ -740,7 +1022,7 @@ live prediction script exposes the same choice as
 - Interactions such as total line times probability skew, total line times
   favorite spread, and line disagreement times vig.
 - Implied home and away points from total and spread.
-- `close_total_consensus`, based on cross-book close total median or mean.
+- `ODDS_close_total_consensus`, based on cross-book close total median or mean.
 
 ## Betting Difference Features
 
@@ -756,6 +1038,11 @@ It looks for home/away pairs that are both:
 
 The resulting columns generally end in `_DIFF_BEFORE`. These features directly
 encode relative home-vs-away market context.
+
+`add_fresh_absence_sums()` runs alongside it and is the deliberate exception:
+the fresh-absence columns get a home-**plus**-away `_SUM_BEFORE` instead, because
+absences on a totals market add rather than offset. See
+[Fresh-Absence Features](#fresh-absence-features).
 
 ## Global Market Regime Features
 
@@ -783,7 +1070,12 @@ Feature families include:
 - Open-to-close move features when a consensus opener exists.
 - Whether the close line has recently beaten the open line.
 - Cross-book total-line disagreement for the current game and rolling league
-  disagreement.
+  disagreement. Measured over the books' raw closes only
+  (`ODDS_TOTAL_LINE_<book>` with a lower-case slug, `consensus_opener`
+  excluded), with `ddof=0`, and NaN where fewer than two books quote the game.
+  Until 2026-10 the std ran over every `ODDS_TOTAL_LINE_*` column, rolling
+  averages and trends included (~212 columns, values ~100); datasets built
+  before then carry that value.
 
 Column names are suffixed with `_BEFORE`, for example:
 
@@ -823,9 +1115,132 @@ Exact trio features also exist in the implementation, but
 `include_ref_trio_features=False`.
 
 For same-day prediction, scheduled referee assignments are appended before
-feature computation. If a scheduled referee has no historical match in the
-database, the pipeline raises an error rather than silently producing unknown
-referee features.
+feature computation. A scheduled referee with no historical match is logged as
+a warning and contributes nothing to these legacy features; it no longer stops
+the day's predictions.
+
+These legacy features are kept so they can be compared against the tendency
+features below. Their history is limited to the output seasons, so in
+same-day prediction (two seasons loaded) they see less history than in
+training.
+
+### Referee Crew Tendency Features
+
+`add_referee_tendency_features()` in
+`data_processing/referees/referee_tendencies.py` replaces the
+with-minus-without comparison with a recency-weighted, shrunk estimate per
+official. For an official and a per-game quantity `y`, the tendency at game
+`j` is
+
+```text
+est_j = sum_i w_ij * y_i / (sum_i w_ij + k),   w_ij = 0.5 ** (age_days / half_life)
+```
+
+over the official's games on dates strictly before `j` and within
+`max_history_days` (6 seasons by default). The crew feature is the sum of its
+officials' estimates. An official without history gets 0, the estimator's own
+"no evidence" value; an empty crew slot is treated the same way (0, counted in
+`REF_CREW_UNKNOWN_COUNT_BEFORE`, minimum prior games 0) rather than
+extrapolated from the officials present. Only crews above three officials
+(in-game replacements) are scaled down to a three-official equivalent.
+
+The build raises if the referee source returns nothing, or if more than 1% of
+completed games end up without a crew (measured 2014-2025: every non-preseason
+game has one), since either means a broken or lagging referee source. Scheduled
+games without an assignment only warn.
+
+History is loaded by `_load_referee_history_inputs()` in
+`create_df_to_predict.py`, independently of the output seasons:
+`referee_history_seasons` (default 6) seasons before the first output season,
+reusing games and odds already in memory. Combined with the date window, the
+same game gets identical features whether it is built for training or for
+same-day prediction.
+
+`build_referee_game_history()` builds one row per completed game. Every
+quantity is centred on the league's season-to-date mean over strictly earlier
+dates, so league-wide rule or officiating-emphasis changes are not credited to
+the officials who happened to work that season. Team expectations are
+season-to-date means over strictly earlier dates as well, so two rows on the
+same date can never see each other. Free throws, fouls and possessions are
+scaled to regulation for overtime games.
+
+| Feature | Quantity (per game, before centring) | Half-life / k | Track |
+|---|---|---|---|
+| `REF_CREW_FTA_TENDENCY_BEFORE` | total FTA - expected FTA from both teams' season-to-date FTA earned/allowed | 548d / 100 | totals |
+| `REF_CREW_PF_TENDENCY_BEFORE` | total fouls - expected fouls | 365d / 100 | totals |
+| `REF_CREW_POSS_TENDENCY_BEFORE` | possessions - expected possessions | 365d / 600 | totals |
+| `REF_CREW_LINE_ERR_TENDENCY_BEFORE` | `TOTAL_POINTS - total_<book>_line_over` | 1460d / 250 | totals |
+| `REF_CREW_SPREAD_ERROR_TENDENCY_BEFORE` | `SPREAD_ERROR` (home-signed) | 1460d / 600 | spread |
+| `REF_CREW_FAV_SPREAD_ERROR_TENDENCY_BEFORE` | `SPREAD_ERROR` from the favourite's side | 730d / 250 | spread |
+| `REF_CREW_HOME_FTA_EDGE_TENDENCY_BEFORE` | (home FTA - away FTA) - expected edge (home-signed) | 1460d / 600 | spread |
+| `REF_CREW_HOME_PF_EDGE_TENDENCY_BEFORE` | (away fouls - home fouls) - expected edge (home-signed) | 730d / 100 | spread |
+| `REF_CREW_MIN_PRIOR_GAMES_BEFORE` | fewest prior games (in window) among the crew | - | both |
+| `REF_CREW_UNKNOWN_COUNT_BEFORE` | officials with no prior games | - | both |
+
+Spread lines are converted with `spread_line_home_from_handicap()`, so the
+spread quantities follow the `SPREAD_ERROR = HOME_MARGIN - SPREAD_LINE_HOME`
+convention of `config/market_columns.py`. Home-signed features negate when home
+and away are swapped; every other feature is unchanged by the swap (pinned by
+`tests/test_referee_tendencies.py`).
+
+With `include_same_season_referee_variants=True`, `REF_CREW_SS_*` same-season-only
+versions are also emitted, used to measure the value of multi-season history
+in-model.
+
+After style-matchup features exist, `add_referee_interaction_features()` adds:
+
+- `REF_CREW_FTA_X_STYLE_EXPECTED_TOTAL_FTA_BEFORE`
+- `REF_CREW_FTA_X_ABS_SPREAD_BEFORE`
+- `REF_CREW_POSS_X_ABS_SPREAD_BEFORE`
+- `REF_CREW_FTA_X_EXPECTED_HOME_FTA_RATE_EDGE_BEFORE`
+
+Scheduled crews carry only names. They are resolved to `OFFICIAL_ID` through
+the historical name index; an unresolvable name becomes `UNMATCHED:<name>`,
+is neutral, is counted in `REF_CREW_UNKNOWN_COUNT_BEFORE` and triggers a
+warning.
+
+What the parameters rest on (measured 2026-09 on 2007-2025, shrinkage chosen
+on 2012-2016 and tested forward on 2017+):
+
+- Crews move whistle volume persistently: fouls r ~0.18, free throws r ~0.12
+  against the residual.
+- The best totals signal is the free-throw tendency against line error
+  (r ~0.048), above the crew's own past line error (~0.036).
+- Decayed multi-season history beats same-season history, mostly at season
+  openers; an equal-weight career average is worse than both.
+- No spread-side quantity showed a stable forward signal (all |r| <= 0.024,
+  inconsistent between periods, including referee-by-team history). The spread
+  track exists so `spread_error_regressor` can confirm that in-model.
+- Crew roles (chief/referee/umpire) added nothing, and `nba_refs` only encodes
+  roles by row order from 2021-22 on. Crews are unordered sets.
+
+`process_scheduled_referee_assignments()` reads NBA Official first, then falls
+back to the requested game's date in S3 if the live fetch, parsing, or date
+validation fails. It does not write to PostgreSQL. The historical `nba_refs`
+box-score update remains separate.
+
+Raw assignments use compressed Parquet in the configured S3 bucket:
+
+```text
+train_data/live_inputs/v1/referees/game_date=YYYY-MM-DD/
+  latest.json
+  fetched_at=YYYY-MM-DDTHH-MM-SS.ffffffZ/assignments.parquet
+```
+
+The game date is Eastern; fetch timestamps are UTC. The manifest contains the
+exact Parquet key, assignment date, original fetch time, row count and content
+and file checksums. Fallback makes one direct GET for `latest.json`, then one
+for Parquet; it never lists the bucket or makes a separate existence request.
+It refuses wrong-date or corrupt data and logs the backup's original fetch
+time when used.
+
+A successful nonempty live response is saved only if its normalized content
+changed (row order does not count as a change). Data is uploaded before its
+manifest. S3 write failures do not prevent using live crews. Successful empty
+responses keep NaN features and do not overwrite or revive a previous crew.
+If both live and S3 fail, games remain with NaN referee features, for both
+closing and intermediate builders. Existing prediction-feature S3 snapshots
+are independent and unchanged.
 
 ## Availability Effect Features
 
@@ -841,32 +1256,250 @@ It is called twice:
    `TOP3_INJURED_AVAILABILITY_EFFECT_*`.
 
 For each player, team, and game date, the function looks at the current and
-previous season for that team before the game date. It compares:
+previous season for that team before the game date. Only games where the local
+roster split classified that player as available or injured are included. This
+excludes games before the player joined the team or after they left it.
+
+It compares:
 
 - Team `TOTAL_POINTS` when the player was present versus injured.
 - Team `DIFF_FROM_LINE` when the player was present versus injured.
+- Team-oriented `SPREAD_ERROR` when the player was present versus injured. For
+  both home and away teams, a positive value means the team beat the Bet365
+  spread by that many points.
 
-Raw effects are shrunk toward zero using:
+Each effect is `mean(available) - mean(injured)`, so a positive spread effect
+means the team historically performed better with the player available.
+
+Team win rate was previously a fourth effect. It was dropped: a binary outcome
+over a handful of games is the noisiest of the four and measures nearly what
+`SPREAD_ERROR` measures on a continuous scale.
+
+Raw effects are shrunk toward zero by an empirical-Bayes weight that is fitted
+rather than assumed:
 
 ```text
-effect_shrunk = effect_raw * n_eff / (n_eff + k)
+effect_shrunk = effect_raw * tau2 / (tau2 + se2)
 ```
 
-where `n_eff` is the smaller of injured-game count and present-game count, and
-`k` defaults to `10.0`.
+The observed spread of player effects is real player-to-player variation plus
+sampling noise, `var(effect) = tau2 + mean(se2)`, so `tau2 = var(effect) -
+mean(se2)` is the signal variance and `tau2 / (tau2 + se2)` is the posterior
+weight on one player's estimate. This is the same shape as `n_eff / (n_eff + k)`
+-- `se2` falls like `1/n` -- but the constant is measured instead of guessed, it
+is measured separately per metric, and it uses each player's own precision
+rather than their game count alone. A player with one game on either side has no
+standard error, so `se2` is imputed as `sigma2 * (1/n_present + 1/n_injured)`
+from the pooled within-team variance.
+
+Both variances are estimated only from games strictly earlier than the row being
+shrunk. A single global fit would let a March game set the shrinkage applied to
+an October row.
+
+`shrinkage_k` survives as the fallback prior for rows too early in the history to
+fit anything (fewer than `MIN_SHRINKAGE_FIT_SAMPLES` prior observations), and
+`shrinkage_k=0` still disables shrinkage entirely. `fit_shrinkage=False` forces
+the old fixed-`k` behaviour for comparison.
+
+Each call prints the fitted `tau2`, `sigma2` and the implied `k = sigma2 / tau2`
+per metric. A `tau2` of zero is a real answer, not a failure: it says the spread
+between players is fully explained by sampling noise, and the honest estimate of
+every effect for that metric is then zero. Watch that line -- it is the fastest
+way to see whether a metric carries any player-level signal at all.
+
+Every effect carries a Welch standard error, `sqrt(var_present/n_present +
+var_injured/n_injured)`, which needs two valid games in each group and is `NaN`
+otherwise. The group-level value is the mean of the per-player standard errors,
+and stays `NaN` when no selected player has evidence: no evidence means unbounded
+uncertainty, so filling it with zero would assert the opposite. Only the effect
+aggregates are filled with zero, where that is the correct limit of a shrinkage
+estimator.
+
+The standard error replaced a Welch/Fisher p-value and its Bonferroni-corrected
+group summary. A p-value is a monotone function of the effect size and the two
+group sizes, all already emitted, so it added little the model could not
+reconstruct -- while implying a significance test that a handful of games per
+player cannot support, across a family of comparisons that invites false
+positives. The standard error keeps magnitude and precision on separate axes and
+leaves the trust rule to the model.
+
+The `MAX_ABS` aggregates went the same way, and for the same kind of reason: the
+largest single player effect is something the `MEAN` over those three players
+already moves with, and the two `MAX_ABS` columns correlate 0.62 with each other
+against 0.20 and 0.07 with their own means. Dropping them removes 8 columns
+across both call sites, taking the block from 36 to 28. Pass
+`emit_max_abs_effects=True` to restore them when reproducing a pre-reduction
+dataset; see [The Player Feature Profile](#the-player-feature-profile).
 
 Aggregate outputs include:
 
 - Home and away mean effects on total points.
 - Home and away mean effects on difference from line.
+- Home and away mean effects on spread error.
+- Home and away mean standard errors for all three effects.
 - Home and away max absolute effects.
 - Home and away total historical sample sizes.
 
-This compact default creates 10 columns per call (20 across active and injured
-players), down from the previous 18 per call. The redundant injured/present
-count split, player counts, and boolean flags are omitted. They remain available
-for diagnostics through `include_detailed_sample_size_features=True`, but the
-training and prediction pipeline explicitly keeps the compact schema.
+This compact default creates 18 columns per call (36 across active and injured
+players). The redundant injured/present count split, player counts, and boolean
+flags are omitted. They remain available for diagnostics through
+`include_detailed_sample_size_features=True`, but the training and prediction
+pipeline explicitly keeps the compact schema.
+
+## Schema 2_6 Layer: Starter History And Lineup Projection
+
+`create_df_to_predict()` builds the base schema, `2_5`, and nothing newer. The
+columns below belong to schema `2_6` and are added by the 2_6 layer
+(`nba_ou.create_training_data.schema_layers.v2_6`) to a finished 2_5 frame or
+file; see [Schema Versions And Layers](#schema-versions-and-layers). The layer
+reads only each game's `GAME_ID`, `GAME_DATE`, `TEAM_ID_TEAM_HOME/AWAY` and
+`TOTAL_POINTS`, and loads its own inputs: player box scores (the output seasons
+plus one prior season, cleaned exactly as `create_df_to_predict` cleans them),
+the injury report state, the rating cache and the stint store.
+
+### Starter history (both datasets)
+
+Four per side, from `data_processing/players/starter_history.py`. Only box
+scores on dates strictly before the game, with exactly five starters and real
+minutes, enter history; games on the same date are held back together.
+
+| Column (`_TEAM_HOME` / `_TEAM_AWAY`) | Meaning |
+|---|---|
+| `STARTER_OVERLAP_LAST_TWO_GAMES_BEFORE` | starters shared by the team's last two starting fives |
+| `STARTER_UNIQUE_LAST_5_GAMES_BEFORE` | distinct starters over the last five games |
+| `STARTER_REPEAT_RATE_LAST_5_GAMES_BEFORE` | share of consecutive games among the last five that kept the same five |
+| `STARTER_LATEST_FIVE_MINUTES_SHARE_LAST_5_GAMES_BEFORE` | share of the team's minutes over the last five games played by its most recent starting five |
+
+### Lineup projection (closing and intermediate)
+
+Seventeen game-level columns from the bottom-up lineup projection in
+`data_processing/lineups/features.py`, with snapshot adaptation in
+`lineups/intermediate_features.py`. Both datasets receive the same family in
+the experimental 2_6 layer. Closing uses the report before tip; intermediate
+uses the report before each snapshot. The following table describes both;
+the closing cutoff details below are adapted as described in the intermediate
+section.
+
+| Column | Meaning |
+|---|---|
+| `LU_PROJ_TOTAL_BEFORE` | projected total from minutes-weighted player lineup ratings and tonight's availability, calibrated walk-forward per phase |
+| `LU_PROJ_POSS_BEFORE` | projected possessions |
+| `LU_PROJ_AVAILABILITY_TOTAL_SD_BEFORE` | standard deviation of projected totals across availability scenarios only; excludes scoring and model uncertainty |
+| `LU_PROJ_MARGIN_BEFORE` | projected home minus away points |
+| `LU_ABSENCE_IMPACT_PTS_BEFORE` | projected total with tonight's absences minus the same roster at full health |
+| `LU_ABSENCE_IMPACT_POSS_BEFORE` | the same difference in possessions |
+| `LU_ABSENCE_IMPACT_OFF_PTS_BEFORE` | the part of it the absentees would have scored |
+| `LU_ABSENCE_IMPACT_DEF_PTS_BEFORE` | the part they would have prevented (positive: losing a defender adds points) |
+| `LU_ABSENCE_IMPACT_PACE_PTS_BEFORE` | the rest: the possession change; the three channels sum to the impact |
+| `LU_ABSENCE_IMPACT_BENCH_DP_PTS_BEFORE` | the defense + pace points carried by the minutes the healthy bench (6+ by full-health minutes) absorbs from tonight's absentees; a slice of the two columns above, not a fourth channel |
+| `LU_ABSENCE_IMPACT_PTS_BEFORE_TEAM_HOME` / `_TEAM_AWAY` | each side's absences alone, the other at full health |
+| `LU_ABSENCE_IMPACT_MARGIN_BEFORE` | the absences' effect on the home margin |
+| `LU_PROJ_FG3A_RATE_BEFORE_TEAM_HOME` / `_TEAM_AWAY` | expected 3PA/FGA of that side's offense against the other's defense, tonight's rotations (`style_matchup.py`) |
+| `LU_FG3A_NEIGHBOR_RESIDUAL_BEFORE` | mean residual of nearby historical lineup pairs after a linear additive 3PA/FGA baseline; may include nonlinear one-team effects |
+| `LU_ABSENCE_SHIFT_FG3A_RATE_BEFORE` | how much tonight's absences shift the game's expected 3PA/FGA |
+
+Inputs and cutoffs:
+
+- **Rosters and minutes:** box scores on strictly earlier dates; each player's
+  average over his last `RECENT_GAMES` (10) appearances, rescaled to 240.
+- **Availability:** `InjuryReportState.statuses` (last report before tip)
+  through `chance_out`, the same probability the report features use. Both
+  teams must have a filing in `InjuryReportState.covered`; otherwise every
+  `LU_*` column is NaN and that game cannot calibrate later projections. A
+  player unlisted on a covered report is taken as available. A G-League assignment removes the
+  player from that game's roster instead (he is not with the team, and not an
+  absence). Zero-minute box-score rows other than a coach's decision
+  (`DND - Injury/Illness`, `NWT ...`) are absences, not appearances.
+- **Ratings:** `data/lineup_ratings/player_ratings.parquet`, built by
+  `scripts/lineups/build_player_ratings.py`. A game reads the latest cache date
+  on or before its own date; every cache row was fitted on stints strictly
+  before that date. A cache date older than 14 days gives NaN rather than a
+  stale projection. The cache must be rebuilt with solver version 2 after the
+  weighted-ridge intercept correction; older caches are rejected.
+- **Level calibration:** the mean `actual - projected` over the previous 200
+  games of the same phase (regular season or playoffs) on earlier dates;
+  stint possessions are estimated and run high, and playoff games score
+  well below a regular-season projection. The layer orders games by
+  (`GAME_DATE`, `GAME_ID`) first, so when the 200-game window starts in the
+  middle of a date the games kept do not depend on the parent file's row order.
+  Builds made before the layer (`--lineup-features`) cut that boundary by an
+  unstable sort instead, so their `LU_PROJ_TOTAL_BEFORE` can differ by up to
+  ~0.5 points on those dates; every other column is unchanged.
+
+The three-point columns read the stint store (`data/lineup_stints`) directly:
+player style traits and the pool of past lineup pairs are rebuilt on each run
+(~2 minutes), walk-forward, with the similar-pairs model refitted monthly.
+They are NaN when the newest stint evidence is over 180 days old.
+
+The absence columns do not need the calibration: it cancels in the difference.
+The old exploratory sample associated defense and pace impact with the
+closing line's error, but these features were selected after inspecting all
+2021-22 through 2025-26 seasons. No control/treatment XGBoost campaign has run,
+and no betting edge has been established (plan §8.6). The total impact is
+exactly offense + defense + pace impact; pace points and pace possessions are
+nearly redundant as model inputs. All outputs remain for diagnosis, while
+`cleaning.exclude_cols_containing` and `keep_columns` can define a compact
+training subset after validation.
+
+**Coverage.** The corrected local rating cache starts in 2017-18. Missing
+ratings, roster history or either team's filing leave unavailable projections
+as NaN. Choose the training window from measured coverage, including style and
+report history, and check whether cleaning drops season-gated columns.
+
+**Serving.** Closing prediction already applies schema layers according to
+enabled slots. Those slots still use 2_5; serving `LU_*` requires a fresh rating
+cache and stint data in that environment. Daily rating refresh and intermediate
+live/refit integration remain separate work.
+
+Leakage tests: `tests/test_lineup_leakage.py`. Evidence and evaluation:
+`docs/lineup_projection_plan.md` §8.5-8.6, `scripts/lineups/evaluate_game_projection.py`.
+
+### Intermediate snapshot calculation (2_6)
+
+`snapshot_lineup_features()` produces the 17 columns per
+`(GAME_ID, TIME_TO_MATCH_MIN)`. The 2_6 layer resolves UTC cutoffs from embedded
+timestamps, `LayerContext.snapshot_times` (the original scoring sidecar), or
+the authoritative line-history schedule. It validates unique keys, complete
+timestamps and `SNAPSHOT_TS_UTC = TIPOFF_UTC - TIME_TO_MATCH_MIN`.
+
+Report states come from the existing `report_state_at_snapshots` bulk query:
+statuses and submitted filings must exist strictly before the cutoff. Missing
+coverage on either team leaves all `LU_*` NaN and excludes that projection from
+calibration. G-League exclusions apply to both the actual and full-availability
+rosters. The points projection combines availability scenarios; the four style
+columns retain their existing most-likely-state rotation rule.
+
+History uses dates strictly before the earlier of the game date and the
+snapshot's Eastern calendar date, where a cutoff before 05:00 ET belongs to the
+previous date (`DAY_SETTLED_HOUR_ET`). A snapshot on the previous evening, or
+in the small hours of game day, therefore uses older rosters, ratings, starter
+history, calibration and style evidence too. Without box-score publication
+timestamps, the whole cutoff day is conservatively held back, and the previous
+day too until its late (up to 23:00 ET) tip-offs have surely finished. Rosters are shared between horizons with the same history date; all
+snapshots share the style traits, monthly linear fit and neighbour index.
+
+The level offset is computed separately for each horizon and phase from up to
+200 distinct games on dates before that row's history cutoff, and needs at
+least 50 of them (`OFFSET_MIN_GAMES`, closing too): with fewer,
+`LU_PROJ_TOTAL_BEFORE` is NaN rather than a level averaged from a handful of
+games, so the value no longer depends on where the parent file starts. Historical
+residuals retain their actual game dates; extra snapshots do not increase the
+calibration sample. Parent rows and columns are unchanged; both datasets add
+eight starter-history columns and 17 `LU_*` columns over 2_5.
+
+For file upgrades, `build_schema_version.py --to 2_6` automatically reads the
+parent's `_scoring` sidecar (Parquet or CSV) when available. Supply
+`--scoring-path <path>` to use a sidecar with another name/location; its path
+and checksum are recorded in the build manifest, and the sidecar is copied
+beside the output as `<output stem>_scoring` so a later upgrade finds it. If no
+sidecar exists the build fails rather than silently reading the live
+line-history schedule; `--allow-schedule-tipoffs` opts into that fallback. The
+manifest's `build_args` records `snapshot_time_source` (`scoring_sidecar`,
+`embedded` or `line_history_schedule`) and SHA-256 digests of the injury-report
+states read (`snapshot_report_states_sha256`, `injury_report_state_sha256` for
+closing), since the report store is live and can be backfilled. Timestamps are
+context only and are never appended as model features. Behavioural tests are
+in `tests/test_intermediate_lineup_features.py`.
 
 ## Travel And Schedule Features
 
@@ -896,14 +1529,24 @@ The final game-level columns are:
 - `TOTAL_KM_IN_LAST_<N>_DAYS_HOME_TEAM`
 - `TOTAL_KM_IN_LAST_<N>_DAYS_AWAY_TEAM`
 
-`create_df_to_predict()` calls this with `log_scale=True`, so the final values
-are `log1p(kilometers)`.
+Both `create_df_to_predict()` and the intermediate base builder call this with
+`log_scale=True`, so these distance columns contain `log1p(kilometers)`.
 
-`add_high_value_features_for_team_points()` later derives fatigue and rest
-compression features such as:
+Before transforming the distances, `compute_travel_features()` also computes
+the fraction of the last 14 days' kilometers traveled in the last 2 days:
 
 - `TRAVEL_RECENCY_RATIO_HOME_2D_OVER_14D_BEFORE`
 - `TRAVEL_RECENCY_RATIO_AWAY_2D_OVER_14D_BEFORE`
+
+These ratios use raw kilometers, so 100/1000 and 1000/10000 both yield 0.10,
+independently of `log_scale`. No travel in the 14-day window leaves the ratio
+NaN (0/0); zero recent travel with positive 14-day travel yields 0. Existing
+datasets that divided the log-transformed distances must be rebuilt before
+training models with the corrected meaning.
+
+`add_high_value_features_for_team_points()` preserves those ratios and adds
+the rest mismatch:
+
 - `REST_DAYS_DIFF_HOME_MINUS_AWAY_BEFORE`
 
 ## Date And Calendar Features
@@ -992,8 +1635,9 @@ The selection rules intentionally favor features that are known before the game:
 - All-star voting columns that survive the post-merge auxiliary-column drop are
   kept because they include `_BEFORE`.
 - Known odds columns are kept.
-- Columns beginning with `odds_` are kept.
-- Columns beginning with `TOTAL_LINE_` are kept.
+- Columns beginning with `ODDS_` are kept (the unified odds-derived marker;
+  see Naming Conventions below).
+- Columns beginning with `ODDS_TOTAL_LINE_` are kept.
 - `GAME_TIME` is kept only for same-day prediction mode.
 - `TOTAL_POINTS` is kept as the target when present.
 
@@ -1043,12 +1687,37 @@ Important conventions for future agents:
   categorical team identity features.
 - `ALL_STAR_*_BEFORE_TEAM_HOME` and `ALL_STAR_*_BEFORE_TEAM_AWAY` are
   side-specific All-Star fan-vote and score features.
-- `TOTAL_LINE_<book>` is the canonical total line for a book.
-- `SPREAD_<book>` and `MONEYLINE_<book>` are canonical selected-book team-side
-  columns before the home/away merge.
-- Raw game-level odds columns generally use lowercase prefixes like `total_`,
-  `spread_`, and `ml_`.
-- Odds-engineered features use the `odds_` prefix.
+- `ODDS_` is the unified marker for every odds-derived column (mirroring
+  `_BEFORE` for leakage safety) so odds features can be selected as a group,
+  e.g. `[c for c in df.columns if is_odds_column(c)]`
+  (`nba_ou.config.odds_columns.is_odds_column`). It sits in front of any other
+  odds-specific tag, e.g. `ODDS_CLOSING_TOTAL_LINE_<book>` in the
+  intermediate-line dataset.
+- **This is an enforced invariant, not a convention.** Each pipeline entry
+  point ends with `apply_odds_prefix()` followed by
+  `assert_odds_columns_prefixed()`, which raises if any column named like a
+  bookmaker market reached the output without the marker. The recognised
+  shapes are `ODDS_SHAPED_PREFIXES` in `nba_ou/config/odds_columns.py`:
+  `TOTAL_LINE_`, `SPREAD_`, `MONEYLINE_`, `total_`, `spread_`, `ml_`,
+  `moneyline_`. A new odds feature named in any of those shapes fails the
+  build rather than silently disappearing from every odds-based selection.
+  `DIFF_FROM_` and `IS_OVER_` are deliberately outside the guard — they are
+  named after the target relationship rather than the market, and prefixing
+  them would be a separate rename.
+- **Where the marker is applied matters.** It goes on *last*, after
+  `engineer_odds_features()` and `add_high_value_features_for_team_points()`,
+  because both resolve their inputs by raw market name
+  (`total_<book>_price_over`, `spread_consensus_opener_line_home`). Prefixing
+  earlier hides those inputs and silently drops every vig / no-vig /
+  price-dispersion feature. Do not move the rename into
+  `select_training_columns`.
+- `ODDS_TOTAL_LINE_<book>` is the canonical total line for a book.
+- `ODDS_SPREAD_<book>` and `ODDS_MONEYLINE_<book>` are canonical selected-book
+  team-side columns before the home/away merge.
+- Raw game-level odds columns use lowercase prefixes like `total_`, `spread_`,
+  and `ml_` throughout the pipeline; the final pass prepends `ODDS_`.
+- Odds-engineered features use the `ODDS_` prefix (see
+  `engineer_odds_features(prefix=...)`).
 
 When adding new features, prefer using `_BEFORE` for any historical, rolling,
 estimated, or pre-game-derived column that should be eligible for training
@@ -1060,7 +1729,9 @@ The pipeline uses several controls to avoid target leakage:
 
 - Rolling team features use `shift(1)` to exclude the current game.
 - Player EWMA features use shifted prior appearances.
-- Referee features use only games before the current game date.
+- Referee features use only games before the current game date; crew
+  tendencies additionally cap history at `max_history_days` so training and
+  same-day prediction see the same window.
 - Global market features aggregate games from strictly earlier calendar dates.
 - Injury availability effects use only games before the current game date.
 - Same-day prediction uses a cutoff date before the scheduled games.
@@ -1068,9 +1739,51 @@ The pipeline uses several controls to avoid target leakage:
 - Raw original boxscore columns are blocked from final selection unless they are
   static, explicitly allowed, or transformed into `_BEFORE` features.
 
+## Schema Versions And Layers
+
+`2_5` is the frozen **base**: `create_df_to_predict()` and
+`create_intermediate_line_df()` produce exactly it. Every later version is a
+layer in `src/nba_ou/create_training_data/schema_layers/` that **only adds
+columns** to its parent (`2_6` = `2_5` + its columns, `2_7` = `2_6` + its
+columns). The rule is enforced each time a layer runs
+(`schema_layers.contract`): same rows in the same order, exactly the declared
+columns, no existing column overwritten, every name `_BEFORE` and outside the
+known leak families. Changing an existing column's values or meaning is a new
+base (`3_0`), not a layer.
+
+- **Build both:** `create_train_data.py` and
+  `create_intermediate_line_train_data.py` write the 2_5 file, then layer
+  `--schema-version` (default: newest) onto that file.
+- **Upgrade an existing file:**
+  `scripts/create_train_data/build_schema_version.py <2_5 file> --to 2_6`.
+  Only the key columns are read. A Parquet parent is streamed row group by row
+  group, so its columns come out bit-identical; an older CSV parent is loaded
+  and written once. The output is always Parquet
+  (`closing_line_data_2_6_<date>.parquet`), and the parent is never modified.
+  An intermediate file keeps its parent's `_scoring` sidecar.
+- **Which file is which:** the version is in the filename, and
+  `<name>.manifest.json` beside it records the layers applied, the columns each
+  version added, the parent file's checksum and the building commit:
+  `python -m nba_ou.create_training_data.schema_layers describe <file>`;
+  `... diff 2_5 2_6` lists a version's columns; `... versions` lists them all.
+- **Serving and refit:** each `ENABLED_MODELS` row names its schema version.
+  `predict_nba_games.py` layers the frame up to the newest enabled version,
+  which serves every slot; `refit.resolve_training_frame` builds the base once
+  per run and layers it up to each spec's version.
+
 ## Adding Or Modifying Features
 
 Use these guidelines when extending the training data:
+
+0. Add new columns as a new schema layer, never inside the base builders.
+   - Write `schema_layers/vX_Y.py` with one `SchemaLayer` (parent = current
+     newest version), declare its columns per dataset and the parent columns it
+     reads, register it in `schema_layers/registry.py`, bump
+     `TRAINING_DATA_SCHEMA_VERSION` and add a history entry in
+     `nba_ou.config.dataset_versions`.
+   - The feature function itself still lives in `data_processing/`; the layer
+     only feeds it and lines its output up with the parent's rows.
+   - Editing the base builders changes 2_5 under every model trained on it.
 
 1. Decide whether the feature is team-level or game-level.
    - Team-level features should usually be added before `merge_home_away_data()`.
@@ -1085,12 +1798,11 @@ Use these guidelines when extending the training data:
 3. Follow naming conventions.
    - Add `_BEFORE` to any feature that should be selected automatically.
    - Use `_TEAM_HOME` and `_TEAM_AWAY` only after the home/away merge.
-   - Use `odds_` for features created by odds engineering.
+   - Use `ODDS_` for features created by odds engineering.
 
 4. Check final selection.
    - If the feature is not selected, verify whether it contains `BEFORE`, starts
-     with `odds_`, starts with `TOTAL_LINE_`, or is in the explicit odds/static
-     allow lists.
+     with `ODDS_`, or is in the explicit odds/static allow lists.
 
 5. Be careful with new sportsbook columns.
    - If the raw column follows existing naming conventions, many rolling and odds
@@ -1115,7 +1827,8 @@ Use these guidelines when extending the training data:
 
 ## Output Shape
 
-The final DataFrame returned by `create_df_to_predict()` is game-level:
+The final DataFrame returned by `create_df_to_predict()` is the base schema
+(`2_5`); newer versions append their layers' columns to it. It is game-level:
 
 - One row per game.
 - Side-specific home and away feature columns.

@@ -1,0 +1,62 @@
+experiment_name: extended_closing_spread_2_2
+prediction_strategy: spread_error_regressor
+training_version: "2.7-extended-history-cv-20260904"
+comparison_group: extended_history_cv_2026_09
+hypothesis: >
+  Test closing spread error with history admitted from 2019, a 90-day holdout,
+  five-game-day rolling-origin folds and training windows reaching 6500 games.
+tags: [extended_history, closing_line, spread_error, schema_2_2, tiebreak_win_rate]
+
+device: cuda
+random_state: 16
+
+data:
+  csv_path: data/train_data/training_data_2_2_20260901.csv
+  data_version: "20260901-training-2.2-normalized"
+  expected_checksum: "sha256:15a8e5c2ac70c269"
+  dataset_type: closing_line
+  season_year_floor: 2019
+  extend_history_dropping_season_gated_columns: false
+
+cleaning:
+  max_na_per_row: 300
+
+holdout:
+  test_days: 90
+
+walk_forward:
+  strategy: rolling_origin
+  retrain_every_days: 5
+  eval_span_games: 850
+  min_validation_games: 25
+  max_folds: null
+  train_games: 4000
+  train_games_choices: [3500, 4000, 4500, 5500, 6500]
+
+sample_weight:
+  enabled: false
+  lambda_: null
+  tune_lambda: false
+  allow_unweighted: false
+
+betting:
+  home_price_col: ODDS_SPREAD_PRICE_HOME
+  away_price_col: ODDS_SPREAD_PRICE_AWAY
+  comparison_line_cols: [ODDS_SPREAD_LINE_HOME_consensus_opener]
+
+refit:
+  use_lexicographic_selection: true
+
+optuna:
+  n_trials: 80
+  timeout: null
+  tune_n_estimators: true
+  objective_aggregation: pooled
+  pruner_warmup_steps: 24
+  tie_tolerance: quantile
+  tie_max_fraction: 0.15
+  tie_tolerance_floor: 0.001
+  tie_tolerance_cap: 0.04
+  tie_warn_fraction: 0.25
+
+evaluation_seeds: []

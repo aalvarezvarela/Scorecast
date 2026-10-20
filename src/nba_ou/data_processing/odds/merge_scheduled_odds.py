@@ -1,4 +1,8 @@
 import pandas as pd
+from nba_ou.config.yahoo_features import (
+    YAHOO_RAW_SOURCES,
+    is_yahoo_percentage_column,
+)
 from nba_ou.postgre_db.odds.merge_odds_data import (
     merge_yahoo_sportsbook_odds,
 )
@@ -25,6 +29,8 @@ def merge_and_validate_scheduled_odds(
     df_odds_sportsbook: pd.DataFrame,
     strict_mode: int = 0,
     normalize_total_lines: bool = True,
+    normalize_spread_lines: bool = True,
+    null_extreme_spread_prices: bool = True,
 ) -> pd.DataFrame:
     """Merge and validate scheduled odds with historical odds data.
 
@@ -46,6 +52,10 @@ def merge_and_validate_scheduled_odds(
             skipped with a warning so the pipeline can still produce predictions.  Default is 0.
         normalize_total_lines (bool): Whether to center asymmetrically priced
             scheduled total markets. Defaults to True.
+        normalize_spread_lines (bool): Whether to center asymmetrically priced
+            scheduled spread markets. Defaults to True.
+        null_extreme_spread_prices (bool): Whether to set implausibly extreme
+            scheduled spread prices to NaN before centering. Defaults to True.
 
     Returns:
         pd.DataFrame: Combined odds dataframe with historical and scheduled games
@@ -59,7 +69,19 @@ def merge_and_validate_scheduled_odds(
         df_odds_yahoo,
         df_odds_sportsbook,
         normalize_total_lines=normalize_total_lines,
+        normalize_spread_lines=normalize_spread_lines,
+        null_extreme_spread_prices=null_extreme_spread_prices,
     )
+
+    # An unavailable Yahoo feed is optional. Keep historical schema columns
+    # present with NaN instead of failing column validation for today's games.
+    missing_yahoo = {
+        c: float("nan")
+        for c in YAHOO_RAW_SOURCES
+        if c in df_odds.columns and c not in df_odds_predict.columns
+    }
+    if missing_yahoo:
+        df_odds_predict = df_odds_predict.assign(**missing_yahoo)
 
     # Validate columns
     df_odds_cols = set(df_odds.columns)
@@ -81,7 +103,10 @@ def merge_and_validate_scheduled_odds(
     # Strict mode: check for NaN or None values
     if strict_mode >= 0:
         # Count NaNs per row
-        nan_counts_per_row = df_odds_predict.isnull().sum(axis=1)
+        required_columns = [
+            c for c in df_odds_predict.columns if not is_yahoo_percentage_column(c)
+        ]
+        nan_counts_per_row = df_odds_predict[required_columns].isnull().sum(axis=1)
 
         # Rows exceeding strict mode threshold
         rows_exceeding = nan_counts_per_row > strict_mode
@@ -104,6 +129,12 @@ def merge_and_validate_scheduled_odds(
                     "exceed the strict-mode threshold."
                 )
                 df_odds_predict = df_odds_predict.loc[~rows_exceeding].copy()
+
+    # A scheduled game has one odds row: tonight's. The stored odds never hold
+    # it before tip-off, but a replay of a played date reads them after.
+    if "game_id" in df_odds.columns and "game_id" in df_odds_predict.columns:
+        scheduled_ids = set(df_odds_predict["game_id"].astype(str))
+        df_odds = df_odds[~df_odds["game_id"].astype(str).isin(scheduled_ids)]
 
     # Concatenate and sort
     df_odds_combined = pd.concat([df_odds, df_odds_predict], ignore_index=True)

@@ -1,0 +1,25 @@
+# Parity. The two tracks share splits.py, tuning.py and scorers.py, so a change
+# to the CV protocol has to be checked on both or the next shared-logic change
+# is made against one target's evidence only.
+#
+# One thing differs automatically: n_estimators is searched over 30-1000 here
+# rather than 10-500 (config.N_ESTIMATORS_RANGES), because total_points has to
+# reproduce the line before it reaches the residual. Measured across the 38 runs
+# in artifacts/experiments it early-stopped at a median of 112 rounds against
+# line_error's 41 -- and unlike line_error its round count correlates with the
+# objective (Spearman +0.45 with CV MAE), so there the rounds are doing real
+# work rather than tracking noise.
+
+experiment_name: total_points_rolling
+prediction_strategy: total_points_regressor
+line_col: ODDS_TOTAL_LINE_bet365
+training_version: "2.1-rolling-origin"
+comparison_group: rolling_origin_2026_08
+hypothesis: >
+  The rolling-origin CV with a tuned window and tuned rounds behaves the same
+  way for total_points as for line_error. Parity check on shared logic.
+tags: [total_points, rolling_origin, tuned_window, tuned_rounds]
+
+optuna:
+  n_trials: 200
+  timeout: null

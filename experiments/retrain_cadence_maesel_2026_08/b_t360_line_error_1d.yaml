@@ -1,0 +1,87 @@
+experiment_name: maesel_cadence_line_error_t360_1d
+prediction_strategy: line_error_regressor
+training_version: "2.5-mae-selection"
+comparison_group: retrain_cadence_maesel_2026_08
+hypothesis: >
+  TREATMENT of pair 1: a one-game-day rolling origin with a 5-game fold floor
+  instead of the default 4 days / 25 games. retrain_every_days: 1 reproduces the
+  daily walk-forward exactly, so this cell selects its hyperparameters under the
+  same protocol the holdout is scored under. Cell A carries the campaign's full
+  statement -- what is being asked, what changed since retrain_cadence_2026_08,
+  and the validity gates -- and should be read first.
+
+  MORE FOLDS IS A CONSEQUENCE, NOT A SECOND VARIABLE. The validation region is
+  pinned to the same eval_span_games: 850 as cell A, so both cells score the
+  same ~850 validation games over the same calendar span; cutting that region
+  one game-day at a time instead of four simply yields ~4x as many folds of
+  ~1/4 the size. max_folds stays null, so nothing is trimmed. Had the region
+  been allowed to change, the pair would be measuring two different sets of
+  games and no comparison would exist.
+
+  WHAT IT COSTS: ~4x the model fits per trial for the same 150 trials. Measured
+  on the identical cell of retrain_cadence_2026_08: 7h42m against the control's
+  2h15m.
+
+  THE FAILURE MODE TO CHECK FIRST, and it already fired once. min_validation_
+  games: 5 is a floor, not a target, and a floor this low re-admits the tiny
+  folds it was introduced to remove. Under objective_aggregation: pooled a
+  5-game fold is harmless in the OBJECTIVE -- it carries 5/850 of the weight,
+  which is correct -- but MedianPruner reads a RUNNING metric whose early steps
+  are those folds. On 2026-08-25 this cell's twin completed 49 of 150 trials
+  against the control's 66 (101 pruned versus 84), with pruner warmup scaling
+  correctly at 24 of 98 steps versus 7 of 28. Warmup was not the problem: pooled
+  MAE over 5-15 games is simply too noisy a running metric for a median rule to
+  prune on. Check tie_n_completed in metadata.json against cell A's FIRST. A
+  large gap is itself the answer about daily folds, and it voids the pair as a
+  clean cadence test whichever ROI is higher.
+
+  Confirm cv_n_validation_games matches cell A's before comparing anything else.
+tags: [line_error, intermediate_line, single_snapshot, t360, retrain_cadence, daily_origin, mae_selection, corr995]
+
+device: cuda
+
+data:
+  # Identical to cell A, including the checksum: a regenerated CSV must break
+  # the pair loudly rather than silently re-basing one half of it.
+  csv_path: data/train_data/intermediate_line_data_10snap.csv
+  data_version: "20260820-intermediate-line-10-snapshots-t360"
+  dataset_type: intermediate_line
+  snapshot_minutes: 360
+  scoring_csv_path: data/train_data/intermediate_line_data_10snap_scoring.csv
+  expected_checksum: "sha256:1e3ca3fe18d2bbe8"
+  season_year_floor: 2021
+  extend_history_dropping_season_gated_columns: false
+
+cleaning:
+  # Identical to cell A.
+  corr_threshold_overrides:
+    ODDS_: 0.995
+
+walk_forward:
+  # THE VARIABLE. One game-day per origin, with the fold floor dropped from 25
+  # to 5 so the floor cannot quietly absorb extra days and turn a "1-day"
+  # cadence back into a multi-day one. Counted in days that CONTAIN games, so a
+  # dark date is skipped rather than eating a window.
+  retrain_every_days: 1
+  min_validation_games: 5
+  # Pinned to cell A's value. Same region, same games, only the cutting differs.
+  eval_span_games: 850
+  # Explicitly null: a cap here would trim the extra folds this cell exists to
+  # produce and quietly deliver a fraction of the validation volume.
+  max_folds: null
+  # Identical to cell A. The earliest origin is the same date in both cells, so
+  # the ceiling is the same and this grid is not a cadence-dependent choice.
+  train_games_choices: [2500, 3000, 3500, 4000]
+
+optuna:
+  # Identical to cell A. Do not "compensate" this cell for its higher per-trial
+  # cost by lowering the budget -- unequal search is a second variable and would
+  # make the pair unreadable.
+  n_trials: 150
+  timeout: null
+
+betting:
+  comparison_line_cols: ["ODDS_CLOSING_TOTAL_LINE_bet365"]
+
+# Identical to cell A; see there for what the three seeds buy.
+evaluation_seeds: [101, 202]

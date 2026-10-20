@@ -1,0 +1,94 @@
+experiment_name: nest_probe_modern22_spread_no_rotation_leak
+prediction_strategy: spread_error_regressor
+training_version: "2.8-n-estimators-probe-20260906"
+comparison_group: n_estimators_probe_modern_spread
+hypothesis: >
+  The closing spread carries no exploitable residual once the rotation-depth
+  leak is gone. Every archived spread_error run was trained with
+  N_ACTIVE_PLAYERS_* and TOTAL_NON_INJURED_PLAYER_*, which aggregate over the
+  players who logged minutes in the game being predicted; the count correlates
+  +0.55 with |HOME_MARGIN|. clean_dataframe_for_training now drops those 14
+  columns, so this is the first spread cell measured without them.
+
+  PRE-REGISTERED: holdout win rate at or below 53%, indistinguishable from the
+  52.38% break-even and from cell b. A repeat of the 62-67% seen in
+  extended_closing_spread_2_2 / cv15_10d_closing_spread_2_2 would mean the drop
+  did not reach this fit site, NOT that the edge is real -- check
+  cleaning_report.json for a "rotation_leak" step before reading anything else.
+
+  Deliberately an exact mirror of b_modern22_line_early_stop: same CSV, same
+  12x50 fold layout, same tie rule, same seed, same tune_n_estimators: false.
+  The single intended difference is the target, so b and i are readable against
+  each other as spread-vs-totals on identical geometry.
+tags:
+  [
+    n_estimators_probe,
+    modern_2_2,
+    spread_error,
+    early_stopping,
+    no_rotation_leak,
+  ]
+
+device: cuda
+random_state: 16
+
+data:
+  csv_path: data/train_data/training_data_2_2_20260901.csv
+  data_version: "20260901-training-2.2-normalized"
+  # Unchanged: the leak is fixed in cleaning, not in the CSV. A run before and
+  # after the fix reads the same bytes and builds a different feature matrix,
+  # which is why the tag above and not the checksum is what separates them.
+  expected_checksum: "sha256:15a8e5c2ac70c269"
+  dataset_type: closing_line
+  season_year_floor: 2019
+  extend_history_dropping_season_gated_columns: false
+  exclude_overtime_from_training: false
+  exclude_playoffs: true
+  allowed_season_types: ["Regular Season", "Play-In Tournament"]
+
+cleaning:
+  max_na_per_row: 300
+
+holdout: {test_size: null, test_games: null, test_days: 90}
+
+walk_forward:
+  strategy: test_anchored
+  test_games: 50
+  step_games_between_tests: 60
+  train_games: 4500
+  train_games_choices: null
+  min_train_games: 1250
+  max_folds: 12
+  fold_selection: latest
+  exclude_test_months: [5, 6]
+  require_same_season_test: true
+  eval_span_games: null
+  min_validation_games: null
+
+sample_weight: {enabled: false, lambda_: null, tune_lambda: false, allow_unweighted: false}
+refit: {use_lexicographic_selection: true}
+
+optuna:
+  n_trials: 80
+  timeout: null
+  tune_n_estimators: false
+  objective_aggregation: pooled
+  pruner_warmup_steps: 13
+  tie_tolerance: quantile
+  tie_max_fraction: 0.15
+  tie_tolerance_floor: 0.001
+  tie_tolerance_cap: 0.04
+  tie_warn_fraction: 0.25
+
+# The spread market settles into its own prices and its own line. Inheriting the
+# totals defaults here would score spread bets against the total, which is
+# numeric on both sides and so produces a plausible ROI rather than an error.
+betting:
+  edge_thresholds: [0.0, 0.1, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0]
+  primary_edge_threshold: 0.1
+  home_price_col: ODDS_SPREAD_PRICE_HOME
+  away_price_col: ODDS_SPREAD_PRICE_AWAY
+  comparison_line_cols: ["ODDS_SPREAD_LINE_HOME_consensus_opener"]
+
+holdout_evaluation: daily_walk_forward
+evaluation_seeds: []

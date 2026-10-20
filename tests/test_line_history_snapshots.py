@@ -140,10 +140,50 @@ def test_each_book_is_carried_independently():
     assert sorted(panel["raw_line"]) == [220.0, 224.0]
 
 
-def test_grid_must_be_positive_minutes_before_tip():
+def test_a_negative_horizon_is_refused():
+    """It would place the snapshot AFTER tip-off and admit in-play ticks -- a
+    look-ahead that every downstream column-name check would pass."""
     ticks = make_ticks([{"left_line": 220.0, "minutes_before_tip": 300.0}])
-    with pytest.raises(ValueError, match="positive minutes"):
+    with pytest.raises(ValueError, match="non-negative minutes"):
         build_snapshot_panel(ticks, grid=(-30,))
+
+
+def test_zero_is_the_closing_snapshot_and_is_allowed():
+    """T=0 means "bet as late as the market allows". It is not tip-off: the
+    fetch layer already refuses ticks inside its safety margin, so the latest
+    tick this can resolve to is still comfortably pre-game."""
+    ticks = make_ticks(
+        [
+            {"left_line": 220.0, "minutes_before_tip": 900.0},
+            {"left_line": 223.0, "minutes_before_tip": 45.0},
+            {"left_line": 224.0, "minutes_before_tip": 6.0},
+        ]
+    )
+
+    panel = build_snapshot_panel(ticks, grid=(0,))
+
+    assert panel["raw_line"].tolist() == [224.0]
+    assert panel["tick_minutes_before_tip"].tolist() == [6.0]
+    # Age is measured from the snapshot, which is 0 -- so it is the tick's own
+    # distance from tip.
+    assert panel["line_age_minutes"].tolist() == [6.0]
+
+
+def test_the_closing_snapshot_sees_every_tick():
+    ticks = make_ticks(
+        [
+            {"left_line": 220.0, "minutes_before_tip": 900.0},
+            {"left_line": 223.0, "minutes_before_tip": 45.0},
+            {"left_line": 224.0, "minutes_before_tip": 6.0},
+        ]
+    )
+
+    panel = build_snapshot_panel(ticks, grid=(0, 60))
+    at_close = panel[panel.snapshot_minutes == 0]
+    at_60 = panel[panel.snapshot_minutes == 60]
+
+    assert at_close["n_ticks_so_far"].iloc[0] == 3
+    assert at_60["n_ticks_so_far"].iloc[0] == 1
 
 
 def test_coverage_reports_rows_and_games_per_snapshot():

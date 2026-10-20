@@ -1,0 +1,76 @@
+experiment_name: promo25_t960_line_error
+prediction_strategy: line_error_regressor
+training_version: "2.16-schema25-promote-intermediate-20260924"
+comparison_group: promote_intermediate_line_error_2_5_2026_09
+hypothesis: >
+  Promotion candidate for 2_5/line_error/t0960/main. Every game since 2019-20
+  that has a T-960 snapshot (max_na 800 admits essentially all of them), trained
+  on the longest window every fold supports (4850 of a measured 4870).
+tags: [intermediate_line, single_snapshot, t960, line_error, schema_2_5, promotion_sweep,
+       floor_2019, max_na_800, fixed_train_games, max_window, cv_6x100, corr_odds_098,
+       no_time_decay]
+device: cuda
+random_state: 16
+data:
+  csv_path: data/train_data/intermediate_line_data_2_5_20260613.csv
+  data_version: "20260918-intermediate-line-2.5-t960"
+  expected_checksum: "sha256:5bda016d4c872e0d"
+  dataset_type: intermediate_line
+  snapshot_minutes: 960
+  scoring_csv_path: data/train_data/intermediate_line_data_2_5_20260613_scoring.csv
+  # 2019 floor + max_na 800: the NaN budget is applied AFTER column cleaning, and
+  # measured on 2026-09-24 it leaves the feature set untouched at every horizon
+  # (T-960: 2454 features at 300, 500 and 800 alike). The budget only decides
+  # how many pre-2021 games survive: 300 drops every 2019-20 and 2020-21 game,
+  # 800 keeps 621 + 614 of them here.
+  season_year_floor: 2019
+  extend_history_dropping_season_gated_columns: false
+  exclude_overtime_from_training: false
+  exclude_playoffs: true
+  allowed_season_types: ["Regular Season", "Play-In Tournament"]
+cleaning: {max_na_per_row: 800, corr_threshold: 0.95, corr_threshold_overrides: {"ODDS_": 0.98}}
+holdout: {test_size: null, test_games: null, test_days: 90}
+walk_forward:
+  strategy: test_anchored
+  test_games: 100
+  # 120 > test_games, so the six validation blocks do not overlap.
+  step_games_between_tests: 120
+  # FIXED at this horizon's maximum: the smallest of the six fold pools is
+  # 4870 games, rounded down to 4850. Fixed rather than tuned because a tuned
+  # window is an argmax over noise (history_depth_line_error_2_5_2026_09), and
+  # the longest window was best or tied-best in train_window_line_error_2_5_2026_09
+  # (T-60, T-720) and in all three closing_*_6x100_2_5_2026_09 targets.
+  # The production refit takes the same number of most recent games.
+  train_games: 4850
+  # Explicitly null, NOT omitted: _base.yaml's [2500, 3000, 3500, 4000] would
+  # otherwise be inherited and put the window back under Optuna.
+  train_games_choices: null
+  min_train_games: 1250
+  max_folds: 6
+  fold_selection: latest
+  exclude_test_months: [5, 6]
+  require_same_season_test: true
+  eval_span_games: null
+  min_validation_games: null
+sample_weight: {enabled: false, lambda_: null, tune_lambda: false, allow_unweighted: false}
+refit: {use_lexicographic_selection: true}
+optuna:
+  n_trials: 150
+  timeout: null
+  persistent_storage: false
+  tune_n_estimators: false
+  objective_aggregation: pooled
+  pruner_warmup_steps: 7
+  tie_tolerance: quantile
+  tie_max_fraction: 0.15
+  tie_tolerance_floor: 0.001
+  tie_tolerance_cap: 0.04
+  tie_warn_fraction: 0.25
+  search_space: {n_estimators: 1000, early_stopping_rounds: 70, n_estimators_range: null}
+betting:
+  edge_thresholds: [0.0, 0.1, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0]
+  primary_edge_threshold: 0.1
+  flat_decimal_odds: 1.9090909090909092
+  comparison_line_cols: [ODDS_CLOSING_TOTAL_LINE_bet365]
+holdout_evaluation: daily_walk_forward
+evaluation_seeds: [101, 202]

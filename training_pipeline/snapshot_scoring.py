@@ -59,12 +59,21 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from training_pipeline.betting import BettingMetrics, evaluate_betting
+from training_pipeline.betting import (
+    OUTCOME_COLUMN,
+    BettingMetrics,
+    evaluate_betting,
+    outcome_from_predictions,
+)
 from training_pipeline.config import ExperimentConfig
+from training_pipeline.data import SNAPSHOT_COLUMN as _SNAPSHOT_COLUMN
 from training_pipeline.decisions import collect_prices, primary_threshold
 
 #: Column carrying minutes-before-tip in the intermediate-line dataset.
-SNAPSHOT_COLUMN = "TIME_TO_MATCH_MIN"
+#: Re-exported from training_pipeline.data, which is also where cleaning reads
+#: it to report per-horizon row retention -- one spelling, so the scorer and the
+#: cleaner cannot end up grouping by different columns.
+SNAPSHOT_COLUMN = _SNAPSHOT_COLUMN
 
 #: Label for the pooled row. Kept for reference only: its ``n_bets`` counts one
 #: game once per snapshot, so its interval and significance verdict are
@@ -290,6 +299,11 @@ def _verify_alignment(
     positions: np.ndarray,
     *,
     date_col: str,
+    #: Defaults to the totals outcome, which is what this function assumed
+    #: before the spread market existed. Both pipeline call sites pass it
+    #: explicitly; the default exists so a direct caller checking only the date
+    #: alignment (as the tests do) need not know about markets.
+    outcome_col: str = "TOTAL_POINTS",
 ) -> None:
     """Confirm the positional index still points where it is assumed to.
 
@@ -331,10 +345,25 @@ def _verify_alignment(
         )
 
     # Value columns that pin down the individual game, not merely its day.
-    for column in ("TOTAL_POINTS", "target_line"):
-        source_column = column if column in source.columns else None
-        if column not in predictions.columns or source_column is None:
+    #
+    # The outcome is spelled differently on each side: predictions carry it as
+    # ``actual_outcome`` (or ``TOTAL_POINTS`` on an archived run), while the
+    # source frame carries it under the market's own name -- TOTAL_POINTS or
+    # HOME_MARGIN. Pairing them explicitly is what keeps this check from
+    # degrading into the date-only check it exists to strengthen.
+    pairs: tuple[tuple[str, str], ...] = (
+        (OUTCOME_COLUMN, outcome_col),
+        ("TOTAL_POINTS", outcome_col),
+        ("target_line", "target_line"),
+    )
+    checked_outcome = False
+    for column, source_column in pairs:
+        if column not in predictions.columns or source_column not in source.columns:
             continue
+        if source_column == outcome_col:
+            if checked_outcome:
+                continue
+            checked_outcome = True
         expected = pd.to_numeric(
             pd.Series(_lookup_by_position(source, positions, source_column)),
             errors="coerce",
@@ -374,23 +403,29 @@ def holdout_snapshot_metrics(
     positions = predictions["row_in_test_final"].to_numpy()
 
     _verify_alignment(
-        predictions, df_test, positions, date_col=config.data.date_col
+        predictions,
+        df_test,
+        positions,
+        date_col=config.data.date_col,
+        outcome_col=config.outcome_col,
     )
 
     over_prices, under_prices = collect_prices(df_test, config, positions=positions)
     return score_by_snapshot(
         snapshot=_lookup_by_position(df_test, positions, snapshot_col),
         predicted_edge=predictions["predicted_edge"].to_numpy(dtype=float),
-        actual_total=predictions["TOTAL_POINTS"].to_numpy(dtype=float),
+        actual_total=outcome_from_predictions(predictions),
         line=predictions["target_line"].to_numpy(dtype=float),
         selection_score=predictions["selection_score"].to_numpy(dtype=float),
         decimal_odds_over=over_prices,
         decimal_odds_under=under_prices,
         min_edge=primary_threshold(config),
         flat_decimal_odds=config.betting.flat_decimal_odds,
-        game_id=_lookup_by_position(df_test, positions, config.data.game_id_col)
-        if config.data.game_id_col in df_test.columns
-        else None,
+        game_id=(
+            _lookup_by_position(df_test, positions, config.data.game_id_col)
+            if config.data.game_id_col in df_test.columns
+            else None
+        ),
     )
 
 
@@ -414,22 +449,30 @@ def cv_snapshot_metrics(
     predictions = cv_betting.predictions
     positions = predictions["row_in_dev"].to_numpy()
 
-    _verify_alignment(predictions, df_dev, positions, date_col=config.data.date_col)
+    _verify_alignment(
+        predictions,
+        df_dev,
+        positions,
+        date_col=config.data.date_col,
+        outcome_col=config.outcome_col,
+    )
 
     over_prices, under_prices = collect_prices(df_dev, config, positions=positions)
     return score_by_snapshot(
         snapshot=_lookup_by_position(df_dev, positions, snapshot_col),
         predicted_edge=predictions["predicted_edge"].to_numpy(dtype=float),
-        actual_total=predictions["TOTAL_POINTS"].to_numpy(dtype=float),
+        actual_total=outcome_from_predictions(predictions),
         line=predictions["target_line"].to_numpy(dtype=float),
         selection_score=predictions["selection_score"].to_numpy(dtype=float),
         decimal_odds_over=over_prices,
         decimal_odds_under=under_prices,
         min_edge=primary_threshold(config),
         flat_decimal_odds=config.betting.flat_decimal_odds,
-        game_id=_lookup_by_position(df_dev, positions, config.data.game_id_col)
-        if config.data.game_id_col in df_dev.columns
-        else None,
+        game_id=(
+            _lookup_by_position(df_dev, positions, config.data.game_id_col)
+            if config.data.game_id_col in df_dev.columns
+            else None
+        ),
     )
 
 

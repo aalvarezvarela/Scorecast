@@ -6,11 +6,13 @@ which one they were given:
 1. **An artifacts super-folder** -- ``artifacts/experiments``. Every run beneath
    it, at any depth, so it keeps working if runs are later filed into
    per-campaign subfolders.
-2. **A campaign config folder** -- ``experiments/strategy_window_2026_08``.
+2. **A campaign config folder** -- ``experiments/rolling_origin_2026_08`` or
+   ``experiments/archived/strategy_window_2026_08``.
    These hold experiment *definitions* (YAML), not results, so each one is
    resolved to the runs it produced.
 3. **A single config file** -- ``experiments/.../classifier_2500.yaml``.
-4. **An individual run directory** -- ``artifacts/experiments/classifier_2500_20260803_005940``.
+4. **An individual run directory** --
+   ``artifacts/experiments/archived/classifier_2500_20260803_005940``.
 
 The config-to-run mapping is the part with a trap in it. Run directories are
 named ``{experiment_name}_{YYYYmmdd}_{HHMMSS}``, so matching on a plain prefix

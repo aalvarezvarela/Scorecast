@@ -1,0 +1,103 @@
+# CELL E -- the second diagnostic control. Read the header of d_corr995_control
+# first; this is the other half of the same investigation.
+#
+# WHAT IT ISOLATES. Of the four things that changed between the archived
+# line_error runs (which all beat the bookmaker's line on the 416-game holdout)
+# and cell A (which does not), cell D undoes the cleaning and this one undoes
+# the cross-validation protocol. The remaining two cannot be undone: the CSV
+# predates the ODDS_ prefix unification and will not load, and n_trials is
+# addressed below.
+#
+# WHY THIS IS A SUSPECT AT ALL. It is not just "something that changed". The
+# archived runs report CV MAE BEATING the line by +0.16 to +0.24; cell A and
+# cell C report CV MAE LOSING to it by -0.19 and -0.21, on holdouts whose line
+# MAE is identical to four decimals (14.5036). A sign flip that large on the
+# selection metric is either a real capability loss or a change in what the
+# folds measure -- and rolling_origin changed exactly that. Trials are now
+# ranked on 30 date-defined folds pooled over ~855 validation games instead of
+# 12 game-anchored folds of 50, so a different trial wins even from an
+# identical search.
+#
+# THREE KEYS, ONE FACTOR. strategy, max_folds and objective_aggregation move
+# together because _base.yaml documents them as coupled: max_folds is null only
+# because a cap of 12 would silently trim rolling_origin's 30 folds, and pooled
+# exists because rolling_origin's fold sizes are whatever the NBA schedule gave
+# them. Setting strategy alone would produce a protocol that has never been run
+# and answer nothing. This is the archived protocol restored, not a new one.
+#
+# NOT A FACTOR HERE: n_trials, still 120 against the archived 50. More trials
+# cannot remove a feature, so it cannot explain the MAE regression -- but it
+# CAN deepen selection overfitting, and cell A's edge ladder already shows that
+# signature (holdout win rate FALLING with edge, 51.4 -> 48.8 -> 46.7 -> 40.0%,
+# while CV's rises). Test it from the studies already on disk rather than by
+# burning another cell: the persistent Optuna storage holds all 120 trials, so
+# "what would the first 50 have selected" is a re-read plus one evaluation.
+#
+# Read against pubbet_a_keep_columns, nothing else. With cell D that is two
+# comparisons against one baseline, so at this noise floor treat a single
+# marginal win as unproven -- the outcome worth acting on is one cell moving
+# holdout MAE back under 14.5036 while the other does not.
+
+experiment_name: pubbet_e_test_anchored_control
+prediction_strategy: line_error_regressor
+training_version: "2.1-public-betting-tradeoff"
+comparison_group: public_betting_tradeoff_2026_08
+hypothesis: >
+  Cell A's loss of accuracy against the line is caused by the switch to
+  rolling_origin cross-validation rather than by the cleaning change.
+  Restoring the archived 12-fold test_anchored protocol should return CV MAE to
+  beating the line and, with it, holdout MAE to roughly the archived 14.43.
+  Weak prior against: rolling_origin mirrors how the holdout is actually
+  scored, so it should if anything generalise better, and a win here would mean
+  the honest protocol is the one that looks worse -- which is a finding about
+  selection, not about the model.
+tags: [line_error, diagnostic, cv_protocol, test_anchored]
+
+device: cuda
+
+data:
+  csv_path: data/train_data/training_data_2_0_20260819.csv
+  data_version: "20260819-training-2.0"
+  expected_checksum: "sha256:27a291de0ae78165"
+  dataset_type: closing_line
+  season_year_floor: 2021
+  extend_history_dropping_season_gated_columns: false
+
+walk_forward:
+  # 12 folds of 50 consecutive games, each trained on the games immediately
+  # before it -- the layout every archived run used.
+  strategy: test_anchored
+  max_folds: 12
+  test_games: 50
+  step_games_between_tests: 60
+  # ONE window, not a tuned list, and not by choice: the config layer refuses
+  # train_games_choices under test_anchored, because there the fold LAYOUT
+  # depends on the window (a fold is dropped once tail(train_games) falls under
+  # min_train_games), so trials would be ranked on different folds. Under
+  # rolling_origin the validation games are date-defined and independent of the
+  # window, which is the whole reason cell A may tune it.
+  #
+  # 3500 because that is the window cell A's selected trial actually chose
+  # (metadata.json: train_games 3500) -- pinning it there makes the model this
+  # cell evaluates the closest possible match to the one cell A shipped. The
+  # unavoidable second difference is therefore "window tuned over 5 values" vs
+  # "window fixed at the value the other cell picked", which is much smaller
+  # than it sounds but is not nothing: state it when reading the result.
+  train_games: 3500
+  train_games_choices: null
+  # Also null, and also not by choice: _base.yaml sets min_validation_games: 25,
+  # which the config layer accepts only under rolling_origin -- test_anchored
+  # already sizes its folds in games via test_games, so the knob would be a
+  # silent no-op there. Inheriting it makes this file fail to parse rather than
+  # quietly do nothing, which is the intended behaviour; stating null is how a
+  # test_anchored cell opts out.
+  min_validation_games: null
+
+optuna:
+  # mean, not pooled: pooled belongs with rolling_origin, whose fold sizes the
+  # schedule decides. Twelve folds of 50 are equal by construction, so mean is
+  # both the archived setting and the correct one here. Both are recorded
+  # either way; only the objective and the trial ranking change.
+  objective_aggregation: mean
+  n_trials: 120
+  timeout: null

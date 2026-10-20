@@ -31,7 +31,11 @@ from typing import Any
 
 import pandas as pd
 
-from training_pipeline.betting import DECIMAL_ODDS_MINUS_110, evaluate_betting
+from training_pipeline.betting import (
+    DECIMAL_ODDS_MINUS_110,
+    evaluate_betting,
+    outcome_from_predictions,
+)
 from training_pipeline.reporting import loaders
 
 #: Which leaderboard columns each source's recomputed metrics overwrite.
@@ -86,7 +90,7 @@ def rescore_runs(
         for source, frame in loaders.load_all_predictions(run, drop_pushes=False):
             metrics = evaluate_betting(
                 predicted_edge=frame["predicted_edge"],
-                actual_total=frame["TOTAL_POINTS"],
+                actual_total=outcome_from_predictions(frame),
                 line=frame["target_line"],
                 selection_score=frame["selection_score"],
                 min_edge=threshold,

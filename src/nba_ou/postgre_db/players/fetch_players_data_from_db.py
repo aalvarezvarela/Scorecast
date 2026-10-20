@@ -4,6 +4,8 @@ from nba_ou.postgre_db.config.db_config import (
     get_schema_name_players,
 )
 from psycopg import sql
+from nba_ou.postgre_db.row_order import read_sql_canonical
+from nba_ou.postgre_db.season_tables import read_through
 
 
 def _normalize_game_ids(game_ids) -> list[str]:
@@ -25,11 +27,13 @@ def _normalize_game_ids(game_ids) -> list[str]:
 
 
 def load_players_from_db(seasons=None, extra_game_ids=None) -> pd.DataFrame | None:
-    """
-    Load NBA players data from Postgres (single DB, schema.table).
+    """Load NBA players data from Postgres (single DB, schema.table).
 
     Args:
         seasons: list like ['2023-24', '2024-25'] or None for all seasons.
+        extra_game_ids (list, optional): Game IDs included in addition to the
+            selected seasons. With None or empty seasons, these IDs restrict the
+            query; without either filter, all rows are loaded.
 
     Returns:
         DataFrame or None if failure.
@@ -41,6 +45,7 @@ def load_players_from_db(seasons=None, extra_game_ids=None) -> pd.DataFrame | No
     try:
         conn = connect_nba_db()
         where_parts = []
+        season_years = None
         query_params = []
 
         if seasons is not None and len(seasons) > 0:
@@ -68,10 +73,15 @@ def load_players_from_db(seasons=None, extra_game_ids=None) -> pd.DataFrame | No
         )
 
         query = query_obj.as_string(conn)
-        if query_params:
-            df = pd.read_sql_query(query, conn, params=tuple(query_params))
-        else:
-            df = pd.read_sql_query(query, conn)
+        # Past seasons from the S3 input cache, the rest from here; the same
+        # frame either way (``season_tables``).
+        df = read_through(
+            "nba_players.nba_players", season_years, normalized_extra_game_ids, conn
+        )
+        if df is None and query_params:
+            df = read_sql_canonical(query, conn, params=tuple(query_params))
+        elif df is None:
+            df = read_sql_canonical(query, conn)
 
         print(f"Loaded {len(df)} player records from database")
         return df

@@ -2,7 +2,11 @@ import re
 
 import numpy as np
 import pandas as pd
-from nba_ou.config.odds_columns import resolve_main_total_line_col
+from nba_ou.config.odds_columns import (
+    BOOK_SLUG_PATTERN,
+    extract_total_line_books,
+    resolve_main_total_line_col,
+)
 
 # Optional legacy default list (only used when explicitly provided by caller)
 BET_BOOKS: list[str] = []
@@ -73,7 +77,7 @@ def safe_mad(x: pd.DataFrame) -> pd.Series:
 
 def engineer_odds_features(
     df: pd.DataFrame,
-    prefix: str = "odds_",
+    prefix: str = "ODDS_",
     books: list[str] | None = None,
 ) -> pd.DataFrame:
     """
@@ -94,11 +98,11 @@ def engineer_odds_features(
 
     Expected (if available):
       - Total current lines per book (UPPERCASE, from merge_total_spread_moneyline):
-          TOTAL_LINE_{book}   (e.g., TOTAL_LINE_betmgm)
+          ODDS_TOTAL_LINE_{book}   (e.g., ODDS_TOTAL_LINE_betmgm)
       - Total current prices per book (lowercase, from merge_remaining):
           total_{book}_price_over, total_{book}_price_under   (DECIMAL)
       - Consensus total opener line (used as reference baseline):
-          TOTAL_LINE_consensus_opener
+          ODDS_TOTAL_LINE_consensus_opener
       - Consensus total opener prices (used as reference baseline):
           total_consensus_opener_price_over, total_consensus_opener_price_under   (DECIMAL)
       - Spread per book (from merge_remaining):
@@ -112,27 +116,23 @@ def engineer_odds_features(
     new_cols = {}
 
     if books is None:
-        inferred_books = set()
-
+        # Raw per-book columns only. By the time this runs the frame also holds
+        # each book's rolling means, trends and season averages
+        # (``ODDS_TOTAL_LINE_bet365_LAST_ALL_5_MATCHES_BEFORE_TEAM_HOME``);
+        # matching any suffix once read ~205 of them as books, so the books'
+        # consensus, dispersion and coverage ran over ~211 "books" instead of 6.
+        inferred_books = set(extract_total_line_books(out))
+        raw_book_columns = (
+            rf"total_({BOOK_SLUG_PATTERN})_price_(?:over|under)",
+            rf"spread_({BOOK_SLUG_PATTERN})_line_(?:home|away)",
+            rf"ml_({BOOK_SLUG_PATTERN})_price_(?:home|away)",
+        )
         for col in out.columns:
-            m_total = re.match(r"^TOTAL_LINE_(.+)$", col)
-            if m_total:
-                inferred_books.add(m_total.group(1))
-                continue
-
-            m_total_price = re.match(r"^total_(.+)_price_(over|under)$", col)
-            if m_total_price:
-                inferred_books.add(m_total_price.group(1))
-                continue
-
-            m_spread = re.match(r"^spread_(.+)_line_(home|away)$", col)
-            if m_spread:
-                inferred_books.add(m_spread.group(1))
-                continue
-
-            m_ml = re.match(r"^ml_(.+)_price_(home|away)$", col)
-            if m_ml:
-                inferred_books.add(m_ml.group(1))
+            for pattern in raw_book_columns:
+                m = re.fullmatch(pattern, col)
+                if m:
+                    inferred_books.add(m.group(1))
+                    break
 
         books = sorted(inferred_books)
     else:
@@ -146,7 +146,7 @@ def engineer_odds_features(
     # 0) Consensus total reference line/probability
     # -----------------------------
     # Source is still consensus opener data, but this script treats it as a reference baseline.
-    cons_ref_line_col = "TOTAL_LINE_consensus_opener"
+    cons_ref_line_col = "ODDS_TOTAL_LINE_consensus_opener"
     cons_ref_price_over = "total_consensus_opener_price_over"
     cons_ref_price_under = "total_consensus_opener_price_under"
 
@@ -183,7 +183,7 @@ def engineer_odds_features(
     total_price_presence_series = []
 
     for book in books:
-        total_line_col = f"TOTAL_LINE_{book}"
+        total_line_col = f"ODDS_TOTAL_LINE_{book}"
         price_over = f"total_{book}_price_over"
         price_under = f"total_{book}_price_under"
 
@@ -493,11 +493,11 @@ def engineer_odds_features(
     # -----------------------------
     # Prefer robust close-consensus proxy (median across books), fallback to mean.
     if f"{prefix}total_line_books_median" in new_cols:
-        new_cols["close_total_consensus"] = as_float(
+        new_cols[f"{prefix}close_total_consensus"] = as_float(
             new_cols[f"{prefix}total_line_books_median"]
         )
     elif f"{prefix}total_line_books_mean" in new_cols:
-        new_cols["close_total_consensus"] = as_float(
+        new_cols[f"{prefix}close_total_consensus"] = as_float(
             new_cols[f"{prefix}total_line_books_mean"]
         )
 

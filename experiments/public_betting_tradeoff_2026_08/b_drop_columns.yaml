@@ -1,0 +1,85 @@
+# CELL B -- drop the public betting columns, keep the 2021 floor.
+#
+# The single-factor contrast against cell A: identical rows, 195 fewer features.
+# This is the cell that answers "do public betting percentages earn their place?"
+# on its own, with no history change to confound it.
+#
+# Written out longhand rather than via
+# data.extend_history_dropping_season_gated_columns, because that flag
+# deliberately does BOTH halves -- it is the production switch, and this cell is
+# the half of it that isolates the columns. It is also not the same set: the
+# flag COMPUTES which columns gate a season, while this cell NAMES a family, and
+# the two disagree in both directions (see cell C). The flag is excluded
+# from fingerprint() precisely so that a hand-written config and the flag share
+# an Optuna study when they resolve to the same thing; here they do not, since
+# the floor differs.
+#
+# Note the row count is 6,163 rather than cell A's 6,148: dropping the columns
+# also frees 15 rows in seasons 2021 and 2023 that were failing max_na_per_row on
+# public-betting NaNs alone. A 0.2% difference, not a cohort change -- the
+# holdout window is the same 60 days either way. See the campaign header in
+# a_keep_columns.yaml.
+
+experiment_name: pubbet_b_drop_columns
+prediction_strategy: line_error_regressor
+training_version: "2.1-public-betting-tradeoff"
+comparison_group: public_betting_tradeoff_2026_08
+hypothesis: >
+  Dropping the 272 public betting percentage columns, at an unchanged 2021 season
+  floor, does not measurably reduce betting performance -- the market signal they
+  carry is public sentiment rather than a sharp price, and the pipeline already
+  declines to impute them.
+tags: [line_error, public_betting, drop_columns]
+
+# Hardware, not part of the hypothesis -- device is excluded from fingerprint()
+# so it cannot fork an Optuna study. It must still be IDENTICAL on every cell of
+# this campaign: trial timing feeds the pruner, so a cell running on different
+# hardware is not comparable with one that is not.
+#
+# VERIFY CUDA IS REAL ON THE MACHINE YOU RUN THIS ON. XGBoost 2.1.4 does not
+# error when asked for a device it was not compiled for -- it warns
+# "XGBoost is not compiled with CUDA support" and silently runs on CPU, so a run
+# can look GPU-configured and take CPU time:
+#   poetry run python -c "import xgboost, numpy as np; \
+#     xgboost.train({'device':'cuda'}, xgboost.DMatrix(np.random.rand(50,3), \
+#     label=np.random.rand(50)), num_boost_round=2)"
+# Silence means real CUDA. The runner checks this before starting.
+device: cuda
+
+data:
+  csv_path: data/train_data/training_data_2_0_20260819.csv
+  data_version: "20260819-training-2.0"
+  expected_checksum: "sha256:27a291de0ae78165"
+  season_year_floor: 2021
+  extend_history_dropping_season_gated_columns: false
+
+cleaning:
+  # Exactly config.PUBLIC_BETTING_SUBSTRINGS, and nothing else, so this cell
+  # differs from cell A in one thing only.
+  #
+  # It used to have to repeat "fanatics_sportsbook" from _base.yaml -- the deep
+  # merge replaces a list rather than appending to it, so omitting it would have
+  # silently un-excluded the book and made this a two-factor cell. _base.yaml no
+  # longer excludes anything (the Caesars merge made that book continuous), so
+  # there is nothing to repeat and the list is the contrast itself. The merge
+  # behaviour has not changed: anything inherited still has to be restated.
+  #
+  # Note what is NOT among these: "consensus" alone would also match
+  # ODDS_TOTAL_LINE_consensus_opener, which is the betting.comparison_line_cols
+  # baseline, and removing it would silently kill the closing-vs-opening
+  # comparison rather than erroring.
+  exclude_cols_containing: ["pct_bets", "pct_money", "consensus_pct"]
+
+walk_forward:
+  # Raised from the inherited [2500, 3000, 3500, 4000]. Measured ceiling on this
+  # cell is 4877 games (preflight), so 4500 fits with margin and 5000 would not:
+  # tail(n) reads as "take up to n", so a window past the earliest fold's history
+  # shrinks that fold for some trials and not others, and the window axis ends up
+  # measuring the shortfall. Cells A and B carry the SAME list so the
+  # public-betting contrast stays window-matched; cell C goes higher because
+  # reaching its extra history is the whole point of it.
+  train_games_choices: [2500, 3000, 3500, 4000, 4500]
+
+optuna:
+  n_trials: 120
+  timeout: null

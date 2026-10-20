@@ -1,0 +1,33 @@
+experiment_name: closing_spread_error_2_1_no_decay_20260828
+prediction_strategy: spread_error_regressor
+training_version: "2.1-no-decay-20260828"
+comparison_group: closing_spread_schema_comparison_2026_09
+hypothesis: >
+  Compare the unweighted, unnormalized 2.1 closing spread pipeline with the
+  regenerated normalized 2.2 closing spread pipeline.
+tags: [no_decay, spread_error, spread, closing_line, schema_2_1]
+
+device: cuda
+
+data:
+  csv_path: data/train_data/training_data_2_1_20260828.csv
+  data_version: "20260828-training-2.1-raw-spread"
+  expected_checksum: "sha256:fe155f95f53715a5"
+  dataset_type: closing_line
+  season_year_floor: 2021
+  extend_history_dropping_season_gated_columns: false
+
+sample_weight:
+  enabled: false
+  lambda_: null
+  tune_lambda: false
+  allow_unweighted: false
+
+betting:
+  # Historical 2.1 prices include corrupted extremes; compare win rate and
+  # settle the raw 2.1 line consistently at flat -110.
+  flat_decimal_odds: 1.9090909090909092
+  comparison_line_cols: ["ODDS_SPREAD_LINE_HOME_consensus_opener"]
+
+optuna: {n_trials: 150, timeout: null}
+evaluation_seeds: [17, 42, 16]

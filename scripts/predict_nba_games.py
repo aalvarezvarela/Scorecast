@@ -3,6 +3,8 @@ import os
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
+import pandas as pd
+from nba_ou.config.dataset_versions import BASE_SCHEMA_VERSION
 from nba_ou.config.settings import SETTINGS
 from nba_ou.create_training_data.create_df_to_predict import (
     create_df_to_predict,
@@ -10,12 +12,20 @@ from nba_ou.create_training_data.create_df_to_predict import (
 from nba_ou.create_training_data.get_all_info_for_scheduled_games import (
     get_all_info_for_scheduled_games,
 )
+from nba_ou.create_training_data.schema_layers import (
+    CLOSING_LINE,
+    compute_new_columns,
+    is_layered,
+    newest_version,
+)
 from nba_ou.postgre_db.update_all.update_all_databases import update_all_databases
 from nba_ou.prediction.baseline_predictions import (
+    baseline_history_window,
     load_baseline_predictions_for_nba_games,
 )
+from nba_ou.prediction.intermediate_frame import tonight_intermediate_frame
 from nba_ou.prediction.prediction import (
-    load_s3_model_and_predict,
+    load_registry_model_and_predict,
 )
 from nba_ou.prediction.prediction_tabpfn_client import (
     load_and_predict_tabpfn_client_for_nba_games,
@@ -80,6 +90,8 @@ def configure_tqdm_for_environment() -> None:
 def predict_nba_games(
     run_tabpfn_client: bool = False,
     normalize_total_lines: bool = True,
+    normalize_spread_lines: bool = True,
+    null_extreme_spread_prices: bool = True,
 ) -> None:
     """
     Main execution function for the NBA prediction pipeline.
@@ -93,20 +105,29 @@ def predict_nba_games(
     6. Saves results to Excel
     """
     configure_tqdm_for_environment()
+    if run_tabpfn_client:
+        # The feature frame now holds tonight's games only; the TabPFN client
+        # trains on history features, which it would have to read from a
+        # stored training dataset instead. Fail before any work is done.
+        raise SystemExit(
+            "TabPFN needs history features, and the prediction frame carries "
+            "tonight's games only; run with --no-tabpfn."
+        )
 
     date_to_predict = (datetime.now(ZoneInfo("US/Pacific"))).strftime("%Y-%m-%d")
 
     # Print welcome banner
     print_banner(date_to_predict)
-    configured_prefixes = SETTINGS.prediction_model_prefixes
-    if not configured_prefixes:
-        raise ValueError(
-            "No prediction model prefixes configured in [PredictionModels] "
-            "S3_MODEL_PREFIXES."
-        )
-    print("  Configured S3 model folders:")
-    for prefix in configured_prefixes:
-        print(f"    - {prefix}")
+    configured_slots = SETTINGS.prediction_model_slots
+    if not configured_slots:
+        # A valid state, not an error: nothing has been promoted yet. The rest
+        # of the pipeline (database update, feature build, baselines) is still
+        # worth running.
+        print("  No model slots enabled in [PredictionModels] ENABLED_MODELS.")
+    else:
+        print("  Enabled model slots:")
+        for slot in configured_slots:
+            print(f"    - {slot.describe()}")
 
     # Step 1: Update the database
     print_step_header(1, "Updating All Databases")
@@ -147,12 +168,37 @@ def predict_nba_games(
     # Step 3: Build feature DataFrame for prediction
     print_step_header(3, "Preparing Feature DataFrame")
     try:
-        df_to_predict_total = create_df_to_predict(
+        # Tonight's games only, on the training build's full history: every
+        # row is exactly what a full build would give it, at a fraction of
+        # the work (create_df_to_predict's target_game_ids).
+        tonight_ids = scheduled_data["scheduled_games"]["GAME_ID"].astype(str).tolist()
+        df_to_predict_total, layer_inputs = create_df_to_predict(
             todays_prediction=True,
             scheduled_data=scheduled_data,
             strict_mode=30,
             normalize_total_lines=normalize_total_lines,
+            normalize_spread_lines=normalize_spread_lines,
+            null_extreme_spread_prices=null_extreme_spread_prices,
+            target_game_ids=tonight_ids,
+            return_layer_inputs=True,
         )
+        # The builder produces the base schema. Each slot reads its own
+        # feature_names, and newer versions only add columns, so one frame at
+        # the newest version any enabled slot needs serves every slot.
+        frame_version = newest_version(slot.schema_version for slot in configured_slots)
+        if is_layered(frame_version):
+            print(f"Adding schema layers up to {frame_version} ...")
+            # Layers calibrate on earlier games, so they run over every built
+            # row's inputs; tonight's rows then take their columns.
+            added = compute_new_columns(
+                layer_inputs,
+                from_version=BASE_SCHEMA_VERSION,
+                to_version=frame_version,
+                dataset_type=CLOSING_LINE,
+                existing_columns=df_to_predict_total.columns,
+            )
+            added = added.loc[df_to_predict_total.index]
+            df_to_predict_total = pd.concat([df_to_predict_total, added], axis=1)
         df_to_predict = df_to_predict_total[
             df_to_predict_total["GAME_DATE"] == date_to_predict
         ].copy()
@@ -167,6 +213,27 @@ def predict_nba_games(
         raise ValueError("df to predict is empty")
 
     print_status(f"Found {len(df_to_predict)} game(s) to predict")
+
+    # Intermediate slots predict a fixed time before tip-off: tonight's passed
+    # snapshots, built tonight-only from the live line history. A failure here
+    # costs only those slots, never the closing ones.
+    frames = {"closing_line": df_to_predict}
+    if any(slot.horizon_minutes for slot in configured_slots):
+        print_step_header(3, "Preparing Intermediate Snapshot Rows")
+        try:
+            intermediate_df = tonight_intermediate_frame(
+                scheduled_data, game_date=date_to_predict
+            )
+            if intermediate_df.empty:
+                print_status("No snapshot of tonight's games has passed yet")
+            else:
+                frames["intermediate_line"] = intermediate_df
+                print_status(
+                    f"{len(intermediate_df)} passed snapshot row(s) over "
+                    f"{intermediate_df['GAME_ID'].nunique()} game(s)"
+                )
+        except Exception as e:  # noqa: BLE001 -- the closing slots still run
+            print_status(f"Intermediate rows unavailable: {e}", ok=False)
 
     # Initialize S3 client once for all model operations
     s3 = make_s3_client(profile=SETTINGS.s3_aws_profile, region=SETTINGS.s3_aws_region)
@@ -191,18 +258,27 @@ def predict_nba_games(
         # Non-fatal: continue with predictions even if snapshot upload fails
 
     step_number = 5
-    for prefix in configured_prefixes:
-        print_step_header(step_number, f"Generating Predictions ({prefix})")
+    for slot in configured_slots:
+        label = slot.describe()
+        print_step_header(step_number, f"Generating Predictions ({label})")
         step_number += 1
         try:
-            predictions_df = load_s3_model_and_predict(
+            predictions_df = load_registry_model_and_predict(
                 s3_client=s3,
                 bucket=SETTINGS.s3_bucket,
-                prefix=prefix,
+                slot=slot,
                 df=df_to_predict,
                 prediction_datetime=prediction_time,
+                frames=frames,
             )
-            print_status(f"Predictions generated for {prefix}")
+            if predictions_df is None or predictions_df.empty:
+                # The horizon guard found no eligible rows: this model is not
+                # for the time of day the pipeline is running at. Not a
+                # failure, and the other slots still have work to do.
+                print_status(f"No eligible rows for {label}; skipped")
+                continue
+
+            print_status(f"Predictions generated for {label}")
 
             # Upload model predictions snapshot
             try:
@@ -211,7 +287,7 @@ def predict_nba_games(
                     bucket=SETTINGS.s3_bucket,
                     pipeline_start_time=pipeline_start_time,
                     date_to_predict=date_to_predict,
-                    model_prefix=prefix,
+                    model_prefix=slot.prefix,
                     predictions_df=predictions_df,
                 )
                 print_status(
@@ -219,20 +295,22 @@ def predict_nba_games(
                 )
             except Exception as snap_exc:
                 print_status(
-                    f"Failed to upload predictions snapshot for {prefix}: {snap_exc}",
+                    f"Failed to upload predictions snapshot for {label}: {snap_exc}",
                     ok=False,
                 )
 
         except Exception as e:
-            print_status(f"Failed to generate predictions for {prefix}: {e}", ok=False)
+            print_status(f"Failed to generate predictions for {label}: {e}", ok=False)
             raise
 
     print_step_header(step_number, "Generating Predictions (Baselines)")
     step_number += 1
     try:
+        # The frame holds tonight's games only; the history is every built
+        # game's layer inputs (GAME_DATE, TOTAL_POINTS among them).
         baseline_predictions = load_baseline_predictions_for_nba_games(
             df=df_to_predict,
-            df_history=df_to_predict_total,
+            df_history=baseline_history_window(layer_inputs, date_to_predict),
             prediction_datetime=prediction_time,
         )
         print_status("Baseline predictions generated")
@@ -310,9 +388,21 @@ if __name__ == "__main__":
         action="store_true",
         help="Keep the original asymmetrically priced total lines",
     )
+    parser.add_argument(
+        "--no-normalize-spread-lines",
+        action="store_true",
+        help="Keep the original asymmetrically priced spread lines",
+    )
+    parser.add_argument(
+        "--keep-extreme-spread-prices",
+        action="store_true",
+        help="Keep extreme spread price cells instead of setting them to NaN.",
+    )
     args = parser.parse_args()
 
     predict_nba_games(
         run_tabpfn_client=not args.no_tabpfn,
         normalize_total_lines=not args.no_normalize_total_lines,
+        normalize_spread_lines=not args.no_normalize_spread_lines,
+        null_extreme_spread_prices=not args.keep_extreme_spread_prices,
     )

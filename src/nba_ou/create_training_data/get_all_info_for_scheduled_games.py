@@ -1,20 +1,26 @@
 import asyncio
+import logging
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 import pandas as pd
 
 from nba_ou.config.constants import TEAM_ID_MAP, TEAM_NAME_STANDARDIZATION
+from nba_ou.config.odds_columns import (
+    drop_history_only_book_columns,
+    drop_sportsbook_metadata_columns,
+)
 from nba_ou.config.settings import SETTINGS
+from nba_ou.data_processing.injury_status.report_state import (
+    load_prediction_report_state,
+    nested_status_dict,
+    report_out_overrides,
+)
 from nba_ou.data_processing.referees.process_refs_scheduled_game import (
     process_scheduled_referee_assignments,
 )
-from nba_ou.data_processing.scheduled_games.manage_injury_data import (
-    process_injury_data,
-)
-from nba_ou.fetch_data.injury_reports.get_latest_injury_report import (
-    retrieve_injury_report_as_df,
-)
+from nba_ou.fetch_data.injury_reports.sync import synchronize_injury_reports
+from nba_ou.fetch_data.live_rosters import load_live_rosters
 from nba_ou.fetch_data.odds_sportsbook.scrape_sportsbook import scrape_sportsbook_days
 from nba_ou.fetch_data.odds_yahoo.process_yahoo_day import yahoo_one_row_per_game
 from nba_ou.fetch_data.odds_yahoo.scrape_yahoo import scrape_yahoo_days
@@ -238,6 +244,11 @@ def get_sportsbook_prediction_data(
         scrape_sportsbook_days(days_to_scrape, headless=headless)
     )
 
+    # Same rule as training: stored-only books never reach a prediction frame.
+    df_sportsbook = drop_sportsbook_metadata_columns(
+        drop_history_only_book_columns(df_sportsbook)
+    )
+
     # Check if we got any data
     if df_sportsbook.empty:
         print(f"No Sportsbook odds data found for {date_to_predict}")
@@ -262,6 +273,8 @@ def get_all_info_for_scheduled_games(
     nba_injury_reports_url,
     save_reports_path=None,
     headless: bool | None = None,
+    *,
+    dataset_type: str = "closing_line",
 ) -> dict:
     """Get all information needed for scheduled games prediction.
 
@@ -270,9 +283,11 @@ def get_all_info_for_scheduled_games(
 
     Args:
         date_to_predict (str): Date in format 'YYYY-MM-DD'
-        nba_injury_reports_url: URL for NBA injury reports
-        save_reports_path: Path to save injury reports
+        nba_injury_reports_url: Legacy argument; timestamped CDN URLs are now used.
+        save_reports_path: Deprecated; reports are archived to S3, never local disk.
         headless (bool | None): Playwright mode. If None, uses SETTINGS.headless.
+        dataset_type: Closing requires both teams to have filed. Intermediate
+            keeps uncovered games, whose snapshot injury features remain NaN.
 
     Returns:
         dict: Dictionary containing:
@@ -281,7 +296,12 @@ def get_all_info_for_scheduled_games(
             - injury_dict_scheduled (dict): Injury information
             - df_odds_yahoo_scheduled (pd.DataFrame): Yahoo odds data
             - df_odds_sportsbook_scheduled (pd.DataFrame): Sportsbook odds data
+            - games_not_updated: Games to exclude for missing filing coverage;
+              always empty for intermediate requests.
+            - games_missing_injury_reports: Games with at least one uncovered team.
     """
+    if dataset_type not in {"closing_line", "intermediate_line"}:
+        raise ValueError(f"Unknown prediction dataset type: {dataset_type}")
     if not date_to_predict:
         date_to_predict = pd.Timestamp.now(tz=ZoneInfo("US/Pacific")).strftime(
             "%Y-%m-%d"
@@ -301,6 +321,8 @@ def get_all_info_for_scheduled_games(
             "df_odds_yahoo_scheduled": pd.DataFrame(),
             "df_odds_sportsbook_scheduled": pd.DataFrame(),
             "games_not_updated": [],
+            "games_missing_injury_reports": [],
+            "roster_snapshots": pd.DataFrame(),
         }
 
     # Convert team IDs to team names using TEAM_ID_MAP
@@ -324,13 +346,48 @@ def get_all_info_for_scheduled_games(
 
     # Then get refs
     df_referees_scheduled = process_scheduled_referee_assignments(scheduled_games)
-    # Then Injuries
-    injury_report_df = retrieve_injury_report_as_df(
-        nba_injury_reports_url, reports_path=save_reports_path
+    # Reports are synchronized before any feature reads. Aiven is the sole
+    # prediction source; a failed refresh may use its previous eligible state.
+    roster_snapshots = load_live_rosters(scheduled_games)
+    injury_as_of = pd.Timestamp.now(tz="UTC")
+    try:
+        synchronize_injury_reports(
+            date_to_predict,
+            scheduled_games=scheduled_games,
+            as_of=injury_as_of,
+            roster_snapshots=roster_snapshots,
+        )
+    except Exception as exc:
+        logging.getLogger(__name__).warning(
+            "Injury report refresh failed; reading existing Aiven state: %s", exc
+        )
+    injury_report_state = load_prediction_report_state(
+        scheduled_games.GAME_ID.astype(str).tolist(), injury_as_of
     )
-
-    injury_dict_scheduled, games_not_updated = process_injury_data(
-        scheduled_games, injury_report_df
+    # Tonight's games only. The state also holds every earlier covered game,
+    # and this dict is merged into the realized-absence history, which must
+    # keep what actually happened in those games, not their pre-game reports.
+    tonight_ids = set(scheduled_games.GAME_ID.astype(str))
+    injury_dict_scheduled = nested_status_dict(
+        {
+            key: players
+            for key, players in report_out_overrides(injury_report_state).items()
+            if key[0] in tonight_ids
+        }
+    )
+    # Intermediate training keeps unknown availability as NaN, so it must not
+    # inherit the closing job's filing requirement. Keep diagnostics separate
+    # from the exclusion list consumed by the closing feature builder.
+    games_missing_injury_reports = [
+        str(row.GAME_ID)
+        for row in scheduled_games.itertuples()
+        if any(
+            (str(row.GAME_ID), str(team)) not in injury_report_state.covered
+            for team in (row.HOME_TEAM_ID, row.VISITOR_TEAM_ID)
+        )
+    ]
+    games_not_updated = (
+        games_missing_injury_reports if dataset_type == "closing_line" else []
     )
 
     if len(games_not_updated) == len(scheduled_games):
@@ -350,7 +407,11 @@ def get_all_info_for_scheduled_games(
         "scheduled_games": scheduled_games,
         "df_referees_scheduled": df_referees_scheduled,
         "injury_dict_scheduled": injury_dict_scheduled,
+        "injury_report_state": injury_report_state,
+        "injury_as_of_utc": injury_as_of,
+        "roster_snapshots": roster_snapshots,
         "df_odds_yahoo_scheduled": df_odds_yahoo_scheduled,
         "df_odds_sportsbook_scheduled": df_odds_sportsbook_scheduled,
         "games_not_updated": games_not_updated,
+        "games_missing_injury_reports": games_missing_injury_reports,
     }

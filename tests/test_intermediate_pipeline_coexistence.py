@@ -205,9 +205,11 @@ def test_roster_continuity_accepts_no_injury_reports():
         add_roster_continuity_feature,
     )
 
-    annotation = inspect.signature(add_roster_continuity_feature).parameters[
-        "injured_dict"
-    ].annotation
+    annotation = (
+        inspect.signature(add_roster_continuity_feature)
+        .parameters["injured_dict"]
+        .annotation
+    )
     assert "None" in str(annotation)
 
 
@@ -221,8 +223,12 @@ def test_team_identity_is_one_hot_encoded():
         {"TEAM_ID_TEAM_HOME": ["1610612738"], "TEAM_ID_TEAM_AWAY": ["1610612747"]}
     )
     out = add_team_one_hot_features(frame, categorical_team_encoding=False)
-    home = [c for c in out.columns if c.startswith("TEAM_HOME_") and c.endswith("_BEFORE")]
-    away = [c for c in out.columns if c.startswith("TEAM_AWAY_") and c.endswith("_BEFORE")]
+    home = [
+        c for c in out.columns if c.startswith("TEAM_HOME_") and c.endswith("_BEFORE")
+    ]
+    away = [
+        c for c in out.columns if c.startswith("TEAM_AWAY_") and c.endswith("_BEFORE")
+    ]
     assert len(home) == 30 and len(away) == 30
     assert out[home].sum(axis=1).tolist() == [1]
     assert out[away].sum(axis=1).tolist() == [1]
@@ -274,3 +280,25 @@ def test_roster_injury_report_mode_is_validated():
     assert _build_roster_injury_dict("none", [], pd.DataFrame(), pd.DataFrame()) is None
     with pytest.raises(ValueError, match="none', 'lagged' or 'full'"):
         _build_roster_injury_dict("sometimes", [], pd.DataFrame(), pd.DataFrame())
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"combine_fanatics_and_caesars": True, "exclude_fanatics": True},
+        {"combine_fanatics_and_caesars": True, "exclude_caesars": True},
+        {
+            "combine_fanatics_and_caesars": True,
+            "exclude_fanatics": True,
+            "exclude_caesars": True,
+        },
+    ],
+)
+def test_combine_fanatics_and_caesars_rejects_conflicting_exclusions(kwargs):
+    """Validated before any DB access, so this needs no mocking."""
+    from nba_ou.create_training_data.create_intermediate_line_df import (
+        create_intermediate_line_df,
+    )
+
+    with pytest.raises(ValueError, match="cannot be combined with"):
+        create_intermediate_line_df(**kwargs)

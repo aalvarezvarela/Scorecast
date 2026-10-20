@@ -1,0 +1,22 @@
+experiment_name: spread_error_intermediate_t120
+prediction_strategy: spread_error_regressor
+training_version: "2.1-spread-error-campaign"
+comparison_group: spread_error_2026_08
+hypothesis: Two-hour spread-error model, evaluated at the line available then.
+tags: [spread_error, spread, intermediate_line, single_snapshot, t120]
+device: cuda
+data:
+  csv_path: data/train_data/intermediate_line_data_2_1_20260828.csv
+  data_version: "20260828-intermediate-line-2.1-spread-t120"
+  expected_checksum: "sha256:a34ce56dc93a5df8"
+  dataset_type: intermediate_line
+  snapshot_minutes: 120
+  scoring_csv_path: data/train_data/intermediate_line_data_2_1_20260828_scoring.csv
+  season_year_floor: 2021
+  extend_history_dropping_season_gated_columns: false
+betting:
+  home_price_col: ODDS_SNAP_SPR_BET365_PRICE_RIGHT
+  away_price_col: ODDS_SNAP_SPR_BET365_PRICE_LEFT
+  comparison_line_cols: ["ODDS_CLOSING_SPREAD_LINE_HOME_bet365"]
+optuna: {n_trials: 150, timeout: null}
+evaluation_seeds: [17, 42, 91]

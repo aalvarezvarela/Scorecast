@@ -36,7 +36,7 @@ def _df_test_full(line_values, total_points):
     return pd.DataFrame(
         {
             "TOTAL_POINTS": total_points,
-            "TOTAL_LINE_bet365": line_values,
+            "ODDS_TOTAL_LINE_bet365": line_values,
             "GAME_DATE": pd.to_datetime(
                 ["2026-01-01", "2026-01-02", "2026-01-03", "2026-01-04"]
             ),
@@ -48,7 +48,7 @@ def _total_points_config() -> ExperimentConfig:
     return ExperimentConfig(
         experiment_name="eval_test",
         target_family=TargetFamily.TOTAL_POINTS,
-        line_col="TOTAL_LINE_bet365",
+        line_col="ODDS_TOTAL_LINE_bet365",
         data=DataConfig(csv_path="x.csv"),
     )
 
@@ -71,11 +71,11 @@ def test_total_points_predictions_df_baseline_pred_is_the_line():
             accuracy_col="ou_betting_accuracy", threshold_col="threshold_abs_pred_edge_gt"
         ),
         _StubModel([208.0, 218.0, 198.0, 228.0]),
-        X_test=df_test[["TOTAL_LINE_bet365"]],
+        X_test=df_test[["ODDS_TOTAL_LINE_bet365"]],
         y_test=pd.Series(total_points),
         df_test_full=df_test,
-        baseline_line_col="TOTAL_LINE_bet365",
-        target_line_col="TOTAL_LINE_bet365",
+        baseline_line_col="ODDS_TOTAL_LINE_bet365",
+        target_line_col="ODDS_TOTAL_LINE_bet365",
         dev_line_error_bias=0.0,
         config=_total_points_config(),
     )
@@ -102,11 +102,11 @@ def test_line_error_predictions_df_baseline_pred_is_zero_not_the_raw_line():
             threshold_col="threshold_abs_pred_error_gt",
         ),
         _StubModel([4.0, 6.0, 3.0, 7.0]),
-        X_test=df_test[["TOTAL_LINE_bet365"]],
+        X_test=df_test[["ODDS_TOTAL_LINE_bet365"]],
         y_test=pd.Series(line_errors),
         df_test_full=df_test,
-        baseline_line_col="TOTAL_LINE_bet365",
-        target_line_col="TOTAL_LINE_bet365",
+        baseline_line_col="ODDS_TOTAL_LINE_bet365",
+        target_line_col="ODDS_TOTAL_LINE_bet365",
         dev_line_error_bias=0.0,
         config=_line_error_config(),
     )
@@ -133,11 +133,11 @@ def test_bias_corrected_null_still_bets_when_drift_is_below_the_edge_threshold()
             accuracy_col="ou_betting_accuracy", threshold_col="threshold_abs_pred_edge_gt"
         ),
         _StubModel([215.0, 205.0, 220.0, 200.0]),
-        X_test=df_test[["TOTAL_LINE_bet365"]],
+        X_test=df_test[["ODDS_TOTAL_LINE_bet365"]],
         y_test=pd.Series(total_points),
         df_test_full=df_test,
-        baseline_line_col="TOTAL_LINE_bet365",
-        target_line_col="TOTAL_LINE_bet365",
+        baseline_line_col="ODDS_TOTAL_LINE_bet365",
+        target_line_col="ODDS_TOTAL_LINE_bet365",
         # Drift far smaller than the 2.0 primary edge threshold.
         dev_line_error_bias=-0.67,
         config=_total_points_config(),
@@ -162,11 +162,11 @@ def test_baseline_metrics_are_scored_in_points_space_for_both_targets():
             threshold_col="threshold_abs_pred_error_gt",
         ),
         _StubModel([4.0, 6.0, 3.0, 7.0]),
-        X_test=df_test[["TOTAL_LINE_bet365"]],
+        X_test=df_test[["ODDS_TOTAL_LINE_bet365"]],
         y_test=pd.Series([5.0, 5.0, 5.0, 5.0]),
         df_test_full=df_test,
-        baseline_line_col="TOTAL_LINE_bet365",
-        target_line_col="TOTAL_LINE_bet365",
+        baseline_line_col="ODDS_TOTAL_LINE_bet365",
+        target_line_col="ODDS_TOTAL_LINE_bet365",
         dev_line_error_bias=0.0,
         config=_line_error_config(),
     )

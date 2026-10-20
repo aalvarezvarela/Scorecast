@@ -225,6 +225,31 @@ class TemporalDecaySampleWeightRegressor(RegressorMixin, BaseEstimator):
         return hasattr(self, "estimator_")
 
 
+def tail_n_games(
+    df: pd.DataFrame, n: int, *, group_col: str | None = None
+) -> pd.DataFrame:
+    """The last ``n`` GAMES of a chronologically ordered training frame.
+
+    ``group_col`` names the column identifying a game. Without it -- and on any
+    frame holding one row per game -- this is ``df.tail(n)``, which is what the
+    day-by-day walk-forward always did.
+
+    It matters on a frame with several rows per game, such as the
+    intermediate-line dataset's one row per (game, pre-game snapshot). There
+    ``tail(n)`` keeps n ROWS, so a 3,500-game window silently becomes 350 games
+    at ten snapshots each, and it can also slice a game in half -- keeping four
+    of its ten snapshots, which is neither a row window nor a game window. Every
+    row of a kept game is kept here.
+    """
+    if group_col is None or group_col not in df.columns:
+        return df.tail(n)
+    groups = df[group_col].astype(str)
+    ordered = groups.drop_duplicates()
+    if len(ordered) <= n:
+        return df
+    return df.loc[groups.isin(set(ordered.tail(n)))]
+
+
 def evaluate_day_by_day_walk_forward(
     df_dev: pd.DataFrame,
     df_test_final: pd.DataFrame,
@@ -234,6 +259,7 @@ def evaluate_day_by_day_walk_forward(
     target_col: str,
     date_col: str = "GAME_DATE",
     max_games: int | None = None,
+    max_games_group_col: str | None = None,
     metric_name: str = "metric",
     show_progress: bool = False,
     progress_desc: str | None = None,
@@ -262,8 +288,14 @@ def evaluate_day_by_day_walk_forward(
     date_col : str
         Date column name.
     max_games : int | None
-        If provided, keep only the latest ``max_games`` rows in each day's
+        If provided, keep only the latest ``max_games`` games in each day's
         training set.
+    max_games_group_col : str | None
+        Column identifying a game, e.g. "GAME_ID". Needed only when the frame
+        holds several rows per game, where without it ``max_games`` counts rows
+        and the window silently shrinks by the number of rows per game. None
+        (the default) keeps the original ``tail(max_games)`` behaviour, which is
+        already correct for a one-row-per-game frame.
     metric_name : str
         Column name used in the returned per-day summary.
     show_progress : bool
@@ -338,7 +370,9 @@ def evaluate_day_by_day_walk_forward(
 
         train_df = combined.loc[train_mask, feature_cols].copy()
         if max_games is not None:
-            train_df = train_df.tail(max_games).copy()
+            train_df = tail_n_games(
+                train_df, max_games, group_col=max_games_group_col
+            ).copy()
 
         test_positions = combined.loc[test_mask, "_walk_orig_pos"].to_numpy()
         test_df = combined.loc[test_mask, feature_cols].copy()
@@ -366,8 +400,18 @@ def evaluate_day_by_day_walk_forward(
         daily_rows.append(
             {
                 "date": pd.Timestamp(current_day).normalize(),
-                "train_n_games": int(len(train_df)),
-                "test_n_games": int(len(test_df)),
+                "train_n_games": (
+                    int(train_df[max_games_group_col].nunique())
+                    if max_games_group_col and max_games_group_col in train_df
+                    else int(len(train_df))
+                ),
+                "train_n_rows": int(len(train_df)),
+                "test_n_games": (
+                    int(test_df[max_games_group_col].nunique())
+                    if max_games_group_col and max_games_group_col in test_df
+                    else int(len(test_df))
+                ),
+                "test_n_rows": int(len(test_df)),
                 "train_start_date": train_dates.min(),
                 "train_end_date": train_dates.max(),
                 metric_name: metric_value,

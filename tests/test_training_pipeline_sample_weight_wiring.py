@@ -48,23 +48,23 @@ def _frame(n_games: int = 240, games_per_day: int = 4) -> pd.DataFrame:
             "GAME_DATE": dates,
             "SEASON_YEAR": 2025,
             "TOTAL_POINTS": (line + rng.normal(0, 12, n_games)).round(1),
-            "TOTAL_LINE_bet365": line,
+            "ODDS_TOTAL_LINE_bet365": line,
             "FEATURE_A": rng.normal(size=n_games),
             "FEATURE_B": rng.normal(size=n_games),
         }
     )
-    df["LINE_ERROR"] = df["TOTAL_POINTS"] - df["TOTAL_LINE_bet365"]
+    df["LINE_ERROR"] = df["TOTAL_POINTS"] - df["ODDS_TOTAL_LINE_bet365"]
     return df
 
 
 def _prepared(df: pd.DataFrame) -> PreparedDataset:
-    features = ["TOTAL_LINE_bet365", "FEATURE_A", "FEATURE_B"]
+    features = ["ODDS_TOTAL_LINE_bet365", "FEATURE_A", "FEATURE_B"]
     return PreparedDataset(
         df_full=df,
         X=df[features],
         y=df["TOTAL_POINTS"],
-        baseline_line_col="TOTAL_LINE_bet365",
-        target_line_col="TOTAL_LINE_bet365",
+        baseline_line_col="ODDS_TOTAL_LINE_bet365",
+        target_line_col="ODDS_TOTAL_LINE_bet365",
         feature_names=features,
         dataset_checksum="sha256:test",
     )
@@ -75,7 +75,7 @@ def _config(tmp_path, *, target_family, sample_weight, **overrides):
         "experiment_name": "sw",
         "target_family": target_family,
         "line_col": (
-            "TOTAL_LINE_bet365"
+            "ODDS_TOTAL_LINE_bet365"
             if target_family == TargetFamily.TOTAL_POINTS
             else None
         ),
@@ -141,7 +141,7 @@ def test_cv_fits_are_weighted_for_both_target_families(
     target = (
         "TOTAL_POINTS" if target_family == TargetFamily.TOTAL_POINTS else "LINE_ERROR"
     )
-    X = df[["TOTAL_LINE_bet365", "FEATURE_A", "FEATURE_B"]]
+    X = df[["ODDS_TOTAL_LINE_bet365", "FEATURE_A", "FEATURE_B"]]
 
     get_strategy(config).tune(
         X=X,
@@ -170,7 +170,7 @@ def test_tuned_lambda_is_the_one_the_folds_were_scored_with(tmp_path, weight_spy
     )
 
     get_strategy(config).tune(
-        X=df[["TOTAL_LINE_bet365", "FEATURE_A", "FEATURE_B"]],
+        X=df[["ODDS_TOTAL_LINE_bet365", "FEATURE_A", "FEATURE_B"]],
         y=df["TOTAL_POINTS"],
         splits=[(np.arange(0, 150), np.arange(150, 200))],
         config=config,

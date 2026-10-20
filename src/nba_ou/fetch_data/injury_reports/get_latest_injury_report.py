@@ -18,6 +18,27 @@ team_pattern = re.compile(r"^[A-Z][a-zA-Z]*(?:\s[A-Z][a-zA-Z]*)+$")
 status_pattern = re.compile(r"^[A-Z][a-zA-Z]*$")
 player_name_pattern = re.compile(r"^[A-Z][a-zA-Z'.\- ]+, [A-Z][a-zA-Z'.\-]+")
 
+#: The values the "Current Status" column can take.
+STATUS_VALUES = frozenset({"Out", "Questionable", "Probable", "Doubtful", "Available"})
+
+#: Marker the NBA prints when a team has not filed yet. Not a player row.
+NOT_YET_SUBMITTED = "NOT YET SUBMITTED"
+
+
+def is_wrapped_reason_fragment(token):
+    """True when ``token`` may be a reason that wrapped onto the next line.
+
+    Reasons carry the ``Category - Detail; Detail`` shape, so a ``-`` or ``;``
+    is what marks a fragment as mergeable. Player names share that punctuation
+    ("Gilgeous-Alexander, Shai", "Aminu, Al-Farouq"), and merging one swallows
+    the name, its status and its reason into a single cell, dropping the row.
+    Statuses are excluded for the same reason.
+    """
+    token = token.strip()
+    if player_name_pattern.match(token) or token in STATUS_VALUES:
+        return False
+    return ";" in token or "-" in token
+
 
 def create_robust_session():
     """Create a requests session with retry strategy and browser-like headers."""
@@ -48,7 +69,7 @@ def get_latest_pdf(nba_injury_report_url) -> bytes:
         # Fetch the webpage content with improved headers and retry logic
         response = session.get(nba_injury_report_url, timeout=30, allow_redirects=True)
         response.raise_for_status()
-        
+
         # Parse the HTML
         soup = BeautifulSoup(response.text, "html.parser")
 
@@ -99,6 +120,25 @@ def get_latest_pdf(nba_injury_report_url) -> bytes:
         session.close()
 
 
+def is_positional_row(elements):
+    """True when a 7-element block really is one complete 7-column row.
+
+    Length alone is not enough. A row that starts a new game carries its Game
+    Time, Matchup and Team inline, so a *six*-field row whose reason wrapped onto
+    a second line also arrives with seven elements -- and mapping that
+    positionally shifts every column left, turning ``Game Date`` into
+    ``"07:30 (ET)"`` and ``Current Status`` into a fragment of the reason.
+    Verify the three leading fields before trusting the position.
+    """
+    if len(elements) != 7:
+        return False
+    return bool(
+        date_pattern.match(elements[0])
+        and time_pattern.match(elements[1])
+        and matchup_pattern.match(elements[2])
+    )
+
+
 def classify_token(token, category):
     """Given a single token and the current partial row dict,
     decide which column it belongs to using regex patterns.
@@ -147,7 +187,7 @@ def read_injury_report(pdf_data):
         doc = pymupdf.open(stream=pdf_data, filetype="pdf")
     else:
         doc = pymupdf.open(pdf_data)
-    
+
     col_names = [
         "Game Date",
         "Game Time",
@@ -162,50 +202,75 @@ def read_injury_report(pdf_data):
 
     data = []  # List to store extracted rows
 
+    # ``joinwith_next`` deliberately lives outside the page loop: a reason can
+    # wrap across a page break, and resetting it per page orphaned the tail.
+    joinwith_next = None
     for page in doc:
         blocks = page.get_text("blocks")  # Extract text with bounding boxes
         page.get_text("html")
-        joinwith_next = None
+        # Only the first *table* block of a page can be a wrapped reason
+        # continued from the previous page.
+        at_page_start = True
         for block in blocks:
             x0, y0, x1, y1, text = block[:5]  # Extract bounding box and text
             text = text.strip()
             if not text:
                 continue
             text_elements = [t.strip() for t in text.split("\n")]
-            if joinwith_next:
-                text_elements = joinwith_next + text_elements
-                joinwith_next = None
+
+            # "Injury Report: ..." and "Page 3 of 10" banners carry no table
+            # data. Skipped before anything else so they cannot break a join
+            # that is pending across the page boundary.
+            if len(text_elements) < 2:
+                continue
 
             if text_elements[0] == "Game Date" and text_elements[1] == "Game Time":
                 # skip header
                 continue
 
-            if len(text_elements) == 2 and any(
-                status in text
-                for status in [
-                    "Out",
-                    "Questionable",
-                    "Probable",
-                    "Doubtful",
-                    "Available",
-                ]
-            ):
+            if joinwith_next:
+                text_elements = joinwith_next + text_elements
+                joinwith_next = None
+                at_page_start = False
+
+            # A row always ends with its Reason, so a block whose last element is
+            # a bare status has had its reason pushed into the next block. This
+            # happens whenever the reason is long enough to wrap: the player row
+            # and the reason text end up as two separate blocks.
+            if text_elements[-1] in STATUS_VALUES:
                 joinwith_next = text_elements.copy()
+                at_page_start = False
                 continue
 
-            if not text_elements or (len(text_elements) < 2):
-                continue  # Skip empty or incomplete lines
+            # Every real row carries a status. A first-of-page block without one
+            # is the tail of a reason that wrapped off the previous page -- give
+            # it back to the row it belongs to rather than letting it parse as a
+            # phantom player ("Knee Bone Bruise, Left Heel" matches the name
+            # pattern, and "Contusion" then matches the status pattern).
+            if (
+                at_page_start
+                and data
+                and NOT_YET_SUBMITTED not in text
+                and not any(element in STATUS_VALUES for element in text_elements)
+            ):
+                tail = " ".join(text_elements)
+                previous = data[-1]
+                previous["Reason"] = f"{previous['Reason'] or ''} {tail}".strip()
+                at_page_start = False
+                continue
 
-            if len(text_elements) >= 3 and (
-                ";" in text_elements[-2] or "-" in text_elements[-2]
+            at_page_start = False
+
+            if len(text_elements) >= 3 and is_wrapped_reason_fragment(
+                text_elements[-2]
             ):
                 text_elements[-2] = (
                     f"{text_elements[-2]} {text_elements[-1]}"  # Merge last two elements
                 )
                 text_elements.pop()
 
-            if len(text_elements) >= 4 and (
-                ";" in text_elements[-3] or "-" in text_elements[-3]
+            if len(text_elements) >= 4 and is_wrapped_reason_fragment(
+                text_elements[-3]
             ):
                 text_elements[-3] = (
                     f"{text_elements[-3]} {text_elements[-2]} {text_elements[-1]}"  # Merge last three elements
@@ -215,13 +280,24 @@ def read_injury_report(pdf_data):
 
             current_line = text_elements.copy()
             results = dict_results_template.copy()
-            if len(current_line) != 7:
+            if is_positional_row(current_line):
+                results = {col: current_line[i] for i, col in enumerate(col_names)}
+            else:
                 last_matched_col = None
-                for element in current_line:
+                consumed: set[int] = set()
+                for index, element in enumerate(current_line):
                     for category in col_names:
                         # Skip already filled values
                         if element in results.values():
                             break
+
+                        # Each column appears once per row, so a filled one must
+                        # not be overwritten. Without this a trailing reason
+                        # fragment that happens to be a single capitalised word
+                        # ("Reconditioning") matches the status pattern and
+                        # clobbers the real status.
+                        if results[category] is not None:
+                            continue
 
                         # Enforce logical sequence: after "Player Name", only allow "Current Status" or "Reason"
                         if last_matched_col == "Player Name" and category not in [
@@ -230,16 +306,35 @@ def read_injury_report(pdf_data):
                         ]:
                             continue
 
+                        # ...and once the status is seen, everything after it is
+                        # the reason. Without this a bare category ("Personal
+                        # Reasons", "League Suspension") matches the two-capital-
+                        # words team pattern and is filed as the Team, which
+                        # ffill then propagates down the rest of the column.
+                        if (
+                            last_matched_col == "Current Status"
+                            and category != "Reason"
+                        ):
+                            continue
+
                         if classify_token(element, category):
                             results[category] = element
                             last_matched_col = category
+                            consumed.add(index)
                             break
 
-                    # Fallback if Reason is still empty
-                    if not results["Reason"]:
-                        results["Reason"] = current_line[-1]
-            if len(current_line) == 7:
-                results = {col: current_line[i] for i, col in enumerate(col_names)}
+                # The reason is whatever is left over, in order. Assigning it
+                # inside the loop (as this once did) set it from the last element
+                # before the status had been seen, which then made the status
+                # look already-used and left ``Current Status`` empty.
+                if not results["Reason"]:
+                    leftover = [
+                        element
+                        for index, element in enumerate(current_line)
+                        if index not in consumed
+                    ]
+                    if leftover:
+                        results["Reason"] = " ".join(leftover)
 
             # append the current line to data
             data.append(results)

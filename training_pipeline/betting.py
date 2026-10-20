@@ -31,6 +31,38 @@ DECIMAL_ODDS_MINUS_110 = 1.0 + 100.0 / 110.0
 DEFAULT_EDGE_THRESHOLDS: tuple[float, ...] = (0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0)
 
 
+#: Column holding the realised outcome in a saved predictions frame.
+#:
+#: Runs predating the spread market wrote this as ``TOTAL_POINTS``, which was
+#: unambiguous while totals were the only market. It no longer is: a spread run's
+#: outcome is HOME_MARGIN, and writing home margins into a column named
+#: TOTAL_POINTS would be a lie that every reader would believe.
+#:
+#: New runs therefore write ``actual_outcome`` (always) and ``TOTAL_POINTS``
+#: (only when that is genuinely what the outcome is). Read via
+#: ``outcome_from_predictions``, which falls back so archived runs keep loading.
+OUTCOME_COLUMN = "actual_outcome"
+
+
+def outcome_from_predictions(predictions: pd.DataFrame) -> np.ndarray:
+    """The realised outcome from a predictions frame, old layout or new.
+
+    Prefers ``actual_outcome``; falls back to ``TOTAL_POINTS`` so every run
+    already in ``artifacts/experiments`` still reads. Raises rather than
+    returning NaNs if neither is present -- a scorer silently producing an
+    all-NaN outcome column reports a plausible-looking zero-bet result.
+    """
+    for column in (OUTCOME_COLUMN, "TOTAL_POINTS"):
+        if column in predictions.columns:
+            return pd.to_numeric(predictions[column], errors="coerce").to_numpy(
+                dtype=float
+            )
+    raise KeyError(
+        f"Predictions frame has neither {OUTCOME_COLUMN!r} nor 'TOTAL_POINTS'; "
+        "there is no realised outcome to score against."
+    )
+
+
 def decimal_odds_from_american(american_odds: float) -> float:
     """Convert American odds to decimal odds (stake included)."""
     if american_odds > 0:

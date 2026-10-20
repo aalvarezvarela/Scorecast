@@ -37,7 +37,7 @@ def test_ordinary_before_columns_are_kept():
 
 def test_current_game_closing_odds_are_dropped():
     for column in [
-        "TOTAL_LINE_betmgm",
+        "ODDS_TOTAL_LINE_betmgm",
         "total_bet365_price_over",
         "spread_fanduel_line_home",
         "ml_caesars_price_away",
@@ -47,16 +47,14 @@ def test_current_game_closing_odds_are_dropped():
 
 
 def test_snapshot_and_schedule_columns_are_kept():
-    assert is_kept_column("SNAP_TOT_BET365_NORM_LINE")
+    assert is_kept_column("ODDS_SNAP_TOT_BET365_NORM_LINE")
     assert is_kept_column("TOTAL_KM_IN_LAST_7_DAYS_HOME_TEAM")
     assert is_kept_column("JETLAG_HOURS_FROM_LAST_GAME_AWAY_TEAM")
 
 
 def test_gate_raises_if_a_leaky_column_is_forced_through():
     """Mutation check: re-inject the leak and the gate must refuse it."""
-    frame = pd.DataFrame(
-        {"GAME_ID": ["1"], "PTS_SEASON_BEFORE_AVG_TEAM_HOME": [110.0]}
-    )
+    frame = pd.DataFrame({"GAME_ID": ["1"], "PTS_SEASON_BEFORE_AVG_TEAM_HOME": [110.0]})
     assert not select_intermediate_training_columns(frame).empty
 
     import nba_ou.create_training_data.select_intermediate_columns as module
@@ -125,15 +123,17 @@ def test_audit_is_quiet_on_genuinely_safe_features():
 
 
 def test_bare_closing_odds_check_allows_only_the_designated_anchor():
-    frame = pd.DataFrame({"TOTAL_LINE_bet365": [224.5], "TOTAL_LINE_fanduel": [225.0]})
-    with pytest.raises(ValueError, match="TOTAL_LINE_fanduel"):
-        assert_no_bare_closing_odds(frame, allowed=("TOTAL_LINE_bet365",))
+    frame = pd.DataFrame(
+        {"ODDS_TOTAL_LINE_bet365": [224.5], "ODDS_TOTAL_LINE_fanduel": [225.0]}
+    )
+    with pytest.raises(ValueError, match="ODDS_TOTAL_LINE_fanduel"):
+        assert_no_bare_closing_odds(frame, allowed=("ODDS_TOTAL_LINE_bet365",))
 
 
 def test_anchor_column_alone_passes_the_bare_odds_check():
     """In this dataset the anchor column holds the SNAPSHOT line, by design."""
-    frame = pd.DataFrame({"TOTAL_LINE_bet365": [224.5]})
-    assert_no_bare_closing_odds(frame, allowed=("TOTAL_LINE_bet365",))
+    frame = pd.DataFrame({"ODDS_TOTAL_LINE_bet365": [224.5]})
+    assert_no_bare_closing_odds(frame, allowed=("ODDS_TOTAL_LINE_bet365",))
 
 
 def test_closing_columns_never_survive_the_gate():
@@ -149,19 +149,19 @@ def test_closing_columns_never_survive_the_gate():
         {
             "GAME_ID": ["1"],
             "PTS_SEASON_BEFORE_AVG_TEAM_HOME": [110.0],
-            "CLOSING_TOTAL_LINE_bet365": [224.5],
-            "CLOSING_TOTAL_LINE_caesars": [225.0],
+            "ODDS_CLOSING_TOTAL_LINE_bet365": [224.5],
+            "ODDS_CLOSING_TOTAL_LINE_caesars": [225.0],
         }
     )
     gated = select_intermediate_training_columns(frame)
-    assert not [c for c in gated.columns if c.startswith("CLOSING_")]
-    assert not is_kept_column("CLOSING_TOTAL_LINE_draftkings")
+    assert not [c for c in gated.columns if c.startswith("ODDS_CLOSING_")]
+    assert not is_kept_column("ODDS_CLOSING_TOTAL_LINE_draftkings")
 
 
 def test_bare_closing_odds_check_also_flags_closing_prefixed_columns():
-    frame = pd.DataFrame({"CLOSING_TOTAL_LINE_bet365": [224.5]})
-    with pytest.raises(ValueError, match="CLOSING_TOTAL_LINE_bet365"):
-        assert_no_bare_closing_odds(frame, allowed=("TOTAL_LINE_bet365",))
+    frame = pd.DataFrame({"ODDS_CLOSING_TOTAL_LINE_bet365": [224.5]})
+    with pytest.raises(ValueError, match="ODDS_CLOSING_TOTAL_LINE_bet365"):
+        assert_no_bare_closing_odds(frame, allowed=("ODDS_TOTAL_LINE_bet365",))
 
 
 def test_consensus_opener_survives_under_its_own_name():
@@ -170,11 +170,11 @@ def test_consensus_opener_survives_under_its_own_name():
     Openers land a median ~25h before tip, outside the whole snapshot grid.
     Sweeping it into ``CLOSING_*`` silently disabled that baseline.
     """
-    assert is_kept_column("TOTAL_LINE_consensus_opener")
-    frame = pd.DataFrame({"TOTAL_LINE_consensus_opener": [223.0]})
+    assert is_kept_column("ODDS_TOTAL_LINE_consensus_opener")
+    frame = pd.DataFrame({"ODDS_TOTAL_LINE_consensus_opener": [223.0]})
     gated = select_intermediate_training_columns(frame)
-    assert "TOTAL_LINE_consensus_opener" in gated.columns
-    assert_no_bare_closing_odds(frame, allowed=("TOTAL_LINE_bet365",))
+    assert "ODDS_TOTAL_LINE_consensus_opener" in gated.columns
+    assert_no_bare_closing_odds(frame, allowed=("ODDS_TOTAL_LINE_bet365",))
 
 
 def test_raw_timestamps_are_not_features():

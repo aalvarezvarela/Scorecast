@@ -1,0 +1,80 @@
+# CELL D2 -- the window axis. 4,500-game window.
+#
+# Read the full campaign rationale in d1_window_3000.yaml; it is not repeated
+# here. The one-line version: cell C of public_betting_tradeoff_2026_08 put the
+# window in Optuna's search space, the pruner killed 94 of 95 trials at the
+# first fold it was allowed to, and the large windows got 5 completed trials
+# between them. This campaign fixes the window per cell so the axis is measured
+# by construction.
+#
+# 4,500 is the interesting midpoint for a specific reason: it is the largest
+# window the OLD data regime could also reach (measured ceilings were 4,877 and
+# 4,893 games for cells A and B, against 7,008 here). So D2 is the last point on
+# this axis that is not reliant on the bubble and COVID-compressed seasons for
+# its history, and D1 -> D2 is therefore an ordinary-history contrast in a way
+# D2 -> D3 is not.
+experiment_name: winax_d2_window_4500
+prediction_strategy: line_error_regressor
+training_version: "2.1-window-axis-extended"
+comparison_group: window_axis_extended_2026_08
+hypothesis: >
+  A 4,500-game window beats the 3,000-game control on the extended-history
+  data. This is the half of the window axis that does not depend on bubble or
+  COVID basketball, so a win here is the stronger of the two available wins
+  and a loss here makes D3 hard to believe.
+tags: [line_error, window_axis, extended_history, fixed_window]
+
+# Hardware, not part of the hypothesis -- device is excluded from fingerprint()
+# so it cannot fork an Optuna study. It must still be IDENTICAL on every cell of
+# this campaign: trial timing feeds the pruner, so a cell running on different
+# hardware is not comparable with one that is not.
+#
+# VERIFY CUDA IS REAL ON THE MACHINE YOU RUN THIS ON. XGBoost 2.1.4 does not
+# error when asked for a device it was not compiled for -- it warns
+# "XGBoost is not compiled with CUDA support" and silently runs on CPU, so a run
+# can look GPU-configured and take CPU time. The runner checks this first.
+device: cuda
+
+data:
+  csv_path: data/train_data/training_data_2_0_20260819.csv
+  data_version: "20260819-training-2.0"
+  expected_checksum: "sha256:27a291de0ae78165"
+  # Identical to cell C, and identical across D1/D2/D3: the data regime is held
+  # FIXED here so the window is the only thing that differs between cells. The
+  # switch resolves to season_year_floor 2019 plus cleaning.max_seasonal_nan_spread
+  # 90 and writes both into the recorded config, so config.json shows what ran.
+  # Measured on this CSV: 8,279 rows / 1,232 columns.
+  extend_history_dropping_season_gated_columns: true
+
+walk_forward:
+  # THE window, fixed. Every fit site -- CV folds, the holdout daily
+  # walk-forward, and the refit -- uses this one number.
+  train_games: 4500
+  # MUST be null, explicitly. experiments/_base.yaml sets
+  # train_games_choices: [2500, 3000, 3500, 4000] and the merge is a deep merge,
+  # so omitting this key does NOT disable window tuning -- it inherits the base
+  # list and this cell silently becomes a tuned-window run over the wrong
+  # choices, capped at 4000. That is exactly the class of silent no-op this
+  # campaign was created to undo, so it is stated rather than assumed.
+  train_games_choices: null
+
+optuna:
+  # Warmup 0.5 -> 15 of 30 folds (~430 validation games) before the pruner may
+  # act, against the base 0.25 -> 8 folds (~240 games). Cell C pruned 94 of 95
+  # trials at fold 8 on a 0.035 MAE spread; doubling the evidence a trial must
+  # produce before it can be killed is the minimum that makes pruning a decision
+  # rather than a coin flip. Costs roughly 2x per pruned trial.
+  pruner_warmup_fraction: 0.5
+  # 0.02 against the base 0.10. Cell C's entire completed spread was 0.035, so
+  # the 0.10 tolerance admitted every single completion as a candidate and the
+  # primary metric contributed nothing -- the trial was chosen on CV OU accuracy
+  # over 855 games, which is noise at +-3.4 points. 0.02 keeps the tie-break for
+  # genuine ties instead of handing it the whole decision.
+  mae_tolerance_abs: 0.02
+  # Matched across D1/D2/D3. One dimension smaller than cell C's space (the
+  # window is fixed now), so 120 buys strictly denser sampling of the model
+  # hyperparameters than C got.
+  n_trials: 120
+  # null, never a duration: a timeout makes trial count a function of how busy
+  # the machine is, which silently un-matches cells meant to be comparable.
+  timeout: null

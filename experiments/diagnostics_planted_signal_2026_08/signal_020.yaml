@@ -1,0 +1,67 @@
+# DIAGNOSTIC -- contains a synthetic feature derived from the target.
+# Not a model evaluation. See ./README.md.
+#
+# Role of this cell: easy positive control; failure here indicts the protocol outright
+#
+# Identical to the other three cells in every respect except
+# diagnostics.planted_signal.variance_explained. Everything else -- dataset,
+# rolling-origin folds, train_games choices, search space, trial budget,
+# random_state, preprocessing, pruning, every real feature -- comes from
+# ../_base.yaml and is therefore shared by construction rather than by being
+# restated four times and kept in sync by hand.
+
+experiment_name: diag_planted_signal_020
+prediction_strategy: line_error_regressor
+training_version: "2.1-rolling-origin-DIAGNOSTIC"
+comparison_group: diagnostics_planted_signal_2026_08
+hypothesis: >
+  With 0.02 of LINE_ERROR variance planted in one synthetic feature, does the
+  current pipeline's pooled out-of-fold performance improve relative to the 0%
+  control? Measures the protocol, not the market.
+tags: [line_error, diagnostic, planted_signal]
+
+# Hardware setting only -- excluded from fingerprint(), so this does not fork
+# the Optuna study.
+device: cuda
+
+# This campaign runs on the 2.0 build rather than _base.yaml's default. Stated
+# in all four cells rather than in one shared place because a campaign-local
+# _base.yaml would REPLACE the root one outright (find_base_config takes the
+# nearest, it does not merge two of them), which would silently discard the
+# rolling-origin protocol this diagnostic exists to test.
+#
+# Kept in sync by a test, not by care:
+# test_the_four_cells_differ_only_in_planted_strength asserts every cell's
+# `data` block is byte-identical, so a drift here fails the suite rather than
+# quietly turning the comparison into a two-variable one.
+#
+# Measured on this CSV (scripts/preflight_campaign.py, 2026-08-20):
+#   cleaned 6148, dev 5732, holdout 416 (2026-02-19 -> 2026-04-17),
+#   28 folds, 117 game-days, 855 validation games, window ceiling 4877.
+# The inherited train_games_choices [2500, 3000, 3500, 4000] all fit, with 877
+# games of headroom on the largest.
+data:
+  # Repointed from training_data_2_0_20260704.csv, which no longer exists and
+  # could not be loaded by today's code even if it did: it predates the ODDS_
+  # prefix unification and carries zero ODDS_ columns. The layout above was
+  # re-measured on THIS file; the earlier figures (5752/5336, 30 folds, ceiling
+  # 4486) described the old one and are not comparable.
+  csv_path: data/train_data/training_data_2_0_20260819.csv
+  data_version: "20260819-2_0"
+  expected_checksum: "sha256:27a291de0ae78165"
+
+diagnostics:
+  planted_signal:
+    enabled: true
+    variance_explained: 0.02
+    # Identical across all four cells, and independent of random_state, so the
+    # noise component of the planted feature is the SAME draw everywhere. Only
+    # the target-derived component changes between cells.
+    seed: 12345
+
+optuna:
+  # Reduced from the real campaign's 200 to 100 trials to cut runtime. This
+  # answers a slightly different question than "can our protocol find it at
+  # full budget" -- say so when reporting results from this campaign.
+  n_trials: 100
+  timeout: null

@@ -7,6 +7,10 @@ from typing import Any
 
 import numpy as np
 import pandas as pd
+from nba_ou.config.identity_columns import (
+    apply_identifier_dtypes,
+    identifier_dtypes,
+)
 from nba_ou.config.odds_columns import total_line_col
 from nba_ou.config.settings import SETTINGS
 from nba_ou.modeling.modeling import evaluate_day_by_day_walk_forward
@@ -79,9 +83,11 @@ def _stable_unique_strings(values: list[str]) -> list[str]:
 
 def load_training_dataframe(csv_path: str | Path) -> pd.DataFrame:
     csv_path = Path(csv_path)
-    header_cols = pd.read_csv(csv_path, nrows=0).columns
-    dtype_dict = {col: str for col in header_cols if "ID" in col.upper()}
-    df = pd.read_csv(csv_path, dtype=dtype_dict)
+    if csv_path.suffix.lower() in {".parquet", ".pq"}:
+        df = apply_identifier_dtypes(pd.read_parquet(csv_path))
+    else:
+        header_cols = pd.read_csv(csv_path, nrows=0).columns
+        df = pd.read_csv(csv_path, dtype=identifier_dtypes(header_cols))
     if DATE_COLUMN in df.columns:
         df[DATE_COLUMN] = pd.to_datetime(
             df[DATE_COLUMN], errors="coerce"
@@ -451,11 +457,21 @@ def build_meta_learner_training_data(
     MetaLearnerTrainingDataResult
         Contains the dataframe, feature names, prediction columns, and model summaries.
     """
-    production_prefixes = production_prefixes or SETTINGS.prediction_model_prefixes
     if not production_prefixes:
+        # No default from settings any more. This module reads the PRE-REGISTRY
+        # layout (one model .json plus one .meta.json directly under a
+        # production/ prefix), which the slot layout replaced and which
+        # scripts/retire_legacy_models.py sweeps into models/retired/. Falling
+        # back to the configured slots would hand it paths it cannot parse, so
+        # the caller has to say which old prefixes it means -- and once the
+        # sweep has run, those live under models/retired/<date>/.
         raise ValueError(
-            "No production prefixes were provided and none are configured in "
-            "[PredictionModels] S3_MODEL_PREFIXES."
+            "production_prefixes is required. The meta-learner still reads the "
+            "pre-registry model layout and has not been migrated to the slot "
+            "registry (nba_ou.modeling.registry_store), so it cannot use "
+            "[PredictionModels] ENABLED_MODELS. Pass the old-style prefixes "
+            "explicitly, e.g. "
+            "'models/retired/<YYYYMMDD>/line_error_full_dataset/production/'."
         )
 
     working_df = raw_df.copy()

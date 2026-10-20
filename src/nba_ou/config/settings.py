@@ -247,14 +247,87 @@ class Settings:
         return profile or None
 
     @property
-    def prediction_model_prefixes(self) -> list[str]:
-        """Ordered S3 model prefixes enabled for prediction runs."""
-        if "prediction_model_prefixes" in self._cache:
-            return self._cache["prediction_model_prefixes"]
+    def default_schema_version(self) -> str:
+        """Training-data schema version used by CLI tools when none is given.
 
-        prefixes = self._get_multiline_list("PredictionModels", "S3_MODEL_PREFIXES")
-        self._cache["prediction_model_prefixes"] = prefixes
-        return prefixes
+        A default for typing convenience only. It is deliberately NOT an
+        implicit part of an enabled slot's identity -- every row of
+        ``ENABLED_MODELS`` states its own version, so a 2_6 slot can be
+        promoted while the 2_5 slots keep serving, with no flag day.
+        """
+        from nba_ou.config.dataset_versions import TRAINING_DATA_SCHEMA_VERSION
+
+        configured = self.config.get(
+            "PredictionModels", "DEFAULT_SCHEMA_VERSION", fallback=""
+        ).strip()
+        return configured or TRAINING_DATA_SCHEMA_VERSION
+
+    @property
+    def prediction_model_slots(self) -> list:
+        """Model slots enabled for prediction and retraining runs.
+
+        Each row of ``[PredictionModels] ENABLED_MODELS`` is::
+
+            schema_version | target | horizon_minutes | variant
+
+        ``variant`` may be omitted and defaults to ``main``;
+        ``horizon_minutes`` may be ``tpool`` for a pooled model. An EMPTY table
+        is a valid state meaning "nothing promoted yet", and every caller must
+        treat it as nothing to do rather than an error -- the system has to be
+        runnable before the first promotion.
+
+        Returns ``list[nba_ou.modeling.registry_paths.ModelSlot]``; the import
+        is deferred so that settings stays importable without the modeling
+        package.
+        """
+        if "prediction_model_slots" in self._cache:
+            return self._cache["prediction_model_slots"]
+
+        from nba_ou.modeling.registry_paths import ModelSlot, parse_horizon
+
+        rows = self._get_multiline_list("PredictionModels", "ENABLED_MODELS")
+        slots = []
+        for row in rows:
+            if row.startswith((";", "#")):
+                continue
+            fields = [field.strip() for field in row.split("|")]
+            if len(fields) == 3:
+                fields.append("main")
+            if len(fields) != 4:
+                raise ValueError(
+                    "Each [PredictionModels] ENABLED_MODELS row must be "
+                    "'schema_version | target | horizon_minutes | variant' "
+                    f"(variant optional). Got: {row!r}"
+                )
+            schema_version, target, horizon, variant = fields
+            horizon_minutes = (
+                parse_horizon(horizon)
+                if not horizon.lstrip("-").isdigit()
+                else int(horizon)
+            )
+            slots.append(
+                ModelSlot(
+                    schema_version=schema_version,
+                    target=target,
+                    horizon_minutes=horizon_minutes,
+                    variant=variant or "main",
+                    root=self.s3_models_prefix or "models/",
+                )
+            )
+
+        duplicates = [
+            slot.describe()
+            for slot in slots
+            if [other.describe() for other in slots].count(slot.describe()) > 1
+        ]
+        if duplicates:
+            raise ValueError(
+                "Duplicate slots in [PredictionModels] ENABLED_MODELS: "
+                f"{sorted(set(duplicates))}"
+            )
+
+        self._cache["prediction_model_slots"] = slots
+        return slots
 
     # =========================================================================
     # HELPER METHODS

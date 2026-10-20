@@ -1,0 +1,100 @@
+# Source recipe: experiments/prod_rerun_2_5_2026_10/intermediate_line_error_t420.yaml
+# Evaluation only. Pin the rebuilt datasets before running; no automatic promotion.
+experiment_name: retrain25_line_error_t420
+prediction_strategy: line_error_regressor
+training_version: 2.19-schema25-defect-fixes-20261016
+comparison_group: retrain_line_error_2_5_2026_10
+hypothesis: 'Retrain line_error at T-420 on corrected 2_5 data after MR #40. Preserve the recipe
+  from experiments/prod_rerun_2_5_2026_10/intermediate_line_error_t420.yaml; evaluate before any
+  production promotion. Previous results are descriptive references, not a fresh holdout.'
+tags:
+- retrain_after_defect_fixes
+- schema_2_5
+- line_error
+- intermediate_line
+- cv_6x100
+- early_stopping
+- evaluation_only
+device: cuda
+random_state: 16
+data:
+  csv_path: data/train_data/intermediate_line_data_2_5_20261016.parquet
+  data_version: 20261016-intermediate-2.5-defect-fixes
+  expected_checksum: 'sha256:5a0f4798828b7018'
+  dataset_type: intermediate_line
+  snapshot_minutes: 420
+  scoring_csv_path: data/train_data/intermediate_line_data_2_5_20261016_scoring.parquet
+  season_year_floor: 2019
+  extend_history_dropping_season_gated_columns: false
+  exclude_overtime_from_training: false
+  exclude_playoffs: true
+  allowed_season_types:
+  - Regular Season
+  - Play-In Tournament
+cleaning:
+  max_na_per_row: 800
+  corr_threshold: 0.95
+  corr_threshold_overrides:
+    ODDS_: 0.98
+holdout:
+  test_size: null
+  test_games: null
+  test_days: 90
+walk_forward:
+  strategy: test_anchored
+  test_games: 100
+  step_games_between_tests: 120
+  train_games: 6200
+  train_games_choices: null
+  min_train_games: 1250
+  max_folds: 6
+  fold_selection: latest
+  exclude_test_months:
+  - 5
+  - 6
+  require_same_season_test: true
+  eval_span_games: null
+  min_validation_games: null
+sample_weight:
+  enabled: false
+  lambda_: null
+  tune_lambda: false
+  allow_unweighted: false
+refit:
+  use_lexicographic_selection: true
+  train_production_model: false
+optuna:
+  n_trials: 150
+  timeout: null
+  persistent_storage: false
+  tune_n_estimators: false
+  objective_aggregation: pooled
+  pruner_warmup_steps: 7
+  tie_tolerance: quantile
+  tie_max_fraction: 0.15
+  tie_tolerance_floor: 0.001
+  tie_tolerance_cap: 0.04
+  tie_warn_fraction: 0.25
+  search_space:
+    n_estimators: 1000
+    early_stopping_rounds: 70
+    n_estimators_range: null
+betting:
+  edge_thresholds:
+  - 0.0
+  - 0.1
+  - 0.5
+  - 1.0
+  - 1.5
+  - 2.0
+  - 3.0
+  - 4.0
+  - 6.0
+  primary_edge_threshold: 0.1
+  flat_decimal_odds: 1.9090909090909092
+  comparison_line_cols:
+  - ODDS_CLOSING_TOTAL_LINE_bet365
+holdout_evaluation: daily_walk_forward
+evaluation_seeds:
+- 101
+- 202

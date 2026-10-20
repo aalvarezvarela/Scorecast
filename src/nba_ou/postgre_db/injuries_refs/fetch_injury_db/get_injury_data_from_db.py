@@ -4,6 +4,8 @@ from nba_ou.postgre_db.config.db_config import (
     get_schema_name_injuries,
 )
 from psycopg import sql
+from nba_ou.postgre_db.row_order import read_sql_canonical
+from nba_ou.postgre_db.season_tables import read_through
 
 
 def _normalize_game_ids(game_ids) -> list[str]:
@@ -25,11 +27,13 @@ def _normalize_game_ids(game_ids) -> list[str]:
 
 
 def get_injury_data_from_db(seasons=None, extra_game_ids=None):
-    """
-    Load injury data from database for the specified seasons.
+    """Load injury data from database for the specified seasons.
 
     Args:
         seasons (list): List of seasons to load (e.g., ["2023-24", "2022-23"])
+        extra_game_ids (list, optional): Game IDs included in addition to the
+            selected seasons. With None or empty seasons, these IDs restrict the
+            query; without either filter, all rows are loaded.
 
     Returns:
         pd.DataFrame: Combined injury data for all seasons
@@ -43,6 +47,7 @@ def get_injury_data_from_db(seasons=None, extra_game_ids=None):
         conn = connect_nba_db()
 
         where_parts = []
+        season_years = None
         query_params = []
 
         if seasons is not None and len(seasons) > 0:
@@ -71,10 +76,15 @@ def get_injury_data_from_db(seasons=None, extra_game_ids=None):
         )
 
         query = query_obj.as_string(conn)
-        if query_params:
-            df_injuries = pd.read_sql_query(query, conn, params=tuple(query_params))
-        else:
-            df_injuries = pd.read_sql_query(query, conn)
+        # Past seasons from the S3 input cache, the rest from here; the same
+        # frame either way (``season_tables``).
+        df_injuries = read_through(
+            "nba_injuries.nba_injuries", season_years, normalized_extra_game_ids, conn
+        )
+        if df_injuries is None and query_params:
+            df_injuries = read_sql_canonical(query, conn, params=tuple(query_params))
+        elif df_injuries is None:
+            df_injuries = read_sql_canonical(query, conn)
 
         # Convert column names to uppercase to match expected format
         df_injuries.columns = df_injuries.columns.str.upper()

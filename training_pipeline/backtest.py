@@ -36,8 +36,14 @@ from nba_ou.modeling.modeling import (
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 from xgboost import XGBClassifier, XGBRegressor
 
-from training_pipeline.baseline import BaselineMetrics, compute_baseline_metrics
+from training_pipeline.baseline import (
+    BaselineMetrics,
+    compute_baseline_metrics,
+    compute_bias_corrected_baseline_metrics,
+    compute_line_error_bias,
+)
 from training_pipeline.betting import (
+    OUTCOME_COLUMN,
     BettingMetrics,
     betting_threshold_sweep,
     evaluate_betting,
@@ -104,6 +110,19 @@ def xgb_params_from_trial(
     return params, get_trial_n_estimators(trial), lambda_
 
 
+def _window_group_col(
+    config: ExperimentConfig, prepared: PreparedDataset
+) -> str | None:
+    """The column ``train_games`` must be counted over, or None for row counts.
+
+    None whenever the frame holds one row per game, which keeps every
+    closing-line run on exactly the arithmetic it has always used.
+    """
+    if not prepared.is_pooled_snapshots:
+        return None
+    return config.data.game_id_col
+
+
 def _build_static_params(
     config: ExperimentConfig, *, random_state: int | None = None
 ) -> dict[str, Any]:
@@ -126,6 +145,7 @@ def _make_fit_and_predict(
     xgb_params: dict[str, Any],
     n_estimators: int,
     sample_weight_lambda: float | None,
+    feature_names: list[str],
     random_state: int | None = None,
 ) -> Callable[[pd.DataFrame, pd.DataFrame], np.ndarray]:
     """Closure fitting one model per day and predicting that day's games."""
@@ -151,11 +171,14 @@ def _make_fit_and_predict(
         if not eligible.all():
             train_df = train_df.loc[eligible].copy()
 
+        # By allow-list: these frames carry GAME_ID (the daily window counts
+        # games with it) and may carry joined closing lines, and a deny-list
+        # would hand both to the model.
         X_train, y_train = build_feature_matrix(
-            train_df, target_col=target_col, exclude_cols=config.exclude_cols
+            train_df, target_col=target_col, feature_names=feature_names
         )
         X_test, _ = build_feature_matrix(
-            test_df, target_col=target_col, exclude_cols=config.exclude_cols
+            test_df, target_col=target_col, feature_names=feature_names
         )
 
         sample_weight = None
@@ -192,6 +215,15 @@ class DailyBacktestResult:
     baseline: BaselineMetrics
     betting_primary: BettingMetrics
     betting_sweep: pd.DataFrame
+    #: "Trust the line + its historical drift" null, fitted on the history rows
+    #: only and applied to the evaluated ones. The same pair of fields
+    #: HoldoutEvaluationResult carries, and for the same reason: without them
+    #: this path has no harder null than the raw line, and anything reading
+    #: "model versus drift" off a daily_walk_forward run would be comparing the
+    #: model against itself.
+    baseline_bias_corrected: BaselineMetrics
+    baseline_bias_corrected_betting: BettingMetrics
+    dev_line_error_bias: float
     #: One row per game-day: metric, training-set size and its date range.
     daily_results: pd.DataFrame
     #: One row per game with y_true/y_pred/line/edge, in chronological order.
@@ -310,6 +342,7 @@ def run_walk_forward_evaluation(
     sample_weight_lambda: float | None = None,
     show_progress: bool = True,
     random_state: int | None = None,
+    dev_line_error_bias: float | None = None,
 ) -> DailyBacktestResult:
     """Score ``df_evaluation`` one game-day at a time, retraining each day.
 
@@ -320,6 +353,13 @@ def run_walk_forward_evaluation(
     ``random_state`` overrides ``config.random_state`` for every daily fit,
     which is how the same evaluation gets repeated under several seeds to
     measure how much of a result is just fit noise.
+
+    ``dev_line_error_bias`` is the drift the bias-corrected null adds to the
+    line. It must be measured on data the evaluation window cannot see; the
+    caller passes the value it already computed on dev, and when it is omitted
+    this falls back to ``df_history``, which is by construction everything
+    before the evaluation period. Never derived from ``df_evaluation``: a null
+    fitted on the rows it is scored on is not a null.
     """
     resolved_random_state = (
         config.random_state if random_state is None else random_state
@@ -347,12 +387,20 @@ def run_walk_forward_evaluation(
             xgb_params=resolved_params,
             n_estimators=resolved_n_estimators,
             sample_weight_lambda=resolved_lambda,
+            feature_names=prepared.feature_names,
             random_state=resolved_random_state,
         ),
         metric_fn=lambda y_true, y_pred: float(mean_absolute_error(y_true, y_pred)),
         target_col=target_col,
         date_col=config.data.date_col,
         max_games=train_games,
+        # So train_games means GAMES here too. Without it the daily retrain
+        # would keep train_games ROWS while CV kept train_games games, and the
+        # holdout would be scoring a model trained on a tenth of the history
+        # the tuning was done under -- the two measurements would no longer be
+        # about the same model. None on any one-row-per-game frame, where it
+        # changes nothing.
+        max_games_group_col=_window_group_col(config, prepared),
         metric_name="mae",
         show_progress=show_progress,
         progress_desc=f"Daily backtest ({config.experiment_name})",
@@ -368,7 +416,7 @@ def run_walk_forward_evaluation(
         df_backtest[prepared.baseline_line_col], errors="coerce"
     ).to_numpy(dtype=float)[positions]
     actual_total = pd.to_numeric(
-        df_backtest["TOTAL_POINTS"], errors="coerce"
+        df_backtest[config.outcome_col], errors="coerce"
     ).to_numpy(dtype=float)[positions]
 
     y_true = walk_forward.predictions["y_true"].to_numpy(dtype=float)
@@ -412,6 +460,34 @@ def run_walk_forward_evaluation(
         line_col=prepared.baseline_line_col,
     )
 
+    resolved_bias = (
+        compute_line_error_bias(
+            df_history,
+            baseline_line_col=prepared.baseline_line_col,
+            outcome_col=config.outcome_col,
+        )
+        if dev_line_error_bias is None
+        else dev_line_error_bias
+    )
+    # Scored on exactly the games the model was scored on -- df_backtest rows
+    # the walk-forward actually predicted, in its order -- so the two are
+    # comparable game for game.
+    baseline_bias_corrected = compute_bias_corrected_baseline_metrics(
+        df_backtest.iloc[positions],
+        baseline_line_col=prepared.baseline_line_col,
+        bias=resolved_bias,
+        outcome_col=config.outcome_col,
+    )
+    # A constant edge on every game, so a min-edge filter would take either all
+    # of them or none. It is a fixed, non-selective strategy: score every
+    # candidate game and let the model's selectivity be the thing that has to
+    # earn its keep.
+    baseline_bias_corrected_betting = evaluate_betting(
+        predicted_edge=np.full_like(actual_total, resolved_bias),
+        min_edge=0.0,
+        **betting_kwargs,
+    )
+
     # A classifier has no view on the total, so there is nothing to re-score
     # against a different line: its label was defined relative to THIS one.
     line_comparison = (
@@ -434,7 +510,12 @@ def run_walk_forward_evaluation(
     predictions = walk_forward.predictions.assign(
         target_line=target_line,
         baseline_line=baseline_line,
-        TOTAL_POINTS=actual_total,
+        **{OUTCOME_COLUMN: actual_total},
+        **(
+            {"TOTAL_POINTS": actual_total}
+            if config.outcome_col == "TOTAL_POINTS"
+            else {}
+        ),
         predicted_edge=predicted_edge,
         selection_score=decisions.selection_score,
     )
@@ -471,6 +552,9 @@ def run_walk_forward_evaluation(
         baseline=baseline,
         betting_primary=betting_primary,
         betting_sweep=betting_sweep,
+        baseline_bias_corrected=baseline_bias_corrected,
+        baseline_bias_corrected_betting=baseline_bias_corrected_betting,
+        dev_line_error_bias=resolved_bias,
         daily_results=walk_forward.daily_results,
         predictions=predictions,
         xgb_params=resolved_params,

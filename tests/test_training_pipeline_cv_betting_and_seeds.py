@@ -23,6 +23,7 @@ from training_pipeline.config import (
     HoldoutConfig,
     HoldoutEvaluation,
     OptunaConfig,
+    PredictionStrategy,
     SearchSpaceConfig,
     TargetFamily,
     WalkForwardConfig,
@@ -50,24 +51,24 @@ def _prepared(n_games: int = 260, games_per_day: int = 4) -> PreparedDataset:
             "GAME_DATE": dates,
             "SEASON_YEAR": 2025,
             "TOTAL_POINTS": (line + rng.normal(0, 12, n_games)).round(1),
-            "TOTAL_LINE_bet365": line,
+            "ODDS_TOTAL_LINE_bet365": line,
             # An "opener" that sits a few points away from the close, the way a
             # real one does.
-            "TOTAL_LINE_consensus_opener": (
+            "ODDS_TOTAL_LINE_consensus_opener": (
                 line + rng.normal(0, 2.5, n_games)
             ).round(1),
             "FEATURE_A": rng.normal(size=n_games),
             "FEATURE_B": rng.normal(size=n_games),
         }
     )
-    df["LINE_ERROR"] = df["TOTAL_POINTS"] - df["TOTAL_LINE_bet365"]
-    features = ["TOTAL_LINE_bet365", "FEATURE_A", "FEATURE_B"]
+    df["LINE_ERROR"] = df["TOTAL_POINTS"] - df["ODDS_TOTAL_LINE_bet365"]
+    features = ["ODDS_TOTAL_LINE_bet365", "FEATURE_A", "FEATURE_B"]
     return PreparedDataset(
         df_full=df,
         X=df[features],
         y=df["TOTAL_POINTS"],
-        baseline_line_col="TOTAL_LINE_bet365",
-        target_line_col="TOTAL_LINE_bet365",
+        baseline_line_col="ODDS_TOTAL_LINE_bet365",
+        target_line_col="ODDS_TOTAL_LINE_bet365",
         feature_names=features,
         dataset_checksum="sha256:test",
     )
@@ -77,7 +78,7 @@ def _config(tmp_path, **overrides) -> ExperimentConfig:
     kwargs = {
         "experiment_name": "cvbet",
         "target_family": TargetFamily.TOTAL_POINTS,
-        "line_col": "TOTAL_LINE_bet365",
+        "line_col": "ODDS_TOTAL_LINE_bet365",
         "data": DataConfig(csv_path="x.csv"),
         "cleaning": CleaningConfig(verbose=0),
         "holdout": HoldoutConfig(test_size=None, test_games=20),
@@ -186,7 +187,7 @@ def test_cv_betting_uses_line_error_predictions_directly_as_the_edge(tmp_path):
         splits=splits,
         params={"max_depth": 2},
         n_estimators=5,
-        target_line_col="TOTAL_LINE_bet365",
+        target_line_col="ODDS_TOTAL_LINE_bet365",
     )
 
     np.testing.assert_allclose(
@@ -302,15 +303,15 @@ def test_line_comparison_appears_in_the_walk_forward_result(patched, tmp_path):
     config = _config(
         tmp_path,
         betting=BettingConfig(
-            comparison_line_cols=("TOTAL_LINE_consensus_opener",)
+            comparison_line_cols=("ODDS_TOTAL_LINE_consensus_opener",)
         ),
     )
     comparison = run_experiment(config).walk_forward_result.line_comparison
 
     assert comparison is not None
     assert list(comparison["line_col"]) == [
-        "TOTAL_LINE_bet365",
-        "TOTAL_LINE_consensus_opener",
+        "ODDS_TOTAL_LINE_bet365",
+        "ODDS_TOTAL_LINE_consensus_opener",
     ]
     # The opener really does sit away from the close in the fixture.
     assert comparison.iloc[1]["mean_abs_move_vs_first"] > 0
@@ -329,14 +330,46 @@ def test_missing_comparison_columns_are_skipped_not_fatal(patched, tmp_path):
     """
     config = _config(
         tmp_path,
-        betting=BettingConfig(comparison_line_cols=("TOTAL_LINE_does_not_exist",)),
+        betting=BettingConfig(comparison_line_cols=("ODDS_TOTAL_LINE_does_not_exist",)),
     )
     lines = collect_comparison_lines(
-        _prepared().df_full, config, target_line_col="TOTAL_LINE_bet365"
+        _prepared().df_full, config, target_line_col="ODDS_TOTAL_LINE_bet365"
     )
-    assert list(lines) == ["TOTAL_LINE_bet365"]
+    assert list(lines) == ["ODDS_TOTAL_LINE_bet365"]
     # And the run still completes.
     assert run_experiment(config).walk_forward_result is not None
+
+
+def test_spread_line_comparison_skips_total_lines(tmp_path):
+    """A spread prediction cannot be meaningfully re-scored against totals."""
+    config = _config(
+        tmp_path,
+        prediction_strategy=PredictionStrategy.SPREAD_ERROR_REGRESSOR,
+        target_family=TargetFamily.SPREAD_ERROR,
+        line_col=None,
+        betting=BettingConfig(
+            comparison_line_cols=(
+                "ODDS_TOTAL_LINE_consensus_opener",
+                "ODDS_SPREAD_LINE_HOME_consensus_opener",
+            )
+        ),
+    )
+    df = pd.DataFrame(
+        {
+            "ODDS_SPREAD_LINE_HOME_bet365": [3.5, -2.0],
+            "ODDS_TOTAL_LINE_consensus_opener": [225.5, 231.0],
+            "ODDS_SPREAD_LINE_HOME_consensus_opener": [4.0, -1.5],
+        }
+    )
+
+    lines = collect_comparison_lines(
+        df, config, target_line_col="ODDS_SPREAD_LINE_HOME_bet365"
+    )
+
+    assert list(lines) == [
+        "ODDS_SPREAD_LINE_HOME_bet365",
+        "ODDS_SPREAD_LINE_HOME_consensus_opener",
+    ]
 
 
 def test_predicted_total_points_adds_the_line_back_for_line_error(tmp_path):
@@ -363,9 +396,7 @@ def test_predicted_total_points_adds_the_line_back_for_line_error(tmp_path):
 # --- artifacts and leaderboard ---------------------------------------------
 
 
-def test_new_artifacts_are_written_and_read_back_by_the_leaderboard(
-    patched, tmp_path
-):
+def test_new_artifacts_are_written_and_read_back_by_the_leaderboard(patched, tmp_path):
     from training_pipeline.leaderboard import build_leaderboard
 
     root = tmp_path / "artifacts"
@@ -375,7 +406,7 @@ def test_new_artifacts_are_written_and_read_back_by_the_leaderboard(
         experiment_root_dir=root,
         evaluation_seeds=(101,),
         betting=BettingConfig(
-            comparison_line_cols=("TOTAL_LINE_consensus_opener",)
+            comparison_line_cols=("ODDS_TOTAL_LINE_consensus_opener",)
         ),
     )
     result = run_experiment(config)
@@ -419,7 +450,7 @@ def test_single_shot_mode_also_reports_a_line_comparison(patched, tmp_path):
         tmp_path,
         holdout_evaluation=HoldoutEvaluation.SINGLE_SHOT,
         betting=BettingConfig(
-            comparison_line_cols=("TOTAL_LINE_consensus_opener",)
+            comparison_line_cols=("ODDS_TOTAL_LINE_consensus_opener",)
         ),
     )
     result = run_experiment(config)

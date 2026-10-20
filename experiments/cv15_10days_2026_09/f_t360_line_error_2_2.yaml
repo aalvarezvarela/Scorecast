@@ -1,0 +1,67 @@
+experiment_name: cv15_10d_t360_line_error_2_2
+prediction_strategy: line_error_regressor
+training_version: 2.7-cv15-10days-20260906
+comparison_group: cv15_10days_2026_09
+hypothesis: Evaluate 15 recent rolling-origin folds of nominally 10 game-days, with
+  pooled MAE and the win-rate tie-break, against daily retraining on a 90-calendar-day
+  holdout.
+tags:
+- extended_history
+- intermediate_line
+- t360
+- line_error
+- schema_2_2
+- tiebreak_win_rate
+- cv15
+- cadence_10days
+device: cuda
+random_state: 16
+data:
+  csv_path: data/train_data/intermediate_line_data_2_2_20260901.csv
+  data_version: 20260901-intermediate-line-2.2-normalized-t360
+  expected_checksum: sha256:d9c134f4d04eb566
+  dataset_type: intermediate_line
+  snapshot_minutes: 360
+  scoring_csv_path: data/train_data/intermediate_line_data_2_2_20260901_scoring.csv
+  season_year_floor: 2019
+  extend_history_dropping_season_gated_columns: false
+cleaning:
+  max_na_per_row: 300
+holdout:
+  test_days: 90
+walk_forward:
+  strategy: rolling_origin
+  retrain_every_days: 10
+  eval_span_games: null
+  min_validation_games: 25
+  max_folds: 15
+  train_games: 3500
+  train_games_choices:
+  - 2500
+  - 3000
+  - 3500
+  - 4000
+  - 4400
+sample_weight:
+  enabled: false
+  lambda_: null
+  tune_lambda: false
+  allow_unweighted: false
+betting:
+  comparison_line_cols:
+  - ODDS_CLOSING_TOTAL_LINE_bet365
+refit:
+  use_lexicographic_selection: true
+optuna:
+  n_trials: 80
+  timeout: null
+  tune_n_estimators: true
+  objective_aggregation: pooled
+  pruner_warmup_steps: 16
+  tie_tolerance: quantile
+  tie_max_fraction: 0.15
+  tie_tolerance_floor: 0.001
+  tie_tolerance_cap: 0.04
+  tie_warn_fraction: 0.25
+evaluation_seeds: []
+holdout_evaluation: daily_walk_forward

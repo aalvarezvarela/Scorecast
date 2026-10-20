@@ -1,0 +1,32 @@
+experiment_name: closing_spread_error_2_2_no_decay_20260901
+prediction_strategy: spread_error_regressor
+training_version: "2.2-no-decay-20260901"
+comparison_group: closing_spread_schema_comparison_2026_09
+hypothesis: >
+  Measure unweighted closing spread-error prediction on the regenerated,
+  normalized 2.2 spread dataset through the 2026-09-01 cutoff.
+tags: [no_decay, spread_error, spread, closing_line, schema_2_2]
+
+device: cuda
+
+data:
+  csv_path: data/train_data/training_data_2_2_20260901.csv
+  data_version: "20260901-training-2.2-normalized"
+  expected_checksum: "sha256:15a8e5c2ac70c269"
+  dataset_type: closing_line
+  season_year_floor: 2021
+  extend_history_dropping_season_gated_columns: false
+
+sample_weight:
+  enabled: false
+  lambda_: null
+  tune_lambda: false
+  allow_unweighted: false
+
+betting:
+  home_price_col: ODDS_SPREAD_PRICE_HOME
+  away_price_col: ODDS_SPREAD_PRICE_AWAY
+  comparison_line_cols: ["ODDS_SPREAD_LINE_HOME_consensus_opener"]
+
+optuna: {n_trials: 150, timeout: null}
+evaluation_seeds: [17, 42, 16]

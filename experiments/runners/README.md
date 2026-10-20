@@ -6,30 +6,81 @@ accessing configs, datasets, logs, or artifacts.
 
 ## Available campaigns
 
-- `run_total_points_dataset_ab.sh`: compares the old and 2.0 training datasets
-  with the same total-points experiment.
-- `run_strategy_window_campaign.sh`: runs the three prediction strategies over
-  the 2,500- and 3,750-game windows.
-- `run_window_overtime_campaign.sh`: follow-up to the above, varying five axes
-  against its winner (`line_error` at 3,750) -- training window, overtime rows,
-  feature build, playoffs, and the per-row missing-data cap. 11 runs.
-- `run_intermediate_line_campaign.sh`: runs the intermediate-line pooled
-  snapshot models and their 12-hour controls. 4 runs.
-- `../intermediate_line_2026_08/run_line_error_7snapshot_6h_4h.sh`: runs the
-  unweighted, line-error-only seven-snapshot model and its independent 6h/4h
-  controls. Its matching data-preparation runner is colocated with the configs
-  so the complete follow-up campaign stays grouped in one folder.
+- `run_early_line_error_window_2_5_2026_09_part1.sh` and
+  `run_early_line_error_window_2_5_2026_09_part2.sh`: parallel halves of the
+  schema-2.5 line-error campaign covering every T-0 through T-1080 snapshot,
+  including T-30.
+  Both let Optuna choose 2,500, 3,000, 3,500, or the maximum for each horizon
+  (3,775–4,788 games) on eight test-anchored folds of at least 80 games.
+  Part 2 also runs the optional time-decay arm at T-360.
+- `run_closing_line_error_6x100_2_5_2026_09.sh`: schema-2.5 closing-line
+  line_error, always 6×100 test-anchored folds. Seven cells, each changing one
+  thing from the reference (NaN budget 300, window 6,200, ODDS_ corr 0.99):
+  a same-config replicate for the noise floor, windows 4,000 and 2,500, NaN
+  budgets 150 and 80, and ODDS_ corr 0.995. No lock; closing data is small.
+- `run_closing_spread_6x100_2_5_2026_09.sh` and
+  `run_closing_total_points_6x100_2_5_2026_09.sh`: schema-2.5 closing-line
+  spread and total_points, always 6×100 test-anchored folds. Five cells each:
+  reference, same-config replicate (noise floor), windows 6,200 and 2,500, and
+  NaN budget 150. No lock; closing data is small.
+- `run_promote_intermediate_line_error_2_5_2026_09_part1_t30_t420.sh` and
+  `run_promote_intermediate_line_error_2_5_2026_09_part2_t480_t1080_controls.sh`:
+  one line-error promotion candidate per intermediate horizon, T-30 .. T-1080
+  (16 cells, 8 per part). One recipe throughout: 2019 floor, max_na 800, each
+  horizon's longest feasible window (fixed), 6×100 folds. Part 2 then runs 5
+  controls: seed replicates at T-240 / T-840 and recent-only windows (2021-22
+  onward, same data) at T-240 / T-480 / T-960. Neither part locks.
+- `run_totals_spread_2_5_2026_10_part1_total_points.sh` and
+  `run_totals_spread_2_5_2026_10_part2_spread.sh`: total_points (part 1) and
+  spread_error (part 2) with the line_error recipe promoted on 2026-10-05, one
+  cell per slot: closing (max_na 800, ODDS_ 0.98, window 6,275) then T-30 ..
+  T-1080 in interleaved order. Each intermediate cell copies its
+  `prod_rerun_2_5_2026_10` line_error config and changes only the target.
+  ~45-55h per part. Neither part locks, so both run at once.
+- `run_train_window_line_error_2_5_2026_09_part1_t60.sh` and
+  `run_train_window_line_error_2_5_2026_09_part2_t720.sh`: does older data help?
+  Six cells per horizon on ONE identical dataset (2019 floor, max_na 800 in
+  every arm), with `train_games` FIXED at 1,500 / 2,500 / 3,500 / 4,500 / max
+  rather than tuned, plus a same-window replicate under a different seed that
+  measures the noise floor. Replaces the history-depth campaign below, which
+  varied the season floor and so varied the surviving feature set along with it.
+  Neither part locks, so both can be launched together.
+- `run_rolling_origin_campaign.sh`: the current protocol -- rolling-origin CV
+  (train to a date, predict the next 4 game-days), with the training window and
+  the boosting rounds both tuned by Optuna. 2 runs, one per regression target.
+- `run_time_decay_2026_09_part1.sh` and `run_time_decay_2026_09_part2.sh`:
+  parallel halves of the regenerated no-decay campaign. Together they run the
+  three closing targets on normalized 2.2 data, spread error at T-30, T-360,
+  and T-720, plus a closing spread-error comparison on schema 2.1.
+- `run_totals_schema_lexicographic_2026_09.sh`: six sequential CUDA runs that
+  compare `total_points` and `line_error` across closing schemas 2.0, 2.1 and
+  2.2. Selection is lexicographic: best pooled O/U win rate inside the best 15%
+  by pooled MAE, with an absolute MAE gap capped at 0.04.
+- `run_extended_history_cv_2026_09_part1.sh` and
+  `run_extended_history_cv_2026_09_part2.sh`: the extended-history protocol.
+  Part 1 runs all three closing targets on schema 2.2 plus a schema 2.0
+  line-error control; part 2 runs the three targets at T-360. Both use a
+  90-day holdout, five-game-day rolling-origin folds, seed 16 and the
+  lexicographic top-15% / +0.04-MAE selector.
+
+## Archived campaigns
+
+Everything that ran under the previous training protocol lives in
+`../archived/runners/`, alongside the configs it drives and a frozen
+`_base.yaml` that keeps those runs reproducing as they originally did. See
+`../archived/README.md` for what changed and why the two sets of numbers are not
+comparable.
 
 Run a campaign in the foreground:
 
 ```bash
-bash experiments/runners/run_strategy_window_campaign.sh
+bash experiments/runners/run_rolling_origin_campaign.sh
 ```
 
 Run it detached:
 
 ```bash
-nohup bash experiments/runners/run_strategy_window_campaign.sh > /dev/null 2>&1 &
+nohup bash experiments/runners/run_rolling_origin_campaign.sh > /dev/null 2>&1 &
 ```
 
 Each runner documents its log paths and any supported resume options at the top

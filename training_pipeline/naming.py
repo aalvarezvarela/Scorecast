@@ -13,20 +13,36 @@ from pathlib import Path
 
 import pandas as pd
 from nba_ou.modeling.modeling import ModelBundleMetadata, ModelInfo, TrainingMetrics
+from nba_ou.modeling.registry_paths import format_horizon
 
-from training_pipeline.config import ExperimentConfig, TargetFamily
+from training_pipeline.config import DatasetType, ExperimentConfig, TargetFamily
 
 #: Used for ModelInfo.training_code_tag when ExperimentConfig.training_version
 #: has not been set by hand.
 DEFAULT_TRAINING_CODE_TAG = "training_pipeline-1.0"
 
 
+def _horizon_segment(config: ExperimentConfig) -> str | None:
+    """``t0060``-style label for intermediate-line models, None for closing.
+
+    Without it, every intermediate horizon trained on the same window and data
+    end date shares one bundle path -- T-30 and T-60 both at 6,275 games wrote
+    ``6275_games_xgb_line_error_17_04_26`` -- and the second is refused (or,
+    with overwrite, silently replaces the first). Same label as the registry
+    slot, so a local bundle and its slot read alike. Closing-line paths are
+    unchanged.
+    """
+    if config.data.dataset_type is DatasetType.CLOSING_LINE:
+        return None
+    return format_horizon(config.data.snapshot_minutes)
+
+
 def resolve_model_output_dir(config: ExperimentConfig) -> Path:
-    return (
-        config.model_output_root
-        / config.family.value
-        / config.resolved_window_dir_label
-    )
+    out_dir = config.model_output_root / config.family.value
+    horizon = _horizon_segment(config)
+    if horizon is not None:
+        out_dir = out_dir / horizon
+    return out_dir / config.resolved_window_dir_label
 
 
 def build_model_name(config: ExperimentConfig, *, as_of: date) -> str:
@@ -40,7 +56,11 @@ def build_model_name(config: ExperimentConfig, *, as_of: date) -> str:
     would make a model retrained on an old snapshot look freshly trained.
     """
     date_str = as_of.strftime("%d_%m_%y")
-    return f"{config.resolved_window_name_label}_xgb_{config.family.value}_{date_str}"
+    label = config.resolved_window_name_label
+    horizon = _horizon_segment(config)
+    if horizon is not None:
+        label = f"{label}_{horizon}"
+    return f"{label}_xgb_{config.family.value}_{date_str}"
 
 
 def assert_model_bundle_is_writable(

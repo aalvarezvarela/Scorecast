@@ -14,19 +14,21 @@ def _normalize_scheduled_season_fields(games: pd.DataFrame) -> pd.DataFrame:
 
 
 def standardize_and_merge_scheduled_games_to_team_data(df, scheduled_games):
-    """
-    Standardizes the `games` DataFrame to match `df` and merges them.
+    """Append scheduled games as home and away team rows.
 
-    - Renames columns to align with `df`
-    - Expands `games` to include separate home and away team rows
-    - Merges while keeping only relevant columns
+    Normalize game and season keys, attach the latest historical team metadata,
+    and keep the historical columns plus GAME_TIME when provided. Scheduled
+    outcome statistics are null. Deduplicate by TEAM_ID and GAME_DATE, keeping
+    the last row, and sort by descending date.
 
-    Parameters:
-        df (pd.DataFrame): Main DataFrame containing existing game stats.
-        games (pd.DataFrame): DataFrame containing new game records.
+    Args:
+        df (pd.DataFrame): Historical team statistics and team metadata.
+        scheduled_games (pd.DataFrame): Scheduled rows with GAME_ID,
+            GAME_DATE_EST, SEASON, HOME_TEAM_ID, VISITOR_TEAM_ID, and optional
+            GAME_TIME.
 
     Returns:
-        pd.DataFrame: Merged and standardized DataFrame.
+        pd.DataFrame: Historical and scheduled team rows.
     """
     # Ensure column names match
     games_renamed = scheduled_games.rename(
@@ -121,9 +123,78 @@ def standardize_and_merge_scheduled_games_to_team_data(df, scheduled_games):
     return df_merged
 
 
+def _season_bucket(players: pd.DataFrame) -> pd.Series:
+    """The lookup's season key: ``SEASON_ID`` where present, else game type + year.
+
+    ``0022501171`` in 2025 -> ``"22025"``, the same key a stored row carries.
+    """
+    derived = players["GAME_ID"].astype(str).str[2] + pd.to_numeric(
+        players["SEASON_YEAR"], errors="coerce"
+    ).astype("Int64").astype(str)
+    if "SEASON_ID" not in players.columns:
+        return derived
+    season_id = players["SEASON_ID"].astype(str)
+    return season_id.where(players["SEASON_ID"].notna(), derived)
+
+
+def _has_row_in_bucket(placeholders: pd.DataFrame, history: pd.DataFrame) -> pd.Series:
+    """Whether each placeholder's player already has a row in its season bucket."""
+    seen = set(
+        zip(_season_bucket(history), history["PLAYER_ID"].astype(str), strict=True)
+    )
+    return pd.Series(
+        [
+            (bucket, str(player)) in seen
+            for bucket, player in zip(
+                _season_bucket(placeholders), placeholders["PLAYER_ID"], strict=True
+            )
+        ],
+        index=placeholders.index,
+        dtype=bool,
+    )
+
+
 def standardize_and_merge_scheduled_games_to_players_data(
     games_original, df_players_original
 ):
+    """Build scheduled player placeholders from each player's latest team row.
+
+    Assign players to scheduled games using their latest loaded TEAM_ID. Preserve
+    columns preceding START_POSITION and clear the remaining box-score values,
+    including MIN. Replace the game-date and season keys with the scheduled
+    values. Null MIN marks these rows as scheduled roster evidence.
+
+    Only players who already have a row in the scheduled game's own season
+    bucket (``SEASON_ID``: ``22025`` for the 2025-26 regular season, ``52025``
+    for its play-in) get a placeholder. That is the bucket
+    ``create_player_lookup`` reads a stored game's roster from, so the roster a
+    prediction sees is the one training saw for the same game:
+
+    * Without it, every player whose latest row *anywhere in the loaded seasons*
+      is with a team reappeared on that team tonight -- players gone for two
+      seasons, camp cuts from the preseason. On 2026-04-10 Charlotte got 37
+      players instead of training's 19 (Davis Bertans, Ish Smith, ...), the
+      Lakers 30 instead of 18 (Cam Reddish, Christian Wood, ...); none is on an
+      injury report, so all counted as available.
+    * When nobody has a row in the bucket yet -- opening night, a first play-in
+      game -- no placeholder is built, and the lookup falls back to the season
+      year and then the previous season exactly as it does in training. A
+      placeholder there would have blocked that fallback.
+
+    Checked with the real lookup, training vs prediction rosters: identical for
+    4/4 team-games on the 2025-10-21 opener, 24/24 on 2025-10-22, 24/24 on
+    2025-10-24 and 30/30 on 2026-04-10.
+
+    Args:
+        games_original (pd.DataFrame): Scheduled rows with GAME_ID, GAME_DATE_EST,
+            SEASON, HOME_TEAM_ID, and VISITOR_TEAM_ID.
+        df_players_original (pd.DataFrame): Player history with PLAYER_ID,
+            TEAM_ID, GAME_DATE, and box-score columns in their original order.
+
+    Returns:
+        pd.DataFrame: Placeholder rows only, ready to append to player history;
+            an empty frame if no team-game placeholders can be built.
+    """
     games = _normalize_scheduled_season_fields(games_original)
     df_players = df_players_original.copy()
     games = games.rename(columns={"GAME_DATE_EST": "GAME_DATE"})
@@ -173,6 +244,9 @@ def standardize_and_merge_scheduled_games_to_players_data(
         return pd.DataFrame(columns=df_last_game.columns)
 
     df_next_game = pd.concat(next_game_parts, ignore_index=True, sort=False)
+    df_next_game = df_next_game[
+        _has_row_in_bucket(df_next_game, df_players)
+    ].reset_index(drop=True)
     if "SEASON_YEAR" in df_players.columns:
         df_next_game["SEASON_YEAR"] = df_next_game["SEASON_YEAR"].astype(
             df_players["SEASON_YEAR"].dtype

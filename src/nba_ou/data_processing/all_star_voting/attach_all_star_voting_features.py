@@ -1,14 +1,16 @@
 from __future__ import annotations
 
-from bisect import bisect_left, bisect_right
+from bisect import bisect_left
 from collections.abc import Callable
+from dataclasses import dataclass
 
 import numpy as np
 import pandas as pd
 from tqdm import tqdm
 
 from nba_ou.config.constants import TEAM_ID_MAP
-from nba_ou.data_processing.past_injuries.past_injuries import create_player_lookup
+from nba_ou.data_processing.past_injuries.past_injuries import PlayerLookupIndex
+from nba_ou.utils.row_cache import RowCache
 
 TEAM_NAME_BY_ID = {str(v): k for k, v in TEAM_ID_MAP.items()}
 
@@ -22,8 +24,41 @@ FEATURE_COLUMNS = [
     "ALL_STAR_SEASON_YEAR_BEFORE",
 ]
 
+#: Emitted only when a questionable group is supplied: the same two star-quality
+#: measures for the availability group between injured and available.
+QUESTIONABLE_FEATURE_COLUMNS = [
+    "ALL_STAR_MAX_QUESTIONABLE_FAN_VOTE_SHARE_BEFORE",
+    "ALL_STAR_MIN_QUESTIONABLE_SCORE_BEFORE",
+]
+
+#: "Nobody in this group" for a MIN-score column. The score is rank-like -- 1 is
+#: the biggest star -- so the true limit of a minimum over an empty group is
+#: +infinity; this stands in for it, above every score the voting table produces
+#: (max observed 178.8 over 2019-2025). Only the ordering matters to a tree, and
+#: a single constant keeps "nobody at risk" worse than every real player in every
+#: season, which a per-season maximum would not.
+#:
+#: ``ALL_STAR_MIN_INJURED_SCORE_BEFORE`` deliberately keeps its NaN instead: it
+#: predates the report, and the schema 2_3 control build has to reproduce it
+#: value for value. The questionable twin has no such history, and its group is
+#: empty on ~87% of team-games -- NaN there would put the column straight over
+#: the cleaner's 5% threshold.
+NO_CANDIDATE_IN_GROUP_SCORE = 1000.0
+
 
 def all_star_season_year_for_game_date(game_date) -> int:
+    """Return the season start year of the latest eligible all-star ballot.
+
+    The current calendar year's ballot becomes eligible on March 1. Earlier
+    January and February games use the previous calendar year's ballot. Return
+    the ballot's NBA season start year (its calendar year minus one).
+
+    Args:
+        game_date: Date accepted by pandas.Timestamp.
+
+    Returns:
+        int: Season start year used to select all-star voting rows.
+    """
     d = pd.Timestamp(game_date)
     all_star_calendar_year = d.year if d >= pd.Timestamp(d.year, 3, 1) else d.year - 1
     return all_star_calendar_year - 1
@@ -73,35 +108,6 @@ def build_last_team_before_date_lookup(
         dates, teams = timeline
         date_np = np.datetime64(pd.Timestamp(date).to_datetime64(), "ns")
         idx = bisect_left(dates, date_np) - 1
-        if idx < 0:
-            return None
-        return teams[idx]
-
-    return lookup
-
-
-def build_team_as_of_date_lookup(
-    df_players: pd.DataFrame,
-) -> Callable[[str, pd.Timestamp], str | None]:
-    """Return a player's latest known team on or before a game date.
-
-    Only player identity, date, and team assignment are used. Minutes, points,
-    and other same-game outcomes are not read. All rows are eligible because
-    DNP and scheduled placeholder rows still provide pregame roster membership.
-    """
-    player_timelines = _build_player_team_timelines(
-        df_players,
-        normalize_dates=True,
-    )
-
-    def lookup(player_id: str, date) -> str | None:
-        timeline = player_timelines.get(str(player_id))
-        if timeline is None:
-            return None
-
-        dates, teams = timeline
-        date_np = np.datetime64(pd.Timestamp(date).normalize().to_datetime64(), "ns")
-        idx = bisect_right(dates, date_np) - 1
         if idx < 0:
             return None
         return teams[idx]
@@ -206,11 +212,47 @@ def _normalize_injured_dict(
     return normalized
 
 
+@dataclass(frozen=True)
+class PreparedAllStarInputs:
+    """The players and votes of :func:`add_all_star_voting_features`, indexed once.
+
+    None of it depends on the injury dicts, so callers that build the features
+    repeatedly on the same players and votes (the snapshot builder, once per
+    horizon) prepare it once with :func:`prepare_all_star_inputs`. Passing it
+    computes exactly what the builder would compute itself.
+    """
+
+    players: pd.DataFrame
+    all_star: pd.DataFrame
+    all_star_indexes: dict
+    player_index: PlayerLookupIndex
+    last_team_before_date_lookup: Callable[[str, pd.Timestamp], str | None]
+
+
+def prepare_all_star_inputs(
+    df_players: pd.DataFrame, all_star_voting_df: pd.DataFrame
+) -> PreparedAllStarInputs:
+    players = _prepare_players_for_lookup(df_players)
+    all_star = _normalize_all_star_voting_df(all_star_voting_df)
+    return PreparedAllStarInputs(
+        players=players,
+        all_star=all_star,
+        all_star_indexes=_precompute_all_star_indexes(all_star),
+        player_index=PlayerLookupIndex(players),
+        last_team_before_date_lookup=build_last_team_before_date_lookup(players),
+    )
+
+
 def add_all_star_voting_features(
     df_team: pd.DataFrame,
     df_players: pd.DataFrame,
     all_star_voting_df: pd.DataFrame,
     injured_dict: dict,
+    questionable_dict: dict | None = None,
+    row_cache: RowCache | None = None,
+    prepared: PreparedAllStarInputs | None = None,
+    target_game_ids: set[str] | None = None,
+    current_rosters: dict | None = None,
 ) -> pd.DataFrame:
     """Adds per-team-game all-star fan-vote share columns.
 
@@ -219,20 +261,51 @@ def add_all_star_voting_features(
         ALL_STAR_MIN_SCORE_BEFORE          float
         ALL_STAR_MAX_INJURED_FAN_VOTE_SHARE_BEFORE float
         ALL_STAR_MIN_INJURED_SCORE_BEFORE  float
+
+    ``questionable_dict``, when given, adds the same two measures for the
+    questionable availability group as
+    ALL_STAR_MAX_QUESTIONABLE_FAN_VOTE_SHARE_BEFORE and
+    ALL_STAR_MIN_QUESTIONABLE_SCORE_BEFORE. A team-game it does not cover keeps
+    them NaN, since "no star at risk" and "no report" are different facts.
         ALL_STAR_FAN_VOTES_BEFORE          float
         ALL_STAR_CANDIDATE_COUNT_BEFORE    int
         ALL_STAR_SEASON_YEAR_BEFORE        int (audit; ok to keep)
+
+    ``row_cache`` is shared across repeated calls on the same team games,
+    players and votes whose ``injured_dict``/``questionable_dict`` differ. A
+    row reads the injury dict only for games on its own day (roster assignment
+    checks every game that day), so it is reused whenever that day's entries
+    and its own questionable set match an earlier call.
+
+    ``prepared`` is ``prepare_all_star_inputs(df_players, all_star_voting_df)``
+    for callers that pass the same players and votes repeatedly.
+
+    ``target_game_ids``, when given, limits the work to those games. A row
+    reads no other row, so each target row is exactly what a build of every
+    row gives; the others keep the no-candidate defaults.
     """
+    if target_game_ids is not None:
+        if row_cache is not None:
+            raise ValueError("target_game_ids and row_cache cannot be combined")
+        target_game_ids = {str(g) for g in target_game_ids}
     required_team_cols = {"GAME_ID", "TEAM_ID", "SEASON_ID", "GAME_DATE"}
     missing_team_cols = sorted(required_team_cols - set(df_team.columns))
     if missing_team_cols:
         raise ValueError(f"df_team is missing columns: {missing_team_cols}")
 
     out = df_team.copy()
-    players = _prepare_players_for_lookup(df_players)
-    all_star = _normalize_all_star_voting_df(all_star_voting_df)
-    all_star_indexes = _precompute_all_star_indexes(all_star)
+    if prepared is None:
+        prepared = prepare_all_star_inputs(df_players, all_star_voting_df)
+    players = prepared.players
+    all_star = prepared.all_star
+    all_star_indexes = prepared.all_star_indexes
     injured_dict_normalized = _normalize_injured_dict(injured_dict)
+    questionable_normalized = (
+        _normalize_injured_dict(questionable_dict) if questionable_dict else None
+    )
+    feature_columns = list(FEATURE_COLUMNS) + (
+        QUESTIONABLE_FEATURE_COLUMNS if questionable_normalized is not None else []
+    )
     game_day_by_game_id = {
         str(game_id): pd.Timestamp(game_date).normalize()
         for game_id, game_date in out[["GAME_ID", "GAME_DATE"]]
@@ -268,21 +341,23 @@ def add_all_star_voting_features(
             "and upload it to Supabase before running this pipeline."
         )
 
-    player_lookup = create_player_lookup(players, injured_dict=injured_dict)
-    team_as_of_date_lookup = build_team_as_of_date_lookup(players)
-    players_for_team_date_index = players.dropna(
-        subset=["TEAM_ID", "GAME_DATE", "PLAYER_ID"]
-    ).assign(
-        _GAME_DAY=lambda frame: frame["GAME_DATE"].dt.normalize()
-    )
-    player_ids_by_team_date = {
-        (str(team_id), pd.Timestamp(game_day).normalize()): set(
-            group["PLAYER_ID"].astype(str)
-        )
-        for (team_id, game_day), group in players_for_team_date_index.groupby(
-            ["TEAM_ID", "_GAME_DAY"], sort=False
-        )
-    }
+    if row_cache is not None:
+        row_cache.bind((len(out), len(players), len(all_star)))
+        day_entries: dict[pd.Timestamp, set[tuple[str, str, str]]] = {}
+        for injury_game_id, injury_team_map in injured_dict_normalized.items():
+            injury_game_day = game_day_by_game_id.get(injury_game_id)
+            if injury_game_day is None:
+                continue
+            day_entries.setdefault(injury_game_day, set()).update(
+                (injury_game_id, injury_team_id, injury_player_id)
+                for injury_team_id, injury_player_ids in injury_team_map.items()
+                for injury_player_id in injury_player_ids
+            )
+        day_signatures = {day: frozenset(v) for day, v in day_entries.items()}
+
+    # Only the roster's ids are read, so the lookup skips building its frame.
+    player_ids_lookup = prepared.player_index.lookup_for(injured_dict, ids_only=True)
+    last_team_before_date_lookup = prepared.last_team_before_date_lookup
 
     updates = []
     team_rows = out[["GAME_ID", "TEAM_ID", "SEASON_ID", "GAME_DATE"]]
@@ -294,6 +369,33 @@ def add_all_star_voting_features(
         game_date = pd.Timestamp(game_date)
         game_day = game_date.normalize()
         team_id_str = str(team_id)
+        members = (current_rosters or {}).get((str(game_id), team_id_str))
+        if row_cache is not None:
+            team_questionable = (
+                questionable_normalized.get(str(game_id))
+                if questionable_normalized is not None
+                else None
+            )
+            cache_key = (
+                str(game_id),
+                team_id_str,
+                str(season_id),
+                game_date,
+                day_signatures.get(game_day),
+                frozenset(members) if members is not None else None,
+                (
+                    frozenset(team_questionable[team_id_str])
+                    if team_questionable is not None
+                    and team_id_str in team_questionable
+                    else None
+                ),
+            )
+            cached = row_cache.rows.get(cache_key)
+            if cached is not None:
+                row_cache.hits += 1
+                updates.append(cached)
+                continue
+            row_cache.misses += 1
         all_star_season_year = all_star_season_year_for_game_date(game_date)
         season_index = all_star_indexes[all_star_season_year]
 
@@ -306,6 +408,9 @@ def add_all_star_voting_features(
             "ALL_STAR_CANDIDATE_COUNT_BEFORE": 0,
             "ALL_STAR_SEASON_YEAR_BEFORE": all_star_season_year,
         }
+        if target_game_ids is not None and str(game_id) not in target_game_ids:
+            updates.append(row_update)
+            continue
 
         team_name = TEAM_NAME_BY_ID.get(team_id_str)
         candidate_ids: set[str] = set()
@@ -330,37 +435,21 @@ def add_all_star_voting_features(
             if injury_team_ids:
                 return current_team_id in injury_team_ids
 
-            team_as_of_date = team_as_of_date_lookup(player_id, current_game_day)
-            return team_as_of_date == current_team_id or (
-                allow_unknown and team_as_of_date is None
-            )
+            last_team = last_team_before_date_lookup(player_id, current_game_day)
+            return last_team == current_team_id or (allow_unknown and last_team is None)
 
         if team_name is not None:
             for player_id in season_index["team_players"].get(team_name, set()):
                 if is_assigned_to_team(player_id, allow_unknown=True):
                     candidate_ids.add(str(player_id))
 
-        # Same-game player rows are used only as roster-assignment evidence.
-        # This makes a transfer effective for the player's first game with the
-        # new team without using MIN, PTS, or any other postgame value.
-        same_day_player_ids = player_ids_by_team_date.get(
-            (team_id_str, game_day), set()
-        )
-        candidate_ids.update(
-            player_id
-            for player_id in same_day_player_ids
-            if player_id in season_index["all_player_ids"]
-            and is_assigned_to_team(player_id, allow_unknown=False)
-        )
-
-        current_players = player_lookup(
+        current_player_ids = player_ids_lookup(
             str(season_id),
             team_id_str,
             game_date,
             game_id=str(game_id),
         )
-        if not current_players.empty and "PLAYER_ID" in current_players.columns:
-            current_player_ids = set(current_players["PLAYER_ID"].astype(str))
+        if current_player_ids:
             candidate_ids.update(
                 player_id
                 for player_id in current_player_ids
@@ -371,6 +460,8 @@ def add_all_star_voting_features(
         injured_ids = injured_dict_normalized.get(str(game_id), {}).get(
             team_id_str, set()
         )
+        if members is not None:
+            candidate_ids = set(members) & season_index["all_player_ids"]
         # A current pregame injury assignment is also authoritative roster
         # evidence, including when a transferred player has not yet logged a
         # box score for the new team.
@@ -414,7 +505,36 @@ def add_all_star_voting_features(
         ]
         if injured_scores:
             row_update["ALL_STAR_MIN_INJURED_SCORE_BEFORE"] = min(injured_scores)
-        updates.append(row_update)
 
-    updates_df = pd.DataFrame(updates, index=out.index, columns=FEATURE_COLUMNS)
+        if questionable_normalized is not None:
+            team_questionable = questionable_normalized.get(str(game_id))
+            if team_questionable is not None and team_id_str in team_questionable:
+                questionable_ids = team_questionable[team_id_str]
+                row_update["ALL_STAR_MIN_QUESTIONABLE_SCORE_BEFORE"] = (
+                    NO_CANDIDATE_IN_GROUP_SCORE
+                )
+                questionable_votes = [
+                    season_index["player_votes"][player_id]
+                    for player_id in questionable_ids
+                    if player_id in season_index["player_votes"]
+                ]
+                row_update["ALL_STAR_MAX_QUESTIONABLE_FAN_VOTE_SHARE_BEFORE"] = (
+                    max(questionable_votes) / season_index["total_fan_votes"]
+                    if questionable_votes
+                    else 0.0
+                )
+                questionable_scores = [
+                    season_index["player_scores"][player_id]
+                    for player_id in questionable_ids
+                    if player_id in season_index["player_scores"]
+                ]
+                if questionable_scores:
+                    row_update["ALL_STAR_MIN_QUESTIONABLE_SCORE_BEFORE"] = min(
+                        questionable_scores
+                    )
+        updates.append(row_update)
+        if row_cache is not None:
+            row_cache.rows[cache_key] = row_update
+
+    updates_df = pd.DataFrame(updates, index=out.index, columns=feature_columns)
     return pd.concat([out, updates_df], axis=1)

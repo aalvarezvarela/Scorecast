@@ -24,6 +24,7 @@ from typing import Any
 
 import numpy as np
 import pandas as pd
+from nba_ou.data_processing.missing_data.cleaning_report import CleaningReport
 
 from training_pipeline.baseline import BaselineMetrics
 from training_pipeline.betting import BettingMetrics
@@ -74,7 +75,9 @@ def create_experiment_run_dir(
     timestamp: datetime | None = None,
 ) -> Path:
     timestamp = timestamp or datetime.now(tz=UTC)
-    run_name = f"{_slugify(experiment_name)}_{timestamp.strftime(RUN_DIR_TIMESTAMP_FORMAT)}"
+    run_name = (
+        f"{_slugify(experiment_name)}_{timestamp.strftime(RUN_DIR_TIMESTAMP_FORMAT)}"
+    )
     run_dir = Path(root_dir) / run_name
     run_dir.mkdir(parents=True, exist_ok=False)
     return run_dir
@@ -92,7 +95,9 @@ def parse_run_dir_timestamp(run_dir: str | Path) -> datetime | None:
         return None
     candidate = f"{parts[-2]}_{parts[-1]}"
     try:
-        return datetime.strptime(candidate, RUN_DIR_TIMESTAMP_FORMAT).replace(tzinfo=UTC)
+        return datetime.strptime(candidate, RUN_DIR_TIMESTAMP_FORMAT).replace(
+            tzinfo=UTC
+        )
     except ValueError:
         return None
 
@@ -143,6 +148,20 @@ def save_feature_schema(run_dir: str | Path, feature_names: list[str]) -> Path:
         Path(run_dir) / "feature_schema.json",
         {"feature_names": feature_names, "n_features": len(feature_names)},
     )
+
+
+def save_cleaning_report(run_dir: str | Path, report: CleaningReport) -> Path:
+    """Persist which cleaning step dropped each column and row, and why.
+
+    Written for every run because it is the only record of the ~350 columns
+    cleaning removes. Without it, "why is this feature not in the model?" is
+    answerable only by re-running cleaning at verbose=2 against the same data
+    and settings, and reading several hundred lines of print.
+
+    Pairs with feature_schema.json, which lists what survived: together they
+    account for every column the CSV started with.
+    """
+    return write_json(Path(run_dir) / "cleaning_report.json", report.to_dict())
 
 
 def save_config_snapshot(run_dir: str | Path, config: ExperimentConfig) -> Path:
@@ -308,9 +327,17 @@ def save_cv_betting_artifacts(
     return artifacts
 
 
-def save_seed_stability(
-    run_dir: str | Path, seed_stability_df: pd.DataFrame
-) -> Path:
+def save_planted_signal(run_dir: str | Path, *, payload: dict[str, Any]) -> Path:
+    """Persist what the planted-signal diagnostic asked for and what it got.
+
+    Written as its own file rather than folded into metadata.json so that the
+    presence of ``planted_signal.json`` in a run directory is by itself the
+    answer to "is this run real?".
+    """
+    return write_json(Path(run_dir) / "planted_signal.json", payload)
+
+
+def save_seed_stability(run_dir: str | Path, seed_stability_df: pd.DataFrame) -> Path:
     """Persist the same evaluation repeated under several seeds.
 
     This is the error bar for every cross-experiment comparison: if two runs

@@ -129,7 +129,7 @@ def test_compute_baseline_metrics_across_folds_uses_validation_rows_only():
     ]
 
     fold_df, aggregate = compute_baseline_metrics_across_folds(
-        df, splits, baseline_line_col="BASELINE_LINE"
+        df, splits, baseline_line_col="BASELINE_LINE", pooled=False
     )
 
     assert len(fold_df) == 2
@@ -138,3 +138,103 @@ def test_compute_baseline_metrics_across_folds_uses_validation_rows_only():
     assert aggregate.mae == pytest.approx((7.5 + 10.0) / 2)
     assert aggregate.ou_accuracy is None
     assert not math.isnan(aggregate.mae)
+
+
+# ---------------------------------------------------------------------------
+# the baseline must be aggregated the same way the model's objective is
+# ---------------------------------------------------------------------------
+
+
+def _uneven_folds():
+    """Deliberately unequal fold sizes -- the only case where the two
+    aggregations differ. With equal folds the bug is invisible, which is
+    exactly why it survived: rolling_origin fold sizes swing with the NBA
+    schedule (measured 2 to 36 games on cell A), while the fold layouts this
+    pipeline was built on were 12 blocks of 50."""
+    df = pd.DataFrame(
+        {
+            #                 fold 1 (4 games, error 1)   fold 2 (1 game, error 21)
+            "TOTAL_POINTS": [201.0, 201.0, 201.0, 201.0, 221.0],
+            "BASELINE_LINE": [200.0, 200.0, 200.0, 200.0, 200.0],
+        }
+    )
+    splits = [
+        (np.array([4]), np.array([0, 1, 2, 3])),
+        (np.array([0, 1, 2, 3]), np.array([4])),
+    ]
+    return df, splits
+
+
+def test_pooled_baseline_weights_every_game_equally():
+    """Pooled means one metric over the concatenated validation games, exactly
+    as _PooledCollector does for the model: (1+1+1+1+21)/5 = 5.0."""
+    df, splits = _uneven_folds()
+
+    _, aggregate = compute_baseline_metrics_across_folds(
+        df, splits, baseline_line_col="BASELINE_LINE", pooled=True
+    )
+
+    assert aggregate.mae == pytest.approx(5.0)
+    assert aggregate.n_games == 5
+
+
+def test_mean_baseline_weights_every_fold_equally():
+    """The other aggregation, unchanged: (1 + 21)/2 = 11.0. A 1-game fold
+    carries the same weight as a 4-game one."""
+    df, splits = _uneven_folds()
+
+    _, aggregate = compute_baseline_metrics_across_folds(
+        df, splits, baseline_line_col="BASELINE_LINE", pooled=False
+    )
+
+    assert aggregate.mae == pytest.approx(11.0)
+    assert aggregate.n_games == 5
+
+
+def test_the_two_aggregations_actually_disagree():
+    """Guards the guard: if these ever coincide the two tests above would both
+    pass under a hardcoded aggregation and prove nothing."""
+    df, splits = _uneven_folds()
+
+    _, pooled = compute_baseline_metrics_across_folds(
+        df, splits, baseline_line_col="BASELINE_LINE", pooled=True
+    )
+    _, mean = compute_baseline_metrics_across_folds(
+        df, splits, baseline_line_col="BASELINE_LINE", pooled=False
+    )
+
+    assert pooled.mae != pytest.approx(mean.mae)
+    assert pooled.rmse != pytest.approx(mean.rmse)
+
+
+def test_pooled_baseline_scores_exactly_the_model_s_validation_rows():
+    """Overlapping folds are not deduplicated: the model's pooled metric counts
+    a repeated game twice, so the baseline has to as well. Matching the model
+    beats being tidy."""
+    df = pd.DataFrame(
+        {
+            "TOTAL_POINTS": [210.0, 220.0, 260.0],
+            "BASELINE_LINE": [200.0, 200.0, 200.0],
+        }
+    )
+    # Game 2 appears in both folds, as an overlapping splitter would produce.
+    splits = [(np.array([0]), np.array([1, 2])), (np.array([1]), np.array([2]))]
+
+    _, aggregate = compute_baseline_metrics_across_folds(
+        df, splits, baseline_line_col="BASELINE_LINE", pooled=True
+    )
+
+    # (20 + 60 + 60) / 3, not (20 + 60) / 2.
+    assert aggregate.n_games == 3
+    assert aggregate.mae == pytest.approx(140.0 / 3)
+
+
+def test_pooled_flag_is_required():
+    """No default. A caller that does not say which aggregation it wants is the
+    bug this whole module was fixed for, and it must not be expressible."""
+    df, splits = _uneven_folds()
+
+    with pytest.raises(TypeError):
+        compute_baseline_metrics_across_folds(
+            df, splits, baseline_line_col="BASELINE_LINE"
+        )

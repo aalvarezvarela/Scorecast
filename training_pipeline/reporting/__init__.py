@@ -12,7 +12,9 @@ here where they can be tested and fixed once.
 """
 
 from training_pipeline.reporting import (
+    alt_line,
     charts,
+    coverage,
     factors,
     loaders,
     narrative,
@@ -28,7 +30,9 @@ from training_pipeline.reporting.discovery import (
 from training_pipeline.reporting.theme import apply_theme, prepare_runs
 
 __all__ = [
+    "alt_line",
     "charts",
+    "coverage",
     "factors",
     "loaders",
     "narrative",

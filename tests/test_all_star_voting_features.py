@@ -4,6 +4,7 @@ import numpy as np
 import pandas as pd
 import pytest
 from nba_ou.data_processing.all_star_voting.attach_all_star_voting_features import (
+    NO_CANDIDATE_IN_GROUP_SCORE,
     add_all_star_voting_features,
     all_star_season_year_for_game_date,
 )
@@ -57,6 +58,32 @@ def test_all_star_season_year_for_game_date_sanity_cases():
     assert all_star_season_year_for_game_date("2024-03-01") == 2023
 
 
+def test_live_roster_moves_votes_without_waiting_for_new_box_scores():
+    votes = _all_star_df(
+        [
+            [2025, "p1", "Boston Celtics", 40, 1.5],
+            [2025, "p2", "Los Angeles Lakers", 60, 2.5],
+        ]
+    )
+    players = _players_df([["old", "p1", BOS_ID, "22025", 2025, "2026-01-10", 30, 20]])
+    result = add_all_star_voting_features(
+        _team_row(NYK_ID),
+        players,
+        votes,
+        {},
+        current_rosters={("predict", NYK_ID): {"p1": "New player"}},
+    )
+    assert result.ALL_STAR_FAN_VOTE_SHARE_BEFORE.item() == pytest.approx(0.4)
+    departed = add_all_star_voting_features(
+        _team_row(BOS_ID),
+        players,
+        votes,
+        {},
+        current_rosters={("predict", BOS_ID): {"rookie": "Rookie"}},
+    )
+    assert departed.ALL_STAR_FAN_VOTE_SHARE_BEFORE.item() == 0
+
+
 def test_trade_out_removes_all_star_player_from_old_team():
     all_star = _all_star_df(
         [
@@ -99,7 +126,7 @@ def test_trade_in_adds_current_roster_player_from_other_all_star_team():
     assert result.loc[0, "ALL_STAR_FAN_VOTE_SHARE_BEFORE"] == 0.4
 
 
-def test_trade_moves_votes_on_first_recorded_new_team_game():
+def test_trade_moves_votes_only_after_first_recorded_new_team_game():
     all_star = _all_star_df(
         [
             [2025, "p1", "Boston Celtics", 40, 1.5],
@@ -138,18 +165,18 @@ def test_trade_moves_votes_on_first_recorded_new_team_game():
         }
     )
 
-    result = add_all_star_voting_features(
-        team_rows, players, all_star, {}
-    ).set_index("GAME_ID")
+    result = add_all_star_voting_features(team_rows, players, all_star, {}).set_index(
+        "GAME_ID"
+    )
 
     assert result.loc["before-old", "ALL_STAR_FAN_VOTES_BEFORE"] == 40
     assert result.loc["before-new", "ALL_STAR_FAN_VOTES_BEFORE"] == 0
-    assert result.loc["transfer-old", "ALL_STAR_FAN_VOTES_BEFORE"] == 0
-    assert result.loc["new-game", "ALL_STAR_FAN_VOTES_BEFORE"] == 40
+    assert result.loc["transfer-old", "ALL_STAR_FAN_VOTES_BEFORE"] == 40
+    assert result.loc["new-game", "ALL_STAR_FAN_VOTES_BEFORE"] == 0
     assert result.loc["after-old", "ALL_STAR_FAN_VOTES_BEFORE"] == 0
     assert result.loc["after-new", "ALL_STAR_FAN_VOTES_BEFORE"] == 40
-    assert np.isnan(result.loc["transfer-old", "ALL_STAR_MIN_SCORE_BEFORE"])
-    assert result.loc["new-game", "ALL_STAR_MIN_SCORE_BEFORE"] == 1.5
+    assert result.loc["transfer-old", "ALL_STAR_MIN_SCORE_BEFORE"] == 1.5
+    assert np.isnan(result.loc["new-game", "ALL_STAR_MIN_SCORE_BEFORE"])
 
 
 def test_injury_assignment_moves_votes_before_first_new_team_box_score():
@@ -187,10 +214,7 @@ def test_injury_assignment_moves_votes_before_first_new_team_box_score():
     assert result.loc["predict-new", "ALL_STAR_FAN_VOTES_BEFORE"] == 40
     assert result.loc["predict-new", "ALL_STAR_FAN_VOTE_SHARE_BEFORE"] == 0.4
     assert (
-        result.loc[
-            "predict-new", "ALL_STAR_MAX_INJURED_FAN_VOTE_SHARE_BEFORE"
-        ]
-        == 0.4
+        result.loc["predict-new", "ALL_STAR_MAX_INJURED_FAN_VOTE_SHARE_BEFORE"] == 0.4
     )
     assert result.loc["predict-new", "ALL_STAR_MIN_INJURED_SCORE_BEFORE"] == 1.5
 
@@ -390,3 +414,97 @@ def test_only_share_columns_are_kept_after_home_away_aux_drop():
         "ALL_STAR_MIN_INJURED_SCORE_BEFORE_TEAM_HOME",
         "ALL_STAR_MIN_INJURED_SCORE_BEFORE_TEAM_AWAY",
     }
+
+
+def test_questionable_group_gets_its_own_star_quality_columns():
+    all_star = _all_star_df(
+        [
+            [2025, "p1", "Boston Celtics", 40, 1.5],
+            [2025, "p2", "Boston Celtics", 60, 2.5],
+        ]
+    )
+    players = _players_df(
+        [
+            ["g1", "p1", BOS_ID, "22025", 2025, "2026-01-10", 30, 20],
+            ["g1", "p2", BOS_ID, "22025", 2025, "2026-01-10", 30, 20],
+        ]
+    )
+    listed = add_all_star_voting_features(
+        _team_row(BOS_ID),
+        players,
+        all_star,
+        {},
+        questionable_dict={"predict": {BOS_ID: ["p1"]}},
+    ).iloc[0]
+    assert listed["ALL_STAR_MIN_QUESTIONABLE_SCORE_BEFORE"] == pytest.approx(1.5)
+    assert listed["ALL_STAR_MAX_QUESTIONABLE_FAN_VOTE_SHARE_BEFORE"] > 0
+
+
+def test_a_covered_team_game_with_nobody_questionable_is_neutral_not_nan():
+    # Covered and empty must be a value, not missing: the group is empty on ~87%
+    # of team-games, and NaN there would put the column over the cleaner's
+    # threshold. Uncovered team-games stay NaN.
+    all_star = _all_star_df([[2025, "p1", "Boston Celtics", 40, 1.5]])
+    players = _players_df([["g1", "p1", BOS_ID, "22025", 2025, "2026-01-10", 30, 20]])
+    empty = add_all_star_voting_features(
+        _team_row(BOS_ID),
+        players,
+        all_star,
+        {},
+        questionable_dict={"predict": {BOS_ID: []}},
+    ).iloc[0]
+    assert empty["ALL_STAR_MAX_QUESTIONABLE_FAN_VOTE_SHARE_BEFORE"] == 0.0
+    assert (
+        empty["ALL_STAR_MIN_QUESTIONABLE_SCORE_BEFORE"] == NO_CANDIDATE_IN_GROUP_SCORE
+    )
+    # ... and worse than any real player's score, which is what a tree reads.
+    assert NO_CANDIDATE_IN_GROUP_SCORE > 178.8
+
+    uncovered = add_all_star_voting_features(
+        _team_row(BOS_ID),
+        players,
+        all_star,
+        {},
+        questionable_dict={"other": {BOS_ID: []}},
+    ).iloc[0]
+    assert pd.isna(uncovered["ALL_STAR_MIN_QUESTIONABLE_SCORE_BEFORE"])
+    assert pd.isna(uncovered["ALL_STAR_MAX_QUESTIONABLE_FAN_VOTE_SHARE_BEFORE"])
+
+
+def test_without_a_questionable_dict_no_questionable_columns_appear():
+    all_star = _all_star_df([[2025, "p1", "Boston Celtics", 40, 1.5]])
+    result = add_all_star_voting_features(
+        _team_row(BOS_ID), _players_df(), all_star, {}
+    )
+    assert not [c for c in result.columns if "QUESTIONABLE" in c]
+
+
+def test_merge_without_legacy_off_rating_slot_skips_star_offensive_ratio():
+    """The reduced player profile emits no per-slot OFF_RATING column."""
+    df = pd.DataFrame(
+        {
+            "SEASON_ID": ["22025", "22025"],
+            "GAME_ID": ["game", "game"],
+            "GAME_DATE": [pd.Timestamp("2026-03-02")] * 2,
+            "SEASON_TYPE": ["Regular Season", "Regular Season"],
+            "SEASON_YEAR": [2025, 2025],
+            "IS_OVERTIME": [0, 0],
+            "HOME": [True, False],
+            "TEAM_ID": [BOS_ID, LAL_ID],
+            "TEAM_CITY": ["Boston", "Los Angeles"],
+            "TEAM_ABBREVIATION": ["BOS", "LAL"],
+            "TEAM_NAME": ["Celtics", "Lakers"],
+            "MATCHUP": ["BOS vs. LAL", "LAL @ BOS"],
+            "GAME_NUMBER": [1, 1],
+            "OFF_RATING_SEASON_BEFORE_AVG": [100, 100],
+            "TOP1_PLAYER_PTS_BEFORE": [20, 20],
+            "PTS_SEASON_BEFORE_AVG": [110, 110],
+            "PTS": [100, 90],
+            "PF": [20, 18],
+        }
+    )
+
+    merged = merge_home_away_data(df)
+
+    assert not any(c.startswith("STAR_OFFENSIVE_RATIO") for c in merged.columns)
+    assert "STAR_PTS_PERCENTAGE_BEFORE_TEAM_HOME" in merged.columns

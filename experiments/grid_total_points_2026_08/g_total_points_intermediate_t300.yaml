@@ -1,0 +1,67 @@
+experiment_name: grid_total_points_intermediate_t300
+prediction_strategy: total_points_regressor
+line_col: ODDS_TOTAL_LINE_bet365
+training_version: "2.3-horizon-grid"
+comparison_group: horizon_grid_2026_08
+hypothesis: >
+  Total points at T-300, filling in a horizon the previous campaign skipped: it
+  measured 120/240/360/720 only, and those four were non-monotone (seed-mean ROI
+  -3.2, +2.0, -4.4, -4.9 for line error), which is either a real shape or
+  scatter. Six more points decide which.
+  Paired with the same horizon in the other stream, target formulation being the
+  only difference. On the horizon campaign this formulation lost to line error on
+  holdout MAE in 9 of 9 paired cells, and its deficit was WORST on the
+  intermediate dataset (-0.43 at T-360), where the line it must reproduce is
+  still moving. This stream is the test of whether that pattern holds across
+  the full horizon grid or was particular to those four snapshots.
+
+tags: [total_points, intermediate_line, single_snapshot, t300, horizon_grid, corr995]
+
+device: cuda
+
+data:
+  csv_path: data/train_data/intermediate_line_data_10snap.csv
+  data_version: "20260820-intermediate-line-10-snapshots-t300"
+  dataset_type: intermediate_line
+  snapshot_minutes: 300
+  scoring_csv_path: data/train_data/intermediate_line_data_10snap_scoring.csv
+  expected_checksum: "sha256:1e3ca3fe18d2bbe8"
+  season_year_floor: 2021
+  extend_history_dropping_season_gated_columns: false
+
+cleaning:
+  # Carried unchanged from horizon_*_2026_08 so the two campaigns' cells are
+  # readable against each other. Odds columns are held to 0.995; everything not
+  # matching "ODDS_" stays at cleaning.corr_threshold (0.95).
+  corr_threshold_overrides:
+    ODDS_: 0.995
+
+walk_forward:
+  train_games_choices: [2500, 3000, 3500, 4000]
+
+optuna:
+  # 150, down from the 300 the horizon campaign used. Measured on those 20 runs:
+  # the best objective reachable in the first 150 trials was IDENTICAL to the
+  # 300-trial best in 13 of 20 cells, median gap 0.000 MAE, worst 0.026 -- and
+  # 0.026 sits inside that campaign's own seed MAE spread of 0.017-0.110. The
+  # extra 150 trials bought less than the evaluation's own noise.
+  #
+  # Note also that pruning means 300 REQUESTED was only 84-172 completed for a
+  # regressor; the classifier's pruner barely fires, so 150 there is ~148
+  # completed and roughly halves an 8h cell.
+  n_trials: 150
+  timeout: null
+
+betting:
+  comparison_line_cols: ["ODDS_CLOSING_TOTAL_LINE_bet365"]
+
+# OFF, campaign-wide, matching the base default. The consequence, stated plainly
+# because nothing else in this campaign will state it: there is no error bar on
+# any single cell. What stands in for one is the SHAPE of the horizon curve --
+# six regressor cells per family and four classifier cells, differing only in
+# snapshot_minutes, plus the T-360 classifier replicate of the horizon
+# campaign's cell at that snapshot. A curve that wanders by more
+# than its own scatter is not a horizon effect, and the horizon campaign's
+# measured single-seed ROI spread on one fixed config was 0.9-11.4 points.
+# Read no single cell on its own.
+evaluation_seeds: []

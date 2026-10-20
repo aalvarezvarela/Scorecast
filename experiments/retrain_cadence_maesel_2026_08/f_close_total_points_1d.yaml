@@ -1,0 +1,54 @@
+experiment_name: maesel_cadence_total_points_close_1d
+prediction_strategy: total_points_regressor
+line_col: ODDS_TOTAL_LINE_bet365
+training_version: "2.5-mae-selection"
+comparison_group: retrain_cadence_maesel_2026_08
+hypothesis: >
+  TREATMENT of pair 3: the daily rolling origin on the closing dataset with the
+  total-points target, against cell E's 4-day control. Cell A carries the
+  campaign-wide statement and the validity gates; cell E carries why a second
+  target is in this campaign at all. Read both first.
+
+  The variable and its consequences are pair 1's and pair 2's: one game-day per
+  origin with a 5-game floor, region pinned to cell E so the same games are
+  scored, ~4x the folds and ~4x the fits per trial.
+
+  CHECK tie_n_completed against cell E BEFORE any result, as in every 1-day
+  cell here. If the pruner again kills materially more trials than in the
+  control, the pair is not an equal-search comparison and that fact is the
+  finding.
+tags: [total_points, closing_line, retrain_cadence, daily_origin, mae_selection, corr995]
+
+device: cuda
+
+data:
+  # Identical to cell E, checksum included.
+  csv_path: data/train_data/training_data_2_0_20260819.csv
+  data_version: "20260819-training-2.0"
+  dataset_type: closing_line
+  expected_checksum: "sha256:27a291de0ae78165"
+  season_year_floor: 2021
+  extend_history_dropping_season_gated_columns: false
+
+cleaning:
+  # Identical to cell E.
+  corr_threshold_overrides:
+    ODDS_: 0.995
+
+walk_forward:
+  # THE VARIABLE.
+  retrain_every_days: 1
+  min_validation_games: 5
+  # Pinned to cell E. Same region, same games, only the cutting differs.
+  eval_span_games: 850
+  # Explicitly null: a cap would trim the folds this cell exists to produce.
+  max_folds: null
+  # Identical to cell E.
+  train_games_choices: [2500, 3000, 3500, 4000, 4500]
+
+optuna:
+  # Identical to cell E.
+  n_trials: 150
+  timeout: null
+
+evaluation_seeds: [101, 202]

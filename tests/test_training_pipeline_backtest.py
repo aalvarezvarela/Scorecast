@@ -38,20 +38,20 @@ def _synthetic_prepared(n_games: int = 60, games_per_day: int = 3) -> PreparedDa
             "GAME_DATE": dates,
             "SEASON_YEAR": 2025,
             "TOTAL_POINTS": total_points,
-            "TOTAL_LINE_bet365": line,
+            "ODDS_TOTAL_LINE_bet365": line,
             "FEATURE_A": rng.normal(size=n_games),
             "FEATURE_B": rng.normal(size=n_games),
         }
     )
-    df["LINE_ERROR"] = df["TOTAL_POINTS"] - df["TOTAL_LINE_bet365"]
+    df["LINE_ERROR"] = df["TOTAL_POINTS"] - df["ODDS_TOTAL_LINE_bet365"]
 
-    feature_names = ["TOTAL_LINE_bet365", "FEATURE_A", "FEATURE_B"]
+    feature_names = ["ODDS_TOTAL_LINE_bet365", "FEATURE_A", "FEATURE_B"]
     return PreparedDataset(
         df_full=df,
         X=df[feature_names],
         y=df["TOTAL_POINTS"],
-        baseline_line_col="TOTAL_LINE_bet365",
-        target_line_col="TOTAL_LINE_bet365",
+        baseline_line_col="ODDS_TOTAL_LINE_bet365",
+        target_line_col="ODDS_TOTAL_LINE_bet365",
         feature_names=feature_names,
     )
 
@@ -60,7 +60,7 @@ def _config(**overrides) -> ExperimentConfig:
     kwargs = {
         "experiment_name": "backtest_test",
         "target_family": TargetFamily.TOTAL_POINTS,
-        "line_col": "TOTAL_LINE_bet365",
+        "line_col": "ODDS_TOTAL_LINE_bet365",
         "data": DataConfig(csv_path="x.csv"),
         "cleaning": CleaningConfig(verbose=0),
         "backtest": BacktestConfig(test_games=15, n_estimators=5, show_progress=False),
@@ -191,3 +191,73 @@ def test_backtest_applies_recency_weighting_when_configured():
 
     assert result.sample_weight_lambda == 0.01
     assert result.n_games == 15
+
+
+# ---------------------------------------------------------------------------
+# the "line + its historical drift" null
+# ---------------------------------------------------------------------------
+
+
+def test_backtest_reports_a_drift_null_distinct_from_the_model():
+    """The walk-forward path used to have no bias-corrected null of its own.
+    run_experiment filled the gap by falling back to the MODEL's own metrics,
+    so roi_vs_bias_baseline came out exactly 0.00 on every daily_walk_forward
+    run -- a model always ties itself. Nothing errored; the number was simply
+    meaningless."""
+    prepared = _synthetic_prepared()
+    result = run_daily_backtest(_config(), prepared=prepared)
+
+    null = result.baseline_bias_corrected_betting
+    assert null.n_candidates == 15
+    # A constant edge is not selective: it stands on every candidate game.
+    assert null.n_bets == 15
+    # And it is a genuinely separate measurement, not a copy of the model's.
+    assert result.baseline_bias_corrected.mae != result.mae
+
+
+def test_the_drift_null_is_fitted_on_history_not_on_the_scored_games():
+    """A null fitted on the rows it is scored on is not a null. The default
+    must come from df_history, which is by construction everything before the
+    evaluation window."""
+    prepared = _synthetic_prepared()
+    result = run_daily_backtest(_config(), prepared=prepared)
+
+    history = prepared.df_full.iloc[:-15]
+    expected = float(
+        (history["TOTAL_POINTS"] - history["ODDS_TOTAL_LINE_bet365"]).mean()
+    )
+    assert result.dev_line_error_bias == pytest.approx(expected)
+
+    scored = prepared.df_full.iloc[-15:]
+    on_scored_rows = float(
+        (scored["TOTAL_POINTS"] - scored["ODDS_TOTAL_LINE_bet365"]).mean()
+    )
+    assert result.dev_line_error_bias != pytest.approx(on_scored_rows)
+
+
+def test_an_explicit_bias_overrides_the_history_default():
+    """run_experiment computes the bias once on dev and passes it in, so the
+    holdout and walk-forward paths are scored against the SAME null."""
+    from training_pipeline.backtest import run_walk_forward_evaluation
+
+    prepared = _synthetic_prepared()
+    config = _config()
+    df_history = prepared.df_full.iloc[:-15]
+    df_evaluation = prepared.df_full.iloc[-15:].reset_index(drop=True)
+
+    result = run_walk_forward_evaluation(
+        config,
+        prepared=prepared,
+        df_history=df_history,
+        df_evaluation=df_evaluation,
+        train_games=None,
+        xgb_params={},
+        n_estimators=5,
+        show_progress=False,
+        dev_line_error_bias=7.5,
+    )
+
+    assert result.dev_line_error_bias == pytest.approx(7.5)
+    # +7.5 on every line means betting OVER on all of them, at that edge.
+    assert result.baseline_bias_corrected_betting.n_bets == 15
+    assert "+7.500" in result.baseline_bias_corrected.line_col

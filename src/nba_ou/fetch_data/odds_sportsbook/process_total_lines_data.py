@@ -11,6 +11,8 @@ TOTAL_BOOKS: list[str] = [
     "bet365",
     "draftkings",
     "fanatics_sportsbook",
+    # From the 2021-22 season only.
+    "betrivers",
 ]
 
 
@@ -24,8 +26,10 @@ def build_games_home_away_df(games_df: pd.DataFrame) -> pd.DataFrame:
     if "home" not in df:
         return pd.DataFrame(columns=["game_id", "game_date", "team_home", "team_away"])
 
-    home = df[df["home"] == True]
-    away = df[df["home"] == False]
+    # .eq, not truthiness: "home" can hold missing values, which a plain
+    # boolean mask would reject. Same comparison as the original == True.
+    home = df[df["home"].eq(True)]
+    away = df[df["home"].eq(False)]
 
     home = home.rename(columns={"team_name": "team_home"})[
         ["game_id", "game_date", "team_home"]
@@ -212,4 +216,4 @@ if __name__ == "__main__":
     totals_game_df = load_one_day_totals_csv(
         "/home/adrian_alvarez/Projects/NBA_over_under_predictor/data/sbr_totals_full_game/2024/csv/2024-10-23.csv"
     )
-    totals_game_df
+    print(totals_game_df.head())

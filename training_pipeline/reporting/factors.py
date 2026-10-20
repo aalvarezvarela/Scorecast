@@ -31,11 +31,13 @@ they can be shown and excluded rather than silently averaged in.
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any
 
 import pandas as pd
 
+from training_pipeline.config import PredictionStrategy
 from training_pipeline.reporting.loaders import load_config_flat
 
 #: One column per experimental knob that has actually been varied across runs,
@@ -43,23 +45,91 @@ from training_pipeline.reporting.loaders import load_config_flat
 #: assumed constant; if a new campaign varies something else, add it here or
 #: its runs will be matched as though they were identical.
 FACTOR_SOURCES: dict[str, str] = {
+    # NOTE this reads the CONFIG value, which on a tuned-window run is the
+    # fallback rather than the selected window. It is kept for runs whose
+    # metadata predates the selected value being recorded; the leaderboard
+    # column of the same name prefers metadata and is the one to trust.
     "train_games": "walk_forward.train_games",
     "max_folds": "walk_forward.max_folds",
     "wf_strategy": "walk_forward.strategy",
     "season_floor": "data.season_year_floor",
     "max_na_per_row": "cleaning.max_na_per_row",
     "nan_threshold": "cleaning.nan_threshold",
+    #: How hard redundant columns are pruned. Tightening this from 0.995 to
+    #: 0.95 removed 150 features that the earlier runs trained on, so a run
+    #: before and after it is not the same experiment.
+    "corr_threshold": "cleaning.corr_threshold",
+    #: The other half of data.extend_history_dropping_season_gated_columns.
+    #: That flag resolves into season_year_floor AND this, so season_floor
+    #: alone happens to separate the runs of the campaign it was built for --
+    #: but a config that moved this without moving the floor would drop a
+    #: different column set and still match as identical.
+    "seasonal_nan_spread": "cleaning.max_seasonal_nan_spread",
+    #: Which dataset a run trained on, and therefore how cleaning judged
+    #: redundancy. Closing-line and intermediate-line runs are not the same
+    #: experiment and must never be averaged together.
+    "dataset_type": "data.dataset_type",
+    #: Pooled (null) vs one model per timepoint. These answer different
+    #: questions -- "can one model price any hour?" against "what is the edge at
+    #: 12 hours out?" -- and they do not even have the same number of training
+    #: rows, so matching them as one experiment would read the grain as though
+    #: it were the treatment.
+    "snapshot_minutes": "data.snapshot_minutes",
     "n_trials": "optuna.n_trials",
+    # --- rolling-origin CV and the tuned training protocol -------------------
+    # These change what a trial IS, so a run before and after any of them is not
+    # the same experiment. Without them here the summary notebook would match a
+    # rolling-origin run against a test-anchored one as though they were
+    # identical and quietly average the two.
+    "retrain_every_days": "walk_forward.retrain_every_days",
+    #: The fold-size FLOOR, which decides how many folds a given cadence
+    #: actually produces: a fold starts at ``retrain_every_days`` game-days and
+    #: absorbs further whole days until it reaches this many games. 4 days with
+    #: a 25-game floor and 1 day with a 5-game floor score the SAME validation
+    #: games and differ only in how those games are grouped -- but the grouping
+    #: is what the pruner reads and what the pooled objective is aggregated
+    #: over, so the two are not the same trial. Without this here a campaign
+    #: that moves only the floor matches as identical.
+    "min_validation_games": "walk_forward.min_validation_games",
+    "eval_span_games": "walk_forward.eval_span_games",
+    "objective_aggregation": "optuna.objective_aggregation",
+    "tune_n_estimators": "optuna.tune_n_estimators",
+    "pruner_warmup_fraction": "optuna.pruner_warmup_fraction",
+    #: Strength of the planted diagnostic signal. The only thing that varies
+    #: across the planted-signal campaign, so without it those four runs
+    #: match as identical and the comparison they exist for disappears.
+    "planted_variance": "diagnostics.planted_signal.variance_explained",
 }
 
 #: Factors needing a rule rather than a straight read; see ``_derived_factors``.
 DERIVED_FACTORS: tuple[str, ...] = (
     "strategy",
+    #: Which betting market the run is about. Without it a totals run and a
+    #: spread run match as "the same experiment differing only in strategy" and
+    #: get averaged together -- and every metric NAME they report is identical,
+    #: so nothing else in the reporting layer would notice. They are scored
+    #: against different lines, in different units, against different null
+    #: baselines; pooling them is meaningless.
+    "market",
     "data_build",
     "exclude_overtime",
     "keep_playoffs",
     "drop_consensus",
+    #: Which referee feature groups a run excluded. The referee campaign varies
+    #: only ``exclude_cols_containing``, which ``drop_consensus`` cannot see, so
+    #: without this its cells would all match as one experiment.
+    "referee_features",
+    #: Whether the league-wide market-regime family (``GLOBAL_*``) was dropped.
+    #: Read for the same reason as ``referee_features``: the no-global ablation
+    #: varies only ``exclude_cols_containing``, and neither ``drop_consensus``
+    #: nor ``referee_features`` matches "GLOBAL_", so without this its cells
+    #: would match their with-global twins as identical runs and the contrast
+    #: would silently vanish.
+    "drop_global_market",
     "sample_weighting",
+    "train_games_tuned",
+    "n_estimators_range",
+    "is_diagnostic",
 )
 
 FACTOR_COLUMNS: tuple[str, ...] = (*DERIVED_FACTORS, *FACTOR_SOURCES)
@@ -79,6 +149,59 @@ CONTRAST_METRICS: tuple[str, ...] = (
 )
 
 
+def _render_range(value: Any) -> str:
+    """A hashable, readable rendering of an IntRange/FloatRange config block.
+
+    ``design_matrix`` groups on factor values, so an unhashable dict would raise
+    rather than produce a wrong answer -- but a stringified dict would also
+    reorder between pandas versions. Reading the three fields explicitly keeps
+    the label stable.
+    """
+    if not isinstance(value, dict):
+        return "" if value is None else str(value)
+    low, high = value.get("low"), value.get("high")
+    scale = "log" if value.get("log") else "lin"
+    return f"{low}-{high}:{scale}"
+
+
+def _market_for_strategy(strategy: Any) -> str | None:
+    """The market a strategy belongs to, tolerant of unknown/missing values.
+
+    Reads through PredictionStrategy so the mapping stays in exactly one place,
+    and returns None when the value is absent or unrecognised -- a run whose
+    market cannot be established must not be grouped with one whose can.
+    """
+    if strategy is None:
+        return None
+    try:
+        return PredictionStrategy(str(strategy)).market.value
+    except ValueError:
+        return None
+
+
+#: Exclusion substrings that target referee features.
+_REFEREE_PATTERN_PREFIXES: tuple[str, ...] = ("REF_", "STYLE_FTA_REFEREE")
+
+
+def _referee_feature_exclusions(excluded: Any) -> str:
+    """The referee-related exclusion patterns as stable text, ``"all"`` if none.
+
+    Only referee patterns are read, so a run that also drops consensus columns
+    still contrasts with its twin on ``drop_consensus`` alone.
+    """
+    # load_config_flat renders lists as JSON text.
+    if isinstance(excluded, str):
+        try:
+            excluded = json.loads(excluded)
+        except ValueError:
+            excluded = [excluded]
+    patterns = excluded if isinstance(excluded, (list, tuple)) else []
+    referee = sorted(
+        {str(p).upper() for p in patterns if str(p).upper().startswith(_REFEREE_PATTERN_PREFIXES)}
+    )
+    return "drop:" + ",".join(referee) if referee else "all"
+
+
 def _derived_factors(config: dict[str, Any], row: Any) -> dict[str, Any]:
     """The factors that are not a single field read straight out of the config.
 
@@ -92,6 +215,11 @@ def _derived_factors(config: dict[str, Any], row: Any) -> dict[str, Any]:
         # prepare_runs has already back-filled this from target_family for runs
         # saved before prediction_strategy existed.
         "strategy": row.get("prediction_strategy"),
+        # Derived from the strategy rather than read from the config, because no
+        # archived run recorded a market and every one of them is a totals run.
+        # An unrecognised strategy resolves to None rather than defaulting to
+        # "totals": guessing here would silently pool a market we do not know.
+        "market": _market_for_strategy(row.get("prediction_strategy")),
         # The training CSV identifies the feature build; the file name is the
         # only thing that distinguishes them in every run, old and new.
         "data_build": "old" if Path(csv_path).name.startswith("old_") else "2.0",
@@ -100,7 +228,34 @@ def _derived_factors(config: dict[str, Any], row: Any) -> dict[str, Any]:
         ),
         "keep_playoffs": not bool(config.get("data.exclude_playoffs", True)),
         "drop_consensus": "consensus" in excluded,
+        "referee_features": _referee_feature_exclusions(
+            config.get("cleaning.exclude_cols_containing")
+        ),
+        # Substring, matching how cleaning.exclude_cols_containing is applied
+        # (case-insensitive ``pattern in column``). Every GLOBAL column in the
+        # 2.5 build starts with the prefix, so the pattern and the family are
+        # the same set.
+        "drop_global_market": "GLOBAL_" in excluded.upper(),
         "sample_weighting": bool(config.get("sample_weight.enabled", False)),
+        # A run that TUNED the window is not comparable with one that fixed it,
+        # even when train_games happens to read the same: the fixed run's value
+        # is what it used, the tuned run's is only a fallback. Without this flag
+        # the two would land in the same cell of the design matrix.
+        "train_games_tuned": bool(
+            config.get("walk_forward.train_games_choices") or False
+        ),
+        # The search range itself, so widening it forks the comparison. Rendered
+        # as text because a dict is not hashable and groupby needs to hash it.
+        "n_estimators_range": _render_range(
+            config.get("optuna.search_space.n_estimators_range")
+        ),
+        # A planted-signal run must never be matched against a real one: its
+        # metrics are inflated by a target-derived feature by construction.
+        # Absent from every config written before diagnostics existed, which
+        # means False -- those runs predate any way to enable it.
+        "is_diagnostic": bool(
+            config.get("diagnostics.planted_signal.enabled", False)
+        ),
     }
 
 
@@ -135,7 +290,10 @@ _DEVIATION_TAGS: dict[str, Any] = {
     "exclude_overtime": "no-OT",
     "keep_playoffs": "+playoffs",
     "drop_consensus": "no-consensus",
+    "referee_features": lambda value: "refs-all" if value == "all" else "refs-subset",
     "sample_weighting": "weighted",
+    "is_diagnostic": "DIAGNOSTIC",
+    "planted_variance": lambda value: f"planted{value:.3f}",
     "data_build": lambda value: f"{value}-data",
     "max_na_per_row": lambda value: f"maxna{value:.0f}",
     "nan_threshold": lambda value: f"nanthr{value:.0f}",
@@ -143,6 +301,14 @@ _DEVIATION_TAGS: dict[str, Any] = {
     "n_trials": lambda value: f"{value:.0f}trials",
     "season_floor": lambda value: f"from{value:.0f}",
     "wf_strategy": lambda value: str(value),
+    "retrain_every_days": lambda value: f"every{value:.0f}d",
+    "min_validation_games": lambda value: f"minfold{value:.0f}",
+    "eval_span_games": lambda value: f"span{value:.0f}",
+    "objective_aggregation": lambda value: str(value),
+    "tune_n_estimators": "tuned-rounds",
+    "train_games_tuned": "tuned-window",
+    "n_estimators_range": lambda value: f"rounds{value}",
+    "pruner_warmup_fraction": lambda value: f"warmup{value:.2f}",
 }
 
 
@@ -298,10 +464,19 @@ def contrasts(
     # between* the contrasts on screen. Spelling out all eleven every time
     # buries the one or two that distinguish "line_error at 3750" from
     # "line_error at 4500" under a wall of identical text.
+    # NaN must be normalised before the comparison. A factor absent from every
+    # config (a knob added after those runs) yields a distinct NaN per group, and
+    # distinct NaNs do not collapse in a set -- so the factor would count as
+    # "varying" and be spelled out in every contrast label, burying the one
+    # factor that actually differs. This bit only shows up once a new factor is
+    # added, which is exactly when the labels matter most.
+    def _level(value: Any) -> Any:
+        return "<absent>" if value is None or pd.isna(value) else value
+
     varying = [
         name
         for position, name in enumerate(others)
-        if len({key[position] for key, _ in kept}) > 1
+        if len({_level(key[position]) for key, _ in kept}) > 1
     ]
     positions = {name: others.index(name) for name in varying}
     for key, group in kept:

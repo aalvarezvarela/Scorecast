@@ -1,0 +1,53 @@
+# The headline run. Everything about the protocol now comes from _base.yaml:
+# rolling-origin folds, a tuned training window, tuned boosting rounds, a pooled
+# objective. This file states only what is specific to THIS run.
+#
+# What one trial looks like now:
+#
+#   train_games   = 3000        <- how much history to use
+#   n_estimators  = 184         <- how much to fit
+#   learning_rate = 0.027
+#   max_depth     = 3
+#   ...
+#
+# and all 30 of that trial's folds train on a 3000-game rolling window ending
+# strictly before each fold's origin. The value the SELECTED trial chose is then
+# what the holdout walk-forward retrains on each test day, and what a promoted
+# production model would be fitted on. Nothing is hardcoded and nothing can
+# disagree.
+#
+# Measured layout (scripts/preflight_campaign.py, this CSV):
+#   30 folds, 117 game-days, 855 validation games, window ceiling 4117.
+#
+# The window curve comes out of optuna_trials.csv for free: every trial records
+# its train_games alongside its score, so "how much history is optimal?" is
+# answered by grouping that column rather than by a separate campaign.
+#
+# Pre-registered expectations, with a multiple-comparisons budget:
+#   - CV and holdout should sit CLOSER together than in the older campaigns,
+#     because they now measure the same protocol. If they do not, the gap was
+#     period and luck, not protocol -- which is a real answer.
+#   - The tuned train_games is only believable if it is STABLE across the four
+#     evaluation seeds. A window that changes with the seed was chosen by noise
+#     whatever its ROI says, and that is the first thing to check.
+#   - At a seed-noise floor of ~5 ROI points, expect one apparent effect per
+#     ~10 comparisons by luck alone.
+
+experiment_name: line_error_rolling
+prediction_strategy: line_error_regressor
+training_version: "2.1-rolling-origin"
+comparison_group: rolling_origin_2026_08
+hypothesis: >
+  A rolling-origin CV that trains to a date and predicts the next 4 game-days,
+  with the training window and the boosting rounds both tuned, selects better
+  hyperparameters than 12 blocks of 50 games with per-fold early stopping -- and
+  narrows the persistent CV-vs-holdout gap.
+tags: [line_error, rolling_origin, tuned_window, tuned_rounds]
+
+optuna:
+  # 10 dimensions now (8 XGBoost + rounds + window) against 4 window choices, so
+  # ~50 trials per window. Fixed, never a timeout: a timeout makes the trial
+  # count a function of the machine and silently un-matches runs meant to be
+  # comparable.
+  n_trials: 200
+  timeout: null

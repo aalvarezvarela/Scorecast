@@ -9,6 +9,26 @@ Build it with:
 poetry run python scripts/create_train_data/create_intermediate_line_train_data.py
 ```
 
+By default the training CSV includes
+`ODDS_LINE_HIST_RIDGE_EXPECTED_TOTAL_MOVE_TO_CLOSE`: the walk-forward Ridge
+estimate, in points, of the anchor total line at the final pregame tick minus
+its value at this snapshot. Use `--no-ridge-movement` to omit the column and
+skip its calculation, or pass `include_ridge_movement=False` to
+`create_intermediate_line_df`. Each historical row uses only games that tipped
+off before that row's snapshot, from its current and immediately previous
+seasons. Each completed game has total training weight one across its snapshots.
+The first 100 eligible games receive a neutral value of zero; 0-minute rows
+also receive exactly zero. This feature is computed from the same tick series
+as the snapshot lines, since the separate closing-odds table does not always
+agree with that series.
+
+Also by default, the market-dynamics families from
+`docs/intermediate_market_dynamics_plan.md`: injury news (`INJ_SNAP_*`), the
+market's reaction to it (`ODDS_SNAP_NEWS_*`), cross-market coherence
+(`ODDS_SNAP_XMKT_*`) and the spread and moneyline versions of the Ridge
+(`ODDS_LINE_HIST_RIDGE_EXPECTED_{SPREAD,ML}_MOVE_TO_CLOSE`). Use
+`--no-market-dynamics` (or `include_market_dynamics=False`) to omit them.
+
 It emits **two files**: the training CSV, and a `_scoring.csv` sidecar holding
 the closing lines, the per-row snapshot weight and raw timestamps. See §10 for
 why they are physically separate rather than distinguished by a prefix.
@@ -136,6 +156,27 @@ versus the proposed `{30m, 1h, 2h, 3h, 4h, 6h, 12h}`. This keeps 30m and 60m
 redundant 3 h/4 h pairing in favour of an 8 h point that is currently unsampled.
 
 At 6,128 games × 6 snapshots ≈ **36,800 rows** (≈22,000 for 2023+ alone).
+
+**Superseded — the shipped grid is denser:**
+
+```
+{0, 30m, 1h, 2h, 3h, 4h, 5h, 6h, 8h, 12h}      → 10 snapshots
+```
+
+The parsimony argument above is sound for a grid that must be chosen once, but
+it does not apply here: **snapshots are rows**. An unwanted horizon is removed
+by filtering `TIME_TO_MATCH_MIN`, at no cost and with no rebuild, while adding
+one back means regenerating the entire dataset. So the asymmetry favours
+over-sampling, and the 3 h/5 h points this section dropped are cheap to carry
+until measured importance says otherwise.
+
+`0` is new in kind rather than in density: it is the **closing snapshot**, the
+same bet the closing-line dataset makes. It is not literally tip-off —
+`fetch_pregame_ticks` refuses anything inside its five-minute safety margin — so
+it resolves to the last tick at least 5 minutes out. It is what makes the two
+datasets directly comparable at the same decision point. Note that
+closing-line value is ~0 by construction on those rows, so CLV measured over a
+pooled dataset is diluted by them; compute it per snapshot.
 
 A variant worth benchmarking later, but not for v1: sample at *actual tick times*
 rather than a fixed grid, with `time_to_match` as a continuous feature. More
@@ -361,6 +402,39 @@ of ~5 h this is one of the more informative columns in the set, not bookkeeping.
 **Cross-book at T:** consensus median/mean, `CROSSBOOK_STD_SNAP`,
 `CROSSBOOK_RANGE_SNAP`, and `BOOK_DEVIATION_<b>` = book line − consensus (an
 outlying book is often the stale one, or the sharp one).
+
+As built, the per-book `deviation_from_consensus`, `abs_deviation_from_consensus`,
+`deviation_z` and `is_outlier_book` columns keep their names but use a
+**leave-one-book-out** reference: the median of the *other* books, after
+dropping peer quotes more than 10 points (totals/spread) or 0.15 probability
+(moneyline) from the all-book median. The gap is then capped at that same limit,
+and `deviation_z` divides by the peer std floored at 0.5 pt / 0.01. Including the
+evaluated book in its own median shrank its deviation toward zero; one corrupt
+feed value could inflate it by tens of points. A book with no quoted peers gets
+0. The headline `consensus_line` (all books) is unchanged.
+
+**Anchor-total path state** (bet365 totals only, to avoid dozens of redundant
+per-book columns; built in `line_history/anchor_total_path.py`). All use raw
+line *level* changes; a price-only reprice is not a move:
+
+- `ODDS_SNAP_TOT_<ANCHOR>_MINUTES_SINCE_LAST_LEVEL_MOVE` — minutes since the
+  level last changed (since open if it never did), capped at 1,440. Differs from
+  `line_age_minutes`, which resets on any tick, including price-only ones.
+- `ODDS_SNAP_TOT_<ANCHOR>_PEERS_MOVED_ANCHOR_STILL_60` — +1/−1 when the median of
+  the other books (quoted both now and 60 min ago, at least two, outliers
+  removed) rose/fell ≥ 0.5 pt in the last 60 min while the anchor level did
+  not; 0 otherwise. Signed so it gives the direction the anchor would follow.
+- `ODDS_SNAP_TOT_<ANCHOR>_ABS_LEVEL_PATH_60` — sum of absolute level changes in
+  the last 60 min; separates a round trip from no activity, which share
+  `move_last_60 = 0`. Single jumps above the 10-pt peer-gap limit are treated
+  as bad ticks and not summed.
+- `ODDS_SNAP_TOT_<ANCHOR>_SIGNED_MOVE_STREAK_60` — consecutive moves in the
+  latest direction within the last 60 min, signed (+ up, − down, 0 none).
+- `ODDS_SNAP_TOT_<ANCHOR>_LAST_TWO_LEVEL_MOVES_GAP_MIN` — minutes between the
+  last two level changes, capped at 720 (also 720 with fewer than two moves).
+
+If `--windows` omits 60, the 60-minute peer lookback is resolved internally
+without exporting a 60-minute window family.
 
 **Movement from the opener:** `MOVE_FROM_OPEN` (signed), `ABS_MOVE_FROM_OPEN`,
 `PCT_MOVE_FROM_OPEN`, `MOVE_DIRECTION` (sign), `MINUTES_SINCE_OPEN`.
@@ -811,7 +885,11 @@ short pairs carry little independent information. Consequences:
 Handled dataset-side only, deliberately leaving `training_pipeline` untouched so
 the closing-line model is unaffected:
 
-- `SNAPSHOT_WEIGHT` = 1 / snapshots-for-that-game ships in the scoring sidecar.
+- A `SNAPSHOT_WEIGHT` column was tried here and removed. It was emitted by
+  the builder and read by nothing, and a correction nobody applies is worse
+  than an acknowledged limitation: it reads as though the problem is handled.
+  The correction that shipped is `training_pipeline.snapshot_scoring`, which
+  regroups finished predictions one horizon at a time.
 - `GAME_ID` and `TIME_TO_MATCH_MIN` stay in the training frame so predictions
   can be regrouped by game.
 

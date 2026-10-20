@@ -44,13 +44,13 @@ def _frame(n_games: int = 260, games_per_day: int = 4, ot_rate: float = 0.20):
             "SEASON_YEAR": 2025,
             # Overtime really does inflate the total, as in real data.
             "TOTAL_POINTS": (line + rng.normal(0, 12, n_games) + is_ot * 12).round(1),
-            "TOTAL_LINE_bet365": line,
+            "ODDS_TOTAL_LINE_bet365": line,
             "IS_OVERTIME": is_ot,
             "FEATURE_A": rng.normal(size=n_games),
             "FEATURE_B": rng.normal(size=n_games),
         }
     )
-    df["LINE_ERROR"] = df["TOTAL_POINTS"] - df["TOTAL_LINE_bet365"]
+    df["LINE_ERROR"] = df["TOTAL_POINTS"] - df["ODDS_TOTAL_LINE_bet365"]
     return df
 
 
@@ -58,7 +58,7 @@ def _config(tmp_path, **overrides) -> ExperimentConfig:
     kwargs = {
         "experiment_name": "ot",
         "target_family": "total_points",
-        "line_col": "TOTAL_LINE_bet365",
+        "line_col": "ODDS_TOTAL_LINE_bet365",
         "data": DataConfig(csv_path="x.csv"),
         "cleaning": CleaningConfig(verbose=0),
         "holdout": HoldoutConfig(test_size=None, test_games=20),
@@ -79,13 +79,13 @@ def _config(tmp_path, **overrides) -> ExperimentConfig:
 
 
 def _prepared(df: pd.DataFrame) -> PreparedDataset:
-    features = ["TOTAL_LINE_bet365", "FEATURE_A", "FEATURE_B"]
+    features = ["ODDS_TOTAL_LINE_bet365", "FEATURE_A", "FEATURE_B"]
     return PreparedDataset(
         df_full=df,
         X=df[features],
         y=df["TOTAL_POINTS"],
-        baseline_line_col="TOTAL_LINE_bet365",
-        target_line_col="TOTAL_LINE_bet365",
+        baseline_line_col="ODDS_TOTAL_LINE_bet365",
+        target_line_col="ODDS_TOTAL_LINE_bet365",
         feature_names=features,
         dataset_checksum="sha256:test",
     )

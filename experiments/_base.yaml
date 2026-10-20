@@ -10,7 +10,7 @@
 # training_pipeline/config.py.
 #
 # Run one with:
-#   poetry run python -m training_pipeline.cli experiments/total_points/3_seasons.yaml
+#   poetry run python -m training_pipeline.cli experiments/rolling_origin_2026_08/line_error.yaml
 #   poetry run python -m training_pipeline.cli <file> --dry-run   # print resolved config
 
 # --- research log -----------------------------------------------------------
@@ -79,21 +79,121 @@
 
 # --- data -------------------------------------------------------------------
 data:
-  csv_path: data/train_data/all_odds_training_data_until_20260318.csv
-  data_version: "20260318-all-odds"
+  # The default every campaign inherits unless it names its own. It must point
+  # at a file that EXISTS: a campaign that omits csv_path (rolling_origin_2026_08
+  # does) inherits this one, and a dead default there is a dead campaign.
+  csv_path: data/train_data/training_data_2_0_20260819.csv
+  data_version: "20260819-2_0"
+  # WHICH DATASET THIS IS. Decides how cleaning judges redundancy, so it is
+  # declared here rather than guessed from the frame.
+  #
+  #   closing_line        one row per game. Correlation pruning runs over every
+  #                       row and every column -- the behaviour that has always
+  #                       applied, and what retraining and same-day prediction
+  #                       produce too.
+  #   intermediate_line   one row per (game, pre-game snapshot). Historical and
+  #                       base features are computed per game and copied onto
+  #                       each snapshot, so they are judged on ONE ROW PER GAME
+  #                       (the t=60 snapshot where present, else that game's
+  #                       nearest horizon); snapshot/market columns
+  #                       (ODDS_SNAP_*, ODDS_LINE_HIST_*) are exempt from
+  #                       correlation pruning entirely, because small cross-book
+  #                       differences and line movements are what that dataset
+  #                       exists to preserve. Exact duplicates still go, via the
+  #                       byte-hash steps.
+  #
+  # Declaring closing_line for a frame that is plainly snapshot-grained RAISES,
+  # so forgetting to set it fails loudly instead of correlating every historical
+  # feature over ten copies of each game. The reverse is allowed: a
+  # single-horizon slice is one row per game either way.
+  #
+  # This is part of fingerprint(), since it changes the cleaned dataset.
+  dataset_type: closing_line
+
+  # ONE MODEL PER TIMEPOINT, or one model for all of them. intermediate_line
+  # only; setting either of these on a closing-line CSV is refused rather than
+  # ignored, because there would be no snapshot column to act on.
+  #
+  #   snapshot_minutes: null   POOLED. Every horizon is a training row and
+  #                            TIME_TO_MATCH_MIN is an ordinary feature, so one
+  #                            model prices a bet placed at any hour. Its
+  #                            headline betting numbers count one game once per
+  #                            horizon; run_experiment always writes the
+  #                            per-horizon tables beside them, and the CLI
+  #                            prints them, so the pooled row can no longer be
+  #                            read on its own by accident.
+  #   snapshot_minutes: 720    ONE HORIZON, one row per game. The control that
+  #                            answers "is pooling earning its complexity?".
+  #
+  # This replaces slice_intermediate_snapshot.py, which made the control by
+  # writing a second ~187MB CSV. Filtering here means both arms read the same
+  # bytes, so one expected_checksum covers both.
+  snapshot_minutes: null
+  # Closing lines and timestamps, joined on (GAME_ID, TIME_TO_MATCH_MIN) AFTER
+  # the feature matrix is built, so they reach df_full and never X. That is what
+  # lets betting.comparison_line_cols measure closing-line value on a model that
+  # was never allowed to see the close. intermediate_line only.
+  scoring_csv_path: null
   # Pin the dataset's sha256 to be told loudly if the CSV is regenerated in
   # place. Get it with:
   #   python -c "from training_pipeline.data import compute_file_checksum as c; \
-  #              print(c('data/train_data/all_odds_training_data_until_20260318.csv'))"
-  expected_checksum: "sha256:78404a0cfab28b7b"
+  #              print(c('data/train_data/training_data_2_0_20260819.csv'))"
+  expected_checksum: "sha256:27a291de0ae78165"
+  # 2021 is not a round number picked for tidiness -- it is where the public
+  # betting percentage columns start being populated. Measured on
+  # training_data_2_0_20260819.csv, this floor is currently REDUNDANT: with no
+  # floor at all, cleaning.max_na_per_row=80 already deletes 100% of the rows
+  # from 2017-2020. Setting it explicitly just makes that visible and saves
+  # reading 4,600 doomed rows.
+  #
+  # Per-season mean NaN% by feature family shows why:
+  #
+  #                      2017  2018  2019  2020  2021  2022  2024
+  #   per-book odds      87.0  87.0   9.7   2.9   0.2   0.0   0.0
+  #   consensus opener   84.3  84.3   1.2   0.0   0.0   0.0   0.0
+  #   public betting %   73.5  73.5  73.5  44.9   0.8   0.2   0.0
+  #
+  # By 2020 everything is healthy EXCEPT public betting % -- one family, 272
+  # columns, single-handedly costing two seasons. To trade it away for those
+  # seasons, set data.extend_history_dropping_season_gated_columns (below); do not
+  # just raise max_na_per_row, which admits the rows while leaving the
+  # missingness pattern as a season indicator.
+  #
+  # 2017-2018 are unreachable either way: they carry almost no odds data and
+  # are dropped by the missing-data policy's required-column rule.
   season_year_floor: 2021
+
+  # THE choice between the two shapes this dataset can take. One switch because
+  # it is one decision: admitting 2019-2020 without dropping the columns that
+  # are absent in them leaves the NaN pattern as a season indicator, and
+  # dropping them without admitting the seasons discards features for nothing.
+  #
+  #   false -> 6,148 rows, 1,362 features   seasons 2021+, every column
+  #   true  -> 8,279 rows, ~1,231 features  seasons 2019+, minus 213
+  #
+  # NOTE this is NOT nan_threshold, and nan_threshold cannot express it. That
+  # one is computed over the whole window, so a column absent for two seasons
+  # and present for five averages to ~19% NaN -- below any useful threshold,
+  # while still being exactly what gates those seasons. Measured at a 2019
+  # floor, nan_threshold 50 and 40 drop nothing at all, and 15 catches only 200
+  # of 272 offenders while taking 14 innocent columns with it. The rule that
+  # works is seasonal SPREAD (below), because the shape is a step, not a rate.
+  #
+  # Off here; the A/B that tests it is in
+  # experiments/public_betting_tradeoff_2026_08/.
+  extend_history_dropping_season_gated_columns: false
+
+  # Season type is NOT set here: regular season + play-in is already the default
+  # (config.DEFAULT_ALLOWED_SEASON_TYPES, data.exclude_playoffs=True), and
+  # restating a default in the file every experiment inherits means changing it
+  # once no longer changes it anywhere. Override per experiment to study
+  # playoffs.
+  #
   # Playoff basketball is a different distribution: in this dataset playoff
-  # games average ~11.6 fewer total points than regular-season games.
-  # Play-in games ARE kept (they are regular-season-like), which is why season
-  # type is resolved from the GAME_ID prefix -- the SEASON_TYPE text column
-  # mislabels play-in games as "Playoffs".
-  exclude_playoffs: true
-  allowed_season_types: ["Regular Season", "Play-In Tournament"]
+  # games average ~11.6 fewer total points than regular-season games. Play-in
+  # games ARE kept (they are regular-season-like), which is why season type is
+  # resolved from the GAME_ID prefix -- the SEASON_TYPE text column mislabels
+  # play-in games as "Playoffs".
 
   # Drop overtime games from the TRAINING rows only. CV validation folds, the
   # holdout and the walk-forward's prediction days always keep them.
@@ -116,7 +216,98 @@ data:
 cleaning:
   nan_threshold: 50.0
   max_na_per_row: 80
-  exclude_cols_containing: ["fanatics_sportsbook"]
+  # Two thresholds, because the redundancy is not evenly spread. Odds features
+  # are what this problem is about and are held to 0.99; everything else is
+  # pruned at 0.95. A pair spanning both is judged at the more tolerant one,
+  # which decides almost nothing: on training_data_2_0_20260819.csv only 6 of
+  # the 915 pairs above 0.95 are odds/non-odds, the two groups forming
+  # near-disjoint correlation clusters.
+  #
+  # Matching is by SUBSTRING, so the 192 DIFF_FROM_ODDS_LINE_* columns take the
+  # tolerant threshold too -- they contain "ODDS_" without starting with it.
+  # Intended (they are rolling averages of total-minus-line, market features by
+  # any reading) but worth knowing: 50 of the 212 columns dropped below are
+  # DIFF_FROM_ODDS_, so this is where the odds threshold actually bites.
+  #
+  # Measured survival on that dataset, from 1,578 numeric columns:
+  #
+  #     thresholds                dropped   ODDS_   DIFF_FROM_   other   survive
+  #     0.995 everywhere (old)        104      77            6      21     1,474
+  #     0.95 everywhere               425     209          146      70     1,153
+  #     odds 0.995 / other 0.95       153      77            6      70     1,425
+  #     odds 0.99  / other 0.95       212      92           50      70     1,366  <-
+  #
+  # Note what the single 0.995 threshold was doing: 83 of its 104 drops were
+  # odds-derived, because the same line quoted by seven books is the most
+  # internally redundant block in the frame. It was pruning hardest exactly
+  # where you least want it to.
+  #
+  # And note which knob does what. The two thresholds partition the columns, so
+  # lowering the odds one changes only odds-derived drops (77 -> 142 across the
+  # last two rows) and leaves "other" at 70 either way. If the goal is to prune
+  # non-odds features harder, corr_threshold is the number to move: 0.90 there
+  # takes "other" from 70 to 142.
+  corr_threshold: 0.95
+  corr_threshold_overrides:
+    ODDS_: 0.99
+  #
+  # These thresholds mean ONE OBSERVATION PER GAME, and that is arranged for
+  # rather than assumed. The intermediate-line dataset holds one row per (game,
+  # snapshot), so its historical and base features -- computed per game, then
+  # copied onto every snapshot of it -- would otherwise be correlated over ten
+  # copies of the same evidence.
+  #
+  # Cleaning handles that itself, with no setting here, because it is not a
+  # preference: a repeated row is an artefact of the grain, never evidence.
+  # When it sees several rows sharing a GAME_ID it
+  #
+  #   * judges historical/base columns on ONE ROW PER GAME -- the t=60 snapshot
+  #     where present (6,585 of 6,585 games on the current build, though the
+  #     builder does not guarantee it), else that game's nearest horizon;
+  #   * EXEMPTS snapshot/market columns (ODDS_SNAP_*, ODDS_LINE_HIST_*) from
+  #     correlation pruning entirely. Small cross-book differences and line
+  #     movements are what that dataset exists to preserve, and a correlation
+  #     cannot distinguish them from redundancy -- 99.06% of a book's line
+  #     variance is merely which game it is, so every pair of books reads at
+  #     r 0.9986-0.9995 however differently they actually move. Exact duplicates
+  #     among them are still removed, by the byte-hash steps, which consult no
+  #     threshold.
+  #
+  # So the numbers above are the closing-line dataset's numbers, and they keep
+  # meaning the same thing on both. cleaning_report.json records which rows and
+  # columns the correlation step was shown, and separates a drop by exact
+  # duplicate (duplicate_columns / absolute_value_match) from a drop by
+  # correlation (correlated_columns_one_row_per_group).
+  #
+  # No default exclusions.
+  #
+  # This used to carry ["fanatics_sportsbook"], because the book existed only
+  # from 2025 and was therefore a de facto season indicator: a column populated
+  # exactly when SEASON_YEAR == 2025 lets a model recover the season from
+  # availability alone. That is fixed at the source now -- both builders fold
+  # the discontinued Caesars into fanatics_sportsbook by default
+  # (combine_fanatics_and_caesars), giving one continuously-covered book -- so
+  # the exclusion had become a way of discarding a book for a reason that no
+  # longer applied. Measured per-season NaN spread on the CSVs pinned by the
+  # current campaigns, over the seasons a floor actually admits:
+  #
+  #     dataset                    floor   columns   worst spread   median
+  #     training_data_2_0            2021      124          3.4pp     0.0pp
+  #     training_data_2_0            2019      124         32.0pp    22.0pp
+  #
+  # Both are far under the 90pp EXTENDED_SEASON_NAN_SPREAD detector, i.e. the
+  # computed rule agrees the book is continuous. (Spreads do reach 100pp if
+  # seasons 2017-2018 are included, but no configured floor reaches them.)
+  #
+  # Watch the blast radius before adding anything here: matching is SUBSTRING
+  # and CASE-INSENSITIVE, so a pattern written for one dataset hits others. This
+  # one matched 124 columns on the closing-line CSV and 291 -- 11.3% of the
+  # frame, including the whole ODDS_SNAP_TOT_FANATICS_SPORTSBOOK_* block -- on
+  # the intermediate-line one, which inherits this file.
+  #
+  # Campaign cells that genuinely want a book or a feature family gone should
+  # name it in their own config, and repeat anything inherited: a deep merge
+  # REPLACES lists rather than extending them.
   verbose: 1
 
 # --- evaluation split -------------------------------------------------------
@@ -148,16 +339,116 @@ holdout:
   test_days: 60
 
 walk_forward:
-  strategy: test_anchored
+  # test_anchored (default, unchanged) builds 12 folds of ~50 consecutive games
+  # spread back through dev, each trained on the games immediately before it.
+  #
+  # rolling_origin instead reproduces the protocol the HOLDOUT is scored under:
+  # train on everything strictly before a date, predict the next few game-days,
+  # advance, retrain with those games now in history. Two things follow.
+  #   - Folds are date-defined, so their size is whatever the schedule gave
+  #     them. Set optuna.objective_aggregation: pooled with it, or a 4-game
+  #     fold weighs as much as a 12-game one.
+  #   - The validation games do not depend on the training window, which is
+  #     what makes walk_forward.train_games_choices legitimate: every trial is
+  #     scored on identical games whichever window it picks.
+  strategy: rolling_origin
+  # test_anchored only. Left here so a config can switch back by naming the
+  # strategy alone.
   test_games: 50
   step_games_between_tests: 60
-  # THE training-window size. Used both by each CV fold and by the final
-  # refit, so the model you ship is fitted on the same amount of history the
-  # hyperparameters were selected for. There is deliberately no separate
-  # refit.train_games -- two knobs could silently disagree.
-  train_games: 2500
+  # THE training-window size. Used by each CV fold, the holdout walk-forward
+  # AND the final refit, so the model you ship is fitted on the same amount of
+  # history the hyperparameters were selected for. There is deliberately no
+  # separate refit.train_games -- two knobs could silently disagree.
+  #
+  # Only the fallback now that train_games_choices is set below: the value the
+  # SELECTED TRIAL chose is what every fit site actually uses. Read as "what to
+  # do if tuning is skipped", not as the window of any run.
+  train_games: 3500
   min_train_games: 1250
-  max_folds: 12
+  # null under rolling_origin: a cap of 12 would trim the 30 folds that
+  # eval_span_games asks for and quietly deliver a third of the volume. The run
+  # refuses to start rather than doing that, but do not make it have to.
+  max_folds: null
+
+  # --- rolling_origin only ---------------------------------------------------
+  # How many GAME-DAYS each origin predicts before retraining. Counted in days
+  # that contain games, so a dark date is skipped rather than eating part of a
+  # window. 1 reproduces the daily walk-forward exactly.
+  #
+  # 4 is the default because staleness turned out to cost nothing measurable:
+  # pooled over the 36 runs already in artifacts/experiments, betting win rate
+  # by day-into-the-fold reads 53.4 / 51.5 / 50.2 / 51.6 / 54.7 / 49.5 / 55.2%
+  # for days 0-6 -- no decay, and days 0-1 (52.1%) are if anything slightly
+  # worse than days 2+ (53.4%). Retraining daily would cost 4x the fits to buy
+  # that. Spend the budget on eval_span_games instead.
+  retrain_every_days: 4
+  # FLOOR on how many games a validation fold must hold. A fold starts at
+  # retrain_every_days game-days and then absorbs further WHOLE days until it
+  # reaches this many games; a fold that still finishes short -- because the
+  # region ran out or a season boundary closed it -- is merged into its
+  # predecessor from the same season rather than dropped.
+  #
+  # Measured on cell A's real layout (dev = 5,732 games, eval_span_games 850):
+  #
+  #                       folds  games/fold min-median-max  days/fold  <25 games
+  #     no floor            30        2 -  30 - 36           1 - 4 - 4      3
+  #     min 25              28       25 -  30 - 36           4 - 4 - 6      0
+  #
+  # The same 855 validation games either way -- none added, none dropped, none
+  # duplicated. Only the grouping changes, which is what makes a cell with the
+  # floor comparable to one without.
+  #
+  # Why 25 rather than leaving it off: the layout above contained a 2-game fold
+  # (2025-04-18, the last day of season 2024, closed by require_same_season_test)
+  # plus folds of 15 and 17. Under objective_aggregation: pooled a 2-game fold is
+  # harmless in the OBJECTIVE -- it carries 2/855 of the weight, which is
+  # correct -- but the pruner reads a RUNNING metric whose early steps are those
+  # same folds, so a trial can be killed on a handful of games. 25 is roughly
+  # the median night's schedule times three and costs two folds.
+  #
+  # null restores the pre-floor layout exactly, for reproducing an older run --
+  # and a test_anchored cell MUST set null explicitly, because the config layer
+  # rejects this knob outside rolling_origin rather than letting it be a silent
+  # no-op. Inheriting it there is a parse error, not a quiet nothing.
+  min_validation_games: 25
+  # Approximate size of the validation region in games, measured back from the
+  # end of dev. Approximate because the region grows in whole game-days; the
+  # realised count is recorded in metadata.json as cv_n_validation_games.
+  # null uses everything the data allows.
+  #
+  # 850 is the measured compromise: on this dataset it yields 28 folds, 117
+  # game-days and 855 validation games -- ~1.3x the 652 games the old 12x50
+  # layout scored, at ~2.5x the fits per trial. (30 folds before
+  # min_validation_games below merged the two short ones; same games, same
+  # days.) 1300 would give ~45 folds and ~1304 games, the next step up once the
+  # 850 runs land.
+  #
+  # GAMES, not rows -- as are train_games, min_train_games and
+  # min_validation_games. On a pooled (game, snapshot) frame the splitter counts
+  # distinct games, so these numbers mean the same history on both datasets and
+  # the x6/x10 hand-multiplying the archived intermediate configs needed is gone.
+  eval_span_games: 850
+  # Discrete training-window sizes for Optuna to choose between, making "how
+  # much history helps?" part of the same search as model complexity rather
+  # than a separate campaign. Categorical, not a range: the question is which
+  # of a few meaningful amounts of history wins, and a continuous axis would
+  # spend trials distinguishing 3,700 from 3,750.
+  #
+  # Every value must fit the EARLIEST fold's history or the run refuses to
+  # start -- tail(n) returns what it has, so the alternative is that fold
+  # quietly training short for some trials and not others. Measure the ceiling
+  # with scripts/preflight_campaign.py before setting this.
+  #
+  # Measured ceiling on this dataset at eval_span_games=850: the earliest fold
+  # has 4117 games of history, so 4000 is the largest value with real headroom.
+  # In seasons (1236 regular-season + play-in games each):
+  #   2500 = 2.02   3000 = 2.43   3500 = 2.83   4000 = 3.24
+  # Reaching 4-5 seasons needs data.season_year_floor lowered from 2021 to 2020
+  # (ceiling ~5560) or 2019 (~6543), but those seasons are the compressed
+  # 72-game 2020-21 and the 2019-20 bubble -- that confounds "more history" with
+  # "different-distribution history", so it belongs in its own labelled run.
+  train_games_choices: [2500, 3000, 3500, 4000]
 
 # How the held-out test period is scored.
 #   daily_walk_forward (default) -- retrain once per test game-day on the games
@@ -176,7 +467,33 @@ refit:
   #   rolling_window (default) -- last walk_forward.train_games games
   #   full_dataset            -- every available game
   strategy: rolling_window
-  use_lexicographic_selection: true
+  # FALSE since 2026-08-26: the selected trial is simply the one with the lowest
+  # CV primary metric (pooled MAE for a regressor, log loss for the classifier),
+  # because study.best_trial on a direction="minimize" study IS that trial.
+  #
+  # What this turns OFF is the lexicographic tie-break -- best primary metric
+  # within a tolerance band, then the best BETTING outcome among that band. The
+  # tie band still gets resolved and written to metadata (tie_*) and
+  # optuna_lexicographic_candidates.csv is still saved, so a run remains
+  # readable against the older ones; those numbers are now diagnostics that
+  # describe a decision nothing acts on.
+  #
+  # Why: the band decides which metric really chooses the model, and on this
+  # data it frequently handed the choice to pooled OU accuracy -- a statistic
+  # with ~1.7pp of binomial noise on ~850 validation games, measured on the very
+  # folds that would then be reported. See TieTolerancePolicy in
+  # training_pipeline/config.py for the full account.
+  #
+  # Measured effect on the retrain_cadence_2026_08 pair: the tie-break changed
+  # the pick in ONE of the two runs. Cell A's lexicographic pick was already the
+  # global MAE minimum; cell B's differed from it by 0.00005 pooled MAE and was
+  # a materially different model (depth 4 / 166 trees versus depth 3 / 98).
+  #
+  # Runs already in artifacts/experiments were selected under the old rule and
+  # carry use_lexicographic_selection: true in their own config.json, so nothing
+  # on disk changes -- but a new run is not selector-comparable with them.
+  # Set this back to true in a cell that must reproduce an archived one.
+  use_lexicographic_selection: false
   # Off by default: most experiments only want the evaluation.
   train_production_model: false
 
@@ -187,6 +504,47 @@ optuna:
   objective_name: reg:squarederror
   mae_tolerance_abs: 0.10
   persistent_storage: false
+
+  # Sample n_estimators per trial instead of letting each fold early-stop on the
+  # very games that then score it. Off by default so every run to date
+  # reproduces; turn it on for new work. Three measured reasons, all from the
+  # runs in artifacts/experiments:
+  #
+  #   1. The fold's eval_set WAS the fold being scored, so each trial's metric
+  #      is the minimum of a noisy curve over ~1000 stopping points. That bias
+  #      is larger for higher-capacity trials, so it tilted the RANKING.
+  #   2. The rounds chosen in CV were never the rounds used: every downstream
+  #      fit took the median across folds. Within one selected trial, folds
+  #      stopped anywhere from 2 to 922 rounds -- coefficient of variation 1.04
+  #      for line_error, 1.01 for the classifier. A CV of 1.0 is what a
+  #      memoryless process looks like; the stopping point was not measuring
+  #      anything.
+  #   3. Optuna could not control capacity. Capacity is ~ learning_rate x
+  #      rounds; the sampler set the rate and early stopping then set the
+  #      rounds. Spearman(learning_rate, rounds) is -0.75 to -0.90 for
+  #      total_points, so half the search space was illusory.
+  #
+  # The range is filled in per strategy from config.N_ESTIMATORS_RANGES
+  # (line_error and classifier 10-500, total_points 30-1000, log scale), read
+  # off where early stopping actually landed for each. State
+  # search_space.n_estimators_range explicitly to override.
+  #
+  # This also removes the max(50, ...) floor that used to raise a selected
+  # 10-round model to 50 rounds -- silently, in 16 of 38 runs.
+  tune_n_estimators: true
+
+  # mean (default) averages the folds' own metrics; pooled computes one metric
+  # over every validation game. Use pooled with rolling_origin, whose fold sizes
+  # the NBA schedule decides. Both are always recorded; only the objective and
+  # the trial ranking change.
+  objective_aggregation: pooled
+
+  # Folds a trial must complete before MedianPruner may kill it. null derives it
+  # as pruner_warmup_fraction x fold count, floored at the historical 5 -- so 12
+  # folds still gives 5 and nothing becomes less patient, while 28 folds gives
+  # 7 rather than pruning on ~35 games.
+  pruner_warmup_steps: null
+  pruner_warmup_fraction: 0.25
 
   # XGBoost hyperparameter search space. These defaults reproduce the space
   # hardcoded in nba_ou.modeling.optuna_*.py exactly (a test asserts identical
@@ -247,8 +605,10 @@ sample_weight:
   # trials preferred it.
   allow_unweighted: true
 
-# --- profit scoring ---------------------------------------------------------
-# Post-hoc only: changing these never invalidates a tuned study.
+# --- betting-outcome scoring ------------------------------------------------
+# Post-hoc only: changing these never invalidates a tuned study or selects a
+# trial. The headline is directional win rate, its Wilson interval and volume.
+# ROI is retained only as a hypothetical flat-odds settlement diagnostic.
 betting:
   # Finer at the bottom: that is where the question "is a 1-point edge better
   # than a 0.5-point one?" lives, and where nearly all the games are.
@@ -270,7 +630,8 @@ betting:
   # fork a persistent Optuna study. It DOES change what win_rate/roi/n_bets mean,
   # so runs before and after are not directly comparable on those columns.
   primary_edge_threshold: 0.1
-  # 1.909091 == -110 American. Break-even win rate is 1/odds = 52.38%.
+  # 1.909091 == -110 American. Used only to translate the same wins/losses into
+  # a hypothetical settlement diagnostic; it does not select a model.
   flat_decimal_odds: 1.9090909090909092
 
   # Score the CV folds for profit too, not just the holdout. This is about
@@ -286,10 +647,9 @@ betting:
   # The 12 CV folds hold ~600 validation games, ~5x the volume, for one extra
   # fit per fold (~= one Optuna trial).
   #
-  # Biased upward: these folds chose the hyperparameters. Use cv_roi to COMPARE
-  # configurations and holdout roi to ESTIMATE live performance. A big gap
-  # between them is the signature of selection overfitting, and is worth
-  # reading as a result in its own right.
+  # These folds chose the hyperparameters, so their win rate is a development
+  # comparison rather than an unbiased live estimate. Read cv_win_rate together
+  # with cv_n_bets and its interval; use untouched forward data for confirmation.
   evaluate_cv_folds: true
 
   # Re-score the same predictions against other total lines, for information.
@@ -302,7 +662,7 @@ betting:
   # against the open. Beating the close = information; beating the open =
   # capturable information.
   # Columns missing from a CSV snapshot are skipped, never fatal.
-  comparison_line_cols: ["TOTAL_LINE_consensus_opener"]
+  comparison_line_cols: ["ODDS_TOTAL_LINE_consensus_opener"]
 
 # --- daily walk-forward backtest --------------------------------------------
 backtest:
@@ -310,24 +670,35 @@ backtest:
   train_games: null       # null = expanding window (all prior games)
   show_progress: true
 
-# --- seed stability ---------------------------------------------------------
-# random_state seeds BOTH the Optuna sampler and every model fit.
+# --- seeds -------------------------------------------------------------------
+# random_state seeds BOTH the Optuna sampler and every model fit, so it is the
+# single number that makes a run reproducible. Every run reports this seed's
+# evaluation and nothing else.
 random_state: 16
 #
-# evaluation_seeds repeats the whole holdout evaluation under more seeds,
-# holding data, split and tuned hyperparameters fixed, so the only thing that
-# varies is XGBoost's own randomness (subsample / colsample draws). It produces
-# seed_stability.csv, and seed_roi_range on the leaderboard.
+# evaluation_seeds re-runs the WHOLE holdout evaluation under additional seeds,
+# holding data, split and tuned hyperparameters fixed so that only XGBoost's own
+# randomness varies. OFF BY DEFAULT, deliberately: it costs a full
+# re-evaluation per seed (~55 daily retrains), and the headline everywhere --
+# betting_metrics.json, final_test_metrics.json, the notebooks -- is seed 16
+# alone. A campaign that wants error bars opts in per cell.
 #
-# Why bother: without it there is no error bar on any comparison between two
-# experiments, and the spread across seeds is plausibly the same size as the
-# differences being read as results. If run A and run B differ by less than one
-# run's own seed range, the difference is not evidence.
+# What it buys, measured on the 20-run horizon_*_2026_08 campaign, which did
+# opt in at [101, 202]:
 #
-# Costs a full re-evaluation per seed (~35 fits under daily_walk_forward), so
-# it is off by default; 2 extra seeds is the useful minimum, 4 is thorough.
-# The primary seed is always evaluated and reported -- listing it here again is
-# ignored.
+#   - ONE config's holdout ROI moved 0.9 to 11.4 points across three seeds
+#     (median ~5). Single-seed ROI differences smaller than that are noise.
+#   - The 3-seed MEAN is far steadier: closing_reference against its own
+#     closing_replicate agreed to 0.1 points (line error) and 1.5 points
+#     (total points), tuning re-run and all. That is the real noise floor.
+#   - Holdout MAE spread was 0.017-0.110 -- the same size as most differences
+#     between cells.
+#
+# So: leave it off for exploratory sweeps, where the sweep's own consistency
+# across cells is the evidence. Set it to [101, 202] on a run whose result you
+# are about to act on, and on any pair you intend to report as a difference.
+# It is excluded from the config fingerprint, so switching it on reuses the
+# existing Optuna study rather than re-tuning.
 evaluation_seeds: []
 
 # --- output -----------------------------------------------------------------

@@ -8,6 +8,7 @@ from training_pipeline.leaderboard import (
     build_leaderboard,
     discover_run_dirs,
     headline_leaderboard,
+    load_run_summary,
 )
 
 
@@ -25,6 +26,7 @@ def _write_run(
     roi: float | None = None,
     n_bets: int = 100,
     win_rate: float = 0.55,
+    win_rate_ci_low: float | None = None,
     is_significant: bool = False,
     bias_baseline_roi: float = -0.02,
     n_candidates: int = 570,
@@ -93,8 +95,13 @@ def _write_run(
                         "n_bets": n_bets,
                         "bet_rate": 0.4,
                         "win_rate": win_rate,
-                        "win_rate_ci_low": win_rate - 0.09,
+                        "win_rate_ci_low": (
+                            win_rate - 0.09
+                            if win_rate_ci_low is None
+                            else win_rate_ci_low
+                        ),
                         "win_rate_ci_high": win_rate + 0.09,
+                        "n_pushes": 0,
                         "break_even_rate": 110.0 / 210.0,
                         "edge_vs_break_even": win_rate - 110.0 / 210.0,
                         "roi": roi,
@@ -204,27 +211,30 @@ def test_leaderboard_falls_back_to_run_dir_timestamp_when_created_at_missing(tmp
     assert df.iloc[0]["created_at"] == "2026-01-15T14:30:00+00:00"
 
 
-def test_leaderboard_ranks_by_roi_not_mae_improvement(tmp_path):
-    """The whole point of the metrics rework: a run with better MAE but a
-    losing ROI must rank below a run that actually makes money.
-    """
+def test_leaderboard_ranks_by_win_rate_confidence_not_roi(tmp_path):
+    """ROI is diagnostic; directional evidence controls the default order."""
     _write_run(
-        tmp_path, "best_mae_losing_money", target_family="total_points",
-        final_mae=12.0, baseline_mae=15.0, roi=-0.04,
+        tmp_path, "high_roi_lower_win_rate", target_family="total_points",
+        final_mae=12.0, baseline_mae=15.0, roi=0.30,
+        win_rate=0.53, win_rate_ci_low=0.49,
     )
     _write_run(
-        tmp_path, "worse_mae_profitable", target_family="total_points",
-        final_mae=13.9, baseline_mae=15.0, roi=0.06,
+        tmp_path, "low_roi_stronger_win_rate", target_family="total_points",
+        final_mae=13.9, baseline_mae=15.0, roi=-0.30,
+        win_rate=0.57, win_rate_ci_low=0.53,
     )
 
     df = build_leaderboard(root_dir=tmp_path)
 
-    assert df.iloc[0]["run_name"] == "worse_mae_profitable"
-    # ...even though it has the worse MAE improvement.
+    assert df.iloc[0]["run_name"] == "low_roi_stronger_win_rate"
     assert (
         df.iloc[0]["mae_improvement_over_baseline_pct"]
         < df.iloc[1]["mae_improvement_over_baseline_pct"]
     )
+
+    # ROI remains available when explicitly requested as a diagnostic.
+    by_roi = build_leaderboard(root_dir=tmp_path, sort_by="roi")
+    assert by_roi.iloc[0]["run_name"] == "high_roi_lower_win_rate"
 
 
 def test_leaderboard_surfaces_bet_volume_and_significance(tmp_path):
@@ -293,7 +303,11 @@ def test_headline_leaderboard_is_a_subset_of_columns(tmp_path):
         "prediction_strategy",
         "window_dir_label",
     ]
-    assert "roi" in headline.columns
+    assert "roi" not in headline.columns
+    assert "cv_roi" not in headline.columns
+    assert "win_rate" in headline.columns
+    assert "win_rate_ci_low" in headline.columns
+    assert "n_bets" in headline.columns
     assert set(headline.columns).issubset(set(full.columns))
 
 
@@ -367,12 +381,14 @@ def test_leaderboard_makes_incomparable_cohorts_visible_without_blocking(tmp_pat
     _write_run(
         tmp_path, "run_short_window", target_family="total_points", final_mae=13.0,
         baseline_mae=15.0, roi=0.20, n_bets=15, n_candidates=40,
+        win_rate=0.70, win_rate_ci_low=0.45,
         holdout_start="2026-03-01T00:00:00", holdout_end="2026-03-18T00:00:00",
         config_fingerprint="fingerprint_one",
     )
     _write_run(
         tmp_path, "run_long_window", target_family="total_points", final_mae=13.4,
         baseline_mae=15.0, roi=0.04, n_bets=300, n_candidates=1200,
+        win_rate=0.56, win_rate_ci_low=0.52,
         holdout_start="2025-10-01T00:00:00", holdout_end="2026-03-18T00:00:00",
         config_fingerprint="fingerprint_two",
     )
@@ -381,17 +397,17 @@ def test_leaderboard_makes_incomparable_cohorts_visible_without_blocking(tmp_pat
 
     # Both runs are present and ranked (nothing is filtered out)...
     assert len(df) == 2
-    assert df.iloc[0]["run_name"] == "run_short_window"  # highest ROI wins
+    assert df.iloc[0]["run_name"] == "run_long_window"
 
-    # ...but the reader can see the top run's ROI came from a far smaller,
-    # differently-dated sample than the run below it.
+    # The raw 70% from 15 bets does not outrank the larger cohort's stronger
+    # lower confidence bound.
     top, second = df.iloc[0], df.iloc[1]
-    assert top["n_candidates"] < second["n_candidates"]
+    assert top["n_candidates"] > second["n_candidates"]
     assert top["holdout_start"] != second["holdout_start"]
     assert top["config_fingerprint"] != second["config_fingerprint"]
 
 
-def test_headline_leaderboard_includes_cohort_columns_next_to_roi(tmp_path):
+def test_headline_leaderboard_includes_cohort_columns_after_directional_metrics(tmp_path):
     _write_run(
         tmp_path, "run_a", target_family="total_points", final_mae=13.0,
         baseline_mae=15.0, roi=0.05,
@@ -401,8 +417,8 @@ def test_headline_leaderboard_includes_cohort_columns_next_to_roi(tmp_path):
 
     for column in ("holdout_start", "holdout_end", "n_candidates", "config_fingerprint"):
         assert column in columns
-    # Cohort context must follow the ROI block, not be buried at the end.
-    assert columns.index("holdout_start") > columns.index("roi")
+    # Cohort context must follow the directional block, not be buried at the end.
+    assert columns.index("holdout_start") > columns.index("n_bets")
     assert columns.index("holdout_start") < columns.index("final_test_mae")
 
 
@@ -427,3 +443,59 @@ def test_discover_run_dirs_empty_when_root_missing(tmp_path):
 def test_build_leaderboard_empty_when_no_runs(tmp_path):
     df = build_leaderboard(root_dir=tmp_path)
     assert df.empty
+
+
+def test_the_leaderboard_reports_the_selected_window_not_the_fallback(tmp_path):
+    """Third instance of the same defect. config.walk_forward.train_games is the
+    fallback for when tuning is skipped; metadata.json records what the selected
+    trial chose and every fit site used.
+
+    train_games is a MATCHING factor, so reading the config value meant two
+    tuned runs that selected different windows were compared as though they
+    were the same experiment whenever their configs shared a fallback -- and the
+    run label carried the wrong number as well."""
+    import json
+
+    run_dir = tmp_path / "tuned_20260820_120000"
+    run_dir.mkdir(parents=True)
+    (run_dir / "metadata.json").write_text(
+        json.dumps(
+            {
+                "experiment_name": "tuned",
+                "target_family": "line_error",
+                "train_games": 2500,          # what the selected trial chose
+                "train_games_tuned": True,
+            }
+        )
+    )
+    (run_dir / "config.json").write_text(
+        json.dumps(
+            {
+                "walk_forward": {
+                    "train_games": 3500,       # the untouched _base.yaml fallback
+                    "train_games_choices": [2500, 3000, 3500],
+                },
+                "optuna": {},
+                "refit": {},
+            }
+        )
+    )
+
+    row = load_run_summary(run_dir)
+
+    assert row["train_games"] == 2500
+
+
+def test_a_fixed_window_run_still_reads_its_window_from_the_config(tmp_path):
+    """Runs saved before the selected value was recorded in metadata must keep
+    working -- the config value is the only thing they have."""
+    import json
+
+    run_dir = tmp_path / "legacy_20260101_000000"
+    run_dir.mkdir(parents=True)
+    (run_dir / "metadata.json").write_text(json.dumps({"experiment_name": "legacy"}))
+    (run_dir / "config.json").write_text(
+        json.dumps({"walk_forward": {"train_games": 3750}, "optuna": {}, "refit": {}})
+    )
+
+    assert load_run_summary(run_dir)["train_games"] == 3750

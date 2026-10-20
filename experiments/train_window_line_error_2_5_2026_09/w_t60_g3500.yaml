@@ -1,0 +1,83 @@
+experiment_name: trainwin25_t60_g3500
+prediction_strategy: line_error_regressor
+training_version: "2.15-schema25-train-window-20260922"
+comparison_group: train_window_line_error_2_5_2026_09
+hypothesis: >
+  The floor both deep arms pinned at when the window was tuned. The anchor every other arm is read against.
+tags: [intermediate_line, single_snapshot, t60, line_error, schema_2_5, train_window,
+       floor_2019, max_na_800, fixed_train_games, cv_6x100, corr_odds_098, no_time_decay]
+device: cuda
+random_state: 16
+data:
+  csv_path: data/train_data/intermediate_line_data_2_5_20260613.csv
+  data_version: "20260918-intermediate-line-2.5-t60"
+  expected_checksum: "sha256:5bda016d4c872e0d"
+  dataset_type: intermediate_line
+  snapshot_minutes: 60
+  scoring_csv_path: data/train_data/intermediate_line_data_2_5_20260613_scoring.csv
+  # The floor is the WIDEST available and is IDENTICAL in every arm, which is
+  # the whole point. Cleaning runs on the full 2019+ frame before any split, so
+  # every arm is handed the same columns and the same rows; only how far back
+  # the training window reaches differs. The predecessor campaign varied the
+  # floor instead, which changed the correlation structure and so the surviving
+  # feature set, and could not separate "older games" from "different features".
+  season_year_floor: 2019
+  extend_history_dropping_season_gated_columns: false
+  exclude_overtime_from_training: false
+  exclude_playoffs: true
+  allowed_season_types: ["Regular Season", "Play-In Tournament"]
+cleaning: {max_na_per_row: 800, corr_threshold: 0.95, corr_threshold_overrides: {"ODDS_": 0.98}}
+holdout: {test_size: null, test_games: null, test_days: 90}
+walk_forward:
+  strategy: test_anchored
+  test_games: 100
+  # 120 > test_games, so the six validation blocks do not overlap.
+  step_games_between_tests: 120
+  # FIXED, not tuned -- see the explicit train_games_choices: null below.
+  #
+  # This is the correction the predecessor campaign forced. There, the window
+  # was an Optuna dimension, and arms a and d at T-720 -- 1,410 identical
+  # features, 6,004 vs 6,017 rows, a 0.2% difference -- selected 3,950 and
+  # 3,625 on objectives 0.009 MAE apart. The argmax was noise, so "the tuner
+  # did not pick the longest window" could not be read as evidence about
+  # history at all. Fixing the window per arm turns the question back into a
+  # comparison between runs, which the seeds below can put an error bar on.
+  #
+  # 3500 games is about 2.8 seasons at ~1,230 regular-season games a year.
+  train_games: 3500
+  # Explicitly null, NOT merely omitted. experiments/_base.yaml sets
+  # train_games_choices: [2500, 3000, 3500, 4000], and an absent key inherits
+  # it -- which would put the window back under Optuna's control and silently
+  # turn all six cells into one tuned run repeated. The pre-flight caught that
+  # here by reporting every arm as reaching 4000, the inherited maximum,
+  # instead of its own window.
+  train_games_choices: null
+  min_train_games: 1250
+  max_folds: 6
+  fold_selection: latest
+  exclude_test_months: [5, 6]
+  require_same_season_test: true
+  eval_span_games: null
+  min_validation_games: null
+sample_weight: {enabled: false, lambda_: null, tune_lambda: false, allow_unweighted: false}
+refit: {use_lexicographic_selection: true}
+optuna:
+  n_trials: 150
+  timeout: null
+  persistent_storage: false
+  tune_n_estimators: false
+  objective_aggregation: pooled
+  pruner_warmup_steps: 7
+  tie_tolerance: quantile
+  tie_max_fraction: 0.15
+  tie_tolerance_floor: 0.001
+  tie_tolerance_cap: 0.04
+  tie_warn_fraction: 0.25
+  search_space: {n_estimators: 1000, early_stopping_rounds: 70, n_estimators_range: null}
+betting:
+  edge_thresholds: [0.0, 0.1, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0]
+  primary_edge_threshold: 0.1
+  flat_decimal_odds: 1.9090909090909092
+  comparison_line_cols: [ODDS_CLOSING_TOTAL_LINE_bet365]
+holdout_evaluation: daily_walk_forward
+evaluation_seeds: [101, 202]

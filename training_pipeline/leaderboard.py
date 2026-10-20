@@ -160,10 +160,23 @@ def load_run_summary(run_dir: str | Path) -> dict[str, Any]:
         # only called that when it actually is one.
         "holdout_evaluation": metadata.get("holdout_evaluation"),
         "n_candidates": betting_primary.get("n_candidates"),
-        # walk_forward is the single source of truth; refit_cfg is only read
-        # as a fallback for runs saved before the two were unified.
+        # metadata FIRST. config.walk_forward.train_games is only the fallback
+        # for when tuning is skipped; on a tuned-window run it is whatever
+        # _base.yaml happened to set, while metadata.json records the window the
+        # selected trial actually chose and every fit site actually used.
+        #
+        # This is a matching factor (reporting.factors), so reading the config
+        # value meant two tuned runs that selected DIFFERENT windows were
+        # compared as though they were the same experiment whenever their
+        # configs shared a fallback -- and the run label said the wrong number
+        # too. The same defect as the one that shipped the fallback window into
+        # the model bundle; this is its reporting-side twin.
+        #
+        # refit_cfg is read last, for runs saved before the two were unified.
         "train_games": (
-            walk_forward_cfg.get("train_games") or refit_cfg.get("train_games")
+            metadata.get("train_games")
+            or walk_forward_cfg.get("train_games")
+            or refit_cfg.get("train_games")
         ),
         "n_trials": optuna_cfg.get("n_trials"),
         "objective_name": optuna_cfg.get("objective_name"),
@@ -177,9 +190,10 @@ def load_run_summary(run_dir: str | Path) -> dict[str, Any]:
         "baseline_cv_rmse": baseline_cv.get("rmse"),
         "baseline_holdout_mae": baseline_holdout.get("mae"),
         "baseline_holdout_rmse": baseline_holdout.get("rmse"),
-        # --- profit-oriented metrics at the primary edge threshold ---
+        # --- directional results at the primary edge threshold ---
         "bet_min_edge": betting_primary.get("min_edge"),
         "n_bets": betting_primary.get("n_bets"),
+        "n_pushes": betting_primary.get("n_pushes"),
         "bet_rate": betting_primary.get("bet_rate"),
         "win_rate": betting_primary.get("win_rate"),
         "win_rate_ci_low": betting_primary.get("win_rate_ci_low"),
@@ -189,11 +203,9 @@ def load_run_summary(run_dir: str | Path) -> dict[str, Any]:
         "roi": betting_primary.get("roi"),
         "profit_units": betting_primary.get("profit_units"),
         "is_significant": betting_primary.get("is_significant"),
-        # --- profit across the CV folds: ~5x the holdout's bet volume ---
-        # Biased upward by hyperparameter selection, so this ranks
-        # configurations against each other; the holdout columns above remain
-        # the out-of-sample estimate. A large cv_roi/roi gap is the signature
-        # of selection overfitting.
+        # --- directional results across the CV folds ---
+        # The ROI fields remain available as settlement diagnostics, but are not
+        # promoted to the headline or used for the default ranking.
         "cv_roi": cv_betting.get("roi"),
         "cv_n_bets": cv_betting.get("n_bets"),
         "cv_win_rate": cv_betting.get("win_rate"),
@@ -202,7 +214,15 @@ def load_run_summary(run_dir: str | Path) -> dict[str, Any]:
         "cv_profit_units": cv_betting.get("profit_units"),
         "cv_n_profitable_folds": cv_betting.get("n_profitable_folds"),
         "cv_n_folds": cv_betting.get("n_folds"),
-        "cv_betting_mae": cv_betting.get("mae"),
+        # Follows objective_aggregation, exactly as baseline_cv_mae and cv_mae
+        # do. cv_betting records BOTH aggregations; taking the pooled one
+        # unconditionally would put a pooled number beside a fold-mean baseline
+        # on any run that aggregated by mean -- the same mismatch, mirrored.
+        "cv_betting_mae": (
+            cv_betting.get("mae")
+            if (optuna_cfg.get("objective_aggregation") or "mean") == "pooled"
+            else cv_betting.get("mean_fold_mae", cv_betting.get("mae"))
+        ),
         # --- probability quality (classifier only; None for regressors) ---
         # log_loss_improvement is the one to read: raw log loss looks flat
         # because a coin flip already scores 0.693, so the meaningful quantity
@@ -229,40 +249,31 @@ def load_run_summary(run_dir: str | Path) -> dict[str, Any]:
     }
 
 
-#: Columns worth looking at first when comparing runs. ROI leads because it is
-#: the only column that answers "would this have made money"; n_bets and
-#: is_significant sit next to it because an ROI computed on 20 bets is noise.
-#: The holdout window and candidate count follow immediately, because a ranking
-#: only means something between runs measured on the same evaluation cohort --
-#: they are shown rather than enforced, since comparing configurations is the
-#: whole point of a leaderboard.
+#: Columns worth looking at first when comparing runs. Directional win rate is
+#: paired with its Wilson interval and volume; the lower confidence bound is the
+#: default ranking so a tiny lucky cohort does not outrank a larger one merely
+#: because its point estimate is higher. Flat-odds ROI remains in the full table
+#: as an optional settlement diagnostic.
 HEADLINE_COLUMNS: tuple[str, ...] = (
     "experiment_id",
     "comparison_group",
     "training_version",
     "prediction_strategy",
     "window_dir_label",
-    "roi",
-    "n_bets",
     "win_rate",
-    "break_even_rate",
-    "edge_vs_break_even",
-    "is_significant",
-    # CV profit sits directly beside holdout profit: it has ~5x the bets behind
-    # it, and the gap between the two columns is itself the diagnostic.
-    "cv_roi",
-    "cv_n_bets",
+    "win_rate_ci_low",
+    "win_rate_ci_high",
+    "n_bets",
+    "n_pushes",
+    "bet_rate",
     "cv_win_rate",
-    "cv_n_profitable_folds",
-    # The error bar. A roi difference between two runs smaller than
-    # seed_roi_range is not evidence of anything.
-    "seed_roi_range",
+    "cv_win_rate_ci_low",
+    "cv_n_bets",
     "n_seeds",
     "holdout_start",
     "holdout_end",
     "n_candidates",
     "config_fingerprint",
-    "bias_baseline_roi",
     "final_test_mae",
     "baseline_holdout_mae",
     "mae_improvement_over_baseline_pct",
@@ -306,15 +317,14 @@ def build_leaderboard(
     root_dir: str | Path = DEFAULT_EXPERIMENT_ROOT,
     *,
     target_family: TargetFamily | str | None = None,
-    sort_by: str = "roi",
+    sort_by: str = "win_rate_ci_low",
 ) -> pd.DataFrame:
-    """One row per saved run, ranked by betting profitability.
+    """One row per saved run, ranked by conservative directional accuracy.
 
-    Sorted by ROI rather than MAE improvement by default: against a closing
-    total line, MAE differences between runs are ~0.1 points and are dominated
-    by noise, whereas ROI (with n_bets and is_significant alongside it) is the
-    quantity that actually decides whether a model is worth using. The MAE
-    columns are still reported for diagnostics.
+    The default is the holdout win rate's Wilson lower bound, not flat-odds ROI
+    or raw win rate. It rewards correct OVER/UNDER calls while accounting for
+    the fact that a high percentage on very few bets is weak evidence. Callers
+    can still explicitly sort by any diagnostic column in the full table.
     """
     rows = [load_run_summary(run_dir) for run_dir in discover_run_dirs(root_dir)]
 

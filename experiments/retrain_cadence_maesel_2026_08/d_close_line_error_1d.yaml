@@ -1,0 +1,57 @@
+experiment_name: maesel_cadence_line_error_close_1d
+prediction_strategy: line_error_regressor
+training_version: "2.5-mae-selection"
+comparison_group: retrain_cadence_maesel_2026_08
+hypothesis: >
+  TREATMENT of pair 2: the daily rolling origin on the CLOSING dataset, against
+  cell C's 4-day control. Cell A of this campaign carries the campaign-wide
+  statement and the validity gates; cell C carries what pair 2 adds. Read both
+  before this one.
+
+  The variable and its consequences are exactly pair 1's: one game-day per
+  origin with a 5-game floor, the validation region pinned to cell C's
+  eval_span_games so the same ~855 games are scored, ~4x the folds and ~4x the
+  fits per trial.
+
+  CHECK THE PRUNER FIRST, as in pair 1: tie_n_completed in metadata.json must be
+  comparable to cell C's. The 2026-08-25 measurement on the intermediate dataset
+  found 49 completed trials against 66 for the control, because a median pruner
+  reading pooled MAE over 5-15-game folds prunes on noise. Whether that repeats
+  on a second dataset is worth knowing in its own right -- if it does, it is a
+  property of daily folds rather than of that one run, and it is the campaign's
+  most portable finding.
+tags: [line_error, closing_line, retrain_cadence, daily_origin, mae_selection, corr995]
+
+device: cuda
+
+data:
+  # Identical to cell C, checksum included.
+  csv_path: data/train_data/training_data_2_0_20260819.csv
+  data_version: "20260819-training-2.0"
+  dataset_type: closing_line
+  expected_checksum: "sha256:27a291de0ae78165"
+  season_year_floor: 2021
+  extend_history_dropping_season_gated_columns: false
+
+cleaning:
+  # Identical to cell C.
+  corr_threshold_overrides:
+    ODDS_: 0.995
+
+walk_forward:
+  # THE VARIABLE.
+  retrain_every_days: 1
+  min_validation_games: 5
+  # Pinned to cell C. Same region, same games, only the cutting differs.
+  eval_span_games: 850
+  # Explicitly null: a cap would trim the folds this cell exists to produce.
+  max_folds: null
+  # Identical to cell C.
+  train_games_choices: [2500, 3000, 3500, 4000, 4500]
+
+optuna:
+  # Identical to cell C. Do not lower it to compensate for the per-trial cost.
+  n_trials: 150
+  timeout: null
+
+evaluation_seeds: [101, 202]

@@ -29,6 +29,10 @@ class RunHyperparameters:
     #: "selected" (lexicographic pick) or "best" (lowest CV MAE).
     source: str
     trial_number: int | None
+    #: The training window the trial selected, when it was tuned. Printed as
+    #: walk_forward.train_games so a reused configuration refits on the same
+    #: amount of history the hyperparameters were chosen under.
+    train_games: int | None = None
     cv_mae: float | None = None
     #: Set instead of cv_mae for classifier runs, whose trial value is log loss.
     cv_logloss: float | None = None
@@ -58,6 +62,9 @@ class RunHyperparameters:
         for key, value in sorted(self.params.items()):
             lines.append(f"    {key}: {value!r}")
         lines.append(f"  fixed_n_estimators: {self.n_estimators}")
+        if self.train_games is not None:
+            lines.append("walk_forward:")
+            lines.append(f"  train_games: {self.train_games}")
         if self.sample_weight_lambda is not None:
             lines.append(
                 f"  fixed_sample_weight_lambda: {self.sample_weight_lambda!r}"
@@ -115,28 +122,42 @@ def load_run_hyperparameters(
     if trial_params.get(USE_SAMPLE_WEIGHT_PARAM) is False:
         lambda_ = None
 
+    # Same order as tuning.n_estimators_from_trial, which the holdout backtest
+    # uses -- a promoted model must fit the rounds the holdout measured.
+    # Tuned value FIRST. A run that tuned n_estimators records it in params and
+    # writes no best_iteration attrs at all. An early-stopping run records the
+    # best_iteration attrs AND user_attrs["n_estimators"], but the latter is
+    # only the early-stopping cap (e.g. 1000 against a median of 51), so it
+    # must come last: reading it before the median refitted 20x the rounds.
     n_estimators = (
-        user_attrs.get("median_best_iteration")
+        trial_params.get("n_estimators")
+        or user_attrs.get("median_best_iteration")
         or user_attrs.get("mean_best_iteration")
-        or trial_params.get("n_estimators")
+        or user_attrs.get("n_estimators")
     )
     if not n_estimators:
         raise ValueError(
             f"Could not determine n_estimators from {run_dir}: the trial "
-            "recorded neither median_best_iteration nor mean_best_iteration."
+            "recorded neither a tuned n_estimators nor a median/mean "
+            "best_iteration."
         )
 
     return RunHyperparameters(
         run_dir=run_dir,
         params=params,
-        n_estimators=max(50, int(round(float(n_estimators)))),
+        # No max(50, ...) floor: it used to raise a selected 10-round model to
+        # 50 rounds, silently, in 16 of the 38 runs under artifacts/experiments.
+        n_estimators=int(round(float(n_estimators))),
         sample_weight_lambda=float(lambda_) if lambda_ is not None else None,
         source=source,
         trial_number=payload.get("number"),
         # No blind fallback to payload["value"]: for a classifier that value is
         # log loss, and filing it under cv_mae would print "CV MAE 0.6931" in
         # the recovered-hyperparameter block.
-        cv_mae=user_attrs.get("mean_mae"),
+        train_games=(
+            trial_params.get("train_games") or user_attrs.get("train_games")
+        ),
+        cv_mae=user_attrs.get("pooled_mae", user_attrs.get("mean_mae")),
         cv_logloss=user_attrs.get("mean_logloss"),
         cv_ou_acc=user_attrs.get("mean_ou_acc"),
         extras=user_attrs,

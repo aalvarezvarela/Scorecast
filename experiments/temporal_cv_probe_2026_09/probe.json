@@ -1,0 +1,29 @@
+{
+  "seed": 16,
+  "device": "cuda",
+  "cadences": [
+    5,
+    10,
+    20
+  ],
+  "n_candidates": 8,
+  "candidate_policy": "Best archived CV MAE per X, archived selected, then remaining best CV MAE; no holdout-based filtering",
+  "pruning": false,
+  "targets": {
+    "line_error": {
+      "yaml": "experiments/extended_history_cv_2026_09/c_closing_line_error_2_2.yaml",
+      "archive": "artifacts/experiments/extended_history_cv_2026_09/extended_closing_line_error_2_2_20260904_101851"
+    },
+    "total_points": {
+      "yaml": "experiments/extended_history_cv_2026_09/b_closing_total_points_2_2.yaml",
+      "archive": "artifacts/experiments/extended_history_cv_2026_09/extended_closing_total_points_2_2_20260904_072543"
+    }
+  },
+  "output": "artifacts/temporal_cv_probe_20260905",
+  "reuse_archived_holdout": true,
+  "optuna_micro": {
+    "new_trials_per_design": 2,
+    "tpe_startup_trials": 8,
+    "seed": 16
+  }
+}

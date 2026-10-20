@@ -25,7 +25,11 @@ from __future__ import annotations
 
 import numpy as np
 import pandas as pd
+from tqdm import tqdm
 
+from nba_ou.data_processing.odds.normalize_spread_lines import (
+    spread_price_extreme_mask,
+)
 from nba_ou.postgre_db.line_history_aiven.fetch import (
     MARKET_MONEYLINE,
     MARKET_SPREAD,
@@ -42,11 +46,64 @@ from .normalization import (
 #: Minutes before tip at which the market is sampled.
 #:
 #: Roughly geometric rather than evenly spaced, because line-movement
-#: information decays in log time. Measured on the store: coverage is ~100% of
-#: game-book pairs out to 12h and collapses to ~60% at 24h, which is why the
-#: grid stops there. 30 and 60 are both kept even though they often resolve to
-#: the same tick -- they bracket the most common betting window.
-DEFAULT_SNAPSHOT_GRID: tuple[int, ...] = (30, 60, 120, 240, 480, 720)
+#: information decays in log time. 30 and 60 are both kept even though they
+#: often resolve to the same tick -- they bracket the most common betting
+#: window.
+#:
+#: **This tuple is the promotable-horizon contract.** A model slot exists per
+#: ``(target, horizon)``, and the daily build's grid bounds which slots can be
+#: refit: promoting a horizon that is not sampled here produces a slot that
+#: silently never updates. So this grid must be a superset of every horizon any
+#: promoted model was trained at -- see ``training_pipeline.registry
+#: .check_horizon_is_buildable``, which enforces exactly that, and
+#: ``tests/test_snapshot_grid_and_windows.py``.
+#:
+#: The 17 entries are the horizons present in the schema-2.5 intermediate
+#: dataset (``intermediate_line_data_2_5_20260613.csv``), which was already
+#: built with this grid passed explicitly via ``--snapshot-grid``. The default
+#: now states what that build actually did, so the daily build and the training
+#: data agree without anyone remembering a flag.
+#:
+#: Coverage falls off past 12h but does not collapse, measured on that build as
+#: games carrying a row at each horizon, against 8,902 at T-0: 720 -> 95.8%,
+#: 840 -> 93.1%, 960 -> 87.6%, 1080 -> 79.5%. The grid stops at 1080 (18h)
+#: because coverage reaches ~60% at 24h, where a longer lead would be a biased
+#: sample of well-covered games rather than more information.
+#:
+#: ``0`` is the closing snapshot: bet as late as the market allows. It is not
+#: literally tip-off -- ``fetch_pregame_ticks`` already refuses anything inside
+#: ``DEFAULT_MIN_MINUTES_BEFORE_TIP``, so T=0 resolves to the last tick at least
+#: five minutes out. That makes it this store's closing line, and it is the row
+#: that puts the intermediate dataset on the same footing as the closing-line
+#: dataset: same bet, same moment, different feature construction. Keep in mind
+#: that closing-line value is ~0 by construction on those rows, so any CLV
+#: measured over a pooled dataset is diluted by them.
+#:
+#: The grid is deliberately denser than any single model needs. Snapshots are
+#: rows, so an unwanted horizon is removed with a filter on
+#: ``TIME_TO_MATCH_MIN`` -- no rebuild required -- whereas adding one back means
+#: regenerating the whole dataset. Over-sampling here is the cheap direction.
+#: The cost is paid in as-of reads at build time: with ``DEFAULT_WINDOWS`` the
+#: extended grid goes from 40 horizons to 61 (x1.5).
+DEFAULT_SNAPSHOT_GRID: tuple[int, ...] = (
+    0,
+    30,
+    60,
+    120,
+    180,
+    240,
+    300,
+    360,
+    420,
+    480,
+    540,
+    600,
+    660,
+    720,
+    840,
+    960,
+    1080,
+)
 
 #: Per-market sigma for the -110 centering. Moneyline has no line to center.
 MARKET_SIGMAS: dict[str, float] = {
@@ -177,18 +234,38 @@ def build_snapshot_panel(
     ticks: pd.DataFrame,
     *,
     grid: tuple[int, ...] = DEFAULT_SNAPSHOT_GRID,
-    normalize: bool = True,
+    normalize: bool | None = None,
+    normalize_total_lines: bool = True,
+    normalize_spread_lines: bool = True,
+    null_extreme_spread_prices: bool = True,
+    progress: str | None = None,
 ) -> pd.DataFrame:
     """Long panel: one row per (game, market, book, snapshot).
 
-    ``normalize`` centers each quote onto its -110/-110 equivalent. The raw line
-    is kept regardless -- it is the one you could actually have bet, while the
-    centered one is the one that is comparable across books and snapshots.
+    ``progress`` labels a tqdm bar over the snapshot horizons; ``None`` runs
+    silently.
+
+    ``normalize_total_lines`` and ``normalize_spread_lines`` center each quote
+    onto its -110/-110 equivalent. The raw line is kept regardless -- it is the
+    one you could actually have bet, while the centered one is the one that is
+    comparable across books and snapshots. ``normalize`` is the backward-
+    compatible alias that sets both market-specific flags at once.
     """
+    if normalize is not None:
+        normalize_total_lines = normalize
+        normalize_spread_lines = normalize
+
     if not grid:
         raise ValueError("grid must not be empty.")
-    if any(minutes <= 0 for minutes in grid):
-        raise ValueError("snapshot horizons must be positive minutes before tip.")
+    # 0 is allowed and means "as late as the store allows" -- the closing
+    # snapshot. Negative is not: it would place the horizon *after* tip-off and
+    # admit in-play ticks, which is a direct look-ahead that every downstream
+    # column-name check would pass.
+    if any(minutes < 0 for minutes in grid):
+        raise ValueError(
+            "snapshot horizons must be non-negative minutes before tip; a "
+            f"negative horizon reads the market after tip-off. Got {grid}."
+        )
 
     if ticks.empty:
         return pd.DataFrame(columns=PANEL_COLUMNS)
@@ -202,7 +279,9 @@ def build_snapshot_panel(
     )
 
     frames = []
-    for snapshot_minutes in sorted(set(grid)):
+    for snapshot_minutes in tqdm(
+        sorted(set(grid)), desc=progress, unit="snapshot", disable=progress is None
+    ):
         latest = _as_of(working, snapshot_minutes)
         if latest.empty:
             continue
@@ -228,15 +307,33 @@ def build_snapshot_panel(
         panel["tick_minutes_before_tip"] - panel["snapshot_minutes"]
     )
 
+    if null_extreme_spread_prices:
+        spread_rows = panel["market"].eq(MARKET_SPREAD)
+        extreme_left = spread_rows & spread_price_extreme_mask(
+            panel["price_left"], odds_format="american"
+        )
+        extreme_right = spread_rows & spread_price_extreme_mask(
+            panel["price_right"], odds_format="american"
+        )
+        panel.loc[extreme_left, "price_left"] = np.nan
+        panel.loc[extreme_right, "price_right"] = np.nan
+
     fair = devig_two_way(panel["price_left"], panel["price_right"])
     panel["fair_left"] = fair["fair_left"]
     panel["fair_right"] = fair["fair_right"]
     panel["overround"] = fair["overround"]
 
     panel["norm_line"] = np.nan
-    if normalize:
+    normalize_by_market = {
+        MARKET_TOTALS: normalize_total_lines,
+        MARKET_SPREAD: normalize_spread_lines,
+    }
+    if any(normalize_by_market.values()):
         for market, sigma in MARKET_SIGMAS.items():
             rows = panel["market"].eq(market)
+            if not normalize_by_market[market]:
+                panel.loc[rows, "norm_line"] = panel.loc[rows, "raw_line"]
+                continue
             if not rows.any():
                 continue
             panel.loc[rows, "norm_line"] = center_two_way_line(

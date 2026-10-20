@@ -1,0 +1,131 @@
+experiment_name: maesel_cadence_line_error_t360_4d
+prediction_strategy: line_error_regressor
+training_version: "2.5-mae-selection"
+comparison_group: retrain_cadence_maesel_2026_08
+hypothesis: >
+  CONTROL of pair 1, and the cell that carries the whole campaign's statement.
+  The default rolling-origin cadence: each CV origin trains to a date, predicts
+  the next 4 game-days (absorbing whole days until the fold holds at least 25
+  games), then advances. Line error at the six-hour snapshot -- the horizon this
+  project actually bets at. Pair 2 repeats the identical question on the closing
+  dataset, pair 3 on the closing dataset with the total-points target.
+
+  WHAT THE CAMPAIGN ASKS. retrain_every_days does NOT change the holdout: every
+  cell is scored under holdout_evaluation: daily_walk_forward, one refit per
+  test game-day, always. What it changes is the protocol the HYPERPARAMETERS
+  are chosen under. So the question is not "does retraining daily win money",
+  which no cell here can answer; it is "does selecting hyperparameters under a
+  validation protocol that mirrors production exactly transfer better to the
+  holdout than selecting them under a cheaper, 4-day-stale one". The 1d cell of
+  each pair is the daily version. Everything else within a pair is identical.
+
+  WHY IT IS BEING ASKED AGAIN. retrain_cadence_2026_08 (2026-08-25) asked it
+  once, on this configuration only, and returned no answer: CV preferred the
+  4-day control (54.51% vs 53.09% win rate on 842 decided games) while the
+  holdout preferred the daily cell (54.23% vs 51.99% on 402), each by about two
+  points, with paired McNemar p = 0.50 and 0.47 respectively on the same games.
+  Two cells that disagree in direction with neither difference significant is
+  "no measurable effect" -- but it is also a single measurement with no error
+  bar, which is exactly what this campaign fixes.
+
+  TWO THINGS ARE DIFFERENT FROM THAT RUN, and both are campaign-wide rather
+  than per-cell, so neither is a second variable inside any pair:
+
+    1. TRIAL SELECTION IS NOW PURE LOWEST CV MAE. _base.yaml sets
+       refit.use_lexicographic_selection: false, so the betting-outcome
+       tie-break no longer chooses among near-tied trials. This is not
+       cosmetic here: on the 2026-08-25 pair the tie-break changed the pick in
+       one of the two cells (the 1-day cell took a trial 0.00005 pooled MAE
+       worse than the minimum, and a materially different model -- depth 4 with
+       166 trees rather than depth 3 with 98). Removing it takes a noisy
+       ~1.7pp-per-850-games statistic out of the comparison.
+    2. evaluation_seeds: [101, 202] ON EVERY CELL. The previous pair had none,
+       so its holdout numbers were one seed against a measured single-seed ROI
+       spread of 4.9-12.0 points on a FIXED config -- a spread larger than any
+       difference it reported. Read seed_stability.csv before any headline.
+
+  HOW TO READ SIX CELLS. Three pairs is not a curve either; it is the same
+  question asked three times so the answer can be the direction that REPEATS.
+  At this noise floor one pair looking good by luck is the expected outcome of
+  three, so a result exists only if the sign of the cadence effect is the same
+  in all three pairs AND survives the seed range within each. If the three
+  pairs disagree, the finding is "no effect, now measured three ways", and the
+  4-day default stands on evidence.
+
+  VALIDITY GATES, in order, before any ROI is read:
+    1. cv_n_validation_games must MATCH within a pair. If it does not, the two
+       cells are not scored on the same cohort and nothing else is readable.
+    2. Completed-trial counts must be comparable within a pair. On 2026-08-25
+       the daily cell completed 49 of 150 trials against the control's 66,
+       because MedianPruner reads a running metric whose steps are 5-15-game
+       folds. That is not bad luck; it is a structural cost of daily folds. If
+       it repeats, record it AS the finding rather than reading the ROI gap
+       past it -- unequal search makes the pair unreadable as a cadence test.
+tags: [line_error, intermediate_line, single_snapshot, t360, retrain_cadence, control, mae_selection, corr995]
+
+device: cuda
+
+data:
+  csv_path: data/train_data/intermediate_line_data_10snap.csv
+  data_version: "20260820-intermediate-line-10-snapshots-t360"
+  dataset_type: intermediate_line
+  snapshot_minutes: 360
+  scoring_csv_path: data/train_data/intermediate_line_data_10snap_scoring.csv
+  expected_checksum: "sha256:1e3ca3fe18d2bbe8"
+  # The FULL extent of this dataset, not a truncation of it: seasons 2021-2025,
+  # 1305-1322 games each, nothing earlier to admit. Raising the floor would
+  # discard 2,633 complete games and silently break train_games_choices below,
+  # since the earliest fold would then hold ~2,700 games of history and the
+  # 3000/3500/4000 options would tail() short without erroring.
+  # retrain_cadence_2026_08/a_cadence_4d_25g.yaml carries the per-season NaN
+  # table behind that claim.
+  season_year_floor: 2021
+  extend_history_dropping_season_gated_columns: false
+
+cleaning:
+  # Unchanged from horizon_*_2026_08, grid_*_2026_08 and retrain_cadence_2026_08
+  # so this cell stays readable against the existing T-360 line-error runs on
+  # everything except the selector. Odds columns held to 0.995; everything not
+  # matching "ODDS_" stays at cleaning.corr_threshold.
+  corr_threshold_overrides:
+    ODDS_: 0.995
+
+walk_forward:
+  # THE VARIABLE, stated explicitly rather than inherited so the one difference
+  # against cell B is visible without opening _base.yaml. These are the base
+  # defaults.
+  retrain_every_days: 4
+  min_validation_games: 25
+  # Held identical to cell B. The validation REGION is the same ~850 games over
+  # the same calendar span in both cells; only how it is cut into folds differs,
+  # so both are scored on the same games.
+  eval_span_games: 850
+  max_folds: null
+  # The four values the horizon, grid and cadence campaigns used for line error
+  # on this dataset. They selected 2500-3500 and never approached the edge, so
+  # the grid is unchanged and these runs stay window-comparable to those.
+  train_games_choices: [2500, 3000, 3500, 4000]
+
+optuna:
+  # Identical in both cells of the pair, which is the point: the 1-day cell pays
+  # ~4x the fits per trial for the same trial budget, and that cost IS what is
+  # being weighed against whatever it buys. Matching n_trials rather than
+  # wall-clock keeps search effort equal; a timeout would make trial count a
+  # function of the machine and silently un-match the pair.
+  n_trials: 150
+  timeout: null
+
+betting:
+  # Diagnostic only, and only meaningful on the intermediate cells: these picks
+  # are made at T-360 and this re-settles them against the CLOSING line, which
+  # the model never sees. The closing cells (pairs 2 and 3) deliberately omit
+  # it -- there that column is the model's own line.
+  comparison_line_cols: ["ODDS_CLOSING_TOTAL_LINE_bet365"]
+
+# ON in every cell of this campaign, unlike retrain_cadence_2026_08. Excluded
+# from the config fingerprint, so it buys the error bar for the price of the
+# extra holdout walk-forwards alone. Measured on horizon_*_2026_08: one config's
+# holdout ROI moved 0.9-11.4 points across these three seeds, while the 3-seed
+# MEAN reproduced to 0.1-1.5 points across a full re-tune. The mean is the
+# number to compare; the range is what says whether a gap is real.
+evaluation_seeds: [101, 202]

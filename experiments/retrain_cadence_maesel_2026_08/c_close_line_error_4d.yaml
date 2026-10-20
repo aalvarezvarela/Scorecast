@@ -1,0 +1,75 @@
+experiment_name: maesel_cadence_line_error_close_4d
+prediction_strategy: line_error_regressor
+training_version: "2.5-mae-selection"
+comparison_group: retrain_cadence_maesel_2026_08
+hypothesis: >
+  CONTROL of pair 2: the same cadence question as pair 1, moved to the CLOSING
+  dataset. Cell A of this campaign (a_t360_line_error_4d.yaml) carries what is
+  being asked, what changed since retrain_cadence_2026_08, and the validity
+  gates; read it first.
+
+  WHAT THIS PAIR ADDS. Against pair 1 the only difference is the dataset and
+  therefore the horizon: same target (line error), same cadence contrast, closing
+  line instead of the six-hour snapshot. Against pair 3 the only difference is
+  the target. So the three pairs form a small factorial -- pair 1 vs pair 2
+  isolates horizon, pair 2 vs pair 3 isolates target -- and a cadence effect
+  that is real should not care about either.
+
+  A DIFFERENT DATASET IS NOT A DIFFERENT QUESTION, but it is a different
+  cohort: 6,148 games rather than 5,722, a 416-game holdout rather than 410, and
+  855 validation games rather than 850 at the same eval_span_games. Numbers from
+  this pair are therefore compared WITHIN the pair and against the other pairs
+  only by the SIGN and rough size of the cadence gap -- never cell-to-cell
+  across datasets, which would be reading a horizon difference as a cadence one.
+
+  The closing dataset is also the cheaper one (~34 s/trial measured on
+  horizon_*_2026_08 hardware), which is why this pair and pair 3 share a runner
+  while pair 1 gets its own.
+tags: [line_error, closing_line, retrain_cadence, control, mae_selection, corr995]
+
+device: cuda
+
+data:
+  # The 2.0 closing build, unchanged from horizon_line_error_2026_08 cell A so
+  # this cell differs from an existing, well-understood run only in trial
+  # selection, seeds and trial budget.
+  csv_path: data/train_data/training_data_2_0_20260819.csv
+  data_version: "20260819-training-2.0"
+  dataset_type: closing_line
+  expected_checksum: "sha256:27a291de0ae78165"
+  season_year_floor: 2021
+  extend_history_dropping_season_gated_columns: false
+
+cleaning:
+  # Odds columns held to 0.995; everything not matching "ODDS_" stays at
+  # cleaning.corr_threshold. Same as every 2026-08 campaign.
+  corr_threshold_overrides:
+    ODDS_: 0.995
+
+walk_forward:
+  # THE VARIABLE, stated explicitly rather than inherited. Base defaults.
+  retrain_every_days: 4
+  min_validation_games: 25
+  # Held identical to cell D. On this dataset 850 realises as 855 validation
+  # games over 28 folds -- measured on horizon_line_error_closing_reference --
+  # and the same region is cut daily in cell D.
+  eval_span_games: 850
+  max_folds: null
+  # The grid the closing-line campaigns used. Verified reachable on this dataset
+  # at eval_span_games 850: horizon_line_error_closing_reference ran this exact
+  # grid and selected 3500. Re-check with scripts/preflight_campaign.py, which
+  # prints the earliest fold's history, before changing the floor or the span.
+  train_games_choices: [2500, 3000, 3500, 4000, 4500]
+
+optuna:
+  # 150, matching pairs 1 and 3 rather than the 300 the horizon campaign used on
+  # this dataset. What must be equal is the budget WITHIN a pair; keeping it
+  # equal across all six cells also keeps the three cadence gaps measured at the
+  # same search effort. It does mean this cell is not search-comparable with
+  # horizon_line_error_closing_reference.
+  n_trials: 150
+  timeout: null
+
+# See cell A. On this dataset the extra seeds are close to free: the holdout
+# walk-forward took ~2m16s against hours of tuning on horizon_*_2026_08.
+evaluation_seeds: [101, 202]

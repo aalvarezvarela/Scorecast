@@ -30,10 +30,17 @@ prediction serving.
    dates. `exclude_test_months = (5, 6)` keeps playoff months out of every
    validation window. Training-row filters are applied here to **TRAIN indices
    only** (`apply_training_filter`).
-4. **`strategy.tune`** — Optuna over the fold set. Trials are picked
-   lexicographically: best primary metric within a tolerance, then the best
-   betting outcome — because the primary metric alone cannot reliably rank
-   trials this close together.
+4. **`strategy.tune`** — Optuna over the fold set. Since 2026-08-26 the
+   selected trial is simply the **lowest primary metric** (`refit.
+   use_lexicographic_selection: false` in `_base.yaml`). Runs before that date
+   used a lexicographic pick — best primary metric within a tolerance band,
+   then the best betting outcome — on the argument that the primary metric
+   alone cannot rank trials this close together. The band was doing too much:
+   it often handed the choice to pooled OU accuracy, which carries ~1.7pp of
+   binomial noise on ~850 games. The `tie_*` metadata and
+   `optuna_lexicographic_candidates.csv` are still written, but now describe a
+   decision nothing acts on. **A new run is not selector-comparable with an
+   archived one**; set the flag back to `true` to reproduce one.
 5. **Holdout evaluation** — by default `daily_walk_forward`: retrain once per
    test game-day on everything strictly earlier (dev plus already-played test
    days), predict only that day, pool. This mirrors production. `single_shot`
@@ -145,7 +152,7 @@ Designing a campaign:
    inferred from the CSV or from arithmetic.
 2. **One deliberate difference per cell.** If a cell changes two things, say so
    in its `hypothesis` and only read it against the single-change cells.
-3. **Pin `expected_checksum`.** A regenerated CSV must not pass silently.
+3. **Pin `expected_checksum`.** A regenerated dataset must not pass silently; the builders print the checksum of the Parquet file they write.
 4. **Set `evaluation_seeds`** — without them nothing has an error bar.
 5. **Fix `n_trials`, disable `timeout`.** A timeout makes trial count a function
    of the machine, silently un-matching runs meant to be comparable.

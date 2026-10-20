@@ -13,7 +13,7 @@ def _tiny_frame() -> pd.DataFrame:
             "GAME_DATE": pd.to_datetime(["2026-01-01", "2026-01-02"]),
             "SEASON_YEAR": [2025, 2025],
             "TOTAL_POINTS": [210.0, 220.0],
-            "TOTAL_LINE_bet365": [205.0, 215.0],
+            "ODDS_TOTAL_LINE_bet365": [205.0, 215.0],
         }
     )
 
@@ -22,7 +22,7 @@ def _config(tmp_path) -> ExperimentConfig:
     return ExperimentConfig(
         experiment_name="fail_fast_test",
         target_family=TargetFamily.TOTAL_POINTS,
-        line_col="TOTAL_LINE_bet365",
+        line_col="ODDS_TOTAL_LINE_bet365",
         data=DataConfig(csv_path="x.csv"),
         window_dir_label="3_seasons",
         window_name_label="three_seasons",
@@ -47,11 +47,11 @@ def test_run_experiment_refuses_existing_bundle_before_running_optuna(monkeypatc
 
     prepared = PreparedDataset(
         df_full=df,
-        X=df[["TOTAL_LINE_bet365"]],
+        X=df[["ODDS_TOTAL_LINE_bet365"]],
         y=df["TOTAL_POINTS"],
-        baseline_line_col="TOTAL_LINE_bet365",
-        target_line_col="TOTAL_LINE_bet365",
-        feature_names=["TOTAL_LINE_bet365"],
+        baseline_line_col="ODDS_TOTAL_LINE_bet365",
+        target_line_col="ODDS_TOTAL_LINE_bet365",
+        feature_names=["ODDS_TOTAL_LINE_bet365"],
     )
     monkeypatch.setattr(pipeline_module, "prepare_dataset", lambda cfg: prepared)
     monkeypatch.setattr(
@@ -61,7 +61,7 @@ def test_run_experiment_refuses_existing_bundle_before_running_optuna(monkeypatc
     def _explode(*args, **kwargs):
         raise AssertionError("tuning must not start when the bundle path is taken")
 
-    monkeypatch.setattr(pipeline_module, "build_walk_forward_splits", _explode)
+    monkeypatch.setattr(pipeline_module, "build_split_provider", _explode)
 
     with pytest.raises(FileExistsError, match="already exists"):
         pipeline_module.run_experiment(config, save_model=True)
@@ -84,11 +84,11 @@ def test_run_experiment_skips_bundle_check_when_not_saving_model(monkeypatch, tm
 
     prepared = PreparedDataset(
         df_full=df,
-        X=df[["TOTAL_LINE_bet365"]],
+        X=df[["ODDS_TOTAL_LINE_bet365"]],
         y=df["TOTAL_POINTS"],
-        baseline_line_col="TOTAL_LINE_bet365",
-        target_line_col="TOTAL_LINE_bet365",
-        feature_names=["TOTAL_LINE_bet365"],
+        baseline_line_col="ODDS_TOTAL_LINE_bet365",
+        target_line_col="ODDS_TOTAL_LINE_bet365",
+        feature_names=["ODDS_TOTAL_LINE_bet365"],
     )
     monkeypatch.setattr(pipeline_module, "prepare_dataset", lambda cfg: prepared)
     monkeypatch.setattr(
@@ -101,7 +101,7 @@ def test_run_experiment_skips_bundle_check_when_not_saving_model(monkeypatch, tm
         reached["tuning"] = True
         raise RuntimeError("stop here -- we only care that we got past the guard")
 
-    monkeypatch.setattr(pipeline_module, "build_walk_forward_splits", _marker)
+    monkeypatch.setattr(pipeline_module, "build_split_provider", _marker)
 
     with pytest.raises(RuntimeError):
         pipeline_module.run_experiment(config, save_model=False)

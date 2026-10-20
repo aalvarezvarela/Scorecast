@@ -1,0 +1,131 @@
+# CELL A -- the baseline. Public betting columns kept, history starts 2021.
+#
+# ============================================================================
+# THE CAMPAIGN
+# ============================================================================
+# One family of 272 columns -- pct_bets / pct_money / consensus_pct, "what share
+# of the public is on the over" -- is simultaneously a feature block and the
+# reason two seasons of games are unusable. Measured on this CSV (regular season
+# + play-in, max_na_per_row=80):
+#
+#   family              2017  2018  2019  2020  2021  2022  2024
+#   per-book odds       87.0  87.0   9.7   2.9   0.2   0.0   0.0   (mean NaN %)
+#   consensus opener    84.3  84.3   1.2   0.0   0.0   0.0   0.0
+#   public betting %    73.5  73.5  73.5  44.9   0.8   0.2   0.0
+#
+# By season 2020 everything is healthy EXCEPT that family, and 272 columns at
+# ~45% NaN is enough missing cells per row on its own to exceed the row budget.
+# So the choice is: keep the columns and start at 2021, or drop them and start
+# at 2019. Dropping them ONLY from the old seasons is not an option -- the
+# column set would then tell the model which season a row came from.
+#
+# Measured by scripts/preflight_campaign.py on this CSV -- all three cells get
+# 30 folds, 117 game-days, 855 validation games and a 416-game holdout, so the
+# cohort is identical and the numbers are directly comparable:
+#
+#   arm                        cleaned    dev   features   window ceiling
+#   A  keep columns, 2021+       6,148  5,732      1,362            4,877
+#   B  drop columns, 2021+       6,164  5,748     ~1,167            4,893
+#   C  drop columns, 2019+       8,279  7,863     ~1,167            7,008
+#
+# ============================================================================
+# WHY THREE CELLS AND NOT TWO
+# ============================================================================
+# A vs C is the production question, but it changes two things at once and so
+# could never say WHICH one moved the number. B splits it into two single-factor
+# contrasts:
+#
+#   A -> B   same rows, 195 fewer features   "do public betting % earn a place?"
+#   B -> C   same features, 2,099 more rows  "does the extra history help?"
+#
+# ============================================================================
+# THE TRAP THIS DESIGN AVOIDS
+# ============================================================================
+# Giving cell C the same train_games_choices as A and B would have made it a
+# near-replication of B rather than a test of anything. Under rolling_origin the
+# validation region is the last ~850 games of dev and each origin trains on the
+# last train_games games before it -- so at a 4000-game window BOTH arms pull the
+# same 4000 games, and C's extra 2,099 rows sit further back, never read. The
+# extra history is only reachable through a LARGER WINDOW, which is why C
+# extends train_games_choices and A and B do not. That coupling is real, not an
+# uncontrolled second change: for C, the bigger window IS the mechanism.
+#
+# Run scripts/preflight_campaign.py before committing GPU time -- tail(n) reads
+# as "take up to n", so a window past the earliest fold's history shrinks that
+# fold silently instead of raising.
+#
+# ============================================================================
+# PRE-REGISTERED EXPECTATIONS
+# ============================================================================
+#   - Seed noise on this pipeline is 4.9-12.0 ROI points for one fixed config.
+#     Runs are evaluated on the primary seed only, so no cell carries its own
+#     error bar. The floor was measured at 4.9-12.0 ROI points for one fixed
+#     config; treat any smaller ROI gap as indistinguishable, and prefer
+#     holdout MAE, which is much less noisy.
+#   - A -> B: no strong prior. These columns are public sentiment, not a sharp
+#     price, and the pipeline already declines to impute them
+#     (MARKET_KEEP_NA_SUBSTRINGS). If dropping 195 features costs nothing
+#     measurable, that is the interesting answer.
+#   - B -> C: weak prior AGAINST. The two extra seasons are the 2019-20 bubble
+#     and the 72-game 2020-21, both played under conditions that no longer
+#     exist, so this trades distribution match for volume.
+#   - 3 cells x 2 headline metrics against a ~5-point noise floor: expect one
+#     apparent effect by luck. Treat a single cell winning on one metric as a
+#     hypothesis, not a finding.
+#
+# ============================================================================
+# READING IT
+# ============================================================================
+# survey_experiments.ipynb with SOURCES = ["experiments/public_betting_tradeoff_2026_08"]
+# and RESCORE_EDGE_THRESHOLD = 0.1.
+#
+# In summary_experiments.ipynb, A->B contrasts on `drop_consensus` and B->C on
+# `season_floor`, both already in factors.FACTOR_SOURCES. A->C moves both and so
+# correctly appears in no single-factor contrast -- read it directly here.
+
+experiment_name: pubbet_a_keep_columns
+prediction_strategy: line_error_regressor
+training_version: "2.1-public-betting-tradeoff"
+comparison_group: public_betting_tradeoff_2026_08
+hypothesis: >
+  Baseline. Public betting percentage columns kept, history floored at 2021.
+  The reference both other cells are read against.
+tags: [line_error, public_betting, baseline, keep_columns]
+
+# Hardware, not part of the hypothesis -- device is excluded from fingerprint()
+# so it cannot fork an Optuna study. It must still be IDENTICAL on every cell of
+# this campaign: trial timing feeds the pruner, so a cell running on different
+# hardware is not comparable with one that is not.
+#
+# VERIFY CUDA IS REAL ON THE MACHINE YOU RUN THIS ON. XGBoost 2.1.4 does not
+# error when asked for a device it was not compiled for -- it warns
+# "XGBoost is not compiled with CUDA support" and silently runs on CPU, so a run
+# can look GPU-configured and take CPU time:
+#   poetry run python -c "import xgboost, numpy as np; \
+#     xgboost.train({'device':'cuda'}, xgboost.DMatrix(np.random.rand(50,3), \
+#     label=np.random.rand(50)), num_boost_round=2)"
+# Silence means real CUDA. The runner checks this before starting.
+device: cuda
+
+data:
+  csv_path: data/train_data/training_data_2_0_20260819.csv
+  data_version: "20260819-training-2.0"
+  expected_checksum: "sha256:27a291de0ae78165"
+  season_year_floor: 2021
+  extend_history_dropping_season_gated_columns: false
+
+walk_forward:
+  # Raised from the inherited [2500, 3000, 3500, 4000]. Measured ceiling on this
+  # cell is 4877 games (preflight), so 4500 fits with margin and 5000 would not:
+  # tail(n) reads as "take up to n", so a window past the earliest fold's history
+  # shrinks that fold for some trials and not others, and the window axis ends up
+  # measuring the shortfall. Cells A and B carry the SAME list so the
+  # public-betting contrast stays window-matched; cell C goes higher because
+  # reaching its extra history is the whole point of it.
+  train_games_choices: [2500, 3000, 3500, 4000, 4500]
+
+optuna:
+  # Fixed, never a timeout: a timeout makes the trial count a function of the
+  # machine and silently un-matches cells meant to be comparable.
+  n_trials: 120
+  timeout: null

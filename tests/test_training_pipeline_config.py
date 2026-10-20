@@ -17,7 +17,7 @@ def _base_kwargs(**overrides):
     kwargs = {
         "experiment_name": "test_experiment",
         "target_family": TargetFamily.TOTAL_POINTS,
-        "line_col": "TOTAL_LINE_bet365",
+        "line_col": "ODDS_TOTAL_LINE_bet365",
         "data": DataConfig(csv_path="data/train_data/example.csv"),
     }
     kwargs.update(overrides)
@@ -30,7 +30,7 @@ def test_total_points_requires_line_col():
 
 
 def test_line_error_forbids_line_col():
-    kwargs = _base_kwargs(target_family=TargetFamily.LINE_ERROR, line_col="TOTAL_LINE_bet365")
+    kwargs = _base_kwargs(target_family=TargetFamily.LINE_ERROR, line_col="ODDS_TOTAL_LINE_bet365")
     with pytest.raises(ValidationError, match="line_col must be omitted"):
         ExperimentConfig(**kwargs)
 

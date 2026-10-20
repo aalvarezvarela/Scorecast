@@ -39,10 +39,10 @@ def adjust_overtime(df):
     This function:
     - Preserves raw ``PTS`` so game targets remain actual final scores,
       including overtime.
-    - Creates ``PTS_PER_40`` with an explicit valid-minutes guard. For
-      ``0 < MIN < 240``, it uses ``PTS * TEAM_MINUTES_PER_40 / MIN``. For
-      every other minutes value, including missing, zero, negative, non-finite,
-      regulation, and overtime minutes, it retains raw ``PTS``.
+    - Creates ``PTS_PER_40`` as ``PTS * TEAM_MINUTES_PER_40 / MIN`` for every
+      positive, finite aggregate minutes value, including regulation and
+      overtime games. Missing, zero, negative and non-finite minutes produce
+      NaN rather than mixing raw points into the normalized feature.
     - Creates ``IS_OVERTIME`` using the shared overtime threshold.
     - Normalizes only explicitly allowlisted additive counting statistics in
       overtime games to a 48-minute regulation equivalent via ``240 / MIN``.
@@ -66,14 +66,9 @@ def adjust_overtime(df):
 
     df["IS_OVERTIME"] = overtime_mask.astype(int)
 
-    points_per_40 = points.astype(float).copy()
-    below_regulation_mask = valid_minutes & minutes.lt(REGULATION_GAME_MINUTES)
-    points_per_40.loc[below_regulation_mask] = (
-        points.loc[below_regulation_mask]
-        * TEAM_MINUTES_PER_40
-        / minutes.loc[below_regulation_mask]
+    df[PTS_PER_40_COLUMN] = (
+        points.astype(float) * TEAM_MINUTES_PER_40 / minutes.where(valid_minutes)
     )
-    df[PTS_PER_40_COLUMN] = points_per_40
 
     regulation_factor = REGULATION_GAME_MINUTES / minutes.loc[overtime_mask]
     normalized_columns = [
@@ -94,20 +89,19 @@ def adjust_overtime(df):
 
 
 def fix_home_away_parsing_errors(df_team: pd.DataFrame) -> pd.DataFrame:
-    """
-    Fix parsing errors in home/away team data.
+    """Repair HOME flags for games with duplicate home/away assignments.
 
-    This function:
-    - Ensures TEAM_IDs are strings
-    - Swaps HOME_TEAM_ID and AWAY_TEAM_ID if they are incorrectly assigned
-      based on the PTS scored by each team
-    - Fixes HOME column by parsing MATCHUP (team after @ is home)
+    For rows sharing the same GAME_ID and HOME value, infer the home team from
+    MATCHUP and compare it with TEAM_ABBREVIATION. Column lookup accepts uppercase
+    or lowercase names. The input is returned unchanged when GAME_ID or HOME is
+    absent; team IDs and points are not modified.
 
     Args:
-        df (pd.DataFrame): Team game statistics DataFrame with HOME_TEAM_ID and AWAY_TEAM_ID columns
+        df_team (pd.DataFrame): Team game rows with GAME_ID and HOME. MATCHUP and
+            TEAM_ABBREVIATION are needed to repair the flagged rows.
 
     Returns:
-        pd.DataFrame: DataFrame with corrected HOME column
+        pd.DataFrame: The input frame with repaired HOME values where possible.
     """
 
     # Helper function to get column name regardless of case

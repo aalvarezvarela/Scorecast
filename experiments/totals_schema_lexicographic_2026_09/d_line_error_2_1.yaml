@@ -1,0 +1,39 @@
+experiment_name: schema_lex_line_error_2_1_20260828
+prediction_strategy: line_error_regressor
+training_version: "2.6-schema-lexicographic-20260903"
+comparison_group: totals_schema_lexicographic_2026_09
+hypothesis: >
+  Test whether the spread and moneyline features added by schema 2.1 improve
+  closing total-line error; totals outcomes and lines are unchanged from 2.0.
+tags: [line_error, totals, closing_line, schema_2_1, lexicographic_selection]
+
+device: cuda
+random_state: 16
+
+data:
+  csv_path: data/train_data/training_data_2_1_20260828.csv
+  data_version: "20260828-training-2.1"
+  expected_checksum: "sha256:fe155f95f53715a5"
+  dataset_type: closing_line
+  season_year_floor: 2021
+  extend_history_dropping_season_gated_columns: false
+
+sample_weight:
+  enabled: false
+  lambda_: null
+  tune_lambda: false
+  allow_unweighted: false
+
+refit:
+  use_lexicographic_selection: true
+
+optuna:
+  n_trials: 150
+  timeout: null
+  tie_tolerance: quantile
+  tie_max_fraction: 0.15
+  tie_tolerance_floor: 0.001
+  tie_tolerance_cap: 0.04
+  tie_warn_fraction: 0.25
+
+evaluation_seeds: []

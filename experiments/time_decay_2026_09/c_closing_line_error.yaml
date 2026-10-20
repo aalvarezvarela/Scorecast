@@ -1,0 +1,27 @@
+experiment_name: closing_line_error_2_2_no_decay_20260901
+prediction_strategy: line_error_regressor
+training_version: "2.2-no-decay-20260901"
+comparison_group: closing_no_decay_2026_09
+hypothesis: >
+  Measure unweighted closing total-line error prediction on the regenerated 2.2
+  dataset through the 2026-09-01 cutoff.
+tags: [no_decay, line_error, totals, closing_line, schema_2_2]
+
+device: cuda
+
+data:
+  csv_path: data/train_data/training_data_2_2_20260901.csv
+  data_version: "20260901-training-2.2-normalized"
+  expected_checksum: "sha256:15a8e5c2ac70c269"
+  dataset_type: closing_line
+  season_year_floor: 2021
+  extend_history_dropping_season_gated_columns: false
+
+sample_weight:
+  enabled: false
+  lambda_: null
+  tune_lambda: false
+  allow_unweighted: false
+
+optuna: {n_trials: 150, timeout: null}
+evaluation_seeds: [17, 42]

@@ -1,0 +1,46 @@
+experiment_name: horizon_total_points_closing_corr099_control
+prediction_strategy: total_points_regressor
+line_col: ODDS_TOTAL_LINE_bet365
+training_version: "2.2-horizon-sweep"
+comparison_group: horizon_2026_08
+hypothesis: >
+  The control for cell A, and the ONLY cell that differs from it. Odds columns
+  pruned at 0.99, reproducing the previous campaign's cleaning. A minus B is the
+  effect of the 59 extra features and nothing else. Measured first: the change
+  is real on the closing dataset (+59 features) and nearly inert on the
+  intermediate one (+7 to +8 of ~1,185), so this control belongs here and there
+  is deliberately no intermediate-line equivalent.
+tags: [total_points, closing_line, control, corr099]
+
+device: cuda
+
+data:
+  csv_path: data/train_data/training_data_2_0_20260819.csv
+  data_version: "20260819-training-2.0"
+  dataset_type: closing_line
+  expected_checksum: "sha256:27a291de0ae78165"
+  season_year_floor: 2021
+  extend_history_dropping_season_gated_columns: false
+
+cleaning:
+  # Campaign-wide change: odds columns held to 0.99 instead of the 0.99 the
+  # previous campaign used. Everything not matching "ODDS_" stays at
+  # cleaning.corr_threshold (0.95), which this does not touch.
+  corr_threshold_overrides:
+    ODDS_: 0.99
+
+walk_forward:
+  train_games_choices: [2500, 3000, 3500, 4000, 4500]
+
+optuna:
+  # 300 rather than the previous 200. Measured cost on this hardware: ~34 s per
+  # trial on the closing dataset, so +100 trials is ~57 min per closing cell.
+  n_trials: 300
+  timeout: null
+
+# The only error bar this pipeline produces, and it is nearly free: the 55-day
+# holdout walk-forward takes 2m16s against ~2h of tuning, so two extra seeds add
+# ~4% to a closing cell. An archived classifier run moved from -0.4% to +8.7% ROI
+# across exactly these three seeds on one fixed configuration. Read
+# seed_stability.csv BEFORE reading any difference between cells.
+evaluation_seeds: [101, 202]

@@ -1,0 +1,73 @@
+experiment_name: legacycv_total_points_3750_2_0
+prediction_strategy: total_points_regressor
+line_col: ODDS_TOTAL_LINE_bet365
+training_version: "2.8-legacy-layout-modern-stack-20260906"
+comparison_group: legacy_cv_replication_2026_09
+hypothesis: >
+  Test the strongest historical closing total-points window on current schema
+  2.0 data, changing the recent CV to the legacy 12-fold anchored layout.
+tags: [legacy_cv_layout, modern_stack, closing_line, total_points, schema_2_0, with_overtime]
+
+device: cuda
+random_state: 16
+
+data:
+  csv_path: data/train_data/training_data_2_0_20260819.csv
+  data_version: "20260819-training-2.0"
+  expected_checksum: "sha256:27a291de0ae78165"
+  dataset_type: closing_line
+  season_year_floor: 2019
+  extend_history_dropping_season_gated_columns: false
+  exclude_overtime_from_training: false
+  exclude_playoffs: true
+  allowed_season_types: ["Regular Season", "Play-In Tournament"]
+
+cleaning:
+  max_na_per_row: 300
+
+holdout:
+  test_size: null
+  test_games: null
+  test_days: 90
+
+walk_forward:
+  strategy: test_anchored
+  test_games: 50
+  step_games_between_tests: 60
+  train_games: 3750
+  train_games_choices: null
+  min_train_games: 1250
+  max_folds: 12
+  fold_selection: latest
+  exclude_test_months: [5, 6]
+  require_same_season_test: true
+  eval_span_games: null
+  min_validation_games: null
+
+sample_weight:
+  enabled: false
+  lambda_: null
+  tune_lambda: false
+  allow_unweighted: false
+
+refit:
+  use_lexicographic_selection: true
+
+optuna:
+  n_trials: 80
+  timeout: null
+  tune_n_estimators: true
+  objective_aggregation: pooled
+  pruner_warmup_steps: 13
+  tie_tolerance: quantile
+  tie_max_fraction: 0.15
+  tie_tolerance_floor: 0.001
+  tie_tolerance_cap: 0.04
+  tie_warn_fraction: 0.25
+
+betting:
+  edge_thresholds: [0.0, 0.1, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0]
+  primary_edge_threshold: 0.1
+
+holdout_evaluation: daily_walk_forward
+evaluation_seeds: []

@@ -5,13 +5,13 @@ uses -- not a copy of them, and not a modification. Every function called here i
 imported from its existing home, so the two datasets cannot drift apart in how a
 shared feature is computed.
 
-Three stages are deliberately absent, and none of them is an oversight:
+Three stages are deliberately absent from this base stage:
 
-* **Player-level statistics and injury status** -- there is no trustworthy
-  timestamped injury history, so a snapshot at T-12h would be given knowledge
-  that only existed at T-1h. Train and inference would disagree.
-* **Referees** -- assignments are not reliably published at the horizons this
-  dataset samples.
+* **Player-level statistics and injury status** -- attached after the base game
+  build using the latest report strictly before each snapshot. The base stage
+  only computes team history and supplies the player context for that step.
+* **Referees** -- attached after the base game build, then masked per snapshot
+  until 09:00 Eastern on game day.
 * **``engineer_odds_features``** -- close-time by its own docstring. Its useful
   parts (consensus, dispersion, vig) are rebuilt from snapshot prices in
   ``data_processing/line_history/`` instead.
@@ -31,11 +31,16 @@ from __future__ import annotations
 
 import warnings
 from collections import defaultdict
+from dataclasses import dataclass
 from zoneinfo import ZoneInfo
 
 import pandas as pd
 
-from nba_ou.config.odds_columns import get_main_book
+from nba_ou.config.odds_columns import (
+    apply_odds_prefix,
+    assert_odds_columns_prefixed,
+    get_main_book,
+)
 
 # Imported rather than reimplemented: this is the same team pipeline the
 # closing-line dataset runs, so rolling statistics are identical between them.
@@ -44,6 +49,7 @@ from nba_ou.create_training_data.create_df_to_predict import (
 )
 from nba_ou.create_training_data.predict_data_utils import (
     filter_by_seasons_with_extra_game_ids,
+    normalize_game_ids,
 )
 from nba_ou.data_processing.all_star_voting.attach_all_star_voting_features import (
     add_all_star_voting_features,
@@ -52,6 +58,7 @@ from nba_ou.data_processing.all_star_voting.attach_all_star_voting_features impo
 from nba_ou.data_processing.merged_home_away_data.add_features_after_merging import (
     add_betting_stats_differences,
     add_derived_features_after_computed_stats,
+    add_fresh_absence_sums,
     add_game_date_features,
     add_high_value_features_for_team_points,
 )
@@ -67,20 +74,27 @@ from nba_ou.data_processing.merged_home_away_data.select_train_columns import (
 from nba_ou.data_processing.merged_home_away_data.team_one_hot_features import (
     add_team_one_hot_features,
 )
-from nba_ou.data_processing.past_injuries.past_injuries import (
-    get_injured_players_dict,
-)
+from nba_ou.data_processing.odds.yahoo_features import select_yahoo_features
+from nba_ou.data_processing.past_injuries.past_injuries import get_injured_players_dict
 from nba_ou.data_processing.players.attach_player_features import (
     clear_player_statistics,
 )
+from nba_ou.data_processing.players.live_roster import (
+    game_day_rosters,
+    previous_game_rosters,
+)
 from nba_ou.data_processing.players.roster_continuity import (
     add_roster_continuity_feature,
+)
+from nba_ou.data_processing.scheduled_games.merge_scheduled_with_existing_data import (
+    standardize_and_merge_scheduled_games_to_players_data,
 )
 from nba_ou.data_processing.team.merge_game_df_with_odds_by_game_id import (
     merge_remaining_odds_by_game_id,
 )
 from nba_ou.data_processing.team.style_matchups import add_style_matchup_features
 from nba_ou.data_processing.travel.travel_processing import compute_travel_features
+from nba_ou.fetch_data.live_rosters import roster_overrides
 from nba_ou.postgre_db import load_all_nba_data_from_db
 from nba_ou.postgre_db.all_star_voting.fetch_data_from_db.fetch_all_star_voting_from_db import (
     load_all_star_voting_from_db,
@@ -97,6 +111,20 @@ from nba_ou.utils.seasons import get_seasons_between_dates
 warnings.simplefilter(action="ignore", category=FutureWarning)
 
 DEFAULT_BOOK = get_main_book()
+
+
+@dataclass
+class BaseInjuryContext:
+    """Inputs already loaded for snapshot-specific player and report features."""
+
+    team_games: pd.DataFrame
+    players: pd.DataFrame
+    seasons: list[str]
+    player_context_seasons: list[str]
+    scheduled_games: pd.DataFrame | None = None
+    roster_snapshots: pd.DataFrame | None = None
+    live_as_of: pd.Timestamp | None = None
+
 
 #: ``merge_home_away_data`` derives two "star player" ratios inline and indexes
 #: these columns directly, so it raises if the player stage never ran. They are
@@ -125,9 +153,17 @@ _ALL_STAR_KEEP_PREFIXES = (
 
 
 def _add_all_star_team_features(
-    df: pd.DataFrame, df_players: pd.DataFrame, *, verbose: bool
+    df: pd.DataFrame,
+    df_players: pd.DataFrame,
+    *,
+    verbose: bool,
+    target_game_ids: set[str] | None = None,
+    rosters: dict | None = None,
 ) -> pd.DataFrame:
     """Team-level all-star fan-vote share, without the injured-player variants.
+
+    ``rosters`` is each team-game's roster (``game_day_rosters`` for stored
+    games, tonight's official one), the candidates the votes are summed over.
 
     Leakage-safe by construction: ``all_star_season_year_for_game_date`` always
     resolves to the most recently *completed* vote. A November 2024 game maps to
@@ -150,6 +186,8 @@ def _add_all_star_team_features(
         df_players=df_players,
         all_star_voting_df=voting,
         injured_dict={},
+        target_game_ids=target_game_ids,
+        current_rosters=rosters,
     )
 
     dropped = [
@@ -237,6 +275,21 @@ def _build_roster_injury_dict(
     return _lag_injured_dict_by_one_team_game(injured_dict, game_context)
 
 
+def _roster_injury_dict_for(
+    mode: str, realized: dict | None, game_context: pd.DataFrame
+) -> dict | None:
+    """``_build_roster_injury_dict(mode, ...)`` from an already loaded full dict."""
+    if mode == "none" or realized is None:
+        return None
+    if mode == "full":
+        return realized
+    if mode == "lagged":
+        return _lag_injured_dict_by_one_team_game(realized, game_context)
+    raise ValueError(
+        f"roster_injury_reports must be 'none', 'lagged' or 'full'; got {mode!r}."
+    )
+
+
 def _inject_player_placeholders(df: pd.DataFrame) -> pd.DataFrame:
     """Add the columns ``merge_home_away_data`` indexes unconditionally."""
     out = df.copy()
@@ -253,11 +306,20 @@ def create_base_game_features(
     season_start_date: str | pd.Timestamp | None = None,
     categorical_team_encoding: bool = False,
     normalize_total_lines: bool = True,
+    normalize_spread_lines: bool = True,
+    null_extreme_spread_prices: bool = True,
     include_all_star: bool = True,
     include_roster_continuity: bool = True,
     roster_injury_reports: str = "lagged",
+    exclude_caesars: bool = False,
+    combine_fanatics_and_caesars: bool | None = None,
+    return_injury_context: bool = False,
+    scheduled_games: pd.DataFrame | None = None,
+    roster_snapshots: pd.DataFrame | None = None,
+    live_as_of: pd.Timestamp | None = None,
+    target_game_ids=None,
     verbose: bool = True,
-) -> pd.DataFrame:
+) -> pd.DataFrame | tuple[pd.DataFrame, BaseInjuryContext]:
     """One row per game, carrying only leakage-safe pre-game team features.
 
     The returned frame still contains this game's closing-odds columns -- they
@@ -282,7 +344,32 @@ def create_base_game_features(
       the report moves 27-54% of team-games.
     * ``"full"`` -- as the closing-line pipeline does. Uses the current game's
       report, which may not have existed at a 12h snapshot.
+
+    ``exclude_caesars`` / ``combine_fanatics_and_caesars`` reconcile the
+    discontinued Caesars book with fanatics_sportsbook. Combining is the
+    default; passing ``exclude_caesars=True`` switches to dropping it instead.
+    See ``nba_ou.data_processing.odds.book_combination``.
+
+    ``scheduled_games`` (``get_schedule_games`` rows) adds tonight's games, which
+    the database does not hold until they are played. They go through the same
+    steps ``create_df_to_predict`` uses for them: team rows appended before the
+    rolling statistics, placeholder player rows (each player's latest team, no
+    minutes) for the roster stages, and their GAME_IDs in the game context so
+    the lagged roster report reaches them. Every feature they get is built from
+    earlier games; their outcome columns are NaN. ``recent_limit_to_include``
+    must then be the day before, so history stops where tonight begins.
+
+    ``target_game_ids`` builds every row but computes the per-row stages
+    (all-star, roster continuity, the rolling trend slopes) only for these
+    games, exactly as ``create_df_to_predict`` does: the other rows still carry
+    everything a later row reads from them -- outcomes, closing lines, rolling
+    means -- and their skipped columns are NaN.
     """
+    targets = (
+        None
+        if target_game_ids is None
+        else {str(g) for g in normalize_game_ids([str(g) for g in target_game_ids])}
+    )
     if recent_limit_to_include is None:
         recent_limit_to_include = pd.Timestamp.now(
             tz=ZoneInfo("US/Pacific")
@@ -341,23 +428,107 @@ def create_base_game_features(
             print(f"✓ Loaded {len(df_players)} player rows for roster context")
 
     df_odds = load_and_merge_odds_yahoo_sportsbookreview(
-        season_years=seasons, normalize_total_lines=normalize_total_lines
+        season_years=seasons,
+        normalize_total_lines=normalize_total_lines,
+        normalize_spread_lines=normalize_spread_lines,
+        null_extreme_spread_prices=null_extreme_spread_prices,
+        exclude_caesars=exclude_caesars,
+        combine_fanatics_and_caesars=combine_fanatics_and_caesars,
     )
 
     if verbose:
         print("Processing team statistics...")
+    has_scheduled = scheduled_games is not None and not scheduled_games.empty
+    scheduled_game_ids = (
+        sorted(scheduled_games["GAME_ID"].astype(str).unique()) if has_scheduled else []
+    )
     df = process_team_statistics_for_training(
         df,
         df_odds,
-        scheduled_games=None,
+        scheduled_games=scheduled_games if has_scheduled else None,
         spread_ml_book=DEFAULT_BOOK,
         total_line_book=DEFAULT_BOOK,
+        target_game_ids=targets,
     )
+    # Roster continuity must not see tonight's placeholders. It treats a
+    # scheduled placeholder as known on game day, but for a stored game only the
+    # earlier box scores and the (lagged) report exist before tip -- its own box
+    # score counts from the next day. Measured on a 2026-04-10 replay: with the
+    # placeholders, 12 ROSTER_* features differed from the training rows by up
+    # to 0.21 in 13 of 15 games; without them the rows match.
+    df_players_history = df_players
+    if has_scheduled:
+        # Tonight's players: each one's latest team, no minutes -- the placeholder
+        # contract create_player_lookup reads as "scheduled, not played". Used by
+        # the all-star stage only.
+        # Only players already in tonight's season bucket -- the roster training
+        # reads for a stored game (see the function's docstring).
+        placeholders = standardize_and_merge_scheduled_games_to_players_data(
+            scheduled_games, df_players
+        )
+        if not placeholders.empty:
+            df_players = pd.concat(
+                [df_players, placeholders], ignore_index=True, sort=False
+            ).drop_duplicates(keep="first")
+        # The lagged roster report re-keys each game's report onto the team's
+        # NEXT game in this context; without tonight here, the last stored
+        # game's report would have nowhere to go.
+        tonight = df[df["GAME_ID"].astype(str).isin(scheduled_game_ids)]
+        context_columns = [c for c in df_team_player_context.columns if c in tonight]
+        df_team_player_context = pd.concat(
+            [df_team_player_context, tonight[context_columns]], ignore_index=True
+        )
+    injury_context = (
+        BaseInjuryContext(
+            team_games=df.copy(),
+            players=df_players.copy(),
+            seasons=seasons,
+            player_context_seasons=player_context_seasons,
+            scheduled_games=scheduled_games,
+            roster_snapshots=roster_snapshots,
+            live_as_of=live_as_of,
+        )
+        if return_injury_context
+        else None
+    )
+
+    rosters = {}
+    realized_injuries = None
+    if needs_players:
+        # Both stages read each team-game's roster as the player features do:
+        # a stored game's game-day roster -- box score plus the realized
+        # inactive list -- and tonight's official one (or, if that fetch
+        # failed, the previous game's). Roster membership, never who is out:
+        # this dataset reads no injury status.
+        realized_injuries = _build_roster_injury_dict(
+            "full", player_context_seasons, df_players_history, df_team_player_context
+        )
+        rosters = game_day_rosters(
+            df_players_history, realized_injuries, exclude_games=scheduled_game_ids
+        )
+        if has_scheduled:
+            official = (
+                roster_overrides(scheduled_games, roster_snapshots, as_of=live_as_of)
+                if roster_snapshots is not None
+                else {}
+            )
+            official.update(
+                previous_game_rosters(
+                    df,
+                    df_players_history,
+                    realized_injuries,
+                    scheduled_game_ids,
+                    rosters=official,
+                )
+            )
+            rosters.update(official)
 
     if include_all_star:
         if verbose:
             print("Adding all-star fan-vote share features...")
-        df = _add_all_star_team_features(df, df_players, verbose=verbose)
+        df = _add_all_star_team_features(
+            df, df_players, verbose=verbose, target_game_ids=targets, rosters=rosters
+        )
 
     if include_roster_continuity:
         if verbose:
@@ -367,14 +538,13 @@ def create_base_game_features(
             )
         df = add_roster_continuity_feature(
             df,
-            df_players,
-            injured_dict=_build_roster_injury_dict(
-                roster_injury_reports,
-                player_context_seasons,
-                df_players,
-                df_team_player_context,
+            df_players_history,
+            injured_dict=_roster_injury_dict_for(
+                roster_injury_reports, realized_injuries, df_team_player_context
             ),
             df_game_context=df_team_player_context,
+            target_game_ids=targets,
+            current_rosters=rosters,
         )
 
     if verbose:
@@ -402,6 +572,7 @@ def create_base_game_features(
     )
     df_merged = add_betting_stats_differences(df_merged)
     df_merged = add_global_market_features(df_merged)
+    df_merged = add_fresh_absence_sums(df_merged)
 
     # The existing leakage gate runs first and unchanged; the intermediate
     # dataset's stricter gate runs later, on top of it.
@@ -413,9 +584,21 @@ def create_base_game_features(
     df_training = add_style_matchup_features(df_training)
     df_training = add_game_date_features(df_training)
 
+    # Applied last, for the same reason as in create_df_to_predict: the feature
+    # adders above still resolve market columns by their raw names, so the ODDS_
+    # marker goes on only once nothing reads them unprefixed.
+    df_training = apply_odds_prefix(df_training)
+    # Current-game Yahoo percentages have no historical snapshot timestamps.
+    df_training = select_yahoo_features(df_training, include_raw=False)
+    assert_odds_columns_prefixed(
+        df_training.columns, context="create_base_game_features"
+    )
+
     if verbose:
         print(
             f"✓ Base game features: {df_training.shape[0]} games, "
             f"{df_training.shape[1]} columns"
         )
+    if injury_context is not None:
+        return df_training, injury_context
     return df_training

@@ -31,9 +31,11 @@ import pandas as pd
 from sklearn.metrics import mean_absolute_error, mean_squared_error
 
 from training_pipeline.betting import (
+    OUTCOME_COLUMN,
     BettingMetrics,
     betting_threshold_sweep,
     evaluate_betting,
+    outcome_from_predictions,
 )
 from training_pipeline.calibration import (
     CalibrationSummary,
@@ -47,9 +49,16 @@ from training_pipeline.decisions import (
     primary_threshold,
     threshold_sweep_values,
 )
+from training_pipeline.diagnostics import planted_feature_importance
 from training_pipeline.line_scoring import (
     build_line_comparison,
     collect_comparison_lines,
+)
+from training_pipeline.season_phase import (
+    annotate,
+    describe_phases,
+    game_months,
+    season_phases,
 )
 from training_pipeline.tuning import fit_final_model
 
@@ -81,6 +90,20 @@ class CrossValidationBettingResult:
     line_comparison: pd.DataFrame | None
     n_profitable_folds: int
     random_state: int
+    #: Betting metrics over the subset of CV games whose season phase also
+    #: appears in the holdout. Every holdout to date is the tail of the season,
+    #: so pooled CV covers Oct-Apr while the holdout covers only Feb-Apr, and the
+    #: two numbers are computed on different populations. Measured across 36
+    #: runs, Oct-Dec games score 52.1% and Jan-Apr 53.5%, so roughly half of the
+    #: usual "CV looks worse than holdout" gap is this mixture. None when the
+    #: holdout's phases were not supplied.
+    betting_phase_matched: BettingMetrics | None = None
+    #: MAE over the same phase-matched subset. NaN for the classifier.
+    mae_phase_matched: float = float("nan")
+    #: The phases the match was made against, e.g. "late". Recorded so the
+    #: subset can be re-derived from cv_predictions.parquet afterwards.
+    holdout_phases: str = ""
+    n_games_phase_matched: int = 0
     #: Probability quality over the pooled folds. Classifier only, and the more
     #: readable of the two measurements: ~5x the games of the holdout.
     calibration: CalibrationSummary | None = None
@@ -105,6 +128,18 @@ class CrossValidationBettingResult:
             "profit_units": self.betting_primary.profit_units,
             "n_profitable_folds": self.n_profitable_folds,
             "random_state": self.random_state,
+            "holdout_phases": self.holdout_phases,
+            "n_games_phase_matched": self.n_games_phase_matched,
+            "mae_phase_matched": self.mae_phase_matched,
+            **(
+                {}
+                if self.betting_phase_matched is None
+                else {
+                    "roi_phase_matched": self.betting_phase_matched.roi,
+                    "win_rate_phase_matched": self.betting_phase_matched.win_rate,
+                    "n_bets_phase_matched": self.betting_phase_matched.n_bets,
+                }
+            ),
             **(
                 {}
                 if self.calibration is None
@@ -121,6 +156,43 @@ class CrossValidationBettingResult:
         }
 
 
+def _distinct(values: pd.Series, positions: np.ndarray | None) -> str:
+    """The distinct values in a fold's slice, rendered stably.
+
+    A single value is reported as itself; several are joined, so a fold that
+    straddles a month or season boundary says so instead of reporting whichever
+    row happened to come first.
+    """
+    series = values if positions is None else values.iloc[positions]
+    unique = pd.Series(series).dropna().unique().tolist()
+    return "+".join(str(value) for value in sorted(unique, key=str))
+
+
+def _planted_importance(
+    model: Any, config: ExperimentConfig, *, n_features: int
+) -> dict[str, float]:
+    """Importance of the planted diagnostic feature in one fold's model.
+
+    Empty on any normal run, so the extra columns exist only where they mean
+    something. Three importance types because they answer different questions:
+    ``weight`` is how often the tree builder chose it, ``gain`` how much it
+    helped on average when chosen, ``total_gain`` the product -- and a weak
+    feature can rank well on one and poorly on another.
+    """
+    planted = config.diagnostics.planted_signal
+    if not planted.enabled:
+        return {}
+
+    booster = model.get_booster()
+    scores = {
+        kind: booster.get_score(importance_type=kind)
+        for kind in ("weight", "gain", "total_gain")
+    }
+    return planted_feature_importance(
+        scores, column=planted.column, n_features=n_features
+    )
+
+
 def evaluate_cv_betting(
     config: ExperimentConfig,
     *,
@@ -134,6 +206,7 @@ def evaluate_cv_betting(
     target_line_col: str,
     sample_weight_lambda: float | None = None,
     random_state: int | None = None,
+    holdout_phases: frozenset[str] | None = None,
 ) -> CrossValidationBettingResult:
     """Refit at the chosen hyperparameters on each fold and score for profit.
 
@@ -150,7 +223,7 @@ def evaluate_cv_betting(
         df_dev[target_line_col], errors="coerce"
     ).to_numpy(dtype=float)
     actual_total_all = pd.to_numeric(
-        df_dev["TOTAL_POINTS"], errors="coerce"
+        df_dev[config.outcome_col], errors="coerce"
     ).to_numpy(dtype=float)
 
     fold_rows: list[dict[str, Any]] = []
@@ -202,8 +275,23 @@ def evaluate_cv_betting(
                 "fold": fold_num,
                 "n_train": int(len(train_idx)),
                 "n_valid": int(len(valid_idx)),
+                # Read off the fold model that was fitted anyway, so the
+                # diagnostic costs nothing extra. Empty dict on a normal run.
+                **_planted_importance(model, config, n_features=X_dev.shape[1]),
                 "valid_start": pd.Timestamp(dates_dev.iloc[valid_idx].min()),
                 "valid_end": pd.Timestamp(dates_dev.iloc[valid_idx].max()),
+                # Where in the season this fold sits. A rolling-origin fold spans
+                # a handful of game-days so these are usually single-valued;
+                # "+"-joined when a fold straddles a boundary, rather than
+                # silently reporting only the first.
+                "season": _distinct(df_dev[config.data.season_col], valid_idx),
+                "game_month": _distinct(
+                    game_months(dates_dev.iloc[valid_idx]).astype("object"),
+                    None,
+                ),
+                "season_phase": _distinct(
+                    season_phases(dates_dev.iloc[valid_idx]).astype("object"), None
+                ),
                 # NaN for the classifier: the "error" of a probability against
                 # a 0/1 label is not in points and must not be read next to a
                 # regressor's MAE.
@@ -230,7 +318,12 @@ def evaluate_cv_betting(
                     "y_true": y_true,
                     "y_pred": y_pred,
                     "target_line": fold_line,
-                    "TOTAL_POINTS": fold_actual,
+                    OUTCOME_COLUMN: fold_actual,
+                    **(
+                        {"TOTAL_POINTS": fold_actual}
+                        if config.outcome_col == "TOTAL_POINTS"
+                        else {}
+                    ),
                     "predicted_edge": fold_edge,
                     "selection_score": fold_decisions.selection_score,
                     **(
@@ -247,10 +340,18 @@ def evaluate_cv_betting(
 
     fold_metrics = pd.DataFrame(fold_rows)
     predictions = pd.concat(prediction_frames, ignore_index=True)
+    # Per-GAME month and phase, which is what makes the phase-matched number
+    # auditable: the subset can be rebuilt from cv_predictions.parquet without
+    # trusting the summary.
+    predictions = annotate(predictions, predictions[config.data.date_col])
+    predictions[config.data.season_col] = (
+        df_dev[config.data.season_col]
+        .to_numpy()[predictions["row_in_dev"].to_numpy()]
+    )
 
     pooled_edge = predictions["predicted_edge"].to_numpy(dtype=float)
     pooled_line = predictions["target_line"].to_numpy(dtype=float)
-    pooled_actual = predictions["TOTAL_POINTS"].to_numpy(dtype=float)
+    pooled_actual = outcome_from_predictions(predictions)
 
     pooled_over, pooled_under = collect_prices(
         df_dev, config, positions=predictions["row_in_dev"].to_numpy()
@@ -301,6 +402,43 @@ def evaluate_cv_betting(
         config=config,
     )
 
+    # --- phase-matched view -------------------------------------------------
+    # Same predictions, restricted to the season phases the holdout covers, so
+    # the CV number and the holdout number describe the same population. The
+    # pooled number above stays the headline: production bets all season, and
+    # restricting to the holdout's phases would throw away most of the volume
+    # that makes CV worth reading at all.
+    betting_phase_matched: BettingMetrics | None = None
+    mae_phase_matched = float("nan")
+    n_games_phase_matched = 0
+    if holdout_phases:
+        matched = (
+            predictions["season_phase"].astype("string").isin(holdout_phases).to_numpy()
+        )
+        n_games_phase_matched = int(matched.sum())
+        if n_games_phase_matched:
+            matched_positions = predictions["row_in_dev"].to_numpy()[matched]
+            matched_over, matched_under = collect_prices(
+                df_dev, config, positions=matched_positions
+            )
+            betting_phase_matched = evaluate_betting(
+                predicted_edge=pooled_edge[matched],
+                min_edge=ev_threshold,
+                selection_score=pooled_score[matched],
+                actual_total=pooled_actual[matched],
+                line=pooled_line[matched],
+                flat_decimal_odds=config.betting.flat_decimal_odds,
+                decimal_odds_over=matched_over,
+                decimal_odds_under=matched_under,
+            )
+            if not config.is_classifier:
+                mae_phase_matched = float(
+                    mean_absolute_error(
+                        predictions["y_true"].to_numpy(dtype=float)[matched],
+                        predictions["y_pred"].to_numpy(dtype=float)[matched],
+                    )
+                )
+
     return CrossValidationBettingResult(
         n_folds=len(splits),
         n_games=int(len(predictions)),
@@ -325,4 +463,8 @@ def evaluate_cv_betting(
         random_state=resolved_random_state,
         calibration=calibration,
         calibration_buckets=calibration_buckets,
+        betting_phase_matched=betting_phase_matched,
+        mae_phase_matched=mae_phase_matched,
+        holdout_phases=describe_phases(holdout_phases),
+        n_games_phase_matched=n_games_phase_matched,
     )

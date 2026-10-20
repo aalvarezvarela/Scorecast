@@ -1,0 +1,30 @@
+experiment_name: target_total_points_closing_2020_extended
+prediction_strategy: total_points_regressor
+line_col: ODDS_TOTAL_LINE_bet365
+training_version: "2.1-target-snapshot-campaign"
+comparison_group: target_snapshot_2026_08
+hypothesis: >
+  Starting the closing-line history in season 2020 and removing columns whose
+  availability identifies the season provides enough additional games to
+  support longer windows. This tests whether the extra history is worth the
+  smaller feature set for the total-points target.
+tags: [total_points, closing_line, season_2020, extended_history, reduced_columns]
+
+device: cuda
+
+data:
+  csv_path: data/train_data/training_data_2_0_20260819.csv
+  data_version: "20260819-training-2.0-season-2020"
+  dataset_type: closing_line
+  expected_checksum: "sha256:27a291de0ae78165"
+  season_year_floor: 2020
+  extend_history_dropping_season_gated_columns: true
+
+walk_forward:
+  train_games_choices: [2500, 3000, 3500, 4000, 4500, 5000]
+
+optuna:
+  n_trials: 200
+  timeout: null
+
+evaluation_seeds: []

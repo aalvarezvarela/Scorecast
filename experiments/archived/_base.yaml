@@ -1,0 +1,343 @@
+# Shared defaults for every experiment.
+#
+# Experiment files in this directory are DEFINITIONS: they describe a run you
+# want to be able to reproduce. The `config.json` written into each run
+# directory under artifacts/experiments/ is the RECORD of what actually ran.
+#
+# Every file here is deep-merged on top of this one, so an experiment only
+# needs to state what it changes. Anything omitted falls back to these values,
+# and anything omitted here falls back to the pydantic defaults in
+# training_pipeline/config.py.
+#
+# Run one with:
+#   poetry run python -m training_pipeline.cli experiments/total_points/3_seasons.yaml
+#   poetry run python -m training_pipeline.cli <file> --dry-run   # print resolved config
+
+# --- research log -----------------------------------------------------------
+# Set these per experiment; they are labels only and never affect results.
+#   training_version:  the training approach behind the run ("2.1-style-features")
+#   comparison_group:  runs sharing this value are meant to be read against
+#                      each other -- same data, same holdout, one deliberate
+#                      difference. The leaderboard can group by it.
+#   hypothesis:        what this run is supposed to tell you.
+#   tags:              free-form filters.
+
+# --- what to predict, and with what -----------------------------------------
+# Set `prediction_strategy` per experiment. One field names both the target and
+# the model class, so every value is a configuration that actually exists:
+#
+#   total_points_regressor  predicts the total. Most of the loss goes on
+#                           reproducing the line, which the model can already
+#                           read off its features. Requires line_col.
+#   line_error_regressor    predicts total minus line. The nuisance part is
+#                           subtracted out, so the whole target is the part you
+#                           bet on. line_col must be OMITTED (the main book's
+#                           line is used).
+#   over_under_classifier   predicts P(OVER) directly. The same logic taken to
+#                           its limit, at the cost of discarding magnitude: a
+#                           game 30 points over and one 1 point over become the
+#                           same label. Requires line_col -- the label IS "did
+#                           the total beat this line", so which line is part of
+#                           the target's definition.
+#
+# `target_family` is derived from it. Setting target_family alone still works
+# and infers the matching regressor, so runs and configs written before this
+# field existed keep loading unchanged.
+#
+# Classifier specifics:
+#   - objective switches to binary:logistic automatically
+#   - Optuna optimises LOG LOSS, not accuracy: log loss scores the probability,
+#     so calling a loser at 51% is barely penalised while 95% is punished hard.
+#     Accuracy cannot tell those apart, and the bet rule depends on exactly
+#     that distinction.
+#   - pushes (total lands exactly on the line) are dropped from TRAINING -- they
+#     have no OVER/UNDER answer -- but kept in betting evaluation as returned
+#     stakes. It costs little: pushes are 1.175% of games, since 53.3% of lines
+#     end in .5 and cannot push at all.
+#   - bet selection uses EXPECTED VALUE (betting.ev_thresholds), not a points
+#     edge. A probability has no points scale.
+#   - MAE/RMSE/R2 are reported as null: point error against a 0/1 label is not
+#     a points error and must not be ranked beside a regressor's.
+#   - the closing-vs-opener comparison is unavailable: the label was defined
+#     against one specific line, so the same prediction cannot be re-scored
+#     against another.
+#   - the search space below is AUTOMATICALLY rescaled. Those ranges are
+#     reasoned in squared-error terms, where the hessian is 1 per sample;
+#     logistic loss has hessian p(1-p) ~ 0.25, so the same numbers mean
+#     something else. min_child_weight 20-250 would become 80-1000 SAMPLES per
+#     leaf, and chance-level split gain drops from ~189 to ~0.49, so a gamma
+#     FLOOR of 1.0 prunes every split. Measured on a planted signal, the upper
+#     half of the regression space drives a classifier to a literally constant
+#     prediction -- which is what produced the 0.47-0.52 probability range in
+#     the first smoke run. See config.CLASSIFIER_SEARCH_SPACE.
+#     The swap fires only when the space below is untouched; state your own
+#     optuna.search_space and it is left exactly as written.
+#
+# Deliberately NOT defaulted here. A shared default would be inherited by every
+# experiment and then contradict any that names a different target, and "what
+# am I predicting?" is the one question a run should always answer out loud.
+
+# --- data -------------------------------------------------------------------
+data:
+  csv_path: data/train_data/all_odds_training_data_until_20260318.csv
+  data_version: "20260318-all-odds"
+  # Pin the dataset's sha256 to be told loudly if the CSV is regenerated in
+  # place. Get it with:
+  #   python -c "from training_pipeline.data import compute_file_checksum as c; \
+  #              print(c('data/train_data/all_odds_training_data_until_20260318.csv'))"
+  expected_checksum: "sha256:78404a0cfab28b7b"
+  season_year_floor: 2021
+  # Playoff basketball is a different distribution: in this dataset playoff
+  # games average ~11.6 fewer total points than regular-season games.
+  # Play-in games ARE kept (they are regular-season-like), which is why season
+  # type is resolved from the GAME_ID prefix -- the SEASON_TYPE text column
+  # mislabels play-in games as "Playoffs".
+  exclude_playoffs: true
+  allowed_season_types: ["Regular Season", "Play-In Tournament"]
+
+  # Drop overtime games from the TRAINING rows only. CV validation folds, the
+  # holdout and the walk-forward's prediction days always keep them.
+  #
+  # The asymmetry is the point. An overtime game's total is inflated by at least
+  # five minutes of basketball that no pre-game feature could have predicted, so
+  # those rows may be teaching the model noise -- but ~5.2% of real games go to
+  # overtime and you are paid or not paid on them. Excluding them from scoring
+  # too would measure a world that does not exist.
+  #
+  # Costs ~130 games out of a 2500-game window. Off by default, matching every
+  # run to date.
+  #
+  # Requires a CSV built AFTER the IS_OVERTIME column stopped being dropped:
+  #   poetry run python scripts/create_train_data/create_train_data.py
+  # Older CSVs raise a clear error rather than silently ignoring the setting.
+  exclude_overtime_from_training: false
+
+# --- cleaning ---------------------------------------------------------------
+cleaning:
+  nan_threshold: 50.0
+  max_na_per_row: 80
+  exclude_cols_containing: ["fanatics_sportsbook"]
+  verbose: 1
+
+# --- evaluation split -------------------------------------------------------
+# Exactly one of test_size / test_games / test_days.
+#
+# test_days is the default because the daily walk-forward retrains once per
+# game-day, so fixing days fixes how much production operation is simulated --
+# and because two datasets then get the IDENTICAL calendar window. A 5%
+# fraction did not: the 2026-07-04 A/B ended up with Mar 8 / 287 games on one
+# dataset and Mar 7 / 293 on the other, quietly making the numbers
+# non-comparable.
+#
+# 60 days on this data is ~55 game-days (retrains), ~417 games and ~166 bets,
+# for 6.8% of the rows -- about 45% more bets than the old 5% fraction cost
+# 1.8pp more data. ~9 minutes per evaluation.
+#
+# Do not read the holdout as proof of profitability; it cannot be. At -110 a
+# true 55% win rate needs ~1400 bets before its interval clears break-even, and
+# even a whole season (~1236 games) only reaches [50.4%, 59.2%]. This is the
+# sanity check that the CV number is not a fantasy. Statistical weight comes
+# from the CV folds (betting.evaluate_cv_folds) and from accumulating runs.
+#
+# 90 days is the reasonable upper end (~81 retrains, ~610 games, ~244 bets,
+# 9.9% of data, ~14 min/eval). Beyond that you are paying real training data
+# for an interval that still cannot clear break-even.
+holdout:
+  test_size: null
+  test_games: null
+  test_days: 60
+
+walk_forward:
+  strategy: test_anchored
+  test_games: 50
+  step_games_between_tests: 60
+  # THE training-window size. Used both by each CV fold and by the final
+  # refit, so the model you ship is fitted on the same amount of history the
+  # hyperparameters were selected for. There is deliberately no separate
+  # refit.train_games -- two knobs could silently disagree.
+  train_games: 2500
+  min_train_games: 1250
+  max_folds: 12
+
+# How the held-out test period is scored.
+#   daily_walk_forward (default) -- retrain once per test game-day on the games
+#     available strictly before it (dev + test days already played), predict
+#     only that day, then pool every day. This is how production actually runs.
+#     Costs one model fit per game-day (~35 for a 5% holdout).
+#   single_shot -- one model fitted on the dev window predicts the whole test
+#     period at once. Much cheaper; use it for smoke runs.
+holdout_evaluation: daily_walk_forward
+
+refit:
+  # The PRODUCTION model, fitted after evaluation on the last
+  # walk_forward.train_games games of the FULL dataset (dev + test, no split),
+  # because production holds nothing back. It is never itself scored -- the
+  # walk-forward above measures the procedure that produces it.
+  #   rolling_window (default) -- last walk_forward.train_games games
+  #   full_dataset            -- every available game
+  strategy: rolling_window
+  use_lexicographic_selection: true
+  # Off by default: most experiments only want the evaluation.
+  train_production_model: false
+
+# --- Optuna -----------------------------------------------------------------
+optuna:
+  n_trials: 80
+  timeout: 16200          # 4.5h
+  objective_name: reg:squarederror
+  mae_tolerance_abs: 0.10
+  # Pinned explicitly so this frozen base keeps meaning what it meant. The
+  # pipeline default is now 'quantile', which derives the lexicographic tie band
+  # from the trial distribution instead of taking 0.10 on faith; leaving this
+  # unset would silently re-select a DIFFERENT trial from these studies than the
+  # one each archived run actually shipped. 'fixed' is the rule they ran under.
+  tie_tolerance: fixed
+  persistent_storage: false
+
+  # XGBoost hyperparameter search space. These defaults reproduce the space
+  # hardcoded in nba_ou.modeling.optuna_*.py exactly (a test asserts identical
+  # draws under a seeded sampler), and are deliberately conservative: NBA
+  # totals are noisy, and deep, lightly-regularized trees overfit them badly.
+  #
+  # Widening any range changes the config fingerprint, so a persistent study
+  # will start fresh rather than mixing incomparable trials.
+  # NOTE these ranges are SQUARED-ERROR units. An over_under_classifier run
+  # replaces them automatically with config.CLASSIFIER_SEARCH_SPACE, because
+  # logistic loss has a different hessian and gain scale (see above).
+  search_space:
+    # Sized for this problem: ~2500 games vs 1400-2100 features (p/n ~ 0.6-0.8)
+    # and a signal worth ~3% of baseline MAE. Differs from the legacy space in
+    # nba_ou.modeling.optuna_*.py (kept as config.UPSTREAM_SEARCH_SPACE):
+    #   colsample_bytree floor 0.35 -> 0.05: at 0.35 a tree picked ~15 splits
+    #     from ~720 candidate features on a noisy bootstrap.
+    #   gamma 0.1-3 -> 1-500 (log): with residual sigma ~19.5 a 500-row node's
+    #     gradient sum varies by ~436 by chance, so chance split gains are
+    #     O(100s) and the old range pruned literally nothing.
+    #   min_child_weight floor 5 -> 20: hessian=1 for squared error, so this is
+    #     min samples/leaf, and 5 of 2500 games is noise.
+    #   max_depth down to 1: stumps cannot invent spurious interactions.
+    max_depth:         {low: 1,       high: 4}
+    min_child_weight:  {low: 20.0,    high: 250.0, log: true}
+    gamma:             {low: 1.0,     high: 500.0, log: true}
+    subsample:         {low: 0.55,    high: 0.95}
+    colsample_bytree:  {low: 0.05,    high: 0.8,   log: true}
+    learning_rate:     {low: 0.0075,  high: 0.06,  log: true}
+    reg_alpha:         {low: 0.01,    high: 20.0,  log: true}
+    reg_lambda:        {low: 1.0,     high: 500.0, log: true}
+    # Upper bound only -- early stopping picks the real number of rounds.
+    n_estimators: 1000
+    early_stopping_rounds: 70
+
+# --- recency weighting ------------------------------------------------------
+# Weight each training row by exp(-lambda * age_in_days). Available to BOTH
+# target families. Off by default; enable it per experiment.
+#
+#   lambda   half-life        weight of oldest game in a 2500-game window
+#   0.0005   1386 d (3.8 yr)  68%    gentle
+#   0.001     693 d (1.9 yr)  46%
+#   0.002     347 d (0.9 yr)  21%
+#   0.005     139 d (0.4 yr)   2%    the practical ceiling
+#   0.010      69 d            0.05% window effectively discarded
+#
+# A 2500-game window spans ~770 calendar days, so bounds stop at 0.005 --
+# beyond that the configured window stops meaning anything.
+sample_weight:
+  enabled: false
+  lambda_: null            # fixed decay rate when tune_lambda is false
+  tune_lambda: false       # let Optuna search the decay rate
+  lambda_bounds: [0.0005, 0.005]
+  # When tuning, also let Optuna decide WHETHER to weight at all, via a
+  # categorical `use_sample_weight`. A log-uniform range can never reach zero,
+  # so without this "no weighting" is not actually reachable; with it, "off"
+  # is a clean binary the sampler can evaluate, and you can count how many
+  # trials preferred it.
+  allow_unweighted: true
+
+# --- profit scoring ---------------------------------------------------------
+# Post-hoc only: changing these never invalidates a tuned study.
+betting:
+  # Finer at the bottom: that is where the question "is a 1-point edge better
+  # than a 0.5-point one?" lives, and where nearly all the games are.
+  edge_thresholds: [0.0, 0.1, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0]
+  # Effectively "bet everything". 0.1 rather than 0.0 only to drop predictions
+  # that land essentially on the line, where the side is arbitrary.
+  #
+  # Deliberately permissive: measured across these runs, win rate does NOT rise
+  # with predicted edge, so a higher threshold was not selecting better bets --
+  # it was only cutting volume, and volume is what every significance test here
+  # is short of. Bet wide, then read the edge-range breakdown in the survey
+  # notebook to find where the value actually sits before re-imposing a filter.
+  #
+  # REGRESSORS ONLY. Classifiers select on primary_ev_threshold (expected
+  # value), which is a different quantity -- 0.1 there would mean a 10% expected
+  # return per unit staked and would cut volume drastically, not raise it.
+  #
+  # betting.* is excluded from the config fingerprint, so changing this does not
+  # fork a persistent Optuna study. It DOES change what win_rate/roi/n_bets mean,
+  # so runs before and after are not directly comparable on those columns.
+  primary_edge_threshold: 0.1
+  # 1.909091 == -110 American. Break-even win rate is 1/odds = 52.38%.
+  flat_decimal_odds: 1.9090909090909092
+
+  # Score the CV folds for profit too, not just the holdout. This is about
+  # statistical power, which is the real constraint here:
+  #
+  #   win rate  bets   95% CI          vs break-even 52.38%
+  #   55%        114   [46.1%, 64.1%]  cannot prove
+  #   55%        600   [51.0%, 58.9%]  cannot prove
+  #   55%       1200   [52.2%, 57.8%]  cannot prove
+  #
+  # A 5% holdout yields ~115 bets, which cannot separate a real edge from a
+  # lucky one -- so ranking runs on holdout ROI alone is close to a coin flip.
+  # The 12 CV folds hold ~600 validation games, ~5x the volume, for one extra
+  # fit per fold (~= one Optuna trial).
+  #
+  # Biased upward: these folds chose the hyperparameters. Use cv_roi to COMPARE
+  # configurations and holdout roi to ESTIMATE live performance. A big gap
+  # between them is the signature of selection overfitting, and is worth
+  # reading as a result in its own right.
+  evaluate_cv_folds: true
+
+  # Re-score the same predictions against other total lines, for information.
+  # Everything else settles bets against the CLOSING line -- the sharpest
+  # price, and the strict test of "does the model know something the market
+  # didn't" -- but by definition the last price quoted, so not one you can
+  # actually take. Measured on this repo's data the line moves 2.54 points on
+  # average and moves at all in 93% of games, which is larger than the 2.0
+  # bet trigger above: an edge against the close can be a different bet
+  # against the open. Beating the close = information; beating the open =
+  # capturable information.
+  # Columns missing from a CSV snapshot are skipped, never fatal.
+  comparison_line_cols: ["TOTAL_LINE_consensus_opener"]
+
+# --- daily walk-forward backtest --------------------------------------------
+backtest:
+  test_games: 300         # ~6.5 weeks, ~40 daily retrains
+  train_games: null       # null = expanding window (all prior games)
+  show_progress: true
+
+# --- seed stability ---------------------------------------------------------
+# random_state seeds BOTH the Optuna sampler and every model fit.
+random_state: 16
+#
+# evaluation_seeds repeats the whole holdout evaluation under more seeds,
+# holding data, split and tuned hyperparameters fixed, so the only thing that
+# varies is XGBoost's own randomness (subsample / colsample draws). It produces
+# seed_stability.csv, and seed_roi_range on the leaderboard.
+#
+# Why bother: without it there is no error bar on any comparison between two
+# experiments, and the spread across seeds is plausibly the same size as the
+# differences being read as results. If run A and run B differ by less than one
+# run's own seed range, the difference is not evidence.
+#
+# Costs a full re-evaluation per seed (~35 fits under daily_walk_forward), so
+# it is off by default; 2 extra seeds is the useful minimum, 4 is thorough.
+# The primary seed is always evaluated and reported -- listing it here again is
+# ignored.
+evaluation_seeds: []
+
+# --- output -----------------------------------------------------------------
+save_experiment_artifacts: true
+experiment_root_dir: artifacts/experiments
+model_output_root: models
+overwrite_existing_model: false

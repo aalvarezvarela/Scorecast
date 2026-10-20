@@ -56,3 +56,6 @@ jobs:
                   cd scripts
                   cd update_databases
                   python update_finished_matches.py
+
+            - name: Update validated lineup stints
+              run: python scripts/lineups/update_lineups.py --local-root data --s3

@@ -1,0 +1,86 @@
+# CELL C -- the production switch: drop the columns, take the two seasons.
+#
+# Read against cell B, not cell A. B already dropped the columns, so B -> C is
+# the history change on its own.
+#
+# train_games_choices is extended here and nowhere else, and that is deliberate
+# rather than an uncontrolled second change. Under rolling_origin each origin
+# trains on the last train_games games before it, so at a 4000-game window this
+# cell and cell B pull the SAME 4000 games -- the extra 2,099 rows sit further
+# back and are never read. Without larger windows this cell would be a
+# replication of B wearing a different name, and the campaign would conclude
+# "extra history does not help" having never used any. The bigger window is the
+# mechanism by which the extra history reaches the model.
+#
+# Measured ceiling here is 7,008 games (preflight), against 4,877 and 4,893 for
+# cells A and B -- so 5000 and 6000 are reachable only in this cell, which is
+# exactly the point, and both sit under the ceiling with headroom. tail(n) reads
+# as "take up to n", so a value past the ceiling would make the earliest fold
+# train short for some trials and not others and the window axis would be
+# measuring the shortfall instead. Re-run the preflight if the CSV changes.
+#
+# What the extra seasons actually are matters for reading the result: 2019-20 is
+# the bubble and 2020-21 the 72-game compressed season. This cell trades
+# distribution match for volume, so a win here is weaker evidence than the same
+# win would be from ordinary seasons, and a loss is not evidence that history
+# per se is unhelpful.
+
+experiment_name: pubbet_c_drop_and_extend
+prediction_strategy: line_error_regressor
+training_version: "2.1-public-betting-tradeoff"
+comparison_group: public_betting_tradeoff_2026_08
+hypothesis: >
+  With the public betting columns gone, the 2,099 extra games from seasons 2019
+  and 2020 -- reachable only through a larger training window -- improve betting
+  performance despite being bubble and COVID-compressed basketball. Weak prior
+  against; the honest expectation is that distribution mismatch cancels the
+  volume gain.
+tags: [line_error, public_betting, drop_columns, extended_history]
+
+# Hardware, not part of the hypothesis -- device is excluded from fingerprint()
+# so it cannot fork an Optuna study. It must still be IDENTICAL on every cell of
+# this campaign: trial timing feeds the pruner, so a cell running on different
+# hardware is not comparable with one that is not.
+#
+# VERIFY CUDA IS REAL ON THE MACHINE YOU RUN THIS ON. XGBoost 2.1.4 does not
+# error when asked for a device it was not compiled for -- it warns
+# "XGBoost is not compiled with CUDA support" and silently runs on CPU, so a run
+# can look GPU-configured and take CPU time:
+#   poetry run python -c "import xgboost, numpy as np; \
+#     xgboost.train({'device':'cuda'}, xgboost.DMatrix(np.random.rand(50,3), \
+#     label=np.random.rand(50)), num_boost_round=2)"
+# Silence means real CUDA. The runner checks this before starting.
+device: cuda
+
+data:
+  csv_path: data/train_data/training_data_2_0_20260819.csv
+  data_version: "20260819-training-2.0"
+  expected_checksum: "sha256:27a291de0ae78165"
+  # The switch resolves to season_year_floor 2019 plus
+  # cleaning.max_seasonal_nan_spread 90, and writes both into the config that is
+  # recorded and fingerprinted -- so config.json shows what actually ran, not
+  # the shorthand that implied it.
+  #
+  # It drops columns whose AVAILABILITY identifies the season, computed rather
+  # than named. On this CSV that is 213 columns: the 200 public-betting ones
+  # cell B names explicitly, PLUS 13 betmgm price columns (100% absent in 2020,
+  # ~0% from 2021) that no public-betting substring list can see. It also KEEPS
+  # the 72 public-betting columns whose availability does not vary by season,
+  # which cell B discards. Measured, that beats the named list on both axes:
+  # 8,279 rows / 1,231 columns against 8,262 / 1,171.
+  extend_history_dropping_season_gated_columns: true
+
+walk_forward:
+  # 4500 added to match cells A and B on every window they can both reach,
+  # and 6500 at the top: measured ceiling here is 7008 games, so 6500 has
+  # margin and 7000 would sit 8 games under it -- too tight to survive a
+  # rebuild of the CSV.
+  train_games_choices: [2500, 3000, 3500, 4000, 4500, 5000, 6000, 6500]
+
+optuna:
+  # Two more window choices than cells A and B, so the same per-window trial
+  # density would need ~180. Held at 120 anyway: matching the trial budget keeps
+  # the cells comparable, and the cost is thinner sampling per window, which
+  # optuna_trials.csv makes visible when grouped by train_games.
+  n_trials: 120
+  timeout: null

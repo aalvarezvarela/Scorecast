@@ -2,10 +2,7 @@ import re
 
 import pandas as pd
 from nba_ou.config.constants import TEAM_ID_MAP, TEAM_NAME_STANDARDIZATION
-from nba_ou.config.settings import SETTINGS
-from nba_ou.fetch_data.referees.fetch_refs_data import (
-    fetch_nba_referee_assignments_today,
-)
+from nba_ou.fetch_data.referees.load_assignments import load_referee_assignments
 
 
 def _canonicalize_referee_name(name: str) -> str:
@@ -21,6 +18,7 @@ def _canonicalize_referee_name(name: str) -> str:
 def process_scheduled_referee_assignments(
     df_scheduled_games_original: pd.DataFrame,
 ) -> pd.DataFrame:
+    """Attach available crews; retain unassigned games with missing REF slots."""
     df_scheduled_games = df_scheduled_games_original.copy()
 
     # Create reverse mapping from team ID to team name
@@ -39,7 +37,18 @@ def process_scheduled_referee_assignments(
         df_scheduled_games["GAME_DATE_EST"]
     ).dt.date
 
-    df_refs = fetch_nba_referee_assignments_today(SETTINGS.nba_official_assignments_url)
+    dates = df_scheduled_games["GAME_DATE"].dropna().unique()
+    if len(dates) != 1:
+        raise ValueError("Scheduled referee assignments require exactly one game date")
+    df_refs = load_referee_assignments(dates[0].isoformat())
+
+    if df_refs.empty:
+        # Splitting an empty Game column cannot produce two team columns.
+        # Keep every scheduled game so closing and intermediate builders both
+        # receive missing assignments and leave their referee features NaN.
+        return df_scheduled_games[
+            ["GAME_ID", "GAME_DATE", "home_team", "away_team"]
+        ].assign(REF_1=float("nan"), REF_2=float("nan"), REF_3=float("nan"))
 
     df_refs[["away_team", "home_team"]] = (
         df_refs["Game"].str.split("@", expand=True).apply(lambda c: c.str.strip())
