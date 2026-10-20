@@ -1,0 +1,39 @@
+# Runtime dependencies of `scripts/predict_nba_games.py --no-tabpfn`
+# (.github/workflows/nba_predictor_daily.yml). Direct imports only; pip
+# resolves the transitive ones. Versions match requirements.txt.
+#
+# Derived from the static import closure of the script (module-level and
+# function-level imports alike). tabpfn-client is imported lazily and only with
+# TabPFN enabled, so it is left out; dev tools, Jupyter and plotting are too.
+
+# Data
+numpy
+pandas==2.2.3
+pyarrow>=18.0.0
+scipy==1.15.2
+
+# Models and serving
+xgboost==2.1.4
+scikit-learn==1.6.1
+shap==0.51.0
+pydantic==2.11.10
+boto3==1.42.49
+
+# Databases
+psycopg==3.3.2
+psycopg-binary==3.3.2
+
+# Scraping and data sources
+nba_api==1.11.4
+requests==2.32.3
+urllib3==2.3.0
+beautifulsoup4==4.14.2
+# pandas.read_html (referee tables) needs a parser backend.
+lxml==6.0.2
+# Injury-report PDFs.
+PyMuPDF==1.26.6
+# Imported at module level by the SBR/Yahoo scrapers; no browser is installed
+# or launched by this job.
+playwright==1.57.0
+
+tqdm==4.67.1

@@ -230,6 +230,7 @@ data/
 *.ubj
 *.json
 *.txt
+!requirements*.txt
 *.joblib
 .codex
 CLAUDE.md
