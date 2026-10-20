@@ -70,6 +70,14 @@ VALIDATION_TOLERANCE_MINUTES: dict[str, int] = {
     "quarter_96": 14,
 }
 
+#: How long after its derived time a report may still be absent from the CDN.
+#: Measured on 2025-26 (18,951 reports): ``Last-Modified`` sits a median 5 s
+#: after the derived time, the 99.9th percentile 15 min (the :45-stamped hourly
+#: files). A slot is probed only once this has passed, and a 403 recorded
+#: earlier than this is not final -- otherwise a report probed before the CDN
+#: published it would be marked missing and never fetched.
+PUBLISH_GRACE = timedelta(minutes=30)
+
 #: The deep offseason, when nothing is published and probing is pure waste.
 #: Measured Jun-Oct across every year: Summer League runs into mid/late July
 #: (latest observed activity 2024-07-22) and the feed does not wake again until
@@ -271,6 +279,12 @@ def candidates_for_date(day: Date, *, skip_offseason: bool = True) -> list[Candi
 
 def date_range(start: Date, end: Date) -> list[Date]:
     return [start + timedelta(days=i) for i in range((end - start).days + 1)]
+
+
+def probe_cutoff(as_of: datetime | None = None) -> datetime:
+    """Latest derived report time (UTC) worth probing at ``as_of`` (default now)."""
+    as_of = as_of or datetime.now(ZoneInfo("UTC"))
+    return as_of - PUBLISH_GRACE
 
 
 def archive_end(today: Date | None = None) -> Date:

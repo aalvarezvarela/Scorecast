@@ -539,6 +539,44 @@ def test_discovery_skips_on_url_so_a_shared_key_cannot_block_a_real_file(tmp_pat
     assert row.nba_available == mf.AVAILABLE_TRUE
 
 
+def test_discovery_leaves_slots_not_yet_due_for_a_later_run(tmp_path):
+    """Probing today's later slots would record them missing for good."""
+    day = date(2026, 1, 15)
+    candidates = U.candidates_for_date(day)
+    as_of = datetime(2026, 1, 15, 14, 0, tzinfo=U.ET)
+    store = mf.ManifestStore(root=tmp_path)
+    client = _FakeClient(existing={c.url for c in candidates})
+    D.discover(
+        store=store, client=client, start=day, end=day, verbose=False, as_of=as_of
+    )
+
+    probed = {c.url: c for c in candidates if c.url in client.probed}
+    assert probed
+    assert all(
+        c.report_datetime_utc <= as_of - U.PUBLISH_GRACE for c in probed.values()
+    )
+    assert len(probed) == sum(
+        c.report_datetime_utc <= as_of - U.PUBLISH_GRACE for c in candidates
+    )
+
+
+def test_a_missing_verdict_recorded_before_the_grace_is_not_final(tmp_path):
+    """A slot the live fetch probed as it fell due may not have been up yet."""
+    due = pd.Timestamp("2026-01-15T19:00:00Z")
+    rows = [_discovery_row("early"), _discovery_row("late")]
+    for row, probed_after in zip(rows, ("2min", "2h"), strict=True):
+        row.update(
+            report_datetime_utc=due,
+            nba_available=mf.AVAILABLE_FALSE,
+            discovery_timestamp=due + pd.Timedelta(probed_after),
+            original_url=f"https://example/{row['report_key']}.pdf",
+        )
+    store = mf.ManifestStore(root=tmp_path)
+    store.upsert("2025-26", rows)
+    assert store.resolved_keys("2025-26") == {"late"}
+    assert store.resolved_urls("2025-26") == {"https://example/late.pdf"}
+
+
 def test_download_stores_a_restamped_report_at_its_header_time(tmp_path):
     day = date(2025, 12, 19)
     cand = next(c for c in U.candidates_for_date(day) if c.label == "04PM")

@@ -97,8 +97,23 @@ def discover(
     s3_prefix: str = "injury_reports",
     dry_run: bool = False,
     verbose: bool = True,
+    as_of: datetime | None = None,
 ) -> DiscoveryStats:
+    """Probe every candidate in ``start..end`` with no final verdict yet.
+
+    Slots not yet due at ``as_of`` (default now) are left for a later run, so
+    ``end`` may be today.
+    """
     stats = DiscoveryStats()
+    cutoff = U.probe_cutoff(as_of)
+
+    def due_candidates(day: Date) -> list[U.Candidate]:
+        return [
+            c
+            for c in U.candidates_for_date(day, skip_offseason=skip_offseason)
+            if c.report_datetime_utc <= cutoff
+        ]
+
     pending: dict[str, list[dict]] = {}
     since_checkpoint = 0
 
@@ -108,7 +123,7 @@ def discover(
     days = U.date_range(start, end)
     to_probe = 0
     for day in days:
-        cands = U.candidates_for_date(day, skip_offseason=skip_offseason)
+        cands = due_candidates(day)
         if not cands:
             continue
         resolved = store.resolved_urls(U.season_label(day)) if not dry_run else set()
@@ -135,7 +150,7 @@ def discover(
 
     try:
         for day in days:
-            candidates = U.candidates_for_date(day, skip_offseason=skip_offseason)
+            candidates = due_candidates(day)
             if not candidates:
                 continue
             stats.dates += 1

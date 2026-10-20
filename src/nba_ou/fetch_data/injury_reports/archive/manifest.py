@@ -18,6 +18,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 import pandas as pd
+from nba_ou.fetch_data.injury_reports.archive.urls import PUBLISH_GRACE
 
 AVAILABLE_TRUE = "true"
 AVAILABLE_FALSE = "false"
@@ -65,6 +66,20 @@ COLUMNS: dict[str, str] = {
 
 #: A verdict we never re-probe. Anything else is the retry queue.
 TERMINAL_AVAILABILITY = {AVAILABLE_TRUE, AVAILABLE_FALSE}
+
+
+def terminal_rows(df: pd.DataFrame) -> pd.Series:
+    """Rows whose verdict is final.
+
+    A ``false`` is final only if it was probed at least ``PUBLISH_GRACE`` after
+    the report's derived time: an earlier probe (the live pre-prediction fetch
+    probes slots as they fall due) may have run before the CDN published it.
+    """
+    terminal = df.nba_available.isin(TERMINAL_AVAILABILITY)
+    premature = (df.nba_available == AVAILABLE_FALSE) & (
+        df.discovery_timestamp < df.report_datetime_utc + PUBLISH_GRACE
+    )
+    return terminal & ~premature.fillna(False)
 
 
 def published_utc(df: pd.DataFrame) -> pd.Series:
@@ -174,7 +189,7 @@ class ManifestStore:
         df = self.load(season)
         if not len(df):
             return set()
-        done = df[df.nba_available.isin(TERMINAL_AVAILABILITY)]
+        done = df[terminal_rows(df)]
         return set(done.report_key.dropna())
 
     def resolved_urls(self, season: str) -> set[str]:
@@ -187,7 +202,7 @@ class ManifestStore:
         df = self.load(season)
         if not len(df):
             return set()
-        done = df[df.nba_available.isin(TERMINAL_AVAILABILITY)]
+        done = df[terminal_rows(df)]
         return set(done.original_url.dropna())
 
     def pending_downloads(self, season: str) -> pd.DataFrame:

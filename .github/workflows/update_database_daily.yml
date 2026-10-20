@@ -8,6 +8,7 @@ on:
 
 permissions:
   contents: read
+  id-token: write
 
 jobs:
   update-database:
@@ -28,6 +29,10 @@ jobs:
       AIVEN_DB_URL: ${{ secrets.AIVEN_DB_URL }}
       AIVEN_DB_PASSWORD: ${{ secrets.AIVEN_DB_PASSWORD }}
 
+      # S3 (injury-report archive, input cache): empty means "use the ambient
+      # OIDC credentials" rather than a named local profile.
+      S3_AWS_PROFILE: ""
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -37,6 +42,12 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_TO_ASSUME }}
+          aws-region: eu-west-1
 
       # requirements.txt does not include the repo itself; without this the
       # scripts' `from nba_ou ...` imports only work if the runner's Python
@@ -81,10 +92,11 @@ jobs:
         run: |
           python scripts/update_databases/repair_sportsbook_closes.py
 
-      # The injury-report store holds a game once it is played: the reports
-      # of the days just finished, downloaded to the S3 archive, then only
-      # those games' spans rebuilt. Tonight's games are read live instead.
-      - name: Store finished days' injury reports
+      # Every report of the season published so far goes to the S3 archive;
+      # the store then gets the spans of every finished game it does not hold
+      # yet (at least the last 2 days are rebuilt). It holds a game once it is
+      # played, so tonight's games are read live instead.
+      - name: Store injury reports and finished games' spans
         run: |
           python scripts/injury_reports/daily_injury_reports.py
 
