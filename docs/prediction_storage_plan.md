@@ -99,8 +99,13 @@ For intermediate rows validate:
 ```text
 snapshot_at = tipoff_at_prediction - snapshot_horizon_minutes * 60 seconds
 snapshot_at <= inputs_observed_at <= predicted_at
-fixed-horizon model: snapshot_horizon_minutes = model_horizon_minutes
+fixed-horizon model, own input: snapshot_horizon_minutes = model_horizon_minutes
 ```
+
+Since 2026-10-20 a fixed-horizon model can also read each game's latest
+snapshot (`INPUT_MODE = latest`, see `docs/live_intermediate_prediction_plan.md`):
+then `snapshot_horizon_minutes` is that row's horizon, off the grid in general,
+and only `snapshot_at <= inputs_observed_at` holds.
 
 The nominal cutoff is not proof that every feature is historically
 reconstructible. The current roster path uses the latest same-day roster

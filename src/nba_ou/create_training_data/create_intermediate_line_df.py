@@ -31,7 +31,7 @@ from __future__ import annotations
 
 import gc
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 
 import numpy as np
@@ -878,6 +878,21 @@ def _ridge_with_history(
     return fitted.loc["t"].reindex(target_input.index)
 
 
+def nearest_grid_horizon(minutes: int, grid: tuple[int, ...]) -> int:
+    """The grid horizon closest to ``minutes``; a tie goes to the earlier one."""
+    return min(grid, key=lambda horizon: (abs(horizon - minutes), -horizon))
+
+
+def _keep_extra_snapshots(
+    wide: pd.DataFrame, grid: tuple[int, ...], extra: Mapping[str, int]
+) -> pd.DataFrame:
+    """``wide``'s grid rows, and of the extra horizons only each game's own."""
+    minutes = wide["snapshot_minutes"].astype(int)
+    own_extra = wide["game_id"].astype(str).map(extra)
+    keep = minutes.isin(grid) | minutes.eq(own_extra)
+    return wide.loc[keep].reset_index(drop=True)
+
+
 def create_intermediate_line_df(
     *,
     recent_limit_to_include: str | pd.Timestamp | None = None,
@@ -900,6 +915,7 @@ def create_intermediate_line_df(
     return_scoring: bool = False,
     live: LiveGameDay | None = None,
     target_game_ids=None,
+    extra_target_snapshots: Mapping[str, int] | None = None,
     verbose: bool = True,
 ) -> pd.DataFrame | tuple[pd.DataFrame, pd.DataFrame]:
     """Build the (game, snapshot) dataset.
@@ -962,12 +978,33 @@ def create_intermediate_line_df(
     NaN otherwise, as before the 09:00 ET release in training. History then
     stops the day before (``recent_limit_to_include`` defaults to it), and the
     live season is admitted even before the store holds any of it.
+
+    ``extra_target_snapshots`` (tonight-only mode) gives a target game one more
+    snapshot off the grid, in minutes before its tip -- the prediction run's own
+    moment, so a model can read the latest market. Every value of that row is
+    computed as of that moment, like a grid row's; only the injury stage's
+    calibration on earlier games, which a full build has at grid horizons only,
+    reads them at the nearest grid horizon (``nearest_grid_horizon``). The other
+    games' history is the grid's, so a training build cannot change.
     """
     targets = (
         None
         if target_game_ids is None
         else set(normalize_game_ids([str(g) for g in target_game_ids]))
     )
+    extra_snapshots: dict[str, int] = {}
+    if extra_target_snapshots:
+        if targets is None:
+            raise ValueError("extra_target_snapshots needs target_game_ids")
+        extra_snapshots = {
+            str(game).strip(): int(minutes)
+            for game, minutes in extra_target_snapshots.items()
+        }
+        unknown = sorted(set(extra_snapshots) - targets)
+        if unknown:
+            raise ValueError(f"extra_target_snapshots of non-target games: {unknown}")
+        if any(minutes < 0 for minutes in extra_snapshots.values()):
+            raise ValueError("extra_target_snapshots must be minutes before tip")
     # Argument validation before any I/O: a bad call should fail immediately,
     # not after opening a database connection.
     if base_lookback_seasons < 0:
@@ -1071,15 +1108,31 @@ def create_intermediate_line_df(
         ticks = merge_caesars_into_fanatics_ticks(ticks)
     if verbose:
         print(f"✓ {len(ticks):,} pre-game ticks over {ticks.game_id.nunique()} games")
+    # The extra horizons widen the targets' grid only: the history above was
+    # built on the grid itself, as a full build's is.
+    target_settings = side_settings
+    if extra_snapshots:
+        target_settings = {
+            **side_settings,
+            "snapshot_grid": tuple(
+                sorted(set(snapshot_grid) | set(extra_snapshots.values()))
+            ),
+        }
+        if verbose:
+            print(f"Extra target snapshots: {dict(sorted(extra_snapshots.items()))}")
     side = _build_snapshot_side(
         ticks,
-        **side_settings,
+        **target_settings,
         stage=stage,
         progress=progress,
         verbose=verbose,
         schema=None if snapshot_history is None else snapshot_history.schema,
     )
     snapshot_wide = side.wide
+    if extra_snapshots:
+        snapshot_wide = _keep_extra_snapshots(
+            snapshot_wide, snapshot_grid, extra_snapshots
+        )
     ridge_closing_lines = side.ridge_closing_lines
     if snapshot_history is not None:
         ridge_closing_lines = {
@@ -1305,10 +1358,17 @@ def create_intermediate_line_df(
         history_cutoffs=history_rows,
         live_reports=live.injury_reports if live is not None else None,
         while_waiting=market_dynamics if include_market_dynamics else None,
+        horizon_aliases={
+            minutes: nearest_grid_horizon(minutes, snapshot_grid)
+            for minutes in set(extra_snapshots.values())
+            if minutes not in snapshot_grid
+        },
     )
     if include_market_dynamics:
-        if not merged[["GAME_ID", "TIME_TO_MATCH_MIN"]].reset_index(drop=True).equals(
-            keys_before.reset_index(drop=True)
+        if (
+            not merged[["GAME_ID", "TIME_TO_MATCH_MIN"]]
+            .reset_index(drop=True)
+            .equals(keys_before.reset_index(drop=True))
         ):
             raise ValueError("Injury features reordered the snapshot rows")
         merged = attach_market_dynamics(merged, market["columns"])

@@ -65,6 +65,7 @@ def test_baselines_read_history_from_the_layer_inputs(monkeypatch):
         "SETTINGS",
         SimpleNamespace(
             prediction_model_slots=[],
+            intermediate_input_mode="own",
             headless=True,
             nba_injury_reports_url="",
             s3_aws_profile=None,
@@ -145,6 +146,7 @@ def test_a_failing_slot_does_not_stop_the_others(monkeypatch, capsys):
         "SETTINGS",
         SimpleNamespace(
             prediction_model_slots=slots,
+            intermediate_input_mode="own",
             headless=True,
             nba_injury_reports_url="",
             s3_aws_profile=None,

@@ -1,0 +1,337 @@
+"""Intermediate slots predicting from tonight's latest snapshot (LATEST_INPUT_SLOTS)."""
+
+from __future__ import annotations
+
+from types import SimpleNamespace
+
+import numpy as np
+import pandas as pd
+import pytest
+import scripts.predict_nba_games as job
+from nba_ou.config.settings import Settings
+from nba_ou.create_training_data.create_intermediate_line_df import (
+    _keep_extra_snapshots,
+    nearest_grid_horizon,
+)
+from nba_ou.create_training_data.intermediate_injuries import _alias_horizons
+from nba_ou.data_processing.injury_status.report_state import InjuryReportState
+from nba_ou.modeling.registry_paths import ModelSlot
+from nba_ou.prediction import prediction
+from nba_ou.prediction.input_limits import (
+    LATEST_INPUT_COLUMN,
+    LIMITED_COUNT_COLUMN,
+    limit_to_training_support,
+    unsupported_news_columns,
+)
+from nba_ou.prediction.intermediate_frame import latest_snapshot_minutes
+
+#: 23:00 UTC is 19:00 ET (EDT) on this date.
+TIP = pd.Timestamp("2026-04-10 23:00", tz="UTC")
+
+
+# ---- the latest snapshot ---------------------------------------------------
+
+
+def test_latest_snapshot_is_rounded_up_and_a_tipped_game_reads_zero():
+    tipoffs = pd.Series(
+        {"early": TIP, "late": TIP + pd.Timedelta(hours=3), "none": pd.NaT}
+    )
+    as_of = TIP - pd.Timedelta(minutes=46, seconds=30)
+    assert latest_snapshot_minutes(tipoffs, as_of) == {"early": 47, "late": 227}
+    # Never after as_of: the snapshot falls at or before the run.
+    assert TIP - pd.Timedelta(minutes=47) <= as_of
+    assert latest_snapshot_minutes(tipoffs, TIP + pd.Timedelta(minutes=5)) == {
+        "early": 0,
+        "late": 175,
+    }
+
+
+def test_nearest_grid_horizon():
+    grid = (0, 30, 60, 120, 1080)
+    assert nearest_grid_horizon(47, grid) == 60
+    assert nearest_grid_horizon(44, grid) == 30
+    # A tie goes to the earlier snapshot (more minutes before tip).
+    assert nearest_grid_horizon(45, grid) == 60
+    assert nearest_grid_horizon(1500, grid) == 1080
+
+
+def test_only_each_games_own_extra_snapshot_is_kept():
+    wide = pd.DataFrame(
+        [(g, m) for g in ("a", "b") for m in (30, 47, 60, 227)],
+        columns=["game_id", "snapshot_minutes"],
+    )
+    kept = _keep_extra_snapshots(wide, (30, 60), {"a": 47, "b": 227})
+    assert sorted(map(tuple, kept.to_numpy().tolist())) == [
+        ("a", 30),
+        ("a", 47),
+        ("a", 60),
+        ("b", 30),
+        ("b", 60),
+        ("b", 227),
+    ]
+
+
+# ---- the injury stage's aliases ----------------------------------------------
+
+
+def _state(rows):
+    """A report state with a status and a filing per (game, team)."""
+    statuses = pd.DataFrame(
+        [(g, t, f"p{g}", "Out") for g, t in rows],
+        columns=["game_id", "team_id", "player_id", "status"],
+    )
+    filings = pd.DataFrame(
+        [(g, t, True) for g, t in rows], columns=["game_id", "team_id", "submitted"]
+    )
+    ages = pd.DataFrame(
+        [(g, 10.0) for g, _ in rows], columns=["game_id", "report_age_minutes"]
+    )
+    empty = InjuryReportState.empty()
+    return InjuryReportState(
+        statuses=statuses,
+        filings=filings,
+        report_age=ages,
+        status_events=empty.status_events,
+        listed_pairs=empty.listed_pairs,
+    )
+
+
+def test_an_alias_reads_the_earlier_games_of_its_grid_horizon():
+    states = {
+        60: _state([("old1", "t1"), ("old2", "t2"), ("tonight", "t3")]),
+        47: _state([("tonight", "t3")]),
+    }
+    cutoffs = pd.DataFrame(
+        {
+            "game_id": ["old1", "old2", "tonight", "tonight"],
+            "snapshot_minutes": [60, 60, 60, 47],
+            "as_of": pd.to_datetime(["2026-01-01"] * 4, utc=True),
+        }
+    )
+    aliased, aliased_cutoffs = _alias_horizons(
+        states, cutoffs, {47: 60}, targets={"tonight"}
+    )
+    # Earlier games from T-60, tonight's own read at T-47 -- never its T-60 one.
+    assert sorted(aliased[47].statuses["game_id"]) == ["old1", "old2", "tonight"]
+    assert aliased[47].statuses["game_id"].tolist().count("tonight") == 1
+    assert len(aliased[47].filings) == 3
+    assert aliased[60] is states[60]
+    at_47 = aliased_cutoffs[aliased_cutoffs["snapshot_minutes"].eq(47)]
+    assert sorted(at_47["game_id"]) == ["old1", "old2", "tonight"]
+    # The caller's frames are untouched (the memos key on them).
+    assert len(cutoffs) == 4 and len(states[47].statuses) == 1
+
+
+# ---- the training-support limits ---------------------------------------------
+
+
+def _rows(minutes=47, **values):
+    frame = pd.DataFrame(
+        {
+            "GAME_ID": ["g1"],
+            "TIME_TO_MATCH_MIN": [minutes],
+            "SNAPSHOT_TS_UTC": [TIP - pd.Timedelta(minutes=minutes)],
+            "REF_CREW_FTA_TENDENCY_BEFORE": [1.5],
+            "INJ_SNAP_HAS_MATERIAL_NEWS_BEFORE_TEAM_HOME": [1],
+            "INJ_SNAP_NEWS_EXP_PTS_W60_BEFORE_TEAM_HOME": [np.nan],
+            "x": [3.0],
+        }
+    )
+    return frame.assign(**values)
+
+
+TABLE = {
+    "INJ_SNAP_HAS_MATERIAL_NEWS_BEFORE_TEAM_HOME": (480, 720),
+    "INJ_SNAP_NEWS_EXP_PTS_W60_BEFORE_TEAM_HOME": (720,),
+}
+
+
+def test_referees_follow_the_models_nominal_snapshot():
+    # 19:00 ET tip. T-360 is 13:00 ET, after the 09:00 release: kept.
+    kept = limit_to_training_support(_rows(), horizon_minutes=360, unsupported={})
+    assert kept["REF_CREW_FTA_TENDENCY_BEFORE"].tolist() == [1.5]
+    assert kept[LIMITED_COUNT_COLUMN].tolist() == [0]
+    # T-720 is 07:00 ET: its training rows never had a crew.
+    masked = limit_to_training_support(_rows(), horizon_minutes=720, unsupported={})
+    assert masked["REF_CREW_FTA_TENDENCY_BEFORE"].isna().all()
+    assert masked[LIMITED_COUNT_COLUMN].tolist() == [1]
+    # A 22:00 ET tip at T-720 is 10:00 ET: released.
+    late = _rows(
+        SNAPSHOT_TS_UTC=[TIP + pd.Timedelta(hours=3) - pd.Timedelta(minutes=47)]
+    )
+    late = limit_to_training_support(late, horizon_minutes=720, unsupported={})
+    assert late["REF_CREW_FTA_TENDENCY_BEFORE"].tolist() == [1.5]
+
+
+def test_news_is_zeroed_only_where_training_had_none():
+    limited = limit_to_training_support(_rows(), horizon_minutes=480, unsupported=TABLE)
+    assert limited["INJ_SNAP_HAS_MATERIAL_NEWS_BEFORE_TEAM_HOME"].tolist() == [0]
+    # NaN stays NaN, as in training; other features are untouched.
+    assert limited["INJ_SNAP_NEWS_EXP_PTS_W60_BEFORE_TEAM_HOME"].isna().all()
+    assert limited["x"].tolist() == [3.0]
+    assert limited[LIMITED_COUNT_COLUMN].tolist() == [1]
+    supported = limit_to_training_support(
+        _rows(), horizon_minutes=360, unsupported=TABLE
+    )
+    assert supported["INJ_SNAP_HAS_MATERIAL_NEWS_BEFORE_TEAM_HOME"].tolist() == [1]
+
+
+def test_support_table_from_a_dataset():
+    frame = pd.DataFrame(
+        {
+            "TIME_TO_MATCH_MIN": [60] * 20 + [720] * 20,
+            # A value in 10/20 rows at T-60, 0/20 at T-720.
+            "INJ_SNAP_NEWS_EXP_PTS_W60_BEFORE_TEAM_HOME": [1.0] * 10
+            + [0.0] * 10
+            + [np.nan] * 5
+            + [0.0] * 15,
+            # Supported everywhere: left out.
+            "ODDS_SNAP_NEWS_HAS_RECENT": [1] * 40,
+            "REF_X": [0] * 40,
+        }
+    )
+    assert unsupported_news_columns(frame) == {
+        "INJ_SNAP_NEWS_EXP_PTS_W60_BEFORE_TEAM_HOME": (720,)
+    }
+
+
+# ---- serving -----------------------------------------------------------------
+
+
+def _serve(monkeypatch, horizon):
+    import nba_ou.modeling.registry_store as store
+
+    class Resolved:
+        spec = SimpleNamespace(
+            spec_id="s",
+            identity=SimpleNamespace(
+                dataset_type="intermediate_line",
+                horizon_minutes=horizon,
+                target="line_error",
+                schema_version="2_5",
+                variant="main",
+            ),
+            features=SimpleNamespace(feature_names=["x"]),
+            cleaning=SimpleNamespace(max_na_per_row=800),
+            provenance=SimpleNamespace(training_version="v"),
+        )
+        fit = SimpleNamespace(
+            fit_id="f",
+            model_name="m",
+            train_date_min=pd.Timestamp("2025-01-01"),
+            train_date_max=pd.Timestamp("2026-01-01"),
+        )
+        model_bytes = b""
+
+    monkeypatch.setattr(store, "resolve_channel", lambda **_: Resolved())
+    monkeypatch.setattr(prediction.XGBRegressor, "load_model", lambda self, raw: None)
+    seen = {}
+
+    def predict(*, df, **kwargs):
+        seen.update(kwargs, rows=df)
+        return df
+
+    monkeypatch.setattr(prediction, "load_and_predict_model_for_nba_games", predict)
+    return seen
+
+
+def _frame():
+    """Two games' grid rows plus each one's latest snapshot."""
+    rows = [("g1", m) for m in (47, 60, 720)] + [("g2", m) for m in (60, 227, 720)]
+    frame = pd.DataFrame(rows, columns=["GAME_ID", "TIME_TO_MATCH_MIN"])
+    frame["SNAPSHOT_TS_UTC"] = TIP - pd.to_timedelta(
+        frame["TIME_TO_MATCH_MIN"], unit="m"
+    )
+    frame["REF_CREW_FTA_TENDENCY_BEFORE"] = 1.5
+    frame["x"] = 1.0
+    frame[LATEST_INPUT_COLUMN] = frame["TIME_TO_MATCH_MIN"].isin([47, 227])
+    return frame
+
+
+def _predict(slot_horizon, **kwargs):
+    return prediction.load_registry_model_and_predict(
+        s3_client=None,
+        bucket="b",
+        slot=ModelSlot(
+            schema_version="2_5",
+            target="line_error",
+            horizon_minutes=slot_horizon,
+            variant="main",
+        ),
+        df=None,
+        **kwargs,
+    )
+
+
+def test_a_latest_input_slot_reads_each_games_latest_row_limited(monkeypatch):
+    seen = _serve(monkeypatch, horizon=720)
+    _predict(720, frames={"intermediate_line": _frame()}, latest_input=True)
+    rows = seen["rows"]
+    assert rows[["GAME_ID", "TIME_TO_MATCH_MIN"]].values.tolist() == [
+        ["g1", 47],
+        ["g2", 227],
+    ]
+    # A T-720 model of a 19:00 ET game never saw a crew.
+    assert rows["REF_CREW_FTA_TENDENCY_BEFORE"].isna().all()
+    assert seen["extra_summary_columns"]["INPUT_MODE"] == "latest"
+
+
+def test_own_input_reads_the_models_snapshot(monkeypatch):
+    seen = _serve(monkeypatch, horizon=720)
+    _predict(720, frames={"intermediate_line": _frame()})
+    rows = seen["rows"]
+    assert rows["TIME_TO_MATCH_MIN"].tolist() == [720, 720]
+    assert rows["REF_CREW_FTA_TENDENCY_BEFORE"].tolist() == [1.5, 1.5]
+    assert seen["extra_summary_columns"]["INPUT_MODE"] == "own"
+
+
+def test_latest_input_needs_a_frame_built_for_it(monkeypatch):
+    _serve(monkeypatch, horizon=60)
+    frame = _frame().drop(columns=LATEST_INPUT_COLUMN)
+    with pytest.raises(ValueError, match=LATEST_INPUT_COLUMN):
+        _predict(60, frames={"intermediate_line": frame}, latest_input=True)
+
+
+# ---- configuration -------------------------------------------------------------
+
+
+def _settings(tmp_path, body):
+    path = tmp_path / "config.ini"
+    path.write_text(
+        "[PredictionModels]\n"
+        "ENABLED_MODELS =\n"
+        "    2_5 | line_error | 0 | main\n"
+        "    2_5 | line_error | 60 | main\n"
+        "    2_5 | line_error | 360 | main\n" + body
+    )
+    return Settings(config_path=str(path), secrets_path=str(tmp_path / "none.ini"))
+
+
+def test_input_mode_defaults_to_own_and_is_validated(tmp_path):
+    assert _settings(tmp_path, "").intermediate_input_mode == "own"
+    assert (
+        _settings(tmp_path, "INTERMEDIATE_INPUT_MODE = Latest\n").intermediate_input_mode
+        == "latest"
+    )
+    with pytest.raises(ValueError, match="INTERMEDIATE_INPUT_MODE"):
+        _settings(tmp_path, "INTERMEDIATE_INPUT_MODE = soon\n").intermediate_input_mode
+
+
+def test_latest_input_slots_all_or_rows(tmp_path, monkeypatch):
+    settings = _settings(
+        tmp_path, "INTERMEDIATE_INPUT_MODE = latest\nLATEST_INPUT_SLOTS = all\n"
+    )
+    assert settings.latest_input_slots is None
+    monkeypatch.setattr(job, "SETTINGS", settings)
+    enabled = settings.prediction_model_slots
+    assert job.latest_input_slots(enabled) == enabled
+    assert job.latest_input_slots(enabled, "own") == []
+
+    settings = _settings(
+        tmp_path,
+        "INTERMEDIATE_INPUT_MODE = latest\nLATEST_INPUT_SLOTS =\n"
+        "    2_5 | line_error | 360\n",
+    )
+    monkeypatch.setattr(job, "SETTINGS", settings)
+    chosen = job.latest_input_slots(settings.prediction_model_slots)
+    assert [slot.horizon_minutes for slot in chosen] == [360]
