@@ -27,12 +27,22 @@ def nba_api_schedule_games(date):
     except ValueError as err:
         raise ValueError("Invalid date format. Please use YYYY-MM-DD.") from err
 
-    # Fetch games
-    scoreboard_v2 = ScoreboardV2(game_date=date)
-
-    games = scoreboard_v2.get_data_frames()[0]
+    # Fetch games. ScoreboardV2 can also fail outright rather than come back
+    # empty: on 2026-10-20 (opening night) it answered today's date with a
+    # non-JSON body while V3 listed all three games.
+    try:
+        games = ScoreboardV2(game_date=date).get_data_frames()[0]
+    except Exception as exc:  # noqa: BLE001 -- V3 below is the fallback
+        print(f"ScoreboardV2 failed for {date} ({type(exc).__name__}: {exc}).")
+        games = pd.DataFrame()
     if not games.empty:
-        return games
+        # V2's GameHeader can list a game once per national broadcaster: on
+        # 2026-10-20 every game came twice, the rows differing only in
+        # NATL_TV_BROADCASTER_ABBREVIATION and LIVE_PERIOD_TIME_BCAST. Every
+        # consumer expects one row per game.
+        return games.drop_duplicates(subset=["GAME_ID"], keep="first").reset_index(
+            drop=True
+        )
 
     from nba_api.stats.endpoints import ScoreboardV3
 
@@ -41,7 +51,7 @@ def nba_api_schedule_games(date):
     if game_header.empty:
         return games
 
-    print("ScoreboardV2 returned no games; using ScoreboardV3 fallback.")
+    print("ScoreboardV2 gave no games; using ScoreboardV3 fallback.")
 
     line_score = scoreboard_v3.line_score.get_data_frame()
     team_ids_by_game = pd.DataFrame(
@@ -119,7 +129,9 @@ def _parse_scoreboard_game_times(games: pd.DataFrame) -> pd.Series:
     game_dates = pd.to_datetime(games["GAME_DATE_EST"], errors="coerce").dt.strftime(
         "%Y-%m-%d"
     )
-    game_status_text = games["GAME_STATUS_TEXT"].astype("string").str.strip().str.upper()
+    game_status_text = (
+        games["GAME_STATUS_TEXT"].astype("string").str.strip().str.upper()
+    )
     game_time_text = game_status_text.str.extract(GAME_TIME_PATTERN, expand=False)
     parsed_game_times = pd.to_datetime(
         game_dates.astype("string") + " " + game_time_text,
@@ -161,7 +173,9 @@ def get_schedule_games(date_to_predict: str) -> pd.DataFrame:
 
     games["GAME_TIME"] = _parse_scoreboard_game_times(games)
 
-    game_status_text = games["GAME_STATUS_TEXT"].astype("string").str.strip().str.upper()
+    game_status_text = (
+        games["GAME_STATUS_TEXT"].astype("string").str.strip().str.upper()
+    )
     unknown_game_time = (
         game_status_text.isin(UNKNOWN_GAME_TIME_STATUS_TEXT)
         | game_status_text.isna()

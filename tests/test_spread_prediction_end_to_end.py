@@ -197,3 +197,62 @@ def test_predictions_continue_with_nan_live_features(
     assert result.NA_COLUMNS_COUNT.eq(1).all()
     assert result.NA_COLUMNS_NAMES.eq(missing_feature).all()
     assert len(captured_uploads[0]) == len(frame)
+
+
+def test_snapshot_marks_reach_the_output_and_a_dry_run_stores_nothing(
+    captured_uploads,
+):
+    """An intermediate row's snapshot time and passed flag survive cleaning
+    into the summary; ``persist=False`` returns it without uploading."""
+    frame = _frame()
+    snapshot_ts = pd.Timestamp("2026-09-21 22:30", tz="UTC")
+    frame["SNAPSHOT_TS_UTC"] = snapshot_ts
+    frame["SNAPSHOT_PASSED"] = [True, False] * 3
+    result = load_and_predict_model_for_nba_games(
+        df=frame,
+        regressor=_model(),
+        model_name="line_error_t0030_main_2_5_21_09_26",
+        model_type="line_error_t0030",
+        model_version="21_09_26",
+        required_features=FEATURES,
+        prediction_target=PREDICTION_TARGET_LINE_ERROR,
+        prediction_datetime=PREDICTION_AT,
+        shap_top_n=2,
+        passthrough_columns=("SNAPSHOT_TS_UTC", "SNAPSHOT_PASSED", "NOT_THERE"),
+        persist=False,
+    )
+
+    assert captured_uploads == []
+    assert (result["SNAPSHOT_TS_UTC"] == snapshot_ts).all()
+    assert result["SNAPSHOT_PASSED"].tolist() == [True, False] * 3
+    assert "NOT_THERE" not in result.columns
+
+
+def test_a_row_over_the_training_nan_limit_is_not_predicted(captured_uploads):
+    """The spec's max_na_per_row, counted over the model's features."""
+    frame = _frame()
+    frame.loc[frame.index[0], FEATURES] = np.nan
+    kwargs = dict(
+        regressor=_model(),
+        model_name="line_error_t0000_main_2_5_21_09_26",
+        model_type="line_error_t0000",
+        model_version="21_09_26",
+        required_features=FEATURES,
+        prediction_target=PREDICTION_TARGET_LINE_ERROR,
+        prediction_datetime=PREDICTION_AT,
+        shap_top_n=2,
+        persist=False,
+    )
+
+    limited = load_and_predict_model_for_nba_games(df=frame, max_na_per_row=1, **kwargs)
+    assert frame["GAME_ID"].iloc[0] not in set(limited["GAME_ID"])
+    assert len(limited) == len(frame) - 1
+
+    # At the limit the row is kept, as training's `<=` keeps it.
+    kept = load_and_predict_model_for_nba_games(df=frame, max_na_per_row=2, **kwargs)
+    assert len(kept) == len(frame)
+
+    nothing_left = load_and_predict_model_for_nba_games(
+        df=frame.iloc[:1], max_na_per_row=0, **kwargs
+    )
+    assert nothing_left.empty

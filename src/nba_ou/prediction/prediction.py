@@ -1,3 +1,4 @@
+from collections.abc import Mapping, Sequence
 from datetime import datetime
 from typing import Literal
 from zoneinfo import ZoneInfo
@@ -9,6 +10,7 @@ from nba_ou.config.odds_columns import (
     resolve_main_spread_line_col,
     total_line_over_col_raw,
 )
+from nba_ou.config.yahoo_features import compact_yahoo_columns
 from nba_ou.data_processing.missing_data.clean_df_for_training import (
     clean_dataframe_for_training,
 )
@@ -43,11 +45,10 @@ TOTALS_TARGETS = frozenset(
 #: was trained FOR.
 DEFAULT_HORIZON_TOLERANCE_MINUTES = 45
 
-#: Dataset types whose features the daily prediction frame carries. The frame
-#: comes from ``create_df_to_predict``, which builds closing-line features only;
-#: an intermediate-line model also needs the ODDS_SNAP_* family, which only
-#: ``create_intermediate_line_df`` produces. Such a slot is skipped, not failed,
-#: until the live snapshot features exist -- then add "intermediate_line" here.
+#: Dataset types a lone ``df`` (no ``frames``) is taken to carry: a frame from
+#: ``create_df_to_predict`` has closing-line features only, and an
+#: intermediate-line model also needs the ODDS_SNAP_* family. The daily job
+#: passes ``frames`` instead, which names the dataset types it built.
 SERVABLE_DATASET_TYPES: frozenset[str] = frozenset({"closing_line"})
 #: A dataset type whose rows are (game, snapshot): a slot predicts the row of
 #: its own horizon, ``TIME_TO_MATCH_MIN`` minutes before tip-off.
@@ -334,7 +335,10 @@ def load_and_predict_model_for_nba_games(
     total_points_pick_line_col: str | None = None,
     spread_pick_line_col: str | None = None,
     extra_summary_columns: dict | None = None,
+    passthrough_columns: Sequence[str] = (),
     shap_top_n: int = 20,
+    persist: bool = True,
+    max_na_per_row: int | None = None,
 ) -> pd.DataFrame:
     """
     Predict NBA games using a trained regressor for one of three targets:
@@ -359,7 +363,16 @@ def load_and_predict_model_for_nba_games(
         prediction_target: Which target this model predicts.
         total_points_pick_line_col: Line column used to derive OVER/UNDER/PUSH when
             prediction_target is TOTAL_POINTS. Defaults to main sportsbook from config.
+        passthrough_columns: Per-row input columns copied unchanged into the
+            output when present (e.g. an intermediate row's snapshot time).
         shap_top_n: Number of top positive/negative SHAP contributors to store.
+        persist: Upload the output to the predictions table. False only
+            returns it (a dry run).
+        max_na_per_row: The model's own training limit (its spec's
+            ``cleaning.max_na_per_row``): a row with more NaN model features is
+            not predicted, as training would not have kept it. Counted as
+            training counts it, the compact Yahoo block excluded. None or
+            negative disables it.
 
     Returns:
         DataFrame containing predictions with key information
@@ -380,6 +393,7 @@ def load_and_predict_model_for_nba_games(
             "TEAM_NAME_TEAM_HOME",
             "TEAM_NAME_TEAM_AWAY",
             "MATCHUP_TEAM_HOME",
+            *passthrough_columns,
         ],
         keep_all_cols=True,
         # The same-day frame carries display columns (GAME_TIME and the like)
@@ -387,7 +401,11 @@ def load_and_predict_model_for_nba_games(
         # decides its inputs, so dropping them here is safe.
         unexpected_text="drop",
         verbose=1,
-        strict_mode=30,
+        # Rows are limited below, by the model's own training limit
+        # (max_na_per_row) over its features. A fixed 30 columns over the
+        # whole frame rejected every game of the 2026-10-20 opener (71), while
+        # the closing models were fitted with up to 300 NaN per row.
+        strict_mode=-1,
     )
 
     # Load the model using joblib
@@ -429,6 +447,28 @@ def load_and_predict_model_for_nba_games(
     # Add NaN tracking columns (based on required features only)
     df_predictable["NA_COLUMNS_COUNT"] = na_count
     df_predictable["NA_COLUMNS_NAMES"] = na_names
+
+    if max_na_per_row is not None and max_na_per_row >= 0:
+        # As training counts it: every NaN in the row but the Yahoo block.
+        yahoo = list(compact_yahoo_columns(X.columns))
+        budget = na_count - (X[yahoo].isna().sum(axis=1) if yahoo else 0)
+        within = budget <= max_na_per_row
+        if not within.all():
+            over = df_predictable.loc[~within]
+            print(
+                f"⚠️  Not predicting {len(over)} row(s) with more than "
+                f"{max_na_per_row} NaN model features (the training limit): "
+                + ", ".join(
+                    f"{game} ({count})"
+                    for game, count in zip(
+                        over["GAME_ID"], budget[~within], strict=True
+                    )
+                )
+            )
+            df_predictable = df_predictable.loc[within]
+            X = X.loc[within]
+        if df_predictable.empty:
+            return pd.DataFrame()
 
     # Make predictions
     raw_predictions = model.predict(X)
@@ -588,6 +628,9 @@ def load_and_predict_model_for_nba_games(
         "NA_COLUMNS_COUNT",
         "NA_COLUMNS_NAMES",
     ]
+    summary_columns += [
+        column for column in passthrough_columns if column in df_predictable.columns
+    ]
 
     # SHAP confidence columns are added after summary creation
     df_summary = df_predictable[summary_columns].copy()
@@ -667,17 +710,21 @@ def load_and_predict_model_for_nba_games(
     # Compute SHAP confidence metrics per row
     # The signed edge this model is expressing, whichever market it is in.
     pred_margins = df_summary[
-        "PRED_SPREAD_ERROR"
-        if prediction_target == PREDICTION_TARGET_SPREAD_ERROR
-        else "PRED_LINE_ERROR"
+        (
+            "PRED_SPREAD_ERROR"
+            if prediction_target == PREDICTION_TARGET_SPREAD_ERROR
+            else "PRED_LINE_ERROR"
+        )
     ]
     confidence_metrics = shap_df.apply(
         lambda row: pd.Series(
             compute_shap_confidence_metrics(
                 shap_row=row,
-                pred_margin=float(pred_margins.loc[row.name])
-                if pd.notna(pred_margins.loc[row.name])
-                else 0.0,
+                pred_margin=(
+                    float(pred_margins.loc[row.name])
+                    if pd.notna(pred_margins.loc[row.name])
+                    else 0.0
+                ),
                 top_k=10,
             )
         ),
@@ -699,7 +746,8 @@ def load_and_predict_model_for_nba_games(
         for column, value in extra_summary_columns.items():
             df_summary_clean[column] = value
 
-    upload_predictions_to_postgre(df_summary_clean)
+    if persist:
+        upload_predictions_to_postgre(df_summary_clean)
 
     return df_summary_clean
 
@@ -744,17 +792,30 @@ def load_registry_model_and_predict(
     total_points_pick_line_col: str | None = None,
     spread_pick_line_col: str | None = None,
     shap_top_n: int = 20,
-    horizon_tolerance_minutes: int = DEFAULT_HORIZON_TOLERANCE_MINUTES,
+    horizon_tolerance_minutes: int | None = None,
     servable_dataset_types: frozenset[str] = SERVABLE_DATASET_TYPES,
     channel=None,
-    frames: dict[str, pd.DataFrame] | None = None,
+    frames: Mapping[str, pd.DataFrame] | None = None,
+    frame_versions: Mapping[str, str] | None = None,
+    passthrough_columns: Sequence[str] = (),
+    persist: bool = True,
 ) -> pd.DataFrame:
     """Predict with whatever a slot's channel currently points at.
 
     ``frames`` maps a dataset type to its feature frame (tonight's closing
-    rows, tonight's passed intermediate snapshots); the slot's model reads the
-    frame of its own type, and ``df`` and ``servable_dataset_types`` are then
+    rows, tonight's intermediate snapshots); the slot's model reads the frame
+    of its own type, and ``df`` and ``servable_dataset_types`` are then
     ignored. An intermediate model predicts the rows of its horizon.
+
+    ``horizon_tolerance_minutes`` restricts a non-snapshot model to rows within
+    that many minutes of its horizon (``select_rows_for_horizon``). None, the
+    default, predicts every row whatever the time to tip: the daily job runs
+    every slot on every run, and the stored ``TIME_TO_MATCH_MINUTES`` and
+    ``MODEL_HORIZON_MINUTES`` let the analysis filter afterwards.
+
+    ``frame_versions`` maps a dataset type to the schema version its frame was
+    built at. A slot whose schema is newer than its frame raises, naming both,
+    rather than failing on missing columns -- or, worse, finding them.
 
     Resolution is ``channels/production.json -> fit -> spec -> model``: the
     served model is interpreted by the spec ITS OWN FIT names, never by the
@@ -765,6 +826,7 @@ def load_registry_model_and_predict(
         slot: ``nba_ou.modeling.registry_paths.ModelSlot`` to serve.
         channel: which channel to read; defaults to production.
     """
+    from nba_ou.create_training_data.schema_layers import parse_version
     from nba_ou.modeling.registry_paths import Channel
     from nba_ou.modeling.registry_store import resolve_channel
 
@@ -781,6 +843,14 @@ def load_registry_model_and_predict(
     if frames is not None:
         servable_dataset_types = frozenset(frames)
         df = frames.get(dataset_type)
+    frame_version = (frame_versions or {}).get(dataset_type)
+    if frame_version is not None and parse_version(
+        spec.identity.schema_version
+    ) > parse_version(frame_version):
+        raise ValueError(
+            f"{slot.describe()}: a {spec.identity.schema_version} model, and the "
+            f"{dataset_type} frame was built at {frame_version}."
+        )
     if dataset_type not in servable_dataset_types:
         # Same contract as the horizon guard below: an empty frame means "not
         # this model's turn", which the daily job skips without failing. The
@@ -796,9 +866,13 @@ def load_registry_model_and_predict(
     prediction_target = resolve_prediction_target(spec.identity.target)
 
     if dataset_type in SNAPSHOT_DATASET_TYPES:
+        # The row built for this model's snapshot -- a choice of row, not a
+        # time guard: the frame holds every horizon of every game.
         eligible = pd.to_numeric(df["TIME_TO_MATCH_MIN"], errors="coerce").eq(
             spec.identity.horizon_minutes
         )
+    elif horizon_tolerance_minutes is None:
+        eligible = pd.Series(True, index=df.index)
     else:
         eligible = select_rows_for_horizon(
             df,
@@ -807,9 +881,8 @@ def load_registry_model_and_predict(
         )
     if not bool(eligible.any()):
         print(
-            f"  {slot.describe()}: no rows within "
-            f"{horizon_tolerance_minutes} min of the model's horizon "
-            f"({spec.identity.horizon_minutes}); skipping."
+            f"  {slot.describe()}: no rows for the model's horizon "
+            f"(T-{spec.identity.horizon_minutes}); skipping."
         )
         return pd.DataFrame()
     skipped = int((~eligible).sum())
@@ -840,6 +913,9 @@ def load_registry_model_and_predict(
         # Passed in rather than attached to the returned frame: the upload to
         # Postgres happens INSIDE load_and_predict_model_for_nba_games, so
         # anything added here afterwards would never be stored.
+        passthrough_columns=passthrough_columns,
+        persist=persist,
+        max_na_per_row=spec.cleaning.max_na_per_row,
         extra_summary_columns={
             "MODEL_TARGET": str(spec.identity.target),
             "MODEL_HORIZON_MINUTES": spec.identity.horizon_minutes,
