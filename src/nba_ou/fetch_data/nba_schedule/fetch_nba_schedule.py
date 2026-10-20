@@ -1,12 +1,20 @@
-"""Fetch authoritative NBA tipoff times from the public season-schedule feed.
+"""Fetch authoritative NBA tipoff times from the season-schedule feeds.
 
 One request returns a whole season, which makes this the cheap way to get
 ``tipoff_utc`` for every ``game_id`` -- the per-game ``cdn.nba.com`` boxscore
 endpoint used by ``game_time_index`` needs one request per game instead.
 
-The feed exposes both an Eastern wall-clock time (``etm``) and a UTC date/time
-pair (``gdtutc`` / ``utctm``); we prefer the UTC pair and fall back to
-localizing the Eastern value.
+The source is stats.nba.com's ``ScheduleLeagueV2``. The legacy ``data.nba.com``
+feed it replaced was abandoned (its 2025-26 file froze on 2026-04-12, the
+2026-27 one was never published) and is kept only as a fallback for past
+seasons. Checked on 2016-17 through 2025-26, the two agree on every regular-
+season game except three season openers, where V2 has the actual tip (one
+minute later) instead of the scheduled one; V2 also carries games the frozen
+2025-26 file lacks, and has no 2019-20 preseason.
+
+The legacy feed exposes both an Eastern wall-clock time (``etm``) and a UTC
+date/time pair (``gdtutc`` / ``utctm``); we prefer the UTC pair and fall back
+to localizing the Eastern value.
 """
 
 from __future__ import annotations
@@ -78,7 +86,33 @@ def _parse_tipoff_utc(game: dict) -> pd.Timestamp | None:
 
 
 def fetch_season_schedule(season_year: int, *, timeout: int = 30) -> pd.DataFrame:
-    """Return one row per game for ``season_year`` (2024 == the 2024-25 season)."""
+    """Return one row per game for ``season_year`` (2024 == the 2024-25 season).
+
+    From :func:`fetch_season_schedule_v2`. If stats.nba.com fails every retry or
+    returns no games, the legacy feed is tried instead; it still serves past
+    seasons, not 2026-27 on, so there the legacy error is what propagates.
+    """
+    try:
+        schedule = fetch_season_schedule_v2(season_year, timeout=timeout)
+    except Exception as exc:  # noqa: BLE001 - nba_api raises many types
+        print(
+            f"! ScheduleLeagueV2 unavailable for {season_year} ({exc}); "
+            "trying the legacy feed"
+        )
+        return fetch_legacy_season_schedule(season_year, timeout=timeout)
+    if schedule.empty:
+        print(
+            f"! ScheduleLeagueV2 has no games for {season_year}; "
+            "trying the legacy feed"
+        )
+        return fetch_legacy_season_schedule(season_year, timeout=timeout)
+    return schedule
+
+
+def fetch_legacy_season_schedule(
+    season_year: int, *, timeout: int = 30
+) -> pd.DataFrame:
+    """One row per game from the legacy ``data.nba.com`` season feed."""
     response = requests.get(
         SCHEDULE_URL.format(season_year=season_year),
         headers=_HEADERS,
@@ -114,6 +148,79 @@ def fetch_season_schedule(season_year: int, *, timeout: int = 30) -> pd.DataFram
     if not rows:
         return pd.DataFrame(columns=SCHEDULE_COLUMNS)
 
+    return pd.DataFrame(rows)[SCHEDULE_COLUMNS]
+
+
+SCHEDULE_V2_RETRIES = 3
+SCHEDULE_V2_BACKOFF_S = 5.0
+
+
+def _request_schedule_v2(season_year: int, timeout: int) -> dict:
+    """The season's ``ScheduleLeagueV2`` payload; raises once every retry failed."""
+    from nba_api.stats.endpoints import ScheduleLeagueV2
+
+    season = f"{season_year}-{str(season_year + 1)[-2:]}"
+    for attempt in range(SCHEDULE_V2_RETRIES):
+        try:
+            return ScheduleLeagueV2(
+                league_id="00", season=season, timeout=timeout
+            ).get_dict()
+        except Exception:
+            if attempt == SCHEDULE_V2_RETRIES - 1:
+                raise
+            time.sleep(SCHEDULE_V2_BACKOFF_S * 2**attempt)
+    raise AssertionError("unreachable")
+
+
+def _schedule_v2_rows(payload: dict, season_year: int) -> list[dict]:
+    """Rows shaped like the legacy feed's.
+
+    ``gameDateTimeEst`` is Eastern wall-clock time despite its trailing ``Z``;
+    without it the value matches the legacy ``etm``. ``gameStatus`` is an int
+    here and a string there. Placeholder fixtures (NBA Cup knockouts, playoffs)
+    carry no teams yet and keep ``None`` for them.
+    """
+    rows: list[dict] = []
+    for day in payload.get("leagueSchedule", {}).get("gameDates", []):
+        for game in day.get("games", []):
+            game_id = str(game.get("gameId") or "").strip()
+            if not game_id:
+                continue
+            status = game.get("gameStatus")
+            rows.append(
+                {
+                    "game_id": game_id,
+                    "season_year": season_year,
+                    "game_date": pd.to_datetime(
+                        (game.get("gameDateEst") or "")[:10], errors="coerce"
+                    ).date(),
+                    "tipoff_utc": pd.to_datetime(
+                        game.get("gameDateTimeUTC"), errors="coerce", utc=True
+                    ),
+                    "tipoff_et": (game.get("gameDateTimeEst") or "").removesuffix("Z")
+                    or None,
+                    "team_home": (game.get("homeTeam") or {}).get("teamTricode")
+                    or None,
+                    "team_away": (game.get("awayTeam") or {}).get("teamTricode")
+                    or None,
+                    "arena_name": game.get("arenaName") or None,
+                    "arena_city": game.get("arenaCity") or None,
+                    "game_status": None if status is None else str(status),
+                }
+            )
+    return rows
+
+
+def fetch_season_schedule_v2(season_year: int, *, timeout: int = 30) -> pd.DataFrame:
+    """One row per game from stats.nba.com's ``ScheduleLeagueV2``.
+
+    Same columns and value formats as :func:`fetch_legacy_season_schedule`, but
+    it keeps updating through the season (rescheduled games, NBA Cup knockouts,
+    play-in and playoffs as they are set).
+    """
+    rows = _schedule_v2_rows(_request_schedule_v2(season_year, timeout), season_year)
+    if not rows:
+        return pd.DataFrame(columns=SCHEDULE_COLUMNS)
     return pd.DataFrame(rows)[SCHEDULE_COLUMNS]
 
 
