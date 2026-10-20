@@ -1,10 +1,15 @@
 """
-NBA Over/Under Predictor - Historical Database Backfill Script
+NBA Over/Under Predictor - Database Update Script
 
-Backfills NBA games and player game logs into PostgreSQL by iterating season-by-season.
-Uses the existing `update_database` function (which fetches only missing game_ids).
+Updates NBA games, player game logs, odds and refs/injuries in PostgreSQL by
+iterating season-by-season. Uses the existing `update_database` function (which
+fetches only missing game_ids).
 
-Covers seasons from 2005-06 through 2024-25, i.e. games played in calendar years 2006..2025.
+    python scripts/update_databases/update_all_databases.py                  # current season
+    python scripts/update_databases/update_all_databases.py --start 2023 --end 2024
+
+Seasons default to the current one (the season in progress, or out of season the
+one just finished), so the daily job needs no yearly edit.
 """
 
 from nba_ou.postgre_db.update_all.update_all_databases import update_all_databases
@@ -13,19 +18,20 @@ if __name__ == "__main__":
     import argparse
 
     parser = argparse.ArgumentParser(
-        description="Backfill NBA games and player logs by season."
+        description="Update NBA games, player logs, odds and refs/injuries by season."
     )
     parser.add_argument(
         "--start",
         type=int,
-        default=2025,
-        help="First season start year (e.g. 2023 for 2023-24)",
+        default=None,
+        help="First season start year (e.g. 2023 for 2023-24). "
+        "Defaults to the current season.",
     )
     parser.add_argument(
         "--end",
         type=int,
-        default=2025,
-        help="Last season start year (e.g. 2025 for 2025-26)",
+        default=None,
+        help="Last season start year. Defaults to --start.",
     )
     parser.add_argument(
         "--only-new-games",

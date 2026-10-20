@@ -129,8 +129,6 @@ def update_refs_injuries_database(
 
 
 if __name__ == "__main__":
-    import datetime
+    from nba_ou.postgre_db.season_tables import current_season_year
 
-    season_year = datetime.datetime.now().year
-
-    update_refs_injuries_database(season_year=season_year)
+    update_refs_injuries_database(season_year=current_season_year())

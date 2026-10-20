@@ -11,6 +11,7 @@ from nba_ou.postgre_db.games.update_games.update_database import (
 from nba_ou.postgre_db.injuries_refs.update_ref_injuries_database.update_refs_injuries_database import (
     update_refs_injuries_database,
 )
+from nba_ou.postgre_db.line_history_aiven.update import resolve_season_years
 from nba_ou.postgre_db.odds_sportsbook.update_sportsbook.update_sportsbook_database import (
     update_odds_sportsbook_database,
 )
@@ -20,24 +21,28 @@ from nba_ou.postgre_db.odds_yahoo.update_yahoo.update_yahoo_database import (
 
 
 def update_all_databases(
-    start_season_year: int = 2006,
-    end_season_year: int = 2025,
+    start_season_year: int | None = None,
+    end_season_year: int | None = None,
     only_new_games: bool = True,
     headless: bool | None = None,
     sleep_seconds_between_seasons: float = 2.0,
     exclude_game_date: str | None = None,
 ) -> None:
     """
-    Backfill from `start_season_year`-YY through `end_season_year`-(YY+1).
+    Update from `start_season_year`-YY through `end_season_year`-(YY+1).
 
     Args:
-        data_folder: Folder where seasonal CSVs are stored (optional feature of update_database).
-        start_season_year: First season start year (2005 -> 2005-06).
-        end_season_year: Last season start year (2024 -> 2024-25).
+        start_season_year: First season start year (2005 -> 2005-06). Defaults
+            to the current season.
+        end_season_year: Last season start year (2024 -> 2024-25). Defaults to
+            `start_season_year`.
         sleep_seconds_between_seasons: Small pause to be polite with the NBA API.
     """
     if headless is None:
         headless = SETTINGS.headless
+
+    seasons = resolve_season_years(start_season_year, end_season_year)
+    print(f"Updating season(s): {seasons}")
 
     games_id_to_exclude = set(get_live_game_ids())
     if exclude_game_date:
@@ -49,7 +54,7 @@ def update_all_databases(
 
     games_id_to_exclude = list(games_id_to_exclude)
 
-    for y in range(start_season_year, end_season_year + 1):
+    for y in seasons:
         season_year = str(y)
         print(f"\n=== Backfilling season starting {season_year} season) ===")
 
