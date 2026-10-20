@@ -437,11 +437,17 @@ def _repair_by_season(frame, seasons, fingerprints, repair):
 
     digests = {}
     for season in memoisable:
-        digest = memo_module.hashlib.sha256(memo_module.package_code_key().encode())
-        digest.update(memo_module._frame_digest(frame[season_of_rows == season]))
+        digest = memo_module.hashlib.sha256(
+            memo_module._frame_digest(frame[season_of_rows == season])
+        )
         digest.update(repr(fingerprints[season]).encode())
         digests[season] = digest.hexdigest()
-    memo = memo_module.HistoryMemo(backend, digests, max_season=current - 1)
+    memo = memo_module.HistoryMemo(
+        backend,
+        digests,
+        max_season=current - 1,
+        code=memo_module.code_key(__name__),
+    )
     # One table per frame layout: the closing builder and the intermediate base
     # repair differently shaped odds frames (books combined or not), and under
     # one name each would invalidate the other's entries on every build.

@@ -419,6 +419,21 @@ with the history memo cold, warm and off.
   finished season, the player step's history rows, the raw availability
   effects and the closing-line repair, in S3 (`train_data/input_cache/v1/memo`).
   Keyed on all `nba_ou` source and a chained digest of the loaded inputs.
+  Since `perf/per-stage-memo-code-key` the code part is per memo
+  (`history_memo.code_key`): the static import closure of the module that
+  builds the entries (or of the builder whose callables and frames they are
+  computed from), the versions of the distributions it imports, the Python
+  version and the main book. A commit outside a memo's closure -- serving,
+  registry, schema layers outside the builders, scripts -- keeps its entries;
+  a dynamic import anywhere in a closure falls back to the whole package.
+  Checked live at 04c58b5 (2026-10-20, 2026-04-10 targets, local memo,
+  `artifacts/perf/memo_key_04c58b5_r3/`): closing cold 415 s, warm 223 s,
+  after a commit to `prediction/prediction.py` 210 s (every entry reused),
+  after one to `attach_player_features.py` 299 s (player/effect memo
+  recomputed under a new key, odds repair still reused); intermediate
+  (3 injury workers -- 8 were OOM-killed cold) cold 1021 s, warm 292 s, after
+  the `prediction.py` commit 285 s. Every build equal to its cold one under
+  `compare_builds.py --exact` (dataset and scoring).
 - S3 closing ticks (935eff2): finished seasons from S3, validated daily by
   `scripts/refresh_input_cache.py`; live 97.6 s -> 2.9 s, identical.
 - Found: `*_CROSSBOOK_TOTAL_STD*` mix every `ODDS_TOTAL_LINE_*` column,

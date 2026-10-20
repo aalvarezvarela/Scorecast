@@ -130,7 +130,9 @@ def _stored_report_states(
         digest = hashlib.sha256(chain.encode())
         digest.update(history_memo._frame_digest(rows.reset_index(drop=True)))
         digests[int(season)] = digest.hexdigest()
-    memo = history_memo.HistoryMemo(backend, digests, max(digests))
+    memo = history_memo.HistoryMemo(
+        backend, digests, max(digests), code=history_memo.code_key(__name__)
+    )
     memo.prefetch([REPORT_STATES_MEMO])
     parts = []
     for season in sorted(digests):
@@ -761,7 +763,13 @@ def _injury_history_memo(
         season: hashlib.sha256(f"{digest}|{votes}".encode()).hexdigest()
         for season, digest in digests.items()
     }
-    memo = history_memo.HistoryMemo(backend, digests, max(seasons))
+    # The rows are computed from frames the builder prepares.
+    memo = history_memo.HistoryMemo(
+        backend,
+        digests,
+        max(seasons),
+        code=history_memo.code_key(history_memo.INTERMEDIATE_BUILDER),
+    )
     memo.prefetch([PLAYER_ROWS_MEMO, EFFECTS_MEMO])
     return memo
 
@@ -800,7 +808,10 @@ def _effect_prior_table(
     )
     digest.update(history_memo._frame_digest(finished.reset_index(drop=True)))
     prior_memo = history_memo.HistoryMemo(
-        memo.backend, {last_finished: digest.hexdigest()}, last_finished
+        memo.backend,
+        {last_finished: digest.hexdigest()},
+        last_finished,
+        code=memo.code,
     )
     table = prior_memo.table(EFFECT_PRIORS_MEMO, last_finished)
     if table is None:

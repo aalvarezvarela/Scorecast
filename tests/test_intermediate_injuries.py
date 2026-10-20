@@ -215,7 +215,7 @@ def test_horizons_in_processes_equal_the_horizons_in_turn(monkeypatch, tmp_path)
 
     def run(workers):
         backend = history_memo._LocalBackend(tmp_path / str(workers))
-        memo = history_memo.HistoryMemo(backend, {2023: "a", 2024: "b"}, 2024)
+        memo = history_memo.HistoryMemo(backend, {2023: "a", 2024: "b"}, 2024, code="c")
         caches = [
             history_memo.PersistentRowCache(
                 memo, name, season_of=season_of, size_positions=()

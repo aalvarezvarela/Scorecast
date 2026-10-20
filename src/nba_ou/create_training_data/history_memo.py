@@ -9,8 +9,14 @@ so this keeps them per season and reuses them.
 
 Reuse is never assumed. Each season's entry is keyed on
 
-* the code: every source file of the ``nba_ou`` package, and the pandas and
-  numpy versions (any change refuses every entry); and
+* the code (``code_key``): every ``nba_ou`` source file the memo's root module
+  can execute -- its import closure, followed statically, imports inside
+  functions included -- the versions of the distributions that closure
+  imports, the Python version and the main sportsbook. A change to any of
+  them refuses every entry of that memo; a change elsewhere in the package
+  leaves it alone. The root is the module that computes and stores the
+  entries, or the builder whose callables or prepared frames they are
+  computed from; and
 * a digest of the season's inputs as this build loaded them -- games, player
   box scores, odds after the closing-line repair, injuries and injury
   reports -- chained over every earlier season too. A history row of season
@@ -30,14 +36,17 @@ season=S.pkl``) or, with ``NBA_OU_HISTORY_MEMO_DIR``, in a local directory.
 
 from __future__ import annotations
 
+import ast
 import hashlib
 import json
 import os
 import pickle
+import sys
 import zlib
 from collections.abc import Iterable
 from concurrent.futures import Future, ThreadPoolExecutor
 from functools import cache
+from importlib import metadata
 from pathlib import Path
 
 import numpy as np
@@ -45,21 +54,171 @@ import pandas as pd
 
 MEMO_PREFIX = "train_data/input_cache/v1/memo"
 
+#: The root of the memos the intermediate builder's injury and line-history
+#: stages keep: their entries are computed from callables and frames the
+#: builder prepares, so its whole closure is their code.
+INTERMEDIATE_BUILDER = "nba_ou.create_training_data.create_intermediate_line_df"
+
+PACKAGE = "nba_ou"
+PACKAGE_ROOT = Path(__file__).resolve().parents[1]
+
+#: Calls that import code a static walk cannot see. A closure that makes one
+#: is keyed on the whole package instead.
+_DYNAMIC_IMPORT_NAMES = frozenset({"__import__", "exec", "eval", "import_module"})
+_DYNAMIC_IMPORT_ATTRS = frozenset(
+    {"import_module", "run_module", "run_path", "iter_modules", "walk_packages"}
+)
+
 
 def history_memo_enabled() -> bool:
     return os.environ.get("NBA_OU_HISTORY_MEMO", "1") != "0"
 
 
-@cache
-def package_code_key() -> str:
-    """Every ``nba_ou`` source file and the pandas/numpy versions."""
-    root = Path(__file__).resolve().parents[1]
+def _module_path(module: str, package_root: Path, package: str) -> Path | None:
+    parts = module.split(".")
+    if parts[0] != package:
+        return None
+    base = package_root.joinpath(*parts[1:])
+    if (base / "__init__.py").is_file():
+        return base / "__init__.py"
+    if base.with_suffix(".py").is_file():
+        return base.with_suffix(".py")
+    return None
+
+
+def _module_name(path: Path, package_root: Path, package: str) -> str:
+    parts = [package, *path.relative_to(package_root).with_suffix("").parts]
+    return ".".join(parts[:-1] if parts[-1] == "__init__" else parts)
+
+
+def _scan_imports(
+    path: Path, package_root: Path, package: str
+) -> tuple[set[str], set[str], bool]:
+    """``path``'s package imports, its external top-level imports, and whether
+    it imports dynamically. Every import counts, wherever it sits."""
+    module = _module_name(path, package_root, package)
+    tree = ast.parse(path.read_bytes(), filename=str(path))
+    internal, external, dynamic = set(), set(), False
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name.split(".")[0] == package:
+                    internal.add(alias.name)
+                else:
+                    external.add(alias.name.split(".")[0])
+        elif isinstance(node, ast.ImportFrom):
+            if node.level:
+                anchor = module.split(".")
+                if path.name != "__init__.py":
+                    anchor = anchor[:-1]
+                anchor = anchor[: len(anchor) - (node.level - 1)]
+                source = ".".join(anchor + ([node.module] if node.module else []))
+            else:
+                source = node.module or ""
+                if source.split(".")[0] != package:
+                    external.add(source.split(".")[0])
+                    continue
+            # ``from a.b import c`` runs a.b, and c too when it is a submodule.
+            internal.add(source)
+            internal.update(f"{source}.{alias.name}" for alias in node.names)
+        elif isinstance(node, ast.Call):
+            func = node.func
+            if (isinstance(func, ast.Name) and func.id in _DYNAMIC_IMPORT_NAMES) or (
+                isinstance(func, ast.Attribute) and func.attr in _DYNAMIC_IMPORT_ATTRS
+            ):
+                dynamic = True
+    return internal, external, dynamic
+
+
+def module_closure(
+    roots: Iterable[str],
+    *,
+    package_root: Path = PACKAGE_ROOT,
+    package: str = PACKAGE,
+) -> tuple[list[Path], set[str], bool]:
+    """The package files ``roots`` can execute, the external top-level modules
+    they import, and whether any of them imports dynamically.
+
+    Importing a module runs every parent package's ``__init__`` first, so
+    those are in the closure too.
+    """
+    seen: dict[str, Path] = {}
+    external: set[str] = set()
+    dynamic = False
+    todo = list(roots)
+    while todo:
+        module = todo.pop()
+        parts = module.split(".")
+        for name in (".".join(parts[:i]) for i in range(1, len(parts) + 1)):
+            if name in seen:
+                continue
+            path = _module_path(name, package_root, package)
+            if path is None:
+                continue
+            seen[name] = path
+            internal, imported, uses_dynamic = _scan_imports(
+                path, package_root, package
+            )
+            todo.extend(internal)
+            external |= imported
+            dynamic |= uses_dynamic
+    for root in roots:
+        if root not in seen:
+            raise ValueError(f"{root} is not a module of {package}")
+    return sorted(seen.values()), external, dynamic
+
+
+def _distribution_versions(modules: Iterable[str]) -> list[str]:
+    """``dist==version`` of each installed distribution providing ``modules``.
+
+    Standard-library modules have none; the Python version covers them.
+    """
+    providers = metadata.packages_distributions()
+    dists = {dist for module in modules for dist in providers.get(module, [])}
+    versions = []
+    for dist in sorted(dists):
+        try:
+            versions.append(f"{dist}=={metadata.version(dist)}")
+        except metadata.PackageNotFoundError:
+            versions.append(f"{dist}==?")
+    return versions
+
+
+def _closure_key(
+    roots: tuple[str, ...], *, package_root: Path, package: str, settings: str
+) -> str:
+    files, external, dynamic = module_closure(
+        roots, package_root=package_root, package=package
+    )
+    if dynamic:
+        # Code imported by name could be anything in the package.
+        files = sorted(package_root.rglob("*.py"))
     digest = hashlib.sha256()
-    for path in sorted(root.rglob("*.py")):
-        digest.update(str(path.relative_to(root)).encode())
+    for path in files:
+        digest.update(str(path.relative_to(package_root)).encode())
         digest.update(path.read_bytes())
-    digest.update(f"pandas={pd.__version__} numpy={np.__version__}".encode())
+    for line in _distribution_versions(external):
+        digest.update(line.encode())
+    digest.update(f"python={sys.version_info[0]}.{sys.version_info[1]}".encode())
+    digest.update(settings.encode())
     return digest.hexdigest()[:20]
+
+
+@cache
+def code_key(*roots: str) -> str:
+    """The code a memo rooted at ``roots`` (module names) depends on.
+
+    ``config.ini`` is not hashed -- it changes with every promotion -- but
+    its one setting that changes feature values, the main sportsbook, is.
+    """
+    from nba_ou.config.odds_columns import get_main_book
+
+    return _closure_key(
+        roots,
+        package_root=PACKAGE_ROOT,
+        package=PACKAGE,
+        settings=f"main_book={get_main_book()}",
+    )
 
 
 def season_of_game_ids(game_ids: pd.Series) -> np.ndarray:
@@ -95,7 +254,8 @@ def season_input_digests(
     """Chained digest per season of every input frame's rows up to it.
 
     ``inputs`` maps a name to ``(frame, game_id_column)``; a row belongs to
-    the season its game id names. Rows keep the frame's order.
+    the season its game id names. Rows keep the frame's order. The code is
+    not part of it: it is in every entry's path (``HistoryMemo.code``).
     """
     per_frame = {}
     for name, (frame, game_id_column) in sorted(inputs.items()):
@@ -104,7 +264,7 @@ def season_input_digests(
             continue
         per_frame[name] = (frame, season_of_game_ids(frame[game_id_column]))
     out = {}
-    chain = hashlib.sha256(package_code_key().encode()).digest()
+    chain = b""
     for season in sorted(set(seasons)):
         digest = hashlib.sha256(chain)
         digest.update(str(season).encode())
@@ -161,16 +321,18 @@ class HistoryMemo:
     """Season entries of named results, valid for the given input digests.
 
     ``max_season`` is the last season whose entries may be read or written.
-    Any failure to read or write is reported and treated as a miss: the
-    caller computes the season itself, so a broken store costs time, never
-    a value.
+    ``code`` is the memo's ``code_key``. Any failure to read or write is
+    reported and treated as a miss: the caller computes the season itself, so
+    a broken store costs time, never a value.
     """
 
-    def __init__(self, backend, digests: dict[int, str], max_season: int) -> None:
+    def __init__(
+        self, backend, digests: dict[int, str], max_season: int, *, code: str
+    ) -> None:
         self.backend = backend
         self.digests = digests
         self.max_season = max_season
-        self.code = package_code_key()
+        self.code = code
         self.report: list[str] = []
         self._tables: dict[tuple[str, int], dict] = {}
         self._sizes: dict[tuple[str, int], int] = {}
