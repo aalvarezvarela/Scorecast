@@ -78,13 +78,25 @@ def _parse_tipoff_utc(game: dict) -> pd.Timestamp | None:
 
 
 def fetch_season_schedule(season_year: int, *, timeout: int = 30) -> pd.DataFrame:
-    """Return one row per game for ``season_year`` (2024 == the 2024-25 season)."""
-    response = requests.get(
-        SCHEDULE_URL.format(season_year=season_year),
-        headers=_HEADERS,
-        timeout=timeout,
-    )
-    response.raise_for_status()
+    """Return one row per game for ``season_year`` (2024 == the 2024-25 season).
+
+    From the static season feed when it exists, else from ``ScheduleLeagueV2``
+    (:func:`fetch_season_schedule_league_v2`): the static feed has no 2026-27
+    file (S3 answers 403 for the missing key; 2025 still answers 200).
+    """
+    try:
+        response = requests.get(
+            SCHEDULE_URL.format(season_year=season_year),
+            headers=_HEADERS,
+            timeout=timeout,
+        )
+        response.raise_for_status()
+    except requests.RequestException as exc:
+        print(
+            f"Season schedule feed unavailable for {season_year} ({exc}); "
+            "using ScheduleLeagueV2."
+        )
+        return fetch_season_schedule_league_v2(season_year, timeout=timeout)
 
     rows: list[dict] = []
     for month in response.json().get("lscd", []):
@@ -114,6 +126,56 @@ def fetch_season_schedule(season_year: int, *, timeout: int = 30) -> pd.DataFram
     if not rows:
         return pd.DataFrame(columns=SCHEDULE_COLUMNS)
 
+    return pd.DataFrame(rows)[SCHEDULE_COLUMNS]
+
+
+def fetch_season_schedule_league_v2(
+    season_year: int, *, timeout: int = 30
+) -> pd.DataFrame:
+    """``fetch_season_schedule``'s frame from stats.nba.com ``ScheduleLeagueV2``.
+
+    One request per season, kept current by the league. Checked against the
+    static feed on 2025-26 (2026-10-20): all 1,271 feed games present with
+    identical teams and arenas; 64 tipoffs and 9 dates differ, all games the
+    league moved after the static feed froze; plus 129 games the feed never had
+    (play-in, playoffs, Cup knockouts, All-Star).
+    """
+    from nba_api.stats.endpoints import ScheduleLeagueV2
+
+    season = f"{season_year}-{str(season_year + 1)[-2:]}"
+    payload = ScheduleLeagueV2(
+        season=season, league_id="00", timeout=timeout
+    ).get_dict()
+
+    rows: list[dict] = []
+    for day in payload.get("leagueSchedule", {}).get("gameDates", []):
+        for game in day.get("games", []):
+            game_id = (game.get("gameId") or "").strip()
+            if not game_id:
+                continue
+            # The Eastern fields carry a spurious "Z": they are wall-clock ET.
+            eastern = (game.get("gameDateTimeEst") or "").rstrip("Z") or None
+            rows.append(
+                {
+                    "game_id": game_id,
+                    "season_year": season_year,
+                    "game_date": pd.to_datetime(
+                        (game.get("gameDateEst") or "")[:10], errors="coerce"
+                    ).date(),
+                    "tipoff_utc": pd.to_datetime(
+                        game.get("gameDateTimeUTC"), errors="coerce", utc=True
+                    ),
+                    "tipoff_et": eastern,
+                    "team_home": (game.get("homeTeam") or {}).get("teamTricode"),
+                    "team_away": (game.get("awayTeam") or {}).get("teamTricode"),
+                    "arena_name": game.get("arenaName"),
+                    "arena_city": game.get("arenaCity"),
+                    "game_status": game.get("gameStatus"),
+                }
+            )
+
+    if not rows:
+        return pd.DataFrame(columns=SCHEDULE_COLUMNS)
     return pd.DataFrame(rows)[SCHEDULE_COLUMNS]
 
 
@@ -230,7 +292,9 @@ def cache_scoreboards(
     dates = sorted({str(pd.Timestamp(d).date()) for d in game_dates})
     pending = [d for d in dates if not _cache_path(cache_dir, d).exists()]
     if len(pending) < len(dates):
-        print(f"Scoreboard cache: {len(dates) - len(pending)}/{len(dates)} date(s) already cached")
+        print(
+            f"Scoreboard cache: {len(dates) - len(pending)}/{len(dates)} date(s) already cached"
+        )
 
     budget = len(pending) if max_requests is None else min(max_requests, len(pending))
     requested = 0
