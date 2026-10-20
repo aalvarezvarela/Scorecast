@@ -1,12 +1,20 @@
-"""Fetch authoritative NBA tipoff times from the public season-schedule feed.
+"""Fetch authoritative NBA tipoff times from the season-schedule feeds.
 
 One request returns a whole season, which makes this the cheap way to get
 ``tipoff_utc`` for every ``game_id`` -- the per-game ``cdn.nba.com`` boxscore
 endpoint used by ``game_time_index`` needs one request per game instead.
 
-The feed exposes both an Eastern wall-clock time (``etm``) and a UTC date/time
-pair (``gdtutc`` / ``utctm``); we prefer the UTC pair and fall back to
-localizing the Eastern value.
+The source is stats.nba.com's ``ScheduleLeagueV2``. The legacy ``data.nba.com``
+feed it replaced was abandoned (its 2025-26 file froze on 2026-04-12, the
+2026-27 one was never published) and is kept only as a fallback for past
+seasons. Checked on 2016-17 through 2025-26, the two agree on every regular-
+season game except three season openers, where V2 has the actual tip (one
+minute later) instead of the scheduled one; V2 also carries games the frozen
+2025-26 file lacks, and has no 2019-20 preseason.
+
+The legacy feed exposes both an Eastern wall-clock time (``etm``) and a UTC
+date/time pair (``gdtutc`` / ``utctm``); we prefer the UTC pair and fall back
+to localizing the Eastern value.
 """
 
 from __future__ import annotations
@@ -80,23 +88,37 @@ def _parse_tipoff_utc(game: dict) -> pd.Timestamp | None:
 def fetch_season_schedule(season_year: int, *, timeout: int = 30) -> pd.DataFrame:
     """Return one row per game for ``season_year`` (2024 == the 2024-25 season).
 
-    From the static season feed when it exists, else from ``ScheduleLeagueV2``
-    (:func:`fetch_season_schedule_league_v2`): the static feed has no 2026-27
-    file (S3 answers 403 for the missing key; 2025 still answers 200).
+    From :func:`fetch_season_schedule_v2`. If stats.nba.com fails every retry or
+    returns no games, the legacy feed is tried instead; it still serves past
+    seasons, not 2026-27 on, so there the legacy error is what propagates.
     """
     try:
-        response = requests.get(
-            SCHEDULE_URL.format(season_year=season_year),
-            headers=_HEADERS,
-            timeout=timeout,
-        )
-        response.raise_for_status()
-    except requests.RequestException as exc:
+        schedule = fetch_season_schedule_v2(season_year, timeout=timeout)
+    except Exception as exc:  # noqa: BLE001 - nba_api raises many types
         print(
-            f"Season schedule feed unavailable for {season_year} ({exc}); "
-            "using ScheduleLeagueV2."
+            f"! ScheduleLeagueV2 unavailable for {season_year} ({exc}); "
+            "trying the legacy feed"
         )
-        return fetch_season_schedule_league_v2(season_year, timeout=timeout)
+        return fetch_legacy_season_schedule(season_year, timeout=timeout)
+    if schedule.empty:
+        print(
+            f"! ScheduleLeagueV2 has no games for {season_year}; "
+            "trying the legacy feed"
+        )
+        return fetch_legacy_season_schedule(season_year, timeout=timeout)
+    return schedule
+
+
+def fetch_legacy_season_schedule(
+    season_year: int, *, timeout: int = 30
+) -> pd.DataFrame:
+    """One row per game from the legacy ``data.nba.com`` season feed."""
+    response = requests.get(
+        SCHEDULE_URL.format(season_year=season_year),
+        headers=_HEADERS,
+        timeout=timeout,
+    )
+    response.raise_for_status()
 
     rows: list[dict] = []
     for month in response.json().get("lscd", []):
@@ -129,32 +151,42 @@ def fetch_season_schedule(season_year: int, *, timeout: int = 30) -> pd.DataFram
     return pd.DataFrame(rows)[SCHEDULE_COLUMNS]
 
 
-def fetch_season_schedule_league_v2(
-    season_year: int, *, timeout: int = 30
-) -> pd.DataFrame:
-    """``fetch_season_schedule``'s frame from stats.nba.com ``ScheduleLeagueV2``.
+SCHEDULE_V2_RETRIES = 3
+SCHEDULE_V2_BACKOFF_S = 5.0
 
-    One request per season, kept current by the league. Checked against the
-    static feed on 2025-26 (2026-10-20): all 1,271 feed games present with
-    identical teams and arenas; 64 tipoffs and 9 dates differ, all games the
-    league moved after the static feed froze; plus 129 games the feed never had
-    (play-in, playoffs, Cup knockouts, All-Star).
-    """
+
+def _request_schedule_v2(season_year: int, timeout: int) -> dict:
+    """The season's ``ScheduleLeagueV2`` payload; raises once every retry failed."""
     from nba_api.stats.endpoints import ScheduleLeagueV2
 
     season = f"{season_year}-{str(season_year + 1)[-2:]}"
-    payload = ScheduleLeagueV2(
-        season=season, league_id="00", timeout=timeout
-    ).get_dict()
+    for attempt in range(SCHEDULE_V2_RETRIES):
+        try:
+            return ScheduleLeagueV2(
+                league_id="00", season=season, timeout=timeout
+            ).get_dict()
+        except Exception:
+            if attempt == SCHEDULE_V2_RETRIES - 1:
+                raise
+            time.sleep(SCHEDULE_V2_BACKOFF_S * 2**attempt)
+    raise AssertionError("unreachable")
 
+
+def _schedule_v2_rows(payload: dict, season_year: int) -> list[dict]:
+    """Rows shaped like the legacy feed's.
+
+    ``gameDateTimeEst`` is Eastern wall-clock time despite its trailing ``Z``;
+    without it the value matches the legacy ``etm``. ``gameStatus`` is an int
+    here and a string there. Placeholder fixtures (NBA Cup knockouts, playoffs)
+    carry no teams yet and keep ``None`` for them.
+    """
     rows: list[dict] = []
     for day in payload.get("leagueSchedule", {}).get("gameDates", []):
         for game in day.get("games", []):
-            game_id = (game.get("gameId") or "").strip()
+            game_id = str(game.get("gameId") or "").strip()
             if not game_id:
                 continue
-            # The Eastern fields carry a spurious "Z": they are wall-clock ET.
-            eastern = (game.get("gameDateTimeEst") or "").rstrip("Z") or None
+            status = game.get("gameStatus")
             rows.append(
                 {
                     "game_id": game_id,
@@ -165,15 +197,28 @@ def fetch_season_schedule_league_v2(
                     "tipoff_utc": pd.to_datetime(
                         game.get("gameDateTimeUTC"), errors="coerce", utc=True
                     ),
-                    "tipoff_et": eastern,
-                    "team_home": (game.get("homeTeam") or {}).get("teamTricode"),
-                    "team_away": (game.get("awayTeam") or {}).get("teamTricode"),
-                    "arena_name": game.get("arenaName"),
-                    "arena_city": game.get("arenaCity"),
-                    "game_status": game.get("gameStatus"),
+                    "tipoff_et": (game.get("gameDateTimeEst") or "").removesuffix("Z")
+                    or None,
+                    "team_home": (game.get("homeTeam") or {}).get("teamTricode")
+                    or None,
+                    "team_away": (game.get("awayTeam") or {}).get("teamTricode")
+                    or None,
+                    "arena_name": game.get("arenaName") or None,
+                    "arena_city": game.get("arenaCity") or None,
+                    "game_status": None if status is None else str(status),
                 }
             )
+    return rows
 
+
+def fetch_season_schedule_v2(season_year: int, *, timeout: int = 30) -> pd.DataFrame:
+    """One row per game from stats.nba.com's ``ScheduleLeagueV2``.
+
+    Same columns and value formats as :func:`fetch_legacy_season_schedule`, but
+    it keeps updating through the season (rescheduled games, NBA Cup knockouts,
+    play-in and playoffs as they are set).
+    """
+    rows = _schedule_v2_rows(_request_schedule_v2(season_year, timeout), season_year)
     if not rows:
         return pd.DataFrame(columns=SCHEDULE_COLUMNS)
     return pd.DataFrame(rows)[SCHEDULE_COLUMNS]
@@ -292,9 +337,7 @@ def cache_scoreboards(
     dates = sorted({str(pd.Timestamp(d).date()) for d in game_dates})
     pending = [d for d in dates if not _cache_path(cache_dir, d).exists()]
     if len(pending) < len(dates):
-        print(
-            f"Scoreboard cache: {len(dates) - len(pending)}/{len(dates)} date(s) already cached"
-        )
+        print(f"Scoreboard cache: {len(dates) - len(pending)}/{len(dates)} date(s) already cached")
 
     budget = len(pending) if max_requests is None else min(max_requests, len(pending))
     requested = 0
