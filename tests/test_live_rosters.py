@@ -99,9 +99,35 @@ def test_replay_reads_s3_without_hitting_the_endpoint(monkeypatch):
     assert snapshot.SOURCE.tolist() == ["s3"]
 
 
+def _league_offline(monkeypatch):
+    monkeypatch.setattr(
+        live, "PlayerIndex", lambda **kw: (_ for _ in ()).throw(TimeoutError())
+    )
+
+
+def player_index(teams_players, **kwargs):
+    """A PlayerIndex stub: ``{team_id: [player_id, ...]}``."""
+    rows = [
+        {
+            "PERSON_ID": int(pid),
+            "PLAYER_FIRST_NAME": "Player",
+            "PLAYER_LAST_NAME": pid,
+            "TEAM_ID": int(team),
+            "POSITION": "G",
+            "ROSTER_STATUS": 1.0,
+        }
+        for team, pids in teams_players.items()
+        for pid in pids
+    ]
+    frame = pd.DataFrame(rows)
+    return SimpleNamespace(get_data_frames=lambda: [frame])
+
+
 def test_live_fetch_is_once_per_team_and_valid_without_s3(monkeypatch):
+    """The per-team fallback, when the league-wide request fails."""
     day = pd.Timestamp.now(tz="America/New_York").date().isoformat()
     calls = []
+    _league_offline(monkeypatch)
 
     def fetch(**kwargs):
         calls.append(kwargs)
@@ -133,6 +159,7 @@ def test_failed_live_endpoint_uses_cached_roster(monkeypatch):
     store = live.RosterStore(S3(), "bucket")
     store.save(day, season, TEAM, players(), now, [])
     monkeypatch.setattr(live, "_store", lambda: store)
+    _league_offline(monkeypatch)
     monkeypatch.setattr(
         live, "CommonTeamRoster", lambda **kw: (_ for _ in ()).throw(TimeoutError())
     )
@@ -177,3 +204,81 @@ def test_concurrent_writer_cannot_replace_newer_manifest():
     entries = first.entries(DAY, SEASON, TEAM)
     assert len(entries) == 1
     assert entries[0]["fetched_at_utc"] == LATE.isoformat()
+
+
+OTHER = "1610612738"
+
+
+def test_one_league_request_serves_every_team(monkeypatch):
+    day = pd.Timestamp.now(tz="America/New_York").date().isoformat()
+    games = schedule(day).assign(VISITOR_TEAM_ID=OTHER)
+    calls = []
+
+    def index(**kwargs):
+        calls.append(kwargs)
+        return player_index({TEAM: ["1", "2"], OTHER: ["3"], "1610612765": ["4"]})
+
+    monkeypatch.setattr(live, "PlayerIndex", index)
+    monkeypatch.setattr(
+        live, "CommonTeamRoster", lambda **kw: pytest.fail("per-team request")
+    )
+    monkeypatch.setattr(
+        live, "_store", lambda: (_ for _ in ()).throw(OSError("S3 offline"))
+    )
+    snapshots = live.load_live_rosters(games)
+    assert len(calls) == 1
+    assert calls[0]["season"] == live.season_for_game(next(games.itertuples()))
+    by_team = snapshots.groupby("TEAM_ID")["PLAYER_ID"].apply(sorted).to_dict()
+    assert by_team == {TEAM: ["1", "2"], OTHER: ["3"]}
+    assert set(snapshots.PLAYER_NAME) == {"Player 1", "Player 2", "Player 3"}
+    assert set(snapshots.SOURCE) == {"nba"}
+
+
+def test_a_team_missing_from_the_league_request_is_fetched_alone(monkeypatch):
+    day = pd.Timestamp.now(tz="America/New_York").date().isoformat()
+    games = schedule(day).assign(VISITOR_TEAM_ID=OTHER)
+    asked = []
+
+    def roster(**kwargs):
+        asked.append(str(kwargs["team_id"]))
+        frame = (
+            players(("9",))
+            .rename(columns={"PLAYER_NAME": "PLAYER"})
+            .assign(TeamID=str(kwargs["team_id"]), SEASON=kwargs["season"])
+        )
+        return SimpleNamespace(
+            common_team_roster=SimpleNamespace(get_data_frame=lambda: frame)
+        )
+
+    monkeypatch.setattr(live, "PlayerIndex", lambda **kw: player_index({TEAM: ["1"]}))
+    monkeypatch.setattr(live, "CommonTeamRoster", roster)
+    monkeypatch.setattr(
+        live, "_store", lambda: (_ for _ in ()).throw(OSError("S3 offline"))
+    )
+    snapshots = live.load_live_rosters(games)
+    assert asked == [OTHER]
+    by_team = snapshots.groupby("TEAM_ID")["PLAYER_ID"].apply(list).to_dict()
+    assert by_team == {TEAM: ["1"], OTHER: ["9"]}
+
+
+def test_unrostered_players_are_not_on_a_league_roster(monkeypatch):
+    frame = pd.DataFrame(
+        {
+            "PERSON_ID": [1, 2, 3],
+            "PLAYER_FIRST_NAME": ["A", "B", "C"],
+            "PLAYER_LAST_NAME": ["One", "Two", "Three"],
+            "TEAM_ID": [int(TEAM), int(TEAM), 0],
+            "POSITION": ["G", "F", "C"],
+            "ROSTER_STATUS": [1.0, None, None],
+        }
+    )
+    monkeypatch.setattr(
+        live,
+        "PlayerIndex",
+        lambda **kw: SimpleNamespace(get_data_frames=lambda: [frame]),
+    )
+    rosters = live.league_rosters(SEASON)
+    assert list(rosters) == [TEAM]
+    assert rosters[TEAM].to_dict("records") == [
+        {"PLAYER_ID": "1", "PLAYER_NAME": "A One", "POSITION": "G"}
+    ]

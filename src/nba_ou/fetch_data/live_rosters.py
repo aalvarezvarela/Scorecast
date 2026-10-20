@@ -14,6 +14,7 @@ import logging
 import pandas as pd
 from botocore.config import Config
 from nba_api.stats.endpoints.commonteamroster import CommonTeamRoster
+from nba_api.stats.endpoints.playerindex import PlayerIndex
 
 from nba_ou.config.settings import SETTINGS
 from nba_ou.utils.general_utils import get_season_year_from_date
@@ -182,8 +183,64 @@ def _store():
     )
 
 
+def league_rosters(season: str) -> dict[str, pd.DataFrame]:
+    """Every team's official roster for ``season`` from ONE ``PlayerIndex`` call.
+
+    ``CommonTeamRoster`` answers one team per request. ``PlayerIndex`` lists
+    every rostered player with his team; on 2026-10-20 it gave exactly the 30
+    teams' ``CommonTeamRoster`` players, names and positions (518 players)
+    after ``normalize_players``. A team whose rows fail validation is left
+    out, so the caller asks ``CommonTeamRoster`` for it instead.
+    """
+    raw = PlayerIndex(season=season, league_id="00", timeout=15).get_data_frames()[0]
+    team = pd.to_numeric(raw["TEAM_ID"], errors="coerce")
+    rostered = raw[
+        team.gt(0) & pd.to_numeric(raw["ROSTER_STATUS"], errors="coerce").eq(1)
+    ]
+    names = (
+        rostered["PLAYER_FIRST_NAME"].fillna("").astype(str).str.strip()
+        + " "
+        + rostered["PLAYER_LAST_NAME"].fillna("").astype(str).str.strip()
+    ).str.strip()
+    frame = pd.DataFrame(
+        {
+            "TEAM_ID": team.loc[rostered.index].astype("int64").astype(str),
+            "PLAYER_ID": rostered["PERSON_ID"],
+            "PLAYER": names,
+            "POSITION": rostered["POSITION"],
+        }
+    )
+    out = {}
+    for team_id, players in frame.groupby("TEAM_ID"):
+        try:
+            out[team_id] = normalize_players(players.drop(columns="TEAM_ID"))
+        except ValueError as exc:
+            log.warning("League roster invalid for team %s: %s", team_id, exc)
+    return out
+
+
+def _team_roster(team: str, season: str) -> pd.DataFrame:
+    """One team's official roster from ``CommonTeamRoster``."""
+    response = CommonTeamRoster(
+        team_id=int(team),
+        season=season,
+        league_id_nullable="00",
+        timeout=10,
+    )
+    raw = response.common_team_roster.get_data_frame()
+    if "TeamID" not in raw or not raw.TeamID.astype(str).eq(team).all():
+        raise ValueError("Roster team mismatch")
+    if (
+        "SEASON" not in raw
+        or not raw.SEASON.astype(str).isin([season, season[:4]]).all()
+    ):
+        raise ValueError("Roster season mismatch")
+    return normalize_players(raw)
+
+
 def load_live_rosters(scheduled_games: pd.DataFrame, *, as_of=None) -> pd.DataFrame:
-    """Fetch once per team/season; retain eligible same-day snapshots for replay.
+    """Fetch once per season (``league_rosters``, per team only as a fallback);
+    retain eligible same-day snapshots for replay.
 
     A past as_of never triggers a live request. Endpoint/S3 failures are isolated
     per team, leaving that team's existing historical inference available.
@@ -210,6 +267,9 @@ def load_live_rosters(scheduled_games: pd.DataFrame, *, as_of=None) -> pd.DataFr
         for team in (game.HOME_TEAM_ID, game.VISITOR_TEAM_ID)
     }
     frames = []
+    # One league-wide request per season; a team it misses (or a failed
+    # request) falls back to its own CommonTeamRoster request.
+    league: dict[str, dict[str, pd.DataFrame]] = {}
     for day, season, team in sorted(requests):
         live = None
         # Explicit historical cutoffs must only read archived observations.
@@ -217,22 +277,16 @@ def load_live_rosters(scheduled_games: pd.DataFrame, *, as_of=None) -> pd.DataFr
             as_of is None
             and day == now.tz_convert("America/New_York").date().isoformat()
         ):
+            if season not in league:
+                try:
+                    league[season] = league_rosters(season)
+                except Exception as exc:
+                    log.warning("League roster failed for %s: %s", season, exc)
+                    league[season] = {}
             try:
-                response = CommonTeamRoster(
-                    team_id=int(team),
-                    season=season,
-                    league_id_nullable="00",
-                    timeout=10,
-                )
-                raw = response.common_team_roster.get_data_frame()
-                if "TeamID" not in raw or not raw.TeamID.astype(str).eq(team).all():
-                    raise ValueError("Roster team mismatch")
-                if (
-                    "SEASON" not in raw
-                    or not raw.SEASON.astype(str).isin([season, season[:4]]).all()
-                ):
-                    raise ValueError("Roster season mismatch")
-                live = normalize_players(raw)
+                live = league[season].get(team)
+                if live is None:
+                    live = _team_roster(team, season)
                 fetched_at = pd.Timestamp.now(tz="UTC")
                 frames.append(
                     live.assign(
