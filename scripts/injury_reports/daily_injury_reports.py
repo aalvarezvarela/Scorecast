@@ -34,6 +34,7 @@ if str(_ROOT / "src") not in sys.path:
     sys.path.insert(0, str(_ROOT / "src"))
 
 import pandas as pd  # noqa: E402
+from nba_ou.config.settings import SETTINGS  # noqa: E402
 from nba_ou.fetch_data.injury_reports.archive import manifest as mf  # noqa: E402
 from nba_ou.fetch_data.injury_reports.archive import urls as U  # noqa: E402
 from nba_ou.fetch_data.injury_reports.archive.manifest import (  # noqa: E402
@@ -44,9 +45,6 @@ from nba_ou.postgre_db.config.db_config import connect_nba_db  # noqa: E402
 from nba_ou.postgre_db.injury_report_aiven.ingest import ingest_season  # noqa: E402
 
 ET = ZoneInfo("America/New_York")
-DEFAULT_BUCKET = "adrian-nba-model-registry-eu-west-1"
-DEFAULT_REGION = "eu-west-1"
-DEFAULT_PROFILE = "adrian-personal"
 DEFAULT_MANIFEST_ROOT = "data/injury_reports/manifest"
 
 
@@ -56,9 +54,11 @@ def main() -> int:
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--skip-download", action="store_true")
     parser.add_argument("--manifest-root", default=DEFAULT_MANIFEST_ROOT)
-    parser.add_argument("--bucket", default=DEFAULT_BUCKET)
-    parser.add_argument("--profile", default=DEFAULT_PROFILE)
-    parser.add_argument("--region", default=DEFAULT_REGION)
+    # Same resolution as the download step (backfill_injury_reports.py), so
+    # both steps of one run use the same S3 identity.
+    parser.add_argument("--bucket", default=SETTINGS.s3_bucket)
+    parser.add_argument("--profile", default=SETTINGS.s3_aws_profile)
+    parser.add_argument("--region", default=SETTINGS.s3_aws_region)
     parser.add_argument(
         "--today", default=None, help="run as of this ET date (YYYY-MM-DD)"
     )
