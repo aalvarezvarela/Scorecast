@@ -26,18 +26,14 @@ from datetime import datetime
 
 import pandas as pd
 from nba_ou.modeling.refit import (
-    GAME_ID_COLUMN,
     count_games,
+    prepare_refit_rows,
     select_training_window,
     settings_from_spec,
-    with_residual_targets,
 )
 from nba_ou.modeling.registry_models import ModelSpec
 from nba_ou.modeling.registry_paths import ModelSlot, ModelTarget
-from nba_ou.modeling.retraining_utils import (
-    _coerce_feature_column_for_xgboost,
-    prepare_retraining_dataframe_from_raw,
-)
+from nba_ou.modeling.retraining_utils import _coerce_feature_column_for_xgboost
 from nba_ou.prediction.prediction import (
     load_and_predict_model_for_nba_games,
     resolve_prediction_target,
@@ -106,11 +102,10 @@ def tabpfn_training_set(
     ``train_games`` overrides the spec's window (the last N games).
     """
     settings = settings_from_spec(spec)
-    prepared = prepare_retraining_dataframe_from_raw(
-        with_residual_targets(frame),
-        settings=settings,
-        passthrough_columns=[GAME_ID_COLUMN],
-    )
+    # The XGBoost refit's rows (nba_ou.modeling.refit.prepare_refit_rows), which
+    # follow training: regular season and play-in only, the residual target
+    # derived, basic cleaning, and the NaN budget with Yahoo exempt.
+    prepared = prepare_refit_rows(frame, spec)
     window = select_training_window(
         prepared,
         train_games=train_games or settings.train_games,

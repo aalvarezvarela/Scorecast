@@ -149,11 +149,16 @@ def _spec(*, train_games=4, max_na_per_row=0):
 
 def _history(n=8) -> pd.DataFrame:
     rng = np.random.default_rng(0)
+    line_error = rng.normal(size=n)
+    line = np.full(n, 224.5)
     frame = pd.DataFrame(
         {
             "GAME_ID": [f"00225000{i:02d}" for i in range(n)],
             "GAME_DATE": pd.date_range("2026-03-01", periods=n).astype(str),
-            "LINE_ERROR": rng.normal(size=n),
+            # A closing frame carries the outcome and the main book's line.
+            "TOTAL_POINTS": line + line_error,
+            LINE: line,
+            "LINE_ERROR": line_error,
             # Object-typed, as a column of a mixed frame can be.
             "FEAT_A": pd.Series(rng.normal(size=n)).astype(object),
             "FEAT_B": rng.normal(size=n),
@@ -193,6 +198,17 @@ def test_the_residual_targets_are_derived_from_the_closing_outcomes():
     carried = frame.assign(LINE_ERROR=[1.0, 2.0], SPREAD_ERROR=[3.0, 4.0])
     assert with_residual_targets(carried)["LINE_ERROR"].tolist() == [1.0, 2.0]
     assert with_residual_targets(carried)["SPREAD_ERROR"].tolist() == [3.0, 4.0]
+
+
+def test_playoff_and_preseason_games_are_not_trained_on():
+    """The XGBoost refit's rows: regular season and play-in only."""
+    history = _history()
+    history.loc[6, "GAME_ID"] = "0042500106"  # playoffs
+    history.loc[7, "GAME_ID"] = "0012500107"  # preseason
+    training_set = tabpfn_training_set(history, _spec(), frame_key="k")
+
+    assert training_set.n_games == 4
+    assert str(training_set.train_date_max.date()) == "2026-03-06"
 
 
 def test_the_window_can_be_overridden():
