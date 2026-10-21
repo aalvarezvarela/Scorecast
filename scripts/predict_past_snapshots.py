@@ -34,15 +34,22 @@ from nba_ou.data_processing.referees.process_refs_scheduled_game import (
     process_scheduled_referee_assignments,
 )
 from nba_ou.fetch_data.live_rosters import load_live_rosters
+from nba_ou.postgre_db.predictions.create.create_ou_predictions_db import (
+    upload_predictions_to_postgre,
+)
+from nba_ou.postgre_db.predictions_aiven.schema import WORKFLOW_PAST_SNAPSHOTS
 from nba_ou.postgre_db.update_all.update_all_databases import update_all_databases
 from nba_ou.prediction.intermediate_frame import (
     PASSTHROUGH_COLUMNS,
     tonight_intermediate_frame,
 )
 from nba_ou.prediction.prediction import load_registry_model_and_predict
+from nba_ou.prediction.prediction_store import (
+    PredictionRunRecorder,
+    persist_prediction_run,
+)
 from nba_ou.utils.general_utils import get_season_year_from_date
 from nba_ou.utils.s3_models import make_s3_client
-from nba_ou.utils.s3_prediction_snapshots import upload_model_predictions_snapshot
 
 EASTERN = ZoneInfo("America/New_York")
 
@@ -146,9 +153,18 @@ def predict_past_snapshots(
         f"{len(frame)} past snapshot row(s) over {frame['GAME_ID'].nunique()} game(s)"
     )
 
+    recorder = PredictionRunRecorder(
+        workflow=WORKFLOW_PAST_SNAPSHOTS, game_date=game_date
+    )
+    recorder.set_schedule(scheduled)
+    recorder.add_frame("intermediate_line", frame, version=BASE_SCHEMA_VERSION)
+
     s3 = make_s3_client(profile=SETTINGS.s3_aws_profile, region=SETTINGS.s3_aws_region)
     started = datetime.now(ZoneInfo("Europe/Madrid"))
     failures: list[str] = []
+    # The old Supabase table's failures: reported, but they do not make the
+    # prediction store's run partial.
+    legacy_failures: list[str] = []
     predicted = 0
     for slot in slots:
         label = slot.describe()
@@ -164,31 +180,42 @@ def predict_past_snapshots(
                 frames={"intermediate_line": frame},
                 frame_versions={"intermediate_line": BASE_SCHEMA_VERSION},
                 passthrough_columns=PASSTHROUGH_COLUMNS,
-                persist=persist,
+                # Stored below, each destination on its own.
+                persist=False,
                 latest_input=False,
             )
         except Exception as exc:  # noqa: BLE001 -- the other slots still run
             traceback.print_exc()
             print_status(f"Failed for {label}: {exc}", ok=False)
             failures.append(f"{label}: {exc}")
+            recorder.record_slot(label, "failed", reason=str(exc))
             continue
+        rejected = recorder.add_predictions(predictions, label=label)
         if predictions is None or predictions.empty:
             print_status(f"No rows for {label}; skipped", ok=False)
             continue
         predicted += 1
         print_status(f"{len(predictions)} prediction(s) for {label}")
+        if rejected:
+            print_status(f"Prediction store rejected {label}: {rejected}", ok=False)
+            failures.append(f"{label} (prediction store): {rejected}")
         if persist:
             try:
-                upload_model_predictions_snapshot(
-                    s3_client=s3,
-                    bucket=SETTINGS.s3_bucket,
-                    pipeline_start_time=started,
-                    date_to_predict=game_date,
-                    model_prefix=slot.prefix,
-                    predictions_df=predictions,
-                )
-            except Exception as exc:  # noqa: BLE001 -- the table rows are stored
-                print_status(f"Snapshot upload failed for {label}: {exc}", ok=False)
+                upload_predictions_to_postgre(predictions)
+            except Exception as exc:  # noqa: BLE001 -- reported below
+                print_status(f"Supabase write failed for {label}: {exc}", ok=False)
+                legacy_failures.append(f"{label} (Supabase): {exc}")
+
+    if persist:
+        print_step_header(step, "Storing Predictions")
+        step += 1
+        failures += persist_prediction_run(
+            recorder,
+            s3_client=s3,
+            bucket=SETTINGS.s3_bucket,
+            partial=bool(failures),
+        )
+    failures += legacy_failures
 
     print_step_header(step, "Summary")
     print_status(f"{predicted}/{len(slots)} slot(s) predicted")
