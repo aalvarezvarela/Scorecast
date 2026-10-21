@@ -170,10 +170,11 @@ def load_game_dimension(
 
     * ``fetch_schedules`` is one request per season and carries explicit UTC,
       including playoffs and play-in for 2019-20 through 2024-25 (zero null
-      tipoffs). **Its 2025-26 file stopped updating on 2026-04-12**, so it lacks
-      that season's play-in, playoffs and NBA Cup knockout week (122 games), and it
-      still carries pre-reschedule dates for 9 more -- see
-      :func:`_drop_stale_schedule_rows`.
+      tipoffs). It now reads ``ScheduleLeagueV2``, which is complete for
+      2025-26 too. The legacy feed it replaced **stopped updating on
+      2026-04-12** (lacking that season's play-in, playoffs and NBA Cup
+      knockout week, 122 games, with pre-reschedule dates for 9 more) and is
+      still the fallback, so :func:`_drop_stale_schedule_rows` stays.
     * ``nba_game_time_index`` is per-game and covers everything including the
       playoffs, but it is populated by ``sync_game_time_index`` and may be empty
       or absent.

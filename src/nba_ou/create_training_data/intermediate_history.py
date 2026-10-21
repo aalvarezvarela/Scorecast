@@ -67,9 +67,11 @@ def ridge_design_columns(anchor: str) -> list[str]:
         book = f"ODDS_SNAP_{design.short}_{upper}_"
         consensus = f"ODDS_SNAP_{design.short}_CONSENSUS_"
         names = [
-            consensus + name.removeprefix("CONSENSUS:")
-            if name.startswith("CONSENSUS:")
-            else book + name
+            (
+                consensus + name.removeprefix("CONSENSUS:")
+                if name.startswith("CONSENSUS:")
+                else book + name
+            )
             for name, _ in design.own_scales
         ]
         names += [template.format(anchor=upper) for template, _ in design.cross_scales]
@@ -188,13 +190,20 @@ def load_season_histories(
     )
     if history_memo is not None:
         history_memo.prefetch([MEMO_NAME])
-    out, built = {}, []
+    out, built, empty = {}, [], []
     for season in seasons:
         table = history_memo.table(MEMO_NAME, season) if history_memo else None
         entry = table.get("value") if table is not None else None
         if entry is None:
+            season_ticks = fetch_season_ticks(season)
+            if season_ticks.empty:
+                # No stored game yet -- the opener's season, whose only games
+                # are tonight's live ones. It has no history to give, exactly
+                # as in a full build; nothing is memoised for it.
+                empty.append(season)
+                continue
             entry = season_snapshot_history(
-                fetch_season_ticks(season), build_side=build_side, anchor=anchor
+                season_ticks, build_side=build_side, anchor=anchor
             )
             built.append(season)
             if table is not None:
@@ -204,8 +213,8 @@ def load_season_histories(
         history_memo.flush()
     if verbose:
         print(
-            f"Snapshot history: {len(seasons) - len(built)} season(s) stored, "
-            f"built {built or 'none'}"
+            f"Snapshot history: {len(out) - len(built)} season(s) stored, "
+            f"built {built or 'none'}, empty {empty or 'none'}"
         )
     return out
 

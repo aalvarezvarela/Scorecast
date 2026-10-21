@@ -77,7 +77,13 @@ def get_game_ids_for_date(game_date: str) -> list[str]:
     except ValueError as exc:
         raise ValueError("Invalid date format. Please use YYYY-MM-DD.") from exc
 
-    games = ScoreboardV2(game_date=game_date).get_data_frames()[0]
+    # Through the schedule fetcher for its ScoreboardV3 fallback: V2 failed
+    # outright for the 2026-10-20 opener.
+    from nba_ou.fetch_data.scheduled_game.get_schedule_games import (
+        nba_api_schedule_games,
+    )
+
+    games = nba_api_schedule_games(game_date)
     if games.empty or "GAME_ID" not in games.columns:
         return []
 

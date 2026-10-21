@@ -119,3 +119,87 @@ def test_tabpfn_is_refused_before_any_work(monkeypatch):
     )
     with pytest.raises(SystemExit, match="--no-tabpfn"):
         job.predict_nba_games(run_tabpfn_client=True)
+
+
+def test_a_failing_slot_does_not_stop_the_others(monkeypatch, capsys):
+    """Every slot and the baselines get their turn; the run then exits 1."""
+    from nba_ou.modeling.registry_paths import ModelSlot
+
+    tonight = pd.DataFrame(
+        {
+            "GAME_ID": ["g5"],
+            "GAME_DATE": [pd.Timestamp("2025-11-03")],
+            "GAME_TIME": [pd.Timestamp("2025-11-03 19:00", tz="US/Eastern")],
+            "ODDS_TOTAL_LINE_bet365": [225.5],
+            "TOTAL_POINTS": [np.nan],
+        }
+    )
+    slots = [
+        ModelSlot(
+            schema_version="2_5", target=target, horizon_minutes=0, variant="main"
+        )
+        for target in ("line_error", "total_points")
+    ]
+    monkeypatch.setattr(
+        job,
+        "SETTINGS",
+        SimpleNamespace(
+            prediction_model_slots=slots,
+            headless=True,
+            nba_injury_reports_url="",
+            s3_aws_profile=None,
+            s3_aws_region="eu-west-1",
+            s3_bucket="bucket",
+        ),
+    )
+    monkeypatch.setattr(job, "update_all_databases", lambda **_: None)
+    monkeypatch.setattr(
+        job,
+        "get_all_info_for_scheduled_games",
+        lambda **_: {"scheduled_games": tonight[["GAME_ID"]]},
+    )
+    monkeypatch.setattr(
+        job, "create_df_to_predict", lambda **_: (tonight.copy(), _history())
+    )
+    monkeypatch.setattr(job, "make_s3_client", lambda **_: object())
+    monkeypatch.setattr(
+        job,
+        "upload_input_features_snapshot",
+        lambda **_: pytest.fail("a dry run uploaded its inputs"),
+    )
+    monkeypatch.setattr(
+        job,
+        "upload_model_predictions_snapshot",
+        lambda **_: pytest.fail("a dry run uploaded predictions"),
+    )
+    monkeypatch.setattr(
+        baseline_predictions,
+        "upload_predictions_to_postgre",
+        lambda df: pytest.fail("a dry run stored baselines"),
+    )
+    served = []
+
+    def serve(*, slot, persist, **_):
+        assert persist is False
+        served.append(slot.target)
+        if slot.target == "line_error":
+            raise RuntimeError("booster unreadable")
+        return pd.DataFrame({"GAME_ID": ["g5"]})
+
+    monkeypatch.setattr(job, "load_registry_model_and_predict", serve)
+
+    class _Now:
+        @staticmethod
+        def now(tz=None):
+            return pd.Timestamp("2025-11-03 12:00", tz=tz).to_pydatetime()
+
+    monkeypatch.setattr(job, "datetime", _Now)
+    with pytest.raises(SystemExit) as exit_info:
+        job.predict_nba_games(run_tabpfn_client=False, persist=False)
+
+    assert exit_info.value.code == 1
+    assert served == ["line_error", "total_points"]
+    out = capsys.readouterr().out
+    assert "1 slot(s) predicted" in out
+    assert "booster unreadable" in out
+    assert "Baseline predictions generated" in out
