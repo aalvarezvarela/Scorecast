@@ -110,7 +110,10 @@ class SpecCleaning(_Strict):
 
 #: (section, field) pairs a spec may omit. Each is hashed only when set, so a
 #: spec written before the field existed recomputes to its stored spec_id.
-_FIELDS_ADDED_LATER: tuple[tuple[str, str], ...] = (("training", "random_state"),)
+_FIELDS_ADDED_LATER: tuple[tuple[str, str], ...] = (
+    ("training", "random_state"),
+    ("training", "device"),
+)
 
 
 class SpecTraining(_Strict):
@@ -130,6 +133,11 @@ class SpecTraining(_Strict):
     #: rows the closing line_error model picks the same side only ~78% of the
     #: time across seeds. None on specs written before it was recorded.
     random_state: int | None = None
+    #: XGBoost device the run fitted on ("cuda" or "cpu"). Part of the model,
+    #: not just hardware: CUDA and CPU build different trees from one seed and
+    #: one dataset, so a refit must use the device the run was evaluated on.
+    #: None on specs written before it was recorded.
+    device: str | None = None
 
 
 class SpecProvenance(_Strict):

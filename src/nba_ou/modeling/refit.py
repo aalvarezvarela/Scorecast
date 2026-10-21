@@ -16,9 +16,11 @@ closing-line half works today and the intermediate half says what it needs.
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
+import numpy as np
 import pandas as pd
 from nba_ou.config.constants import SEASON_TYPE_MAP, TRAINING_SEASON_TYPES
 from nba_ou.config.market_columns import HOME_MARGIN_COL, SPREAD_ERROR_COL, spread_error
@@ -36,13 +38,11 @@ from nba_ou.modeling.retraining_utils import (
 from xgboost import XGBRegressor
 
 #: Fixed across every model: these decide how XGBoost runs, not what it learns.
-#: The tuned half lives in ``spec.training.params``. CPU on purpose: a refit
-#: is one small fit, and CUDA subsamples differently from CPU under the same
-#: seed, so pinning the device is what makes a build reproducible anywhere.
+#: The tuned half lives in ``spec.training.params``; the seed and the device
+#: come from the spec too (refit_random_state, refit_device).
 XGB_STATIC_PARAMS: dict[str, object] = {
     "booster": "gbtree",
     "tree_method": "hist",
-    "device": "cpu",
     "objective": "reg:squarederror",
     "eval_metric": "mae",
     "n_jobs": -1,
@@ -54,11 +54,51 @@ XGB_STATIC_PARAMS: dict[str, object] = {
 #: runs used. The exception, 2_5/line_error/t0000/main, ran with 17.
 DEFAULT_RANDOM_STATE = 16
 
+#: The device for a spec written before devices were recorded: all 51 of the
+#: first promoted runs were tuned and fitted on CUDA.
+DEFAULT_DEVICE = "cuda"
+
 
 def refit_random_state(spec: ModelSpec) -> int:
     if spec.training.random_state is not None:
         return spec.training.random_state
     return DEFAULT_RANDOM_STATE
+
+
+def refit_device(spec: ModelSpec) -> str:
+    """The device to refit on: the one the run was evaluated on.
+
+    CUDA and CPU build different trees from the same seed and data (on the
+    closing line_error slot only ~79% of games get the same side), so a refit
+    on another device is not the model that was evaluated.
+    """
+    return spec.training.device or DEFAULT_DEVICE
+
+
+def fitted_device(model: XGBRegressor) -> str:
+    """The device a fitted model actually trained on, e.g. "cuda:0" or "cpu"."""
+    config = json.loads(model.get_booster().save_config())
+    return str(config["learner"]["generic_param"]["device"])
+
+
+def require_device(device: str) -> None:
+    """Fail now if ``device`` cannot be used.
+
+    Without a visible GPU, XGBoost does not raise: it logs a warning and fits
+    on CPU, which here would silently ship a different model. A tiny fit shows
+    which device it really used.
+    """
+    if not device.startswith("cuda"):
+        return
+    probe = XGBRegressor(n_estimators=1, device=device, verbosity=0)
+    probe.fit(np.zeros((4, 1)), np.zeros(4))
+    if not fitted_device(probe).startswith("cuda"):
+        raise RefitError(
+            f"The spec asks for device={device!r}, but XGBoost fell back to "
+            f"{fitted_device(probe)!r}: no usable GPU or no CUDA build. Refit on "
+            "the machine the configuration was evaluated on."
+        )
+
 
 DATE_COLUMN = "GAME_DATE"
 GAME_ID_COLUMN = "GAME_ID"
@@ -120,6 +160,7 @@ def settings_from_spec(spec: ModelSpec) -> RetrainingSettings:
     target_column = TARGET_COLUMNS[ModelTarget(spec.identity.target)]
     xgb_params = {
         **XGB_STATIC_PARAMS,
+        "device": refit_device(spec),
         "random_state": refit_random_state(spec),
         **spec.training.params,
     }
@@ -365,6 +406,12 @@ def refit_from_spec(
         raise RefitError(f"{slot.describe()}: training window is empty.")
 
     model = retrain_model(window, settings=settings)
+    wanted = str(settings.xgb_params["device"])
+    if wanted.startswith("cuda") and not fitted_device(model).startswith("cuda"):
+        raise RefitError(
+            f"{slot.describe()}: fitted on {fitted_device(model)!r} although the "
+            f"spec asks for {wanted!r}; refusing to stage a different model."
+        )
 
     train_date_min = pd.Timestamp(window[settings.date_column].min()).to_pydatetime()
     train_date_max = pd.Timestamp(window[settings.date_column].max()).to_pydatetime()

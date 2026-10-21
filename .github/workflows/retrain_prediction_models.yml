@@ -37,13 +37,15 @@ jobs:
     uses: ./.github/workflows/update_database_daily.yml
     secrets: inherit
 
-  # GitHub-hosted, so the refit does not occupy the local machine. Reads only:
-  # Supabase and Aiven (both reachable from hosted runners) and S3.
+  # Self-hosted, on the GPU the configurations were tuned on: CUDA and CPU
+  # XGBoost build different trees from the same seed and data, so only the
+  # same device reproduces the evaluated model. The refit checks the GPU before
+  # building the frame and refuses to stage a model XGBoost fitted on CPU.
   retrain:
     needs: update-database
     # Runs after a successful update, or straight away when it was switched off.
     if: ${{ !cancelled() && (needs.update-database.result == 'success' || needs.update-database.result == 'skipped') }}
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     timeout-minutes: 120
     env:
       PYTHONWARNINGS: "ignore::UserWarning,ignore::DeprecationWarning,ignore::FutureWarning"

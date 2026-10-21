@@ -29,6 +29,7 @@ scipy==1.15.2
 tqdm==4.67.1
 
 # Models and registry
+# The PyPI wheel is built with CUDA; the refit fits on the GPU the specs name.
 xgboost==2.1.4
 # Lineup style matchup (schema layers).
 scikit-learn==1.6.1

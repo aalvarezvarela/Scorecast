@@ -26,7 +26,7 @@ def _spec(dataset_type: str) -> SimpleNamespace:
     return SimpleNamespace(
         spec_id=f"spec-{dataset_type}",
         identity=SimpleNamespace(dataset_type=dataset_type, horizon_minutes=0),
-        training=SimpleNamespace(random_state=None),
+        training=SimpleNamespace(random_state=None, device=None),
     )
 
 
@@ -37,6 +37,8 @@ def daily_retrain(monkeypatch):
     refit_fails: set[str] = set()
 
     monkeypatch.setattr(retrain, "make_s3_client", lambda **_: object())
+    # The GPU check would fail on a machine without CUDA; fitting is stubbed.
+    monkeypatch.setattr(retrain, "require_device", lambda device: None)
     monkeypatch.setattr(
         retrain,
         "resolve_config_spec",

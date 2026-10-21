@@ -185,11 +185,11 @@ def check_schema_version_against_checkout(schema_version: str) -> None:
 def check_refit_reproduces_rows(config: ExperimentConfig) -> None:
     """Refuse a configuration the daily refit cannot repeat.
 
-    The spec records features, cleaning thresholds, hyperparameters and the
-    seed, not every row rule or the objective, so nba_ou.modeling.refit applies
-    training's defaults for those. A run that changed one of them would be
-    refitted daily on different games, or a different loss, from the one it
-    was evaluated with, and nothing would raise.
+    The spec records features, cleaning thresholds, hyperparameters, the seed
+    and the device, not every row rule or the objective, so
+    nba_ou.modeling.refit applies training's defaults for those. A run that
+    changed one of them would be refitted daily on different games, or a
+    different loss, from the one it was evaluated with, and nothing would raise.
     """
     data = config.data
     changed = []
@@ -262,6 +262,7 @@ def build_spec_from_run(
         refit_strategy=config.refit.strategy.value,
         required_line_col=config.line_col,
         random_state=config.random_state,
+        device=config.device,
     )
 
     cleaning = SpecCleaning(

@@ -12,7 +12,9 @@ import io
 import numpy as np
 import pandas as pd
 import pytest
+from nba_ou.modeling import refit
 from nba_ou.modeling.refit import (
+    DEFAULT_DEVICE,
     DEFAULT_RANDOM_STATE,
     TARGET_COLUMNS,
     RefitError,
@@ -247,24 +249,45 @@ def test_a_spec_without_a_seed_keeps_the_id_it_was_stored_under(frame_path):
     assert "random_state" not in unseeded.canonical_body()["training"]
 
     seeded = unseeded.model_copy(
-        update={
-            "training": unseeded.training.model_copy(update={"random_state": 17})
-        }
+        update={"training": unseeded.training.model_copy(update={"random_state": 17})}
     )
     assert seeded.compute_spec_id() != unseeded.spec_id
 
 
-def test_the_refit_fits_on_cpu_with_the_seed_the_spec_records(frame_path):
+def test_the_refit_uses_the_seed_and_device_the_spec_records(frame_path):
     config = _config(frame_path, TargetFamily.LINE_ERROR)
     spec = _spec(config, ModelTarget.LINE_ERROR, FEATURES)
     params = settings_from_spec(spec).xgb_params
-    assert params["device"] == "cpu"
+    assert params["device"] == DEFAULT_DEVICE == "cuda"
     assert params["random_state"] == DEFAULT_RANDOM_STATE
 
-    seeded = spec.model_copy(
-        update={"training": spec.training.model_copy(update={"random_state": 17})}
+    recorded = spec.model_copy(
+        update={
+            "training": spec.training.model_copy(
+                update={"random_state": 17, "device": "cpu"}
+            )
+        }
     )
-    assert settings_from_spec(seeded).xgb_params["random_state"] == 17
+    params = settings_from_spec(recorded).xgb_params
+    assert (params["random_state"], params["device"]) == (17, "cpu")
+
+
+def test_a_spec_without_a_device_keeps_the_id_it_was_stored_under(frame_path):
+    config = _config(frame_path, TargetFamily.LINE_ERROR)
+    spec = _spec(config, ModelTarget.LINE_ERROR, FEATURES)
+    assert "device" not in spec.canonical_body()["training"]
+    on_cuda = spec.model_copy(
+        update={"training": spec.training.model_copy(update={"device": "cuda"})}
+    )
+    assert on_cuda.compute_spec_id() != spec.spec_id
+
+
+def test_a_cuda_spec_refuses_to_fit_when_xgboost_falls_back_to_cpu(monkeypatch):
+    # What XGBoost does without a visible GPU: a warning, then a CPU fit.
+    monkeypatch.setattr(refit, "fitted_device", lambda model: "cpu")
+    with pytest.raises(RefitError, match="fell back"):
+        refit.require_device("cuda")
+    refit.require_device("cpu")  # nothing to check
 
 
 def test_promotion_records_the_run_seed(frame_path):
@@ -289,6 +312,7 @@ def test_promotion_records_the_run_seed(frame_path):
         config, hyperparameters=hyperparameters, feature_names=FEATURES, slot=slot
     )
     assert spec.training.random_state == 17
+    assert spec.training.device == config.device
 
 
 def test_promotion_refuses_an_objective_the_refit_does_not_fit(frame_path):
