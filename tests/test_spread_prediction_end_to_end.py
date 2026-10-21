@@ -83,7 +83,6 @@ def _predict(target, **kwargs):
         required_features=FEATURES,
         prediction_target=target,
         prediction_datetime=PREDICTION_AT,
-        shap_top_n=2,
         **kwargs,
     )
 
@@ -190,7 +189,6 @@ def test_predictions_continue_with_nan_live_features(
         required_features=features,
         prediction_target=target,
         prediction_datetime=PREDICTION_AT,
-        shap_top_n=2,
     )
 
     assert len(result) == len(frame)
@@ -217,7 +215,6 @@ def test_snapshot_marks_reach_the_output_and_a_dry_run_stores_nothing(
         required_features=FEATURES,
         prediction_target=PREDICTION_TARGET_LINE_ERROR,
         prediction_datetime=PREDICTION_AT,
-        shap_top_n=2,
         passthrough_columns=("SNAPSHOT_TS_UTC", "SNAPSHOT_PASSED", "NOT_THERE"),
         persist=False,
     )
@@ -240,7 +237,6 @@ def test_a_row_over_the_training_nan_limit_is_not_predicted(captured_uploads):
         required_features=FEATURES,
         prediction_target=PREDICTION_TARGET_LINE_ERROR,
         prediction_datetime=PREDICTION_AT,
-        shap_top_n=2,
         persist=False,
     )
 

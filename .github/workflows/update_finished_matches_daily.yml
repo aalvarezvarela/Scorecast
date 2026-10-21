@@ -23,6 +23,9 @@ jobs:
             DB_ENV: supabase
             SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
             SUPABASE_DB_PASSWORD: ${{ secrets.SUPABASE_DB_PASSWORD }}
+            # Aiven: the prediction store's games (final scores).
+            AIVEN_DB_URL: ${{ secrets.AIVEN_DB_URL }}
+            AIVEN_DB_PASSWORD: ${{ secrets.AIVEN_DB_PASSWORD }}
 
         steps:
             - name: Checkout
@@ -56,6 +59,11 @@ jobs:
                   cd scripts
                   cd update_databases
                   python update_finished_matches.py
+
+            # The Aiven prediction store grades from its games table; every
+            # game past tip-off without a final score is looked up again.
+            - name: Update prediction store results
+              run: python scripts/prediction_store/update_game_results.py
 
             - name: Update validated lineup stints
               run: python scripts/lineups/update_lineups.py --local-root data --s3

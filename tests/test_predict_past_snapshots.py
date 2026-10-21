@@ -54,6 +54,26 @@ def test_snapshots_still_ahead_are_left_out():
     ]
 
 
+class _NullRecorder:
+    """The prediction store's recorder, accepting everything (it has its own
+    tests in test_prediction_store.py)."""
+
+    def __init__(self, **_):
+        pass
+
+    def set_schedule(self, *_):
+        pass
+
+    def add_frame(self, *_, **__):
+        pass
+
+    def record_slot(self, *_, **__):
+        pass
+
+    def add_predictions(self, *_, **__):
+        return None
+
+
 def test_each_slot_reads_its_own_snapshot(monkeypatch):
     frame = pd.DataFrame(
         {
@@ -88,10 +108,16 @@ def test_each_slot_reads_its_own_snapshot(monkeypatch):
         return frames["intermediate_line"].iloc[:1]
 
     monkeypatch.setattr(job, "load_registry_model_and_predict", predict)
+    monkeypatch.setattr(job, "PredictionRunRecorder", _NullRecorder)
     monkeypatch.setattr(
         job,
-        "upload_model_predictions_snapshot",
-        lambda **_: pytest.fail("a dry run uploaded predictions"),
+        "persist_prediction_run",
+        lambda *_, **__: pytest.fail("a dry run stored predictions"),
+    )
+    monkeypatch.setattr(
+        job,
+        "upload_predictions_to_postgre",
+        lambda df: pytest.fail("a dry run stored predictions in Supabase"),
     )
     job.predict_past_snapshots("2026-10-21", persist=False, update_databases=False)
     # The closing slot is left out; no slot reads the latest snapshot.

@@ -26,6 +26,12 @@ What is never moved:
 
 A move, not a delete: server-side copy, then delete only once every copy has
 succeeded, the same as ``retire_legacy_models.py``.
+
+The Aiven prediction store names the build behind every stored prediction
+(``prediction.model_builds.s3_build_prefix``). Once the originals are deleted,
+the moved builds' prefixes are rewritten there to their retired location, so a
+stored prediction can still be traced to its model. If the store cannot be
+reached, the UPDATE statements are printed, to run once it can.
 """
 
 from __future__ import annotations
@@ -274,9 +280,53 @@ def main() -> int:
     if not args.execute:
         print(f"\nDry run: {len(moves)} object(s) would move. Re-run with --execute.")
         return 0
-    return execute_moves(
+    status = execute_moves(
         s3_client=s3, bucket=bucket, moves=moves, keep_source=args.keep_source
     )
+    if status == 0 and not args.keep_source:
+        status = retarget_prediction_store(plans, root=root, stamp=args.stamp)
+    return status
+
+
+def moved_build_prefixes(
+    plans: list[SlotArchivePlan], *, root: str, stamp: str
+) -> dict[str, str]:
+    """Old build prefix -> retired build prefix, for every build moved."""
+    return {
+        plan.slot.build_prefix(fit_id): retired_key(
+            plan.slot.build_prefix(fit_id), root=root, stamp=stamp
+        )
+        for plan in plans
+        for fit_id in plan.fit_ids
+    }
+
+
+def retarget_prediction_store(
+    plans: list[SlotArchivePlan], *, root: str, stamp: str
+) -> int:
+    """Rewrite the moved builds' prefixes in the prediction store; 1 on failure."""
+    from nba_ou.postgre_db.config.db_config import connect_nba_db
+    from nba_ou.postgre_db.predictions_aiven.store import retarget_build_prefixes
+
+    moved = moved_build_prefixes(plans, root=root, stamp=stamp)
+    if not moved:
+        return 0
+    try:
+        with connect_nba_db(env="aiven") as conn:
+            changed = retarget_build_prefixes(conn, moved)
+    except Exception as exc:  # noqa: BLE001 -- the moves themselves succeeded
+        print(
+            f"\nPrediction store NOT updated ({exc}). Run on Aiven:", file=sys.stderr
+        )
+        for old, new in moved.items():
+            print(
+                "UPDATE prediction.model_builds SET s3_build_prefix = "
+                f"'{new}' WHERE s3_build_prefix = '{old}';",
+                file=sys.stderr,
+            )
+        return 1
+    print(f"Prediction store: {changed} build row(s) now point at the retired path.")
+    return 0
 
 
 if __name__ == "__main__":
