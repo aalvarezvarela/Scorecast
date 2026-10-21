@@ -17,6 +17,11 @@ from nba_ou.data_processing.missing_data.clean_df_for_training import (
 from nba_ou.postgre_db.predictions.create.create_ou_predictions_db import (
     upload_predictions_to_postgre,
 )
+from nba_ou.prediction.input_limits import (
+    LATEST_INPUT_COLUMN,
+    LIMITED_COUNT_COLUMN,
+    limit_to_training_support,
+)
 from xgboost import XGBRegressor
 
 PredictionTarget = Literal["PRED_LINE_ERROR", "TOTAL_POINTS", "PRED_SPREAD_ERROR"]
@@ -799,13 +804,17 @@ def load_registry_model_and_predict(
     frame_versions: Mapping[str, str] | None = None,
     passthrough_columns: Sequence[str] = (),
     persist: bool = True,
+    latest_input: bool = False,
 ) -> pd.DataFrame:
     """Predict with whatever a slot's channel currently points at.
 
     ``frames`` maps a dataset type to its feature frame (tonight's closing
     rows, tonight's intermediate snapshots); the slot's model reads the frame
     of its own type, and ``df`` and ``servable_dataset_types`` are then
-    ignored. An intermediate model predicts the rows of its horizon.
+    ignored. An intermediate model predicts the rows of its horizon -- or,
+    with ``latest_input``, each game's latest snapshot (the frame's
+    ``LATEST_INPUT`` rows), limited to what its training rows could carry
+    (``input_limits.limit_to_training_support``). ``INPUT_MODE`` records which.
 
     ``horizon_tolerance_minutes`` restricts a non-snapshot model to rows within
     that many minutes of its horizon (``select_rows_for_horizon``). None, the
@@ -865,7 +874,16 @@ def load_registry_model_and_predict(
 
     prediction_target = resolve_prediction_target(spec.identity.target)
 
-    if dataset_type in SNAPSHOT_DATASET_TYPES:
+    snapshot_input = dataset_type in SNAPSHOT_DATASET_TYPES
+    latest_input = latest_input and snapshot_input
+    if latest_input:
+        if LATEST_INPUT_COLUMN not in df.columns:
+            raise ValueError(
+                f"{slot.describe()}: latest input asked, and the intermediate "
+                f"frame has no {LATEST_INPUT_COLUMN} column (built without it)."
+            )
+        eligible = df[LATEST_INPUT_COLUMN].fillna(False).astype(bool)
+    elif snapshot_input:
         # The row built for this model's snapshot -- a choice of row, not a
         # time guard: the frame holds every horizon of every game.
         eligible = pd.to_numeric(df["TIME_TO_MATCH_MIN"], errors="coerce").eq(
@@ -880,23 +898,40 @@ def load_registry_model_and_predict(
             tolerance_minutes=horizon_tolerance_minutes,
         )
     if not bool(eligible.any()):
-        print(
-            f"  {slot.describe()}: no rows for the model's horizon "
-            f"(T-{spec.identity.horizon_minutes}); skipping."
+        wanted = (
+            "latest snapshot"
+            if latest_input
+            else f"model's horizon (T-{spec.identity.horizon_minutes})"
         )
+        print(f"  {slot.describe()}: no rows for the {wanted}; skipping.")
         return pd.DataFrame()
     skipped = int((~eligible).sum())
-    if skipped:
+    if skipped and not latest_input:
         print(
             f"  {slot.describe()}: skipping {skipped} row(s) outside the "
             f"model's horizon (T-{spec.identity.horizon_minutes})."
         )
+    rows = df.loc[eligible]
+    extra_columns = {}
+    if latest_input:
+        rows = limit_to_training_support(
+            rows, horizon_minutes=spec.identity.horizon_minutes
+        )
+        horizons = sorted(rows["TIME_TO_MATCH_MIN"].astype(int).unique())
+        print(
+            f"  {slot.describe()}: latest snapshots "
+            f"{', '.join(f'T-{m}' for m in horizons)}; "
+            f"{int(rows[LIMITED_COUNT_COLUMN].sum())} cell(s) limited to the "
+            f"T-{spec.identity.horizon_minutes} training support."
+        )
+    if snapshot_input:
+        extra_columns["INPUT_MODE"] = "latest" if latest_input else "own"
 
     regressor = XGBRegressor()
     regressor.load_model(bytearray(resolved.model_bytes))
 
     predictions = load_and_predict_model_for_nba_games(
-        df=df.loc[eligible],
+        df=rows,
         regressor=regressor,
         model_name=fit.model_name,
         model_type=f"{spec.identity.target}_{slot.horizon_label}",
@@ -923,6 +958,7 @@ def load_registry_model_and_predict(
             "MODEL_VARIANT": spec.identity.variant,
             "SPEC_ID": spec.spec_id,
             "FIT_ID": fit.fit_id,
+            **extra_columns,
         },
         shap_top_n=shap_top_n,
     )

@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import multiprocessing
 import os
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass
 
@@ -819,6 +819,48 @@ def _effect_prior_table(
     return prior_memo, table, first_current
 
 
+def _alias_horizons(
+    states: dict[int, InjuryReportState],
+    cutoffs: pd.DataFrame,
+    aliases: Mapping[int, int],
+    targets: set[str],
+) -> tuple[dict[int, InjuryReportState], pd.DataFrame]:
+    """``states`` and ``cutoffs`` where each alias horizon's earlier games are
+    its source horizon's: the targets keep their own reads at the alias.
+
+    The earlier games' reads at a grid horizon are what a full build holds, so
+    an off-grid horizon of tonight's (the run's own moment) is calibrated on
+    the nearest one rather than on reads no build has made.
+    """
+    states = dict(states)
+    added = []
+    for alias, source in aliases.items():
+        if alias == source or source not in states:
+            continue
+        own = states.get(alias, InjuryReportState.empty())
+        history = states[source]
+
+        def merged(history_frame: pd.DataFrame, own_frame: pd.DataFrame):
+            earlier = history_frame[~history_frame["game_id"].astype(str).isin(targets)]
+            return pd.concat([earlier, own_frame], ignore_index=True)
+
+        states[alias] = InjuryReportState(
+            statuses=merged(history.statuses, own.statuses),
+            filings=merged(history.filings, own.filings),
+            report_age=merged(history.report_age, own.report_age),
+            status_events=history.status_events,
+            listed_pairs=history.listed_pairs,
+        )
+        rows = cutoffs[
+            cutoffs["snapshot_minutes"].eq(source)
+            & ~cutoffs["game_id"].astype(str).isin(targets)
+        ]
+        added.append(rows.assign(snapshot_minutes=alias))
+    if added:
+        cutoffs = pd.concat([cutoffs, *added], ignore_index=True)
+    return states, cutoffs
+
+
 def add_snapshot_injury_features(
     snapshots: pd.DataFrame,
     base: pd.DataFrame,
@@ -829,6 +871,7 @@ def add_snapshot_injury_features(
     history_cutoffs: pd.DataFrame | None = None,
     live_reports: LiveInjuryReports | None = None,
     while_waiting: Callable[[], None] | None = None,
+    horizon_aliases: Mapping[int, int] | None = None,
 ) -> pd.DataFrame:
     """Attach 2_5 injury features using the latest report before each snapshot.
 
@@ -849,7 +892,16 @@ def add_snapshot_injury_features(
 
     ``while_waiting`` is other work of the caller's, run once in this process
     while the horizons run in others (or before them, when they run in turn).
+
+    ``horizon_aliases`` (tonight-only mode) maps an off-grid horizon of the
+    targets to a grid horizon: the targets' rows there read their reports at
+    their own snapshot, and the earlier games (whose players, availability and
+    effect fit they are calibrated on) are those of the grid horizon. The
+    memos stay keyed on the grid, so nothing an alias reads is stored under it.
     """
+    aliases = {int(k): int(v) for k, v in (horizon_aliases or {}).items() if k != v}
+    if aliases and target_game_ids is None:
+        raise ValueError("horizon_aliases needs target_game_ids")
     existing_effects = [
         c for c in base if c.startswith(SNAPSHOT_INJURY_EFFECT_PREFIXES)
     ]
@@ -923,6 +975,14 @@ def add_snapshot_injury_features(
             prior_memo, priors, first_current_season = _effect_prior_table(
                 memo, cutoffs, targets
             )
+    if aliases:
+        # After every memo key is taken from the grid's own cutoffs.
+        states, cutoffs = _alias_horizons(states, cutoffs, aliases, targets)
+        if priors is not None:
+            for alias, source in aliases.items():
+                for prefix, _ in EFFECT_FAMILIES:
+                    if (source, prefix) in priors:
+                        priors[(alias, prefix)] = priors[(source, prefix)]
     # The same for every horizon: the players' cumulative statistics, sort
     # and lookup indexes, and the All-Star votes, do not depend on the report.
     prepared_players = prepare_player_history(context.players.copy(), PLAYER_STATS)
@@ -996,6 +1056,9 @@ def add_snapshot_injury_features(
         ]
     if memo is not None:
         memo.flush()
+    if priors is not None:
+        for key in [key for key in priors if key[0] in aliases]:
+            del priors[key]
     if prior_memo is not None:
         prior_memo.flush()
     injury = pd.concat(parts, ignore_index=True)

@@ -41,6 +41,63 @@ only needs one run after each horizon, not a run at each exact minute.
 `as_of`, builder with the replayed data substituted for the stored rows) and
 require the rows to equal the training dataset's for those games.
 
+## Latest input: a model fed the run's own moment (2026-10-20)
+
+The user bets at the time of the run, so a slot can instead predict from each
+game's **latest snapshot**, whatever its own horizon: a T-360 model run at
+T-47 reads the T-47 row as if it were its T-360 row. The two modes, per run:
+
+- `latest` (`[PredictionModels] INTERMEDIATE_INPUT_MODE`, the default during
+  the day): the slots of `LATEST_INPUT_SLOTS` (`all`, or `ENABLED_MODELS`
+  rows) read the latest row; the others their own. The user runs it at the
+  grid times by cron.
+- `own` (`predict_nba_games.py --intermediate-input own`): every slot reads its
+  own snapshot. Run once after the last tip-off, every snapshot is the past,
+  so each slot predicts exactly its training row. That run is
+  `scripts/predict_past_snapshots.py` (workflow "NBA Past-Snapshot
+  Predictions", on dispatch): the intermediate slots only, on a schedule that
+  keeps started and finished games (the live one drops them), snapshot rows
+  still ahead left out. Its default date is the Eastern date 12 hours ago, so
+  it can run from the last game's tip-off until noon ET the next day; after
+  that, pass the date. Dry run on 2026-10-20 (3 games): 48/48 slots, ~13 min.
+
+How the latest row is built (`prediction.intermediate_frame`,
+`create_intermediate_line_df(extra_target_snapshots=...)`):
+
+- Its horizon is `ceil(tip - as_of)` in minutes, 0 once the game has tipped,
+  so it never falls after the run. It is added to tonight's grid only; the
+  stored history of the other games stays on the grid, so no training build
+  can change.
+- Every value is computed as of that moment exactly as a grid row's is: the
+  market as of then, the movement windows anchored on it (`move_last_W` is the
+  last W minutes before it), the Ridge with its real horizon, the injury
+  reports published before it, the referees once released.
+- The one exception is the injury stage's calibration on earlier games (the
+  players' availability and the availability-effect fit), which a full build
+  only has at grid horizons: an off-grid horizon reads it at the nearest grid
+  horizon (`intermediate_injuries._alias_horizons`), tonight's own report state
+  still at the run's moment. The memos stay keyed on the grid.
+
+What the model may read of it (`prediction.input_limits`), applied to the
+latest input only:
+
+- **Referees**: masked as training masks them, before 09:00 ET on game day, but
+  at the model's nominal snapshot `tip - H`. A T-720 model of a 19:00 ET game
+  reads no crew; of a 22:00 ET game it does.
+- **Injury news** (`INJ_SNAP_*`, `ODDS_SNAP_NEWS_*`): a value becomes 0 (the
+  no-news reading) where under 5% of the 2_5 training rows at H carry one --
+  mostly T-480 to T-960, when no report is published overnight
+  (`input_support_table`, regenerated with
+  `scripts/build_input_support_table.py`). The injury status itself is in
+  ~95% of rows at every horizon and is not limited.
+
+Each prediction carries `INPUT_MODE` (`latest`/`own`), the input row's
+`TIME_TO_MATCH_MIN` and `INPUT_LIMITED_COUNT` in its S3 snapshot; the
+Postgres table keeps its columns until the prediction store is decided.
+Features whose meaning grows with time elapsed (`MINUTES_SINCE_OPEN`,
+`N_MOVES_SO_FAR`, ...) are left as they are: the model reads the real values,
+outside its training range at a much later moment.
+
 ## Status
 
 ### Done (2026-09-27)

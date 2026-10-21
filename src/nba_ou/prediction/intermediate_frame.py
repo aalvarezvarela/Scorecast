@@ -12,15 +12,24 @@ snapshot is still ahead is built from the ticks so far, so it is NOT the row
 the model was trained on; ``SNAPSHOT_PASSED`` says which kind each row is, and
 ``SNAPSHOT_TS_UTC`` when its snapshot falls, so the two can be told apart in
 the stored predictions.
+
+With ``latest_input`` each game also gets the row of the run's own moment, its
+latest snapshot (``latest_snapshot_minutes``), flagged ``LATEST_INPUT``: the
+slots in ``LATEST_INPUT_SLOTS`` predict from it whatever their horizon. A game
+already tipped has its T-0 row as latest.
 """
 
 from __future__ import annotations
+
+import math
 
 import pandas as pd
 from nba_ou.create_training_data.create_intermediate_line_df import (
     create_intermediate_line_df,
 )
 from nba_ou.create_training_data.live_game_day import fetch_live_game_day
+from nba_ou.data_processing.line_history.snapshots import DEFAULT_SNAPSHOT_GRID
+from nba_ou.prediction.input_limits import LATEST_INPUT_COLUMN, LIMITED_COUNT_COLUMN
 
 #: The display columns the prediction summary reads, from tonight's schedule.
 SCHEDULE_COLUMNS = ("GAME_TIME",)
@@ -28,6 +37,26 @@ SCHEDULE_COLUMNS = ("GAME_TIME",)
 
 #: Per-row snapshot columns the predictions carry through to their output.
 SNAPSHOT_COLUMNS = ("SNAPSHOT_TS_UTC", "SNAPSHOT_PASSED")
+#: What an intermediate prediction carries through: when its snapshot falls,
+#: its horizon (the model's own or the latest) and the cells the training
+#: support limits changed (latest input only).
+PASSTHROUGH_COLUMNS = (*SNAPSHOT_COLUMNS, "TIME_TO_MATCH_MIN", LIMITED_COUNT_COLUMN)
+
+
+def latest_snapshot_minutes(tipoffs: pd.Series, as_of: pd.Timestamp) -> dict[str, int]:
+    """Per game id (``tipoffs``' index), whole minutes before tip at ``as_of``.
+
+    Rounded up, so the snapshot never falls after ``as_of``; a game already
+    tipped reads 0, its closing snapshot.
+    """
+    as_of = pd.Timestamp(as_of)
+    latest = {}
+    for game_id, tipoff in tipoffs.items():
+        if pd.isna(tipoff):
+            continue
+        seconds = (pd.Timestamp(tipoff) - as_of).total_seconds()
+        latest[str(game_id)] = max(0, math.ceil(seconds / 60))
+    return latest
 
 
 def mark_snapshots(
@@ -65,10 +94,12 @@ def tonight_intermediate_frame(
     *,
     game_date: str | pd.Timestamp,
     as_of: pd.Timestamp | None = None,
+    latest_input: bool = False,
     verbose: bool = True,
 ) -> pd.DataFrame:
     """Tonight's (game, snapshot) rows for every horizon, with the schedule's
-    display columns and the snapshot marks (``SNAPSHOT_COLUMNS``)."""
+    display columns and the snapshot marks (``SNAPSHOT_COLUMNS``); with
+    ``latest_input``, also each game's latest snapshot (``LATEST_INPUT``)."""
     scheduled = scheduled_data["scheduled_games"]
     live = fetch_live_game_day(
         game_date,
@@ -77,13 +108,30 @@ def tonight_intermediate_frame(
         roster_snapshots=scheduled_data.get("roster_snapshots"),
         as_of=as_of,
     )
+    latest: dict[str, int] = {}
+    if latest_input:
+        games = live.line_history.games
+        tipoffs = games.set_index(games["game_id"].astype(str))["tipoff_utc"]
+        tipoffs = tipoffs[tipoffs.index.isin(live.game_ids)]
+        latest = latest_snapshot_minutes(tipoffs, live.as_of)
     frame, scoring = create_intermediate_line_df(
         live=live,
         target_game_ids=live.game_ids,
         return_scoring=True,
+        extra_target_snapshots={
+            game: minutes
+            for game, minutes in latest.items()
+            if minutes not in DEFAULT_SNAPSHOT_GRID
+        },
         verbose=verbose,
     )
     frame = mark_snapshots(frame, scoring, live.as_of)
+    if latest_input:
+        frame[LATEST_INPUT_COLUMN] = (
+            frame["TIME_TO_MATCH_MIN"]
+            .astype(int)
+            .eq(frame["GAME_ID"].astype(str).map(latest))
+        )
     display = scheduled[["GAME_ID", *SCHEDULE_COLUMNS]].assign(
         GAME_ID=lambda games: games["GAME_ID"].astype(str)
     )

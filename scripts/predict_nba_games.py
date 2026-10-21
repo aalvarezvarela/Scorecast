@@ -26,8 +26,9 @@ from nba_ou.prediction.baseline_predictions import (
     baseline_history_window,
     load_baseline_predictions_for_nba_games,
 )
+from nba_ou.prediction.input_limits import LATEST_INPUT_COLUMN
 from nba_ou.prediction.intermediate_frame import (
-    SNAPSHOT_COLUMNS,
+    PASSTHROUGH_COLUMNS,
     tonight_intermediate_frame,
 )
 from nba_ou.prediction.prediction import (
@@ -103,6 +104,7 @@ def predict_nba_games(
     persist: bool = True,
     dump_frames: str | Path | None = None,
     allow_stale_lines: bool = False,
+    intermediate_input: str | None = None,
 ) -> None:
     """
     Main execution function for the NBA prediction pipeline.
@@ -113,8 +115,12 @@ def predict_nba_games(
        tonight's intermediate rows for every horizon.
     4. Predicts with every enabled slot, whatever the time to tip: a closing
        slot predicts every game, an intermediate slot the row of its own
-       horizon (passed or not; ``SNAPSHOT_PASSED`` tells them apart).
+       horizon (passed or not; ``SNAPSHOT_PASSED`` tells them apart) -- or,
+       in ``latest`` mode, each game's latest snapshot (``LATEST_INPUT_SLOTS``).
     5. Runs the baselines.
+
+    ``intermediate_input`` (``latest`` or ``own``) overrides
+    ``[PredictionModels] INTERMEDIATE_INPUT_MODE`` for this run.
 
     A slot that fails does not stop the others; the run exits non-zero at the
     end if anything failed. ``persist=False`` stores no predictions: no
@@ -150,6 +156,11 @@ def predict_nba_games(
         print("  Enabled model slots:")
         for slot in configured_slots:
             print(f"    - {slot.describe()}")
+    latest_slots = latest_input_slots(configured_slots, intermediate_input)
+    print(
+        f"  Intermediate input: {len(latest_slots)} slot(s) read the latest "
+        "snapshot, the others their own"
+    )
 
     # Step 1: Update the database
     print_step_header(1, "Updating All Databases")
@@ -279,7 +290,9 @@ def predict_nba_games(
         print_step_header(3, "Preparing Intermediate Snapshot Rows")
         try:
             intermediate_df = tonight_intermediate_frame(
-                scheduled_data, game_date=date_to_predict
+                scheduled_data,
+                game_date=date_to_predict,
+                latest_input=bool(latest_slots),
             )
             frames["intermediate_line"] = intermediate_df
             print_status(
@@ -287,6 +300,17 @@ def predict_nba_games(
                 f"{intermediate_df['GAME_ID'].nunique()} game(s), "
                 f"{int(intermediate_df['SNAPSHOT_PASSED'].sum())} already passed"
             )
+            if latest_slots:
+                latest_rows = intermediate_df[intermediate_df[LATEST_INPUT_COLUMN]]
+                print_status(
+                    "Latest snapshots: "
+                    + ", ".join(
+                        f"{game} T-{minutes}"
+                        for game, minutes in latest_rows[
+                            ["GAME_ID", "TIME_TO_MATCH_MIN"]
+                        ].itertuples(index=False)
+                    )
+                )
         except Exception as e:  # noqa: BLE001 -- the closing slots still run
             traceback.print_exc()
             print_status(f"Intermediate rows unavailable: {e}", ok=False)
@@ -341,8 +365,9 @@ def predict_nba_games(
                 prediction_datetime=prediction_time,
                 frames=frames,
                 frame_versions=frame_versions,
-                passthrough_columns=SNAPSHOT_COLUMNS,
+                passthrough_columns=PASSTHROUGH_COLUMNS,
                 persist=persist,
+                latest_input=slot in latest_slots,
             )
         except Exception as e:  # noqa: BLE001 -- the other slots still run
             traceback.print_exc()
@@ -471,6 +496,24 @@ def predict_nba_games(
         raise
 
 
+def latest_input_slots(configured_slots: list, mode: str | None = None) -> list:
+    """The enabled slots that read the latest snapshot on this run.
+
+    ``mode`` overrides ``[PredictionModels] INTERMEDIATE_INPUT_MODE``. Only an
+    intermediate slot reads one; a closing slot in the list keeps its frame.
+    """
+    mode = mode or SETTINGS.intermediate_input_mode
+    if mode == "own":
+        return []
+    listed = SETTINGS.latest_input_slots
+    if listed is None:
+        return list(configured_slots)
+    unknown = [slot.describe() for slot in listed if slot not in configured_slots]
+    if unknown:
+        print(f"  ⚠️ LATEST_INPUT_SLOTS rows not in ENABLED_MODELS: {unknown}")
+    return [slot for slot in configured_slots if slot in listed]
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Generate NBA over/under predictions")
     parser.add_argument(
@@ -508,6 +551,15 @@ if __name__ == "__main__":
         action="store_true",
         help="Predict even when SBR's line feed looks frozen (lines hours old).",
     )
+    parser.add_argument(
+        "--intermediate-input",
+        choices=("latest", "own"),
+        help=(
+            "Which intermediate rows the slots read: latest (each game's latest "
+            "snapshot, for LATEST_INPUT_SLOTS) or own (every slot its own "
+            "snapshot). Default: [PredictionModels] INTERMEDIATE_INPUT_MODE."
+        ),
+    )
     args = parser.parse_args()
 
     predict_nba_games(
@@ -518,4 +570,5 @@ if __name__ == "__main__":
         persist=not args.no_persist,
         dump_frames=args.dump_frames,
         allow_stale_lines=args.allow_stale_lines,
+        intermediate_input=args.intermediate_input,
     )
