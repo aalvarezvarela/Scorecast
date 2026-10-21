@@ -53,7 +53,13 @@ T-47 reads the T-47 row as if it were its T-360 row. The two modes, per run:
   grid times by cron.
 - `own` (`predict_nba_games.py --intermediate-input own`): every slot reads its
   own snapshot. Run once after the last tip-off, every snapshot is the past,
-  so each slot predicts exactly its training row.
+  so each slot predicts exactly its training row. That run is
+  `scripts/predict_past_snapshots.py` (workflow "NBA Past-Snapshot
+  Predictions", on dispatch): the intermediate slots only, on a schedule that
+  keeps started and finished games (the live one drops them), snapshot rows
+  still ahead left out. Its default date is the Eastern date 12 hours ago, so
+  it can run from the last game's tip-off until noon ET the next day; after
+  that, pass the date. Dry run on 2026-10-20 (3 games): 48/48 slots, ~13 min.
 
 How the latest row is built (`prediction.intermediate_frame`,
 `create_intermediate_line_df(extra_target_snapshots=...)`):
