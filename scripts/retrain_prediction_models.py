@@ -31,7 +31,10 @@ from nba_ou.modeling.refit import (
     TrainingFrame,
     TrainingFrameUnavailable,
     model_bytes_of,
+    refit_device,
     refit_from_spec,
+    refit_random_state,
+    require_device,
     resolve_training_frame,
 )
 from nba_ou.modeling.registry_paths import Channel, ModelSlot, parse_horizon
@@ -178,6 +181,12 @@ def main() -> int:
         except SlotNotPromotedError as exc:
             print(f"{slot.describe()}\n  skipped: {exc}\n")
 
+    # Before the ~12-minute frame build, not after it: without a usable GPU
+    # XGBoost would fit on CPU with only a warning.
+    if not args.dry_run:
+        for device in sorted({refit_device(spec) for spec in specs.values()}):
+            require_device(device)
+
     by_dataset: dict[tuple[str, str], list[ModelSlot]] = defaultdict(list)
     for slot in slots:
         spec = specs.get(slot.describe())
@@ -230,6 +239,12 @@ def main() -> int:
             spec = specs[slot.describe()]
             print(slot.describe())
             print(f"  spec       : {spec.spec_id}")
+            for label, value, recorded in (
+                ("seed", refit_random_state(spec), spec.training.random_state),
+                ("device", refit_device(spec), spec.training.device),
+            ):
+                note = "" if recorded is not None else " (not in the spec; default)"
+                print(f"  {label:<11}: {value}{note}")
             if args.dry_run:
                 print("  dry run    : not fitted\n")
                 continue
