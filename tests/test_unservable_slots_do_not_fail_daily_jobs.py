@@ -26,6 +26,7 @@ def _spec(dataset_type: str) -> SimpleNamespace:
     return SimpleNamespace(
         spec_id=f"spec-{dataset_type}",
         identity=SimpleNamespace(dataset_type=dataset_type, horizon_minutes=0),
+        training=SimpleNamespace(random_state=None),
     )
 
 

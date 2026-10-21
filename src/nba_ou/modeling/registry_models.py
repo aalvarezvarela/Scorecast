@@ -108,6 +108,11 @@ class SpecCleaning(_Strict):
     corr_threshold_overrides: dict[str, float] = Field(default_factory=dict)
 
 
+#: (section, field) pairs a spec may omit. Each is hashed only when set, so a
+#: spec written before the field existed recomputes to its stored spec_id.
+_FIELDS_ADDED_LATER: tuple[tuple[str, str], ...] = (("training", "random_state"),)
+
+
 class SpecTraining(_Strict):
     """Everything needed to refit, and nothing that changes when you do."""
 
@@ -120,6 +125,11 @@ class SpecTraining(_Strict):
     refit_strategy: str = "rolling_window"
     required_line_col: str | None = None
     minimum_line_value: float | None = None
+    #: The seed the run tuned and fitted with (ExperimentConfig.random_state).
+    #: With subsampling, a different seed is a different model: on the same
+    #: rows the closing line_error model picks the same side only ~78% of the
+    #: time across seeds. None on specs written before it was recorded.
+    random_state: int | None = None
 
 
 class SpecProvenance(_Strict):
@@ -160,11 +170,16 @@ class ModelSpec(_Strict):
 
         ``spec_id`` is excluded because it is the output, and ``provenance``
         because it describes how the configuration was arrived at rather than
-        what it is.
+        what it is. Fields added after specs were first written are left out
+        while unset, so those specs keep the id they were stored under.
         """
-        return self.model_dump(
+        body = self.model_dump(
             mode="json", exclude={"spec_id", "provenance"}, exclude_none=False
         )
+        for section, field in _FIELDS_ADDED_LATER:
+            if body[section].get(field) is None:
+                body[section].pop(field, None)
+        return body
 
     def compute_spec_id(self) -> str:
         return compute_spec_id(self.canonical_body())

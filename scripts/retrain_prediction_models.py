@@ -28,6 +28,7 @@ from nba_ou.modeling.refit import (
     TrainingFrameUnavailable,
     model_bytes_of,
     refit_from_spec,
+    refit_random_state,
     resolve_training_frame,
 )
 from nba_ou.modeling.registry_paths import Channel, ModelSlot, parse_horizon
@@ -188,6 +189,14 @@ def main() -> int:
             spec = specs[slot.describe()]
             print(slot.describe())
             print(f"  spec       : {spec.spec_id}")
+            print(
+                f"  seed       : {refit_random_state(spec)}"
+                + (
+                    ""
+                    if spec.training.random_state is not None
+                    else " (not recorded in the spec; training default)"
+                )
+            )
             if args.dry_run:
                 print("  dry run    : not fitted\n")
                 continue

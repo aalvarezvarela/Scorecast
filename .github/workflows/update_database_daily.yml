@@ -2,6 +2,8 @@ name: Update PostgreSQL DB - Games, Players, Refs & Injuries (Local Runner)
 
 on:
   workflow_dispatch:
+  # Also run as the first job of retrain_prediction_models.yml.
+  workflow_call:
   # schedule:
   #   - cron: "11 12 * * *"
   #   - cron: "11 13 * * *"

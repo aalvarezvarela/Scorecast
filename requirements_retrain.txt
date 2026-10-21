@@ -1,0 +1,48 @@
+# Runtime dependencies of the daily refit
+# (.github/workflows/retrain_prediction_models.yml):
+# scripts/retrain_prediction_models.py, scripts/smoke_test_s3_model_load.py and
+# scripts/promote_build.py. Direct imports only; pip resolves the transitive
+# ones. Versions match requirements_predict.txt / the Poetry lock.
+#
+# Derived from the static import closure of the three scripts (module-level and
+# function-level imports alike, 124 modules). The refit builds the closing frame
+# for history (todays_prediction=False), so nothing reaches the scrapers,
+# injury-report PDFs or SHAP; dev tools, Jupyter and plotting are left out too.
+#
+# Keep the pins equal to the local environment: the history memo's code key
+# includes the installed versions of what the builder imports
+# (nba_ou.create_training_data.history_memo), so a different version misses
+# every memo entry and the build runs cold.
+#
+# Install the repo itself WITHOUT its Poetry dependencies, which pull in the
+# training and lab stacks:
+#
+#     pip install -r requirements_retrain.txt
+#     pip install --no-deps -e .
+
+# Data
+numpy==2.1.3
+pandas==2.2.3
+# Parquet: history memo, input cache.
+pyarrow==20.0.0
+scipy==1.15.2
+tqdm==4.67.1
+
+# Models and registry
+xgboost==2.1.4
+# Lineup style matchup (schema layers).
+scikit-learn==1.6.1
+# Registry model specs.
+pydantic==2.11.10
+
+# Databases and S3
+psycopg==3.3.2
+psycopg-binary==3.3.2
+boto3==1.42.49
+botocore==1.42.49
+
+# Live rosters, all-star voting.
+nba_api==1.11.4
+# pyproject requires >=2.32.5.
+requests==2.32.5
+urllib3==2.3.0

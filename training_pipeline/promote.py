@@ -167,6 +167,11 @@ def train_production_model_from_run(
         )
     if training_version is not None:
         updates["training_version"] = training_version
+    # The production fit runs on CPU whatever the run tuned on, like the daily
+    # refit (nba_ou.modeling.refit.XGB_STATIC_PARAMS): CUDA subsamples
+    # differently under the same seed, so this is what lets a refit on the same
+    # data reproduce the promoted build. One fit is cheap on CPU.
+    updates["device"] = "cpu"
     if refit_strategy is not None:
         updates["refit"] = config.refit.model_copy(update={"strategy": refit_strategy})
     if updates:

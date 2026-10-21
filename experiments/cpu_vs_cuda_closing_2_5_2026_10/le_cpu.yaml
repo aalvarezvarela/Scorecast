@@ -1,0 +1,123 @@
+# Campaign cpu_vs_cuda_closing_2_5_2026_10: does the promoted closing line_error configuration
+# score the same when fitted on CPU as on CUDA?
+#
+# Copy of experiments/retrain_line_error_2_5_2026_10/closing_line_error.yaml
+# (the YAML behind the promoted 2_5 slot, source run retrain25_line_error_closing_20261017_110124) with:
+#   - optuna.fixed_*: the selected trial's hyperparameters, so nothing is tuned;
+#   - device: cpu  <- the ONLY difference between the _cuda and _cpu cells.
+# Same seeds in both cells (random_state 17 + evaluation_seeds 101, 202), so
+# each cell carries its own seed spread as the noise floor.
+#
+# Why: the daily refit and promote's production fit now run on CPU, and CUDA
+# and CPU XGBoost give different models from the same seed (79% same side for
+# closing line_error). The configuration was only ever evaluated on CUDA.
+#
+# Pre-registered reading: CPU is "the same" if its CV and holdout win rate and
+# ROI sit inside the CUDA cell's own seed range. Control: the CUDA cell's
+# primary-seed holdout should reproduce the source run's holdout (same data,
+# params, rounds, seed, device); if it does not, the fixed-params path differs
+# from the tuned one and the CUDA cell -- not the source run -- is the reference.
+experiment_name: cvc_line_error_closing_cpu
+prediction_strategy: line_error_regressor
+training_version: 2.19-schema25-defect-fixes-20261016
+comparison_group: cpu_vs_cuda_closing_2_5_2026_10_line_error
+hypothesis: Promoted closing line_error configuration with fixed selected hyperparameters,
+  fitted on CPU; paired with the cuda cell, identical but for device.
+tags:
+- cpu_vs_cuda
+- schema_2_5
+- line_error
+- closing_line
+- fixed_params
+- cpu
+device: cpu
+random_state: 17
+data:
+  csv_path: data/train_data/closing_line_data_2_5_20261016.parquet
+  data_version: 20261016-closing-2.5-defect-fixes
+  expected_checksum: sha256:b2b7a2221b7da03c
+  dataset_type: closing_line
+  season_year_floor: 2019
+  extend_history_dropping_season_gated_columns: false
+  exclude_overtime_from_training: false
+  exclude_playoffs: true
+  allowed_season_types:
+  - Regular Season
+  - Play-In Tournament
+cleaning:
+  max_na_per_row: 300
+  corr_threshold: 0.95
+  corr_threshold_overrides:
+    ODDS_: 0.99
+holdout:
+  test_size: null
+  test_games: null
+  test_days: 90
+walk_forward:
+  strategy: test_anchored
+  test_games: 100
+  step_games_between_tests: 120
+  train_games: 6200
+  train_games_choices: null
+  min_train_games: 1250
+  max_folds: 6
+  fold_selection: latest
+  exclude_test_months:
+  - 5
+  - 6
+  require_same_season_test: true
+  eval_span_games: null
+  min_validation_games: null
+sample_weight:
+  enabled: false
+  lambda_: null
+  tune_lambda: false
+  allow_unweighted: false
+refit:
+  use_lexicographic_selection: true
+  train_production_model: false
+optuna:
+  n_trials: 150
+  timeout: null
+  persistent_storage: false
+  tune_n_estimators: false
+  objective_aggregation: pooled
+  pruner_warmup_steps: 7
+  tie_tolerance: quantile
+  tie_max_fraction: 0.15
+  tie_tolerance_floor: 0.001
+  tie_tolerance_cap: 0.04
+  tie_warn_fraction: 0.25
+  search_space:
+    n_estimators: 1000
+    early_stopping_rounds: 70
+    n_estimators_range: null
+  fixed_params:
+    colsample_bytree: 0.16070434459904112
+    gamma: 25.232845760600345
+    learning_rate: 0.055987581910643625
+    max_depth: 2
+    min_child_weight: 149.18676317681155
+    reg_alpha: 0.17626829265474953
+    reg_lambda: 12.30068803948664
+    subsample: 0.6093933236487854
+  fixed_n_estimators: 76
+  fixed_sample_weight_lambda: null
+betting:
+  edge_thresholds:
+  - 0.0
+  - 0.1
+  - 0.5
+  - 1.0
+  - 1.5
+  - 2.0
+  - 3.0
+  - 4.0
+  - 6.0
+  primary_edge_threshold: 0.1
+  comparison_line_cols:
+  - ODDS_TOTAL_LINE_consensus_opener
+holdout_evaluation: daily_walk_forward
+evaluation_seeds:
+- 101
+- 202

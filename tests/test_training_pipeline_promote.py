@@ -118,6 +118,20 @@ def test_promotes_onto_different_data_and_records_the_source_run(tmp_path, csv):
     assert "2.1" in meta["model"]["training_code_tag"]
 
 
+def test_the_production_fit_runs_on_cpu_whatever_the_run_tuned_on(tmp_path, csv):
+    """CUDA subsamples differently under the same seed; the daily refit is CPU."""
+    run_dir = _make_run(tmp_path, "data/train_data/old_and_gone.csv")
+    config_path = run_dir / "config.json"
+    config = json.loads(config_path.read_text())
+    config["device"] = "cuda"
+    config_path.write_text(json.dumps(config))
+
+    result = train_production_model_from_run(run_dir, csv_path=csv, save=False)
+
+    assert result.model.get_params()["device"] == "cpu"
+    assert result.model.get_params()["random_state"] == 16
+
+
 def test_stale_checksum_is_dropped_when_data_is_overridden(tmp_path, csv):
     """The source run pinned a checksum for its own bytes; keeping it would
     make every promotion onto new data fail.

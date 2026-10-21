@@ -18,7 +18,9 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from nba_ou.config.constants import TRAINING_SEASON_TYPES
 from nba_ou.data_processing.line_history.snapshots import DEFAULT_SNAPSHOT_GRID
+from nba_ou.modeling.refit import XGB_STATIC_PARAMS
 from nba_ou.modeling.registry_models import (
     ModelSpec,
     SpecCleaning,
@@ -180,6 +182,43 @@ def check_schema_version_against_checkout(schema_version: str) -> None:
         )
 
 
+def check_refit_reproduces_rows(config: ExperimentConfig) -> None:
+    """Refuse a configuration the daily refit cannot repeat.
+
+    The spec records features, cleaning thresholds, hyperparameters and the
+    seed, not every row rule or the objective, so nba_ou.modeling.refit applies
+    training's defaults for those. A run that changed one of them would be
+    refitted daily on different games, or a different loss, from the one it
+    was evaluated with, and nothing would raise.
+    """
+    data = config.data
+    changed = []
+    if (
+        not data.exclude_playoffs
+        or tuple(data.allowed_season_types) != TRAINING_SEASON_TYPES
+    ):
+        changed.append(
+            f"season types (exclude_playoffs={data.exclude_playoffs}, "
+            f"allowed_season_types={list(data.allowed_season_types)})"
+        )
+    if data.exclude_overtime_from_training:
+        changed.append("data.exclude_overtime_from_training=True")
+    if config.cleaning.strict_mode >= 0:
+        changed.append(f"cleaning.strict_mode={config.cleaning.strict_mode}")
+    refit_objective = XGB_STATIC_PARAMS["objective"]
+    if config.optuna.objective_name != refit_objective:
+        changed.append(
+            f"objective {config.optuna.objective_name!r} (the refit fits "
+            f"{refit_objective!r})"
+        )
+    if changed:
+        raise PromotionError(
+            "The daily refit cannot reproduce this run's training: "
+            f"{'; '.join(changed)}. Record the rule in the spec and apply it in "
+            "nba_ou.modeling.refit before promoting."
+        )
+
+
 def build_spec_from_run(
     config: ExperimentConfig,
     *,
@@ -197,6 +236,7 @@ def build_spec_from_run(
     because correlation pruning is data-dependent: what the model was actually
     handed is the contract, not what was asked for.
     """
+    check_refit_reproduces_rows(config)
     identity = SpecIdentity(
         schema_version=slot.schema_version,
         target=slot.target,
@@ -221,6 +261,7 @@ def build_spec_from_run(
         train_games=train_games,
         refit_strategy=config.refit.strategy.value,
         required_line_col=config.line_col,
+        random_state=config.random_state,
     )
 
     cleaning = SpecCleaning(
