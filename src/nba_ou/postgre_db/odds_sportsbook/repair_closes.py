@@ -32,6 +32,7 @@ from nba_ou.data_processing.odds.closing_line_repair import (
     closing_quote_columns,
     print_repair_summary,
     repair_closing_lines,
+    stale_history_games,
     summarize_repair,
 )
 from nba_ou.postgre_db.config.db_config import (
@@ -42,6 +43,7 @@ from nba_ou.postgre_db.line_history_aiven.fetch import fetch_closing_ticks
 from nba_ou.postgre_db.odds_sportsbook.create_db.create_odds_sportsbook_db import (
     create_odds_sportsbook_table,
 )
+from nba_ou.utils.ci import annotate
 from psycopg import sql
 
 RAW_TABLE = "odds_sportsbook_sbr_raw"
@@ -256,8 +258,17 @@ def repair_stored_closes(
             "games": int(rows["game_id"].nunique()),
             "repaired_games": len(verified_games),
             "games_without_line_history": int(waiting),
+            "games_with_stale_history": len(stale_history_games(audit)),
             "cells": int(len(audit)),
         }
+        if summary["games_with_stale_history"]:
+            annotate(
+                "warning",
+                "Closing-line repair: line history stops long before tip for "
+                f"{summary['games_with_stale_history']} game(s) (SBR feed freeze); "
+                "their closes are stale, flagged history_stale: "
+                + ", ".join(stale_history_games(audit)[:10]),
+            )
         if dry_run:
             with pd.option_context("display.width", 200):
                 print(summarize_repair(audit))

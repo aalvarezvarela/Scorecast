@@ -50,6 +50,13 @@ PARTIAL_COVERAGE_BOOKS: tuple[str, ...] = ("fanatics_sportsbook",)
 #: tipoff that is a few minutes stale would otherwise admit an in-play tick.
 DEFAULT_MIN_MINUTES_BEFORE_TIP = 5
 
+#: A game whose freshest pre-tip tick (any book, any market) is further than
+#: this from tip-off has a truncated history: SBR's feed froze before the close
+#: and nothing after it can be read. Measured 2026-10-21: per-season median gap
+#: 2-8 minutes, under 1% of games past 60 outside 2019-20, and every feed freeze
+#: (2024-03-28, 2026-03-23, 2026-04-20, 2026-05-01, 2026-10-20) 3+ hours.
+TRUNCATED_HISTORY_MINUTES = 60
+
 TICK_COLUMNS = [
     "game_id",
     "season_year",

@@ -75,6 +75,7 @@ from nba_ou.postgre_db.line_history_aiven.fetch import (
     MARKET_MONEYLINE,
     MARKET_SPREAD,
     MARKET_TOTALS,
+    TRUNCATED_HISTORY_MINUTES,
 )
 
 CELL_KEYS = ["game_id", "market", "book"]
@@ -140,6 +141,11 @@ ACTION_HISTORY_SAME = "history_same"
 ACTION_HISTORY_REPLACED = "history_replaced"
 ACTION_HISTORY_FILLED = "history_filled"
 ACTION_UNVERIFIED = "unverified"
+#: History-backed, but the game's whole history stops more than
+#: ``TRUNCATED_HISTORY_MINUTES`` before tip (an SBR feed freeze). The value is
+#: the last pre-tip quote, which beats SBR's own close: on the 2025-26 freezes
+#: both held the same frozen line. It is not the close, so it is flagged.
+ACTION_HISTORY_STALE = "history_stale"
 ACTION_OUTLIER_NULLED = "outlier_nulled"
 ACTION_OUTLIER_MEDIAN = "outlier_median_filled"
 
@@ -326,7 +332,18 @@ def history_quotes(ticks: pd.DataFrame) -> pd.DataFrame:
     """Valid, leveled quotes from ticks shaped like ``fetch_closing_ticks``."""
     columns = [*CELL_KEYS, "line_ts", "minutes_before_tip", "line", "left_price", "right_price", "level"]
     if ticks.empty:
-        return pd.DataFrame(columns=columns)
+        # Typed, so a merge onto it keeps the level columns float: an all-object
+        # ``level`` turns ``final_level`` object and breaks the write-back audit.
+        return pd.DataFrame(
+            {
+                **{key: pd.Series(dtype="object") for key in CELL_KEYS},
+                "line_ts": pd.Series(dtype="datetime64[ns, UTC]"),
+                **{
+                    column: pd.Series(dtype="float64")
+                    for column in columns[len(CELL_KEYS) + 1 :]
+                },
+            }
+        )
     quotes = ticks.assign(
         game_id=ticks["game_id"].astype(str),
         line=_resolve_tick_line(ticks),
@@ -481,6 +498,17 @@ def repair_closing_lines(
         [ACTION_HISTORY_SAME, ACTION_HISTORY_REPLACED, ACTION_HISTORY_FILLED],
         default=ACTION_UNVERIFIED,
     )
+    # A game is stale when even its freshest verified cell closed long before
+    # tip: the feed froze, so no book's last quote is its close.
+    freshest = (
+        cells.loc[verified]
+        .groupby("game_id")["history_minutes_before_tip"]
+        .min()
+        .reindex(cells["game_id"])
+        .to_numpy()
+    )
+    stale = verified & (freshest > TRUNCATED_HISTORY_MINUTES)
+    cells.loc[stale, "action"] = ACTION_HISTORY_STALE
     cells["verified"] = verified
     for column in ("line", "left_price", "right_price"):
         cells[f"final_{column}"] = cells[f"history_{column}"].where(
@@ -551,8 +579,10 @@ def repair_closing_lines(
         cells.loc[moneyline, "final_level"] = home
 
     # ---- Write back ------------------------------------------------------ #
-    changed = cells["action"].ne(ACTION_HISTORY_SAME) & cells["action"].ne(
-        ACTION_UNVERIFIED
+    changed = (
+        cells["action"].ne(ACTION_HISTORY_SAME)
+        & cells["action"].ne(ACTION_UNVERIFIED)
+        & ~(cells["action"].eq(ACTION_HISTORY_STALE) & same)
     )
     if changed.any():
         _write_cells(
@@ -581,6 +611,14 @@ def summarize_repair(audit: pd.DataFrame) -> pd.DataFrame:
     )
 
 
+def stale_history_games(audit: pd.DataFrame) -> list[str]:
+    """Games with at least one ``history_stale`` cell, sorted."""
+    if audit.empty:
+        return []
+    stale = audit["action"].eq(ACTION_HISTORY_STALE)
+    return sorted(audit.loc[stale, "game_id"].astype(str).unique())
+
+
 def print_repair_summary(audit: pd.DataFrame) -> None:
     """Log the repair: overall action counts plus a per-book breakdown."""
     if audit.empty:
@@ -601,6 +639,13 @@ def print_repair_summary(audit: pd.DataFrame) -> None:
             f"{int((lined & big['gap'].ge(2.0)).sum())} line cells off by 2+ points, "
             f"{int((~lined & big['gap'].ge(0.05)).sum())} moneyline cells off by 0.05+ "
             "win probability."
+        )
+    stale_games = stale_history_games(audit)
+    if stale_games:
+        print(
+            f"  {len(stale_games)} game(s) with history stopping over "
+            f"{TRUNCATED_HISTORY_MINUTES} min before tip (SBR feed freeze): "
+            "their closes are the last pre-tip quotes, flagged history_stale."
         )
     outliers = audit[
         audit["action"].isin([ACTION_OUTLIER_NULLED, ACTION_OUTLIER_MEDIAN])

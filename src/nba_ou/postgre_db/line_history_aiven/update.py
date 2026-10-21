@@ -75,6 +75,11 @@ class UpdateResult:
     #: Scraped but not written because SBR did not list them as final yet;
     #: a later run stores them whole (see ingest.is_finished).
     deferred_unfinished_games: int = 0
+    #: Final, but their history stops well before tip (an SBR feed freeze);
+    #: held back for a few days in case SBR fills the gap (ingest.is_held_back).
+    deferred_truncated_games: int = 0
+    #: Stored past their hold with the gap still there.
+    truncated_games: list[str] = field(default_factory=list)
     retimed_games: list[str] = field(default_factory=list)
     failed_dates: list[str] = field(default_factory=list)
 
@@ -351,6 +356,8 @@ def update_line_history_database(
         result.inserted_ticks += stats.inserted_ticks
         result.inserted_games += stats.inserted_games
         result.deferred_unfinished_games += stats.dropped.get("unfinished_game", 0)
+        result.deferred_truncated_games += stats.dropped.get("truncated_history", 0)
+        result.truncated_games.extend(getattr(stats, "truncated_games", []))
         result.retimed_games.extend(stats.retimed_games)
         batch.clear()
 

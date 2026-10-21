@@ -20,6 +20,7 @@ from nba_ou.create_training_data.schema_layers import (
     is_layered,
     newest_version,
 )
+from nba_ou.postgre_db.line_history_aiven.feed_freshness import check_live_feed
 from nba_ou.postgre_db.update_all.update_all_databases import update_all_databases
 from nba_ou.prediction.baseline_predictions import (
     baseline_history_window,
@@ -35,6 +36,7 @@ from nba_ou.prediction.prediction import (
 from nba_ou.prediction.prediction_tabpfn_client import (
     load_and_predict_tabpfn_client_for_nba_games,
 )
+from nba_ou.utils.ci import annotate
 from nba_ou.utils.general_utils import get_season_year_from_date
 from nba_ou.utils.s3_models import (
     make_s3_client,
@@ -100,6 +102,7 @@ def predict_nba_games(
     null_extreme_spread_prices: bool = True,
     persist: bool = True,
     dump_frames: str | Path | None = None,
+    allow_stale_lines: bool = False,
 ) -> None:
     """
     Main execution function for the NBA prediction pipeline.
@@ -118,6 +121,10 @@ def predict_nba_games(
     predictions-table rows and no S3 snapshots. The database update and the
     injury-report sync in steps 1-3 still write. ``dump_frames`` writes the
     feature frames to that local directory, for inspection.
+
+    When SBR's feed has frozen (``feed_freshness``), every line the models would
+    read is hours old, so the run stops after the database update with exit 1
+    and predicts nothing; ``allow_stale_lines`` predicts anyway.
     """
     configure_tqdm_for_environment()
     if run_tabpfn_client:
@@ -160,6 +167,30 @@ def predict_nba_games(
     except Exception as e:
         print_status(f"Failed to update databases: {e}", ok=False)
         raise
+
+    # Step 1b: SBR's lines must still be moving, or every prediction below is
+    # made on lines frozen hours ago. The database update above stands either way.
+    print_step_header(1, "Checking SBR Line Feed")
+    try:
+        freshness = check_live_feed(
+            datetime.strptime(date_to_predict, "%Y-%m-%d").date()
+        )
+    except Exception as e:  # noqa: BLE001 -- the check must not cost the run
+        annotate("warning", f"SBR feed check failed, continuing unchecked: {e}")
+    else:
+        print_status(freshness.describe(), ok=not freshness.stale)
+        if freshness.stale:
+            message = (
+                f"SBR line feed looks frozen: {freshness.describe()}. "
+                "Predictions would use stale lines"
+            )
+            if not allow_stale_lines:
+                annotate(
+                    "error",
+                    f"{message}; nothing predicted (--allow-stale-lines overrides).",
+                )
+                raise SystemExit(1)
+            annotate("warning", f"{message}; predicting anyway (--allow-stale-lines).")
 
     # Step 2: Fetch scheduled games, referees, injuries and odds
     print_step_header(2, "Fetching Scheduled Games & Reports")
@@ -472,6 +503,11 @@ if __name__ == "__main__":
         action="store_true",
         help="Keep extreme spread price cells instead of setting them to NaN.",
     )
+    parser.add_argument(
+        "--allow-stale-lines",
+        action="store_true",
+        help="Predict even when SBR's line feed looks frozen (lines hours old).",
+    )
     args = parser.parse_args()
 
     predict_nba_games(
@@ -481,4 +517,5 @@ if __name__ == "__main__":
         null_extreme_spread_prices=not args.keep_extreme_spread_prices,
         persist=not args.no_persist,
         dump_frames=args.dump_frames,
+        allow_stale_lines=args.allow_stale_lines,
     )
