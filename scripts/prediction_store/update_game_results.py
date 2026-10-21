@@ -6,6 +6,10 @@ Idempotent. ``--recheck-days`` also re-reads the games finalised in the last
 N days, to pick up score corrections; ``--game-id`` re-reads only the games
 named, whatever their status.
 
+A game in progress is never written, even if the API already lists it with a
+result: the live scoreboard's games are left out (or, if it cannot be read,
+every game tipped in the last 4 hours), as the database update does.
+
 A game still without a final score ``--stale-days`` after its stored tip-off
 is reported: usually a postponement, which the next prediction run of its new
 date retimes. Marking a game void (``status = 2``) is a manual update.
@@ -20,7 +24,11 @@ import argparse
 
 import pandas as pd
 from nba_ou.postgre_db.config.db_config import connect_nba_db
-from nba_ou.postgre_db.predictions_aiven.results import fetch_final_scores
+from nba_ou.postgre_db.predictions_aiven.results import (
+    drop_unfinished,
+    fetch_final_scores,
+    live_game_ids,
+)
 from nba_ou.postgre_db.predictions_aiven.store import (
     games_by_id,
     pending_games,
@@ -69,6 +77,12 @@ def main() -> None:
         scores = fetch_final_scores(
             games["game_id"].tolist(), games["season_year"].tolist()
         )
+        final = len(scores)
+        scores = drop_unfinished(
+            scores, games, live=live_game_ids(), now=pd.Timestamp.now(tz="UTC")
+        )
+        if len(scores) < final:
+            print(f"{final - len(scores)} game(s) may still be in progress; skipped")
         changed = update_game_results(conn, scores)
         waiting = sorted(set(games["game_id"]) - set(scores["game_id"]))
         stale = stale_pending_games(conn, args.stale_days)

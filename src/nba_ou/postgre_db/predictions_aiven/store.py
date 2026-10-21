@@ -223,13 +223,13 @@ def pending_games(conn: psycopg.Connection) -> pd.DataFrame:
     with conn.cursor() as cur:
         cur.execute(
             sql.SQL(
-                "SELECT game_id, game_date, season_year FROM {} "
+                "SELECT game_id, game_date, season_year, tipoff_at FROM {} "
                 "WHERE status = %s AND tipoff_at < now() ORDER BY game_id"
             ).format(_table("games")),
             (GAME_STATUS_SCHEDULED,),
         )
         return pd.DataFrame(
-            cur.fetchall(), columns=["game_id", "game_date", "season_year"]
+            cur.fetchall(), columns=["game_id", "game_date", "season_year", "tipoff_at"]
         )
 
 
@@ -238,13 +238,13 @@ def games_by_id(conn: psycopg.Connection, game_ids: list[int]) -> pd.DataFrame:
     with conn.cursor() as cur:
         cur.execute(
             sql.SQL(
-                "SELECT game_id, game_date, season_year FROM {} "
+                "SELECT game_id, game_date, season_year, tipoff_at FROM {} "
                 "WHERE game_id = ANY(%s) ORDER BY game_id"
             ).format(_table("games")),
             ([int(game) for game in game_ids],),
         )
         return pd.DataFrame(
-            cur.fetchall(), columns=["game_id", "game_date", "season_year"]
+            cur.fetchall(), columns=["game_id", "game_date", "season_year", "tipoff_at"]
         )
 
 
@@ -270,14 +270,15 @@ def recently_final_games(conn: psycopg.Connection, days: int) -> pd.DataFrame:
     with conn.cursor() as cur:
         cur.execute(
             sql.SQL(
-                "SELECT game_id, game_date, season_year FROM {} WHERE status = %s "
+                "SELECT game_id, game_date, season_year, tipoff_at FROM {} "
+                "WHERE status = %s "
                 "AND result_updated_at > now() - make_interval(days => %s) "
                 "ORDER BY game_id"
             ).format(_table("games")),
             (GAME_STATUS_FINAL, int(days)),
         )
         return pd.DataFrame(
-            cur.fetchall(), columns=["game_id", "game_date", "season_year"]
+            cur.fetchall(), columns=["game_id", "game_date", "season_year", "tipoff_at"]
         )
 
 

@@ -4,11 +4,20 @@
 both of its rows carry a result (``WL``) and points (``PTS``). No total-points
 heuristic: a game counts as final on the official result alone. A game that is
 not final is left out and looked up again on the next run.
+
+Games in progress are left out as well, whatever those rows say: the API
+returns a started game with its points so far, which is why the database
+update excludes live games too (``fetch_data.live_games``). Should the live
+scoreboard be unreachable, every game tipped within ``UNFINISHED_WINDOW`` is
+left out instead.
 """
 
 from __future__ import annotations
 
 import pandas as pd
+
+#: Without the live scoreboard, a game tipped this recently may still be on.
+UNFINISHED_WINDOW = pd.Timedelta(hours=4)
 
 
 def season_label(season_year: int) -> str:
@@ -62,3 +71,33 @@ def fetch_final_scores(game_ids: list[int], season_years: list[int]) -> pd.DataF
         return pd.DataFrame(columns=["game_id", "home_points", "away_points"])
     scores = final_scores(pd.concat(frames, ignore_index=True))
     return scores[scores["game_id"].isin(set(game_ids))].reset_index(drop=True)
+
+
+def live_game_ids() -> set[int] | None:
+    """The games in progress now, or None when no scoreboard answers."""
+    from nba_ou.fetch_data.live_games.live_games import get_live_game_ids
+
+    try:
+        return {int(game) for game in get_live_game_ids()}
+    except Exception as exc:  # noqa: BLE001 -- the caller falls back on tip-off
+        print(f"Live scoreboard unavailable ({exc}); using the tip-off window.")
+        return None
+
+
+def drop_unfinished(
+    scores: pd.DataFrame,
+    games: pd.DataFrame,
+    *,
+    live: set[int] | None,
+    now: pd.Timestamp,
+) -> pd.DataFrame:
+    """``scores`` without the games that may still be in progress.
+
+    ``live`` is the scoreboard's games in progress; None means it could not be
+    read, and then every game of ``games`` (``game_id``, ``tipoff_at``) tipped
+    within ``UNFINISHED_WINDOW`` of ``now`` is left out.
+    """
+    if live is None:
+        tipoff = pd.to_datetime(games["tipoff_at"], utc=True)
+        live = set(games.loc[tipoff > now - UNFINISHED_WINDOW, "game_id"])
+    return scores[~scores["game_id"].isin(live)].reset_index(drop=True)

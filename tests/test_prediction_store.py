@@ -16,7 +16,10 @@ import pandas as pd
 import pyarrow.parquet as pq
 import pytest
 from nba_ou.postgre_db.predictions_aiven import schema as store_schema
-from nba_ou.postgre_db.predictions_aiven.results import final_scores
+from nba_ou.postgre_db.predictions_aiven.results import (
+    drop_unfinished,
+    final_scores,
+)
 from nba_ou.prediction.prediction_store import (
     PredictionRunRecorder,
     bet_line_columns,
@@ -539,6 +542,33 @@ def test_final_scores_need_both_results_and_points():
     assert scores.to_dict("records") == [
         {"game_id": 22600001, "home_points": 120, "away_points": 110}
     ]
+
+
+def test_games_in_progress_are_never_written():
+    scores = pd.DataFrame(
+        {
+            "game_id": [22600001, 22600002, 22600003],
+            "home_points": [120, 61, 99],
+            "away_points": [110, 58, 97],
+        }
+    )
+    now = pd.Timestamp("2026-10-22 03:00", tz="UTC")
+    games = pd.DataFrame(
+        {
+            "game_id": [22600001, 22600002, 22600003],
+            "tipoff_at": [
+                now - pd.Timedelta(hours=6),
+                now - pd.Timedelta(hours=1),
+                now - pd.Timedelta(hours=3),
+            ],
+        }
+    )
+    # The live scoreboard says game 2 is on: only it is left out.
+    kept = drop_unfinished(scores, games, live={22600002}, now=now)
+    assert kept["game_id"].tolist() == [22600001, 22600003]
+    # No scoreboard: every game tipped within the last 4 hours is left out.
+    kept = drop_unfinished(scores, games, live=None, now=now)
+    assert kept["game_id"].tolist() == [22600001]
 
 
 # -- the Aiven writer, against a real PostgreSQL ------------------------------
