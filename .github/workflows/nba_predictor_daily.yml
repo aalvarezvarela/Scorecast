@@ -85,5 +85,5 @@ jobs:
             # predicts on every run, whatever the time to tip.
             - name: Run NBA predictor
               run: |
-                  python scripts/predict_nba_games.py --no-tabpfn \
+                  python scripts/predict_nba_games.py \
                       ${{ github.event_name == 'workflow_dispatch' && !inputs.persist && '--no-persist' || '' }}

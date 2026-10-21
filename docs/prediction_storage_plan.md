@@ -220,7 +220,7 @@ fields; `status = 0`, scores null), and completed by the finished-games job.
 | --- | --- | --- |
 | `run_id` | `INTEGER` identity PK | |
 | `run_uuid` | `UUID` unique | Also the S3 folder name. |
-| `workflow` | `SMALLINT` | `1` daily predictor, `2` past-snapshot run. |
+| `workflow` | `SMALLINT` | `1` daily predictor, `2` past-snapshot run, `3` TabPFN run (`scripts/predict_tabpfn.py`). |
 | `started_at`, `finished_at` | `TIMESTAMPTZ` | UTC. |
 | `git_sha` | `TEXT` | |
 | `status` | `SMALLINT` | `1` ok, `2` partial, `3` S3 upload failed. |
@@ -230,7 +230,7 @@ fields; `status = 0`, scores null), and completed by the finished-games job.
 | Column | Type | Meaning |
 | --- | --- | --- |
 | `model_build_id` | `INTEGER` identity PK | |
-| `kind` | `SMALLINT` | `1` registry model, `2` baseline. |
+| `kind` | `SMALLINT` | `1` registry model, `2` baseline, `3` TabPFN (fitted per run on a registry slot's spec, which `spec_id` names; `s3_build_prefix` is the training frame's key). |
 | `schema_version` | `TEXT` | e.g. `2_5`. |
 | `dataset_type` | `SMALLINT` | `1 = closing_line`, `2 = intermediate_line`. |
 | `target` | `SMALLINT` | `1 = line_error`, `2 = total_points`, `3 = spread_error`. |
@@ -515,6 +515,7 @@ Checked against `streamlit/streamlit_ou_app.py`:
 | `training_code_tag` filter | `model_builds` |
 | Missing-feature count / names | `na_feature_count` / S3 |
 | Baselines | `model_builds.kind = 2` |
+| TabPFN | `model_builds.kind = 3` |
 | SHAP reasoning tab | removed |
 
 New dashboard work, outside this store: the dashboard has no spread views

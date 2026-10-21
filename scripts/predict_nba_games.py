@@ -42,15 +42,11 @@ from nba_ou.prediction.prediction_store import (
     PredictionRunRecorder,
     persist_prediction_run,
 )
-from nba_ou.prediction.prediction_tabpfn_client import (
-    load_and_predict_tabpfn_client_for_nba_games,
-)
 from nba_ou.utils.ci import annotate
 from nba_ou.utils.general_utils import get_season_year_from_date
 from nba_ou.utils.s3_models import (
     make_s3_client,
 )
-from nba_ou.utils.s3_prediction_snapshots import upload_model_predictions_snapshot
 
 
 def print_banner(date_to_predict: str) -> None:
@@ -102,7 +98,6 @@ def configure_tqdm_for_environment() -> None:
 
 
 def predict_nba_games(
-    run_tabpfn_client: bool = False,
     normalize_total_lines: bool = True,
     normalize_spread_lines: bool = True,
     null_extreme_spread_prices: bool = True,
@@ -138,14 +133,6 @@ def predict_nba_games(
     and predicts nothing; ``allow_stale_lines`` predicts anyway.
     """
     configure_tqdm_for_environment()
-    if run_tabpfn_client:
-        # The feature frame now holds tonight's games only; the TabPFN client
-        # trains on history features, which it would have to read from a
-        # stored training dataset instead. Fail before any work is done.
-        raise SystemExit(
-            "TabPFN needs history features, and the prediction frame carries "
-            "tonight's games only; run with --no-tabpfn."
-        )
 
     date_to_predict = (datetime.now(ZoneInfo("US/Pacific"))).strftime("%Y-%m-%d")
 
@@ -340,8 +327,7 @@ def predict_nba_games(
 
     # Initialize S3 client once for all model operations
     s3 = make_s3_client(profile=SETTINGS.s3_aws_profile, region=SETTINGS.s3_aws_region)
-    pipeline_start_time = datetime.now(ZoneInfo("Europe/Madrid"))
-    prediction_time = pipeline_start_time
+    prediction_time = datetime.now(ZoneInfo("Europe/Madrid"))
 
     if not persist:
         print_status("Dry run (--no-persist): no predictions are stored")
@@ -449,41 +435,7 @@ def predict_nba_games(
     if failures:
         raise SystemExit(1)
 
-    if not run_tabpfn_client:
-        print("\nPrediction pipeline completed successfully.")
-        return
-
-    # Generate predictions with TabPFN client
-    print_step_header(step_number, "Generating Predictions (TabPFN Client)")
-    try:
-        tabpfn_predictions = load_and_predict_tabpfn_client_for_nba_games(
-            df=df_to_predict_total,
-            prediction_date=date_to_predict,
-            prediction_datetime=prediction_time,
-        )
-        print_status("TabPFN predictions generated")
-
-        # Upload TabPFN predictions snapshot
-        try:
-            tabpfn_key = upload_model_predictions_snapshot(
-                s3_client=s3,
-                bucket=SETTINGS.s3_bucket,
-                pipeline_start_time=pipeline_start_time,
-                date_to_predict=date_to_predict,
-                model_prefix="tabpfn_client",
-                predictions_df=tabpfn_predictions,
-            )
-            print_status(
-                f"TabPFN snapshot uploaded to s3://.../{tabpfn_key.split('/', 3)[-1]}"
-            )
-        except Exception as snap_exc:
-            print_status(
-                f"Failed to upload TabPFN predictions snapshot: {snap_exc}", ok=False
-            )
-
-    except Exception as e:
-        print_status(f"Failed to generate TabPFN predictions: {e}", ok=False)
-        raise
+    print("\nPrediction pipeline completed successfully.")
 
 
 def legacy_supabase_upload(predictions: pd.DataFrame, label: str) -> list[str]:
@@ -520,11 +472,6 @@ def latest_input_slots(configured_slots: list, mode: str | None = None) -> list:
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Generate NBA over/under predictions")
-    parser.add_argument(
-        "--no-tabpfn",
-        action="store_true",
-        help="Disable TabPFN predictions",
-    )
     parser.add_argument(
         "--no-normalize-total-lines",
         action="store_true",
@@ -567,7 +514,6 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     predict_nba_games(
-        run_tabpfn_client=not args.no_tabpfn,
         normalize_total_lines=not args.no_normalize_total_lines,
         normalize_spread_lines=not args.no_normalize_spread_lines,
         null_extreme_spread_prices=not args.keep_extreme_spread_prices,

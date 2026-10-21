@@ -391,9 +391,9 @@ test runs per schema version.
 
 **4.4 Baselines and TabPFN.** The baselines read only `TOTAL_POINTS` and
 `GAME_DATE` from the history rows, so give them those from the cached games
-table. The TabPFN client trains on history *features*. It is disabled in the
-daily workflow (`--no-tabpfn`). If it is re-enabled it should read the stored
-training dataset, not the prediction frame.
+table. The TabPFN client trains on history *features*. It now runs in its own
+job (`scripts/predict_tabpfn.py`), fitted on the closing frame the daily refit
+stores in S3, not on the prediction frame.
 
 Expected: the closing prediction frame goes from about 10 min to the cost of
 loading the cache plus the vectorised stages, likely 1-2 min after phases 1-2

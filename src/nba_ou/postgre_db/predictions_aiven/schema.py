@@ -15,9 +15,10 @@ Codes (``SMALLINT``):
   snapshot), 2 latest (the game's latest snapshot, read by every model).
 * ``pick_side``: +1 OVER/HOME, -1 UNDER/AWAY, 0 no pick.
 * ``games.status``: 0 scheduled, 1 final, 2 postponed/void.
-* ``runs.workflow``: 1 daily predictor, 2 past-snapshot run.
+* ``runs.workflow``: 1 daily predictor, 2 past-snapshot run, 3 TabPFN run.
 * ``runs.status``: 1 ok, 2 partial (some slot failed), 3 S3 upload failed.
-* ``model_builds.kind``: 1 registry model, 2 baseline.
+* ``model_builds.kind``: 1 registry model, 2 baseline, 3 TabPFN (fitted per
+  run on a registry slot's spec; ``spec_id`` is that spec).
 """
 
 from __future__ import annotations
@@ -39,11 +40,13 @@ INPUT_MODE_CODES: dict[str, int] = {
 }
 WORKFLOW_DAILY = 1
 WORKFLOW_PAST_SNAPSHOTS = 2
+WORKFLOW_TABPFN = 3
 RUN_STATUS_OK = 1
 RUN_STATUS_PARTIAL = 2
 RUN_STATUS_S3_FAILED = 3
 KIND_REGISTRY = 1
 KIND_BASELINE = 2
+KIND_TABPFN = 3
 GAME_STATUS_SCHEDULED = 0
 GAME_STATUS_FINAL = 1
 

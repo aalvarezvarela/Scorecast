@@ -53,6 +53,49 @@ def historical_filename(*, schema_version: str, limit_date: str) -> str:
     return f"historical_training_data_{schema_version}_{limit_date}.parquet"
 
 
+#: Under a version's folder: the frames the daily refit fitted on
+#: (``nba_ou.create_training_data.daily_frame_store``).
+DAILY_SUBDIR = "daily"
+
+_DAILY_FILENAME_RE = re.compile(
+    r"^(?P<dataset_type>[a-z_]+)_data_(?P<schema_version>\d+_\d+)_"
+    r"(?P<limit_date>\d{8})\.parquet$"
+)
+
+
+def daily_frames_prefix(*, schema_version: str, root: str = TRAIN_DATA_PREFIX) -> str:
+    """``train_data/2_5/daily/``."""
+    return train_data_key(
+        schema_version=schema_version, filename=f"{DAILY_SUBDIR}/", root=root
+    )
+
+
+def daily_frame_key(
+    *,
+    dataset_type: str,
+    schema_version: str,
+    limit_date: str,
+    root: str = TRAIN_DATA_PREFIX,
+) -> str:
+    """``train_data/2_5/daily/closing_line_data_2_5_20261021.parquet``.
+
+    Named as the builders name their local files, so a downloaded frame reads
+    like any other dataset. ``limit_date`` (YYYYMMDD) is the refit's cutoff.
+    """
+    filename = f"{dataset_type}_data_{schema_version}_{limit_date}.parquet"
+    if not _DAILY_FILENAME_RE.match(filename):
+        raise ValueError(f"Not a daily frame name: {filename!r}")
+    return daily_frames_prefix(schema_version=schema_version, root=root) + filename
+
+
+def parse_daily_frame_key(key: str) -> tuple[str, str, str] | None:
+    """``(dataset_type, schema_version, limit_date)`` of a daily frame key, or None."""
+    match = _DAILY_FILENAME_RE.match(key.rsplit("/", 1)[-1])
+    if match is None:
+        return None
+    return match["dataset_type"], match["schema_version"], match["limit_date"]
+
+
 def is_unversioned_key(key: str, *, root: str = TRAIN_DATA_PREFIX) -> bool:
     """True for a dataset sitting loose at the root of the prefix.
 

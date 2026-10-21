@@ -20,11 +20,10 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 
 import pandas as pd
-from nba_ou.modeling.registry_models import (
-    FitRecord,
-    ModelSpec,
-    build_model_name,
-)
+from nba_ou.config.market_columns import HOME_MARGIN_COL, SPREAD_ERROR_COL, spread_error
+from nba_ou.config.odds_columns import spread_line_home_col
+from nba_ou.modeling.meta_learner_training_data import _ensure_line_error_column
+from nba_ou.modeling.registry_models import FitRecord, ModelSpec, build_model_name
 from nba_ou.modeling.registry_paths import ModelSlot, ModelTarget, build_fit_id
 from nba_ou.modeling.retraining_utils import (
     RetrainingSettings,
@@ -159,6 +158,25 @@ def select_training_window(
     return sorted_df.tail(train_games).reset_index(drop=True)
 
 
+def with_residual_targets(df: pd.DataFrame) -> pd.DataFrame:
+    """``df`` with ``LINE_ERROR`` and ``SPREAD_ERROR`` where it can carry them.
+
+    The closing builder ships the outcomes (``TOTAL_POINTS``, ``HOME_MARGIN``)
+    and the main book's lines, not the residuals: the training pipeline derives
+    them at load time (``training_pipeline.data``), and a refit must train on
+    the same target. Same derivations, never overwriting a column already
+    there.
+    """
+    df = _ensure_line_error_column(df)
+    line_col = spread_line_home_col()
+    if SPREAD_ERROR_COL not in df.columns and {HOME_MARGIN_COL, line_col} <= set(
+        df.columns
+    ):
+        df = df.copy()
+        df[SPREAD_ERROR_COL] = spread_error(df[HOME_MARGIN_COL], df[line_col])
+    return df
+
+
 def count_games(df: pd.DataFrame, *, game_id_col: str | None = GAME_ID_COLUMN) -> int:
     if game_id_col and game_id_col in df.columns:
         return int(df[game_id_col].nunique())
@@ -222,7 +240,7 @@ def resolve_training_frame(
                 dataset_type=CLOSING_LINE,
                 ctx=layer_context,
             )
-        return TrainingFrame(df=df, build_id=None, checksum=None)
+        return TrainingFrame(df=with_residual_targets(df), build_id=None, checksum=None)
 
     raise TrainingFrameUnavailable(
         f"Spec {spec.spec_id} needs a {dataset_type!r} dataset, and the daily "

@@ -11,6 +11,9 @@ hyperparameters. Nothing here can change a configuration; adopting a new one is
 The staged build does not serve until ``scripts/promote_build.py --execute``
 flips the production pointer, so a bad refit is visible before it reaches
 anything.
+
+Each closing training frame is also kept in S3 (``daily_frame_store``), for
+the jobs that fit on the same rows without a stored model (TabPFN).
 """
 
 import argparse
@@ -22,6 +25,7 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 
 from nba_ou.config.settings import SETTINGS
+from nba_ou.create_training_data.daily_frame_store import upload_daily_frame
 from nba_ou.create_training_data.schema_layers import LayerContext
 from nba_ou.modeling.refit import (
     TrainingFrame,
@@ -37,6 +41,7 @@ from nba_ou.modeling.registry_store import (
     set_build_channel,
     write_build,
 )
+from nba_ou.utils.ci import annotate
 from nba_ou.utils.s3_models import make_s3_client
 
 TODAY_TIMEZONE = ZoneInfo("Europe/Madrid")
@@ -82,6 +87,35 @@ def _parse_slot(value: str, *, root: str) -> ModelSlot:
         variant=variant,
         root=root,
     )
+
+
+def store_training_frame(
+    frame: TrainingFrame,
+    *,
+    s3_client,
+    bucket: str,
+    dataset_type: str,
+    schema_version: str,
+    limit_date: str,
+) -> None:
+    """Keep the frame in S3 for the jobs that fit on it (TabPFN).
+
+    A failure is a warning: the refit does not depend on it.
+    """
+    label = f"{dataset_type} / schema {schema_version}"
+    try:
+        key = upload_daily_frame(
+            frame.df,
+            s3_client=s3_client,
+            bucket=bucket,
+            dataset_type=dataset_type,
+            schema_version=schema_version,
+            limit_date=limit_date,
+        )
+    except Exception as exc:  # noqa: BLE001 -- the refit goes on without it
+        annotate("warning", f"[{label}] training frame not stored in S3: {exc}")
+    else:
+        print(f"[{label}] training frame stored at s3://{bucket}/{key}")
 
 
 def _build_arg_parser() -> argparse.ArgumentParser:
@@ -166,6 +200,14 @@ def main() -> int:
                         limit_date=limit_date,
                         base_frames=base_frames,
                         layer_context=layer_context,
+                    )
+                    store_training_frame(
+                        frames[(dataset_type, schema_version)],
+                        s3_client=s3,
+                        bucket=bucket,
+                        dataset_type=dataset_type,
+                        schema_version=schema_version,
+                        limit_date=limit_date,
                     )
         except TrainingFrameUnavailable as exc:
             # Not a failure: there is no daily build of this dataset yet

@@ -1,0 +1,9 @@
+# Runtime dependencies of `scripts/predict_tabpfn.py`
+# (.github/workflows/nba_predictor_daily_tabpfn_client.yml): the daily
+# predictor's, plus the hosted TabPFN client. Resolved together 2026-10-21.
+#
+#     pip install -r requirements_predict_tabpfn.txt
+#     pip install --no-deps -e .
+#     playwright install chromium
+-r requirements_predict.txt
+tabpfn-client==0.6.1

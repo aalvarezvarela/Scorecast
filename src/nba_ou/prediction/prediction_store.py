@@ -62,6 +62,7 @@ from nba_ou.postgre_db.predictions_aiven.schema import (
     INPUT_MODE_OWN,
     KIND_BASELINE,
     KIND_REGISTRY,
+    KIND_TABPFN,
     RUN_STATUS_OK,
     RUN_STATUS_PARTIAL,
     RUN_STATUS_S3_FAILED,
@@ -331,7 +332,8 @@ class RunTables:
 class PredictionRunRecorder:
     """Everything one run predicted, ready for ``persist_prediction_run``.
 
-    ``workflow`` is ``schema.WORKFLOW_DAILY`` or ``WORKFLOW_PAST_SNAPSHOTS``.
+    ``workflow`` is ``schema.WORKFLOW_DAILY``, ``WORKFLOW_PAST_SNAPSHOTS`` or
+    ``WORKFLOW_TABPFN``.
     Call ``set_schedule`` and ``add_frame`` before adding outputs: an output is
     validated against them as it arrives.
     """
@@ -428,6 +430,14 @@ class PredictionRunRecorder:
         empty output records the slot as skipped.
         """
         return self._add(predictions, label=label, kind=KIND_REGISTRY)
+
+    def add_tabpfn(self, predictions: pd.DataFrame, *, label: str) -> str | None:
+        """A TabPFN output (``prediction_tabpfn_client.predict_with_tabpfn``).
+
+        Shaped like a registry slot's output, and checked the same way; only
+        ``model_builds.kind`` tells them apart.
+        """
+        return self._add(predictions, label=label, kind=KIND_TABPFN)
 
     def add_baseline(
         self, name: str, predictions: pd.DataFrame, *, schema_version: str
