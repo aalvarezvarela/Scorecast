@@ -233,7 +233,6 @@ data/
 !requirements/*.txt
 *.joblib
 .codex
-CLAUDE.md
 # Experiment run outputs (regenerated; never source of truth)
 artifacts/
 
