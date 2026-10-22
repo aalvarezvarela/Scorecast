@@ -62,6 +62,15 @@ JOBS = [
         hour=9,
         minute=0,
     ),
+    # Books the day's snapshot-time predictor runs (one-off jobs in UTC, see
+    # schedule_snapshot_triggers.py). 10:00 Madrid is after Pacific midnight
+    # all year, so the game date is already the predictor's.
+    WorkflowJob(
+        title="Scorecast - schedule snapshot predictions",
+        workflow_file="schedule_snapshot_triggers.yml",
+        hour=10,
+        minute=0,
+    ),
 ]
 
 

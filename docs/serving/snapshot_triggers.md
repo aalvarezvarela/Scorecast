@@ -1,7 +1,7 @@
 # Snapshot triggers: running the predictor at each snapshot time
 
-Status: **Implemented** (2026-10-22). The scheduler's daily cron-job.org entry
-(a row in `scripts/cronjobs/setup_cronjobs.py`) has not been added yet.
+Status: **Implemented** (2026-10-22). The scheduler's own daily job (10:00
+Madrid) is a row in `scripts/cronjobs/setup_cronjobs.py`, not applied yet.
 
 ## What it does
 
