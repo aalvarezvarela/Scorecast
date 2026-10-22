@@ -1,7 +1,9 @@
 # Injury-report database plan (Aiven `injury_report` schema)
 
-**Status:** plan only — nothing implemented.
-**Companion:** [`injury_report_archive_plan.md`](injury_report_archive_plan.md) covers
+Status: **Implemented** (checked 2026-10-22) — the `injury_report` schema lives
+in `postgre_db/injury_report_aiven/` and is refreshed before every prediction.
+
+**Companion:** [`docs/injuries/report_archive.md`](report_archive.md) covers
 collecting the PDFs. This document covers turning them into queryable state.
 
 ---

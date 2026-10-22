@@ -1,7 +1,14 @@
 # Live intermediate-line predictions
 
-Serve the 16 promoted `2_5/line_error/t0030..t1080` slots on game days, from
-tonight's data, without ever storing a partial game.
+Status: **Implemented** (checked 2026-10-22) — the 48 intermediate slots are
+served by `scripts/predict_nba_games.py`; the open items are under "To take care
+of".
+
+Serve the intermediate slots on game days, from tonight's data, without ever
+storing a partial game. The plan started with the 16 `2_5/line_error`
+horizons (T-30 to T-1080); `ENABLED_MODELS` now holds those 16 horizons for each
+of the three targets (`line_error`, `total_points`, `spread_error`), plus the
+three closing slots.
 
 ## The rule
 
@@ -9,10 +16,10 @@ tonight's data, without ever storing a partial game.
 Published injury reports are now an explicit exception: they are archived in S3
 and ingested into Aiven before prediction. The database is their prediction
 source at every time cutoff. Referee assignments use a separate S3 cache.
-See [live injury reports](live_injury_reports.md).
+See [live injury reports](../injuries/live_reports.md).
 
 Live roster membership uses the latest same-day official roster observed by
-the run, as documented in [live rosters](live_rosters.md). Report publication
+the run, as documented in [live rosters](../injuries/live_rosters.md). Report publication
 cutoffs remain strict per horizon; an intraday roster transaction may therefore
 affect a horizon that passed before the roster was fetched. Historical replay
 matches training when given the same roster inputs; it cannot reconstruct
@@ -36,6 +43,11 @@ A prediction run at time `now` therefore:
 
 A slot's prediction never changes once its horizon has passed, so the schedule
 only needs one run after each horizon, not a run at each exact minute.
+
+**Policy since 2026-10-20:** every enabled slot predicts on every run, whatever
+the time to tip. A slot whose snapshot is still ahead predicts from the row
+built from the ticks so far, marked `SNAPSHOT_PASSED = False`; the list above
+describes the rows that are exact.
 
 **Parity test.** Replay a past date "as of" chosen times (live readers with
 `as_of`, builder with the replayed data substituted for the stored rows) and
@@ -181,7 +193,7 @@ outside its training range at a much later moment.
 
 1. ~~Base features for scheduled games.~~ Done above.
 2. ~~Referees.~~ Done above.
-3. **Injuries per horizon: ingestion implemented.** The scheduled-data path
+3. ~~Injuries per horizon~~ -- done: ingestion implemented. The scheduled-data path
    synchronizes yesterday's and today's published PDFs into S3 and Aiven.
    `add_snapshot_injury_features` reads that timeline at each horizon's strict
    publication cutoff; it does not need an in-memory PDF overlay.
@@ -199,14 +211,15 @@ outside its training range at a much later moment.
    mode (`create_intermediate_line_df(target_game_ids=...)`) computes only
    tonight's rows; every earlier game comes from per-season stored history
    (`intermediate_history`, `PersistentRowCache`), see
-   `docs/pipeline_speedup_plan.md`.
+   `docs/pipeline/speedup.md`.
 7. ~~Parity test~~ -- `point_in_time_parity.py --kind intermediate --targets`
    (tonight-only build == full build rows, dataset and scoring) and
    `live_replay_parity.py` (live tonight-only == live full, replayed date).
    These harnesses are retained; their previous acceptance results do not
    certify this integration until rerun on the merged commit.
-8. **Daily intermediate refit** (`docs/model_registry_reorg_plan.md` section 5):
-   rebuild from finished-game history. The injury store also holds published
+8. ~~Daily intermediate refit~~ -- done: one-horizon intermediate slots are
+   refitted daily from the season partitions (`docs/serving/model_registry.md`
+   §7 items 10-11). The injury store also holds published
    reports for upcoming games, read under each snapshot's strict time cutoff.
 
 The 2026-27 regular season starts around 2026-10-20; until then everything is
@@ -227,15 +240,17 @@ tested by replaying past dates.
 - [ ] **Prediction schedule**: the predictor workflow runs every 30-60 min on
       game days (crons are currently commented out in
       `.github/workflows/nba_predictor_daily.yml`).
-- [ ] **Enable the 16 slots** in `ENABLED_MODELS` once live serving works.
+- [x] **Enable the slots** in `ENABLED_MODELS` -- done: 51 rows, the closing
+      slot and 16 horizons for each of the three targets.
 - [ ] **Archive the old CSVs** in `data/train_data/` to S3, then delete them.
       Builders now write Parquet only, and a config reads exactly the file it
       names, so the CSVs serve only configs still pinned to them. The two 2.5
       Parquet copies predate the identifier-dtype fix and fail cleaning; rebuild
       instead of reusing them.
-- [ ] **Commit** the parquet, naming, daily-job and live line-history changes.
-- [ ] Pre-existing lint in `line_history_aiven/tipoff_corrections.py` (import
-      order) -- unrelated, left alone.
+- [x] **Commit** the parquet, naming, daily-job and live line-history changes
+      -- done (Parquet in 322a91a).
+- [x] Pre-existing lint in `line_history_aiven/tipoff_corrections.py` (import
+      order) -- clean now.
 - [x] **Closing prediction path: same roster inflation** (fixed 2026-10-02).
       The shared `standardize_and_merge_scheduled_games_to_players_data` now
       builds a placeholder only for players with a row in tonight's season
@@ -246,8 +261,10 @@ tested by replaying past dates.
       roster continuity identical on the first two, 7/30 team-games off by at
       most 0.0005 on 2026-04-10 (was up to 0.21). Before: e.g. Charlotte 37
       players vs 19, Lakers 30 vs 18. Tests in tests/test_scheduled_player_rows.py.
-- [ ] **Residual player-feature gap: verified, a small training-side dependence
-      on tonight's box score** (2026-10-02). With identical rosters, a player's
+- [x] **Residual player-feature gap: verified, a small training-side dependence
+      on tonight's box score** (2026-10-02). Fixed in training as item 9 of
+      `docs/pipeline/defect_fixes_2_5.md` (date-based `_AFTER` selection) and in
+      the 2026-10-16 rebuild. With identical rosters, a player's
       stats come from his latest row on or before game day
       (`latest_player_states`, available branch). In training that is tonight's
       box-score row if he appeared (stats already shifted, so pre-game

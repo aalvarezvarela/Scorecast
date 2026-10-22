@@ -1,4 +1,4 @@
-"""The three leakage checks ``docs/lineup_projection_plan.md`` section 8.3 requires.
+"""The three leakage checks ``docs/lineups/lineup_projection.md`` section 8.3 requires.
 
 1. **Perturbation.** Changing the target game's own box score and result, a
    same-day game's, and any rating fitted on or after the game date leaves

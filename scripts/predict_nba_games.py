@@ -264,7 +264,7 @@ def predict_nba_games(
     print_status(f"Found {len(df_to_predict)} game(s) to predict")
 
     # Everything this run predicts, stored at the end in one piece: the S3 run
-    # archive and the Aiven prediction store (docs/prediction_storage_plan.md).
+    # archive and the Aiven prediction store (docs/serving/prediction_storage.md).
     recorder = PredictionRunRecorder(workflow=WORKFLOW_DAILY, game_date=date_to_predict)
     recorder.set_schedule(scheduled_data["scheduled_games"])
     recorder.add_frame("closing_line", df_to_predict, version=frame_version)
@@ -442,7 +442,7 @@ def legacy_supabase_upload(predictions: pd.DataFrame, label: str) -> list[str]:
     """Write ``predictions`` to the old Supabase table; the failure, if any.
 
     Runs in parallel with the prediction store during the transition
-    (docs/prediction_storage_plan.md, rollout 3), and independently of it.
+    (docs/serving/prediction_storage.md, rollout 3), and independently of it.
     """
     try:
         upload_predictions_to_postgre(predictions)

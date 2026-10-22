@@ -232,7 +232,7 @@ def test_campaign_line_col_matches_each_strategy():
     assert load_config(CAMPAIGN / "line_error_2500.yaml").line_col is None
     # These read real archived campaign YAMLs (experiments/archived/), which
     # are frozen historical records against a pre-ODDS_-prefix CSV and are
-    # deliberately not rewritten -- see docs/README_Training Data Processing.md.
+    # deliberately not rewritten -- see docs/pipeline/training_data_processing.md.
     assert (
         load_config(CAMPAIGN / "total_points_2500.yaml").line_col == "TOTAL_LINE_bet365"
     )

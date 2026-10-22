@@ -1,4 +1,4 @@
-"""Schema for the Aiven prediction store (``docs/prediction_storage_plan.md``).
+"""Schema for the Aiven prediction store (``docs/serving/prediction_storage.md``).
 
 Sized for the 1 GB instance it shares with the line history. The one large
 table, ``predictions``, carries only what differs per model -- 22 bytes of

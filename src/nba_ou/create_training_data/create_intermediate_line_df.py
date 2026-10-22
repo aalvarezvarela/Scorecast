@@ -942,7 +942,7 @@ def create_intermediate_line_df(
     to each snapshot: injury news (``INJ_SNAP_*``), the market's reaction to it
     (``ODDS_SNAP_NEWS_*``), cross-market coherence (``ODDS_SNAP_XMKT_*``) and the
     walk-forward spread and moneyline move-to-close estimates. See
-    ``docs/intermediate_market_dynamics_plan.md``.
+    ``docs/intermediate/market_dynamics.md``.
 
     ``fanatics_sportsbook`` only exists from season 2025 and the odds-fetching
     pipeline no longer scrapes the now-discontinued Caesars, so left alone

@@ -1,6 +1,6 @@
 """Snapshot features on how injury news and the markets evolved up to T.
 
-Three groups (``docs/intermediate_market_dynamics_plan.md`` section 3):
+Three groups (``docs/intermediate/market_dynamics.md`` section 3):
 
 * **G1 injury news** -- ``INJ_SNAP_*_BEFORE_TEAM_{HOME,AWAY}``: recent changes
   in expected missing points, the biggest single-player change, and how long

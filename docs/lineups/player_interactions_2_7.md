@@ -1,6 +1,9 @@
 # Schema 2_7: player interactions plan
 
-Oct 6, 2026 · Adrián Álvarez Varela · **Status: plan, not implemented** (corrected 2026-10-07)
+Oct 6, 2026 · Adrián Álvarez Varela (corrected 2026-10-07)
+
+Status: **Plan** (checked 2026-10-22) — there is no `v2_7` layer in
+`schema_layers/` yet.
 
 ## Goal and principles
 
@@ -46,14 +49,14 @@ The goal is to give XGBoost features that capture who plays tonight, for how man
 
 ## Starting point: what 2_6 already has
 
-Much of the groundwork was built and measured for 2_6 ([lineup_projection_plan.md](lineup_projection_plan.md), code in `src/nba_ou/data_processing/lineups/`). 2_7 builds on it instead of rebuilding it.
+Much of the groundwork was built and measured for 2_6 ([docs/lineups/lineup_projection.md](lineup_projection.md), code in `src/nba_ou/data_processing/lineups/`). 2_7 builds on it instead of rebuilding it.
 
 | This plan | Already built | Module | Status |
 | --- | --- | --- | --- |
 | Phase 0: as-of-T availability | Roster from strictly earlier games plus the last injury report before T; closing and per intermediate snapshot | `availability.py`, `intermediate_features.py` | In 2_6 |
 | Phase 0: doubtful scenarios | Every play/sit combination weighted by `chance_out`; spread across scenarios emitted as an SD | `game_projection.py`, `injury_status/news.py` | In 2_6 |
 | Phase 1: harness | Campaigns under `experiments/`, runs under `artifacts/experiments/` | `training_pipeline` | Exists; the 2_5 vs 2_6 campaign is still pending |
-| Phase 2: graph inputs | Validated stints 2016-17 → 2025-26; who guarded whom 2017-18 → 2025-26 ([player_lineup_and_matchup_data.md](player_lineup_and_matchup_data.md)) | `stint_store.py`, `fetch_data/nba_lineups/matchups.py` | Stints used by 2_6; **matchups imported, nothing reads them** |
+| Phase 2: graph inputs | Validated stints 2016-17 → 2025-26; who guarded whom 2017-18 → 2025-26 ([docs/lineups/data_inventory.md](data_inventory.md)) | `stint_store.py`, `fetch_data/nba_lineups/matchups.py` | Stints used by 2_6; **matchups imported, nothing reads them** |
 | Phase 2: v0 node weights | Recent-minutes average redistributed to 240, pair shared-minutes weighting | `availability.py`, `game_projection.py` | In 2_6 |
 | Phase 3: RAPM | Walk-forward ridge for offense, defense, pace; daily rating dates; λ_offdef = 1000, λ_pace = 30000, half-life 180 days | `player_ratings.py`, `rating_cache.py` | In 2_6. No profile prior |
 | Phase 4A: minutes model | Gradient-boosted `E[min | play]` | `minutes_model.py` | Built, not connected |
@@ -359,7 +362,7 @@ But each team's minutes sum to 240, so the level of this sum barely depends on h
 
 The defensive counterpart of the minutes model. Minutes say who is on the floor; this says **who guards whom while they are**, and how much a defender changes what his assignments produce. It learns from the phase 2 matchup graphs.
 
-**The data** ([player_lineup_and_matchup_data.md](player_lineup_and_matchup_data.md) §4). One row per attacker × defender × game: `matchup_seconds`, `partial_possessions`, `pct_total_time_both_on`, and the attacker's points, FGA, 3PA, FTA, assists and turnovers against that defender. ~245k rows a season, 2017-18 onward. The primary defender covers a median 36% of an attacker's matched time across ~9 defenders, so this is a distribution of assignments, not one assignment.
+**The data** ([docs/lineups/data_inventory.md](data_inventory.md) §4). One row per attacker × defender × game: `matchup_seconds`, `partial_possessions`, `pct_total_time_both_on`, and the attacker's points, FGA, 3PA, FTA, assists and turnovers against that defender. ~245k rows a season, 2017-18 onward. The primary defender covers a median 36% of an attacker's matched time across ~9 defenders, so this is a distribution of assignments, not one assignment.
 
 **Guarding shares (provider v1)**
 
@@ -599,7 +602,7 @@ These ideas from the earlier draft already exist as 2_6 columns. They are not re
 | `PI_HEAD_TOTAL_SD_BEFORE` | 8C | points | SD of the head total across doubtful scenarios |
 | `PI_Z01_BEFORE` … `PI_Z16_BEFORE` (or `Z32`) | 8D-E | unitless | Game embedding coordinates |
 
-Before any of these is added, follow the "Adding Or Modifying Features" checklist in [README_Training Data Processing.md](README_Training%20Data%20Processing.md) and record the columns in `nba_ou.config.dataset_versions`.
+Before any of these is added, follow the "Adding Or Modifying Features" checklist in [docs/pipeline/training_data_processing.md](../pipeline/training_data_processing.md) and record the columns in `nba_ou.config.dataset_versions`.
 
 ## Risks and open questions
 

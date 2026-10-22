@@ -1,6 +1,6 @@
 """Evaluate the phase-F lineup projection against the closing total line.
 
-Regenerates the numbers in ``docs/lineup_projection_plan.md`` sections 7.1d,
+Regenerates the numbers in ``docs/lineups/lineup_projection.md`` sections 7.1d,
 8.5 and 8.6 from the committed code: the projection's MAE, the slope of
 ``LINE_ERROR`` on the absence counterfactual and on each of its channels per
 season, with date-clustered bootstrap intervals and directional accuracy, and

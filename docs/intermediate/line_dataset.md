@@ -1,6 +1,10 @@
 # Intermediate-line training dataset — implementation plan
 
-Status: **implemented.** Companion to `docs/line_history_phase0_findings.md`,
+Status: **Implemented** (checked 2026-10-22) — built by
+`create_intermediate_line_df()`; the dataset is written as Parquet now, not the
+CSV named below.
+
+Companion to `docs/odds/line_history_phase0_findings.md`,
 which established the line-history store this dataset reads from.
 
 Build it with:
@@ -23,7 +27,7 @@ as the snapshot lines, since the separate closing-odds table does not always
 agree with that series.
 
 Also by default, the market-dynamics families from
-`docs/intermediate_market_dynamics_plan.md`: injury news (`INJ_SNAP_*`), the
+`docs/intermediate/market_dynamics.md`: injury news (`INJ_SNAP_*`), the
 market's reaction to it (`ODDS_SNAP_NEWS_*`), cross-market coherence
 (`ODDS_SNAP_XMKT_*`) and the spread and moneyline versions of the Ridge
 (`ODDS_LINE_HIST_RIDGE_EXPECTED_{SPREAD,ML}_MOVE_TO_CLOSE`). Use
@@ -68,10 +72,10 @@ matters a great deal for production and is picked up in §9.
 
 | Store | Location | Verdict |
 |---|---|---|
-| Legacy per-market schemas | [process_sportsbook_line_history_data.py](src/nba_ou/postgre_db/odds_sportsbook_line_history/process_sportsbook_line_history_data.py), schemas `odds_sportsbook_{totals,spread,moneyline}_line_history` | superseded — no tip-off join, so no leakage filter |
-| **Aiven line-history store** | [line_history_aiven/](src/nba_ou/postgre_db/line_history_aiven/), schema `line_history` | **use this** — commit `f011598`, tip-off-aware |
+| Legacy per-market schemas | [process_sportsbook_line_history_data.py](../../src/nba_ou/postgre_db/odds_sportsbook_line_history/process_sportsbook_line_history_data.py), schemas `odds_sportsbook_{totals,spread,moneyline}_line_history` | superseded — no tip-off join, so no leakage filter |
+| **Aiven line-history store** | [line_history_aiven/](../../src/nba_ou/postgre_db/line_history_aiven), schema `line_history` | **use this** — commit `f011598`, tip-off-aware |
 
-### Aiven schema ([schema.py](src/nba_ou/postgre_db/line_history_aiven/schema.py))
+### Aiven schema ([schema.py](../../src/nba_ou/postgre_db/line_history_aiven/schema.py))
 
 ```
 lh_game (game_id PK, game_date, season_year, tipoff_utc, event_id, team_home, team_away)
@@ -218,7 +222,7 @@ This needs care, and the obvious approach does not work. For
 `prediction_strategy: line_error_regressor`, `experiments/_base.yaml` states
 that **`line_col` must be omitted — the main book's line is used** — and
 `_ensure_line_error_column`
-([meta_learner_training_data.py:207](src/nba_ou/modeling/meta_learner_training_data.py#L207))
+([meta_learner_training_data.py:207](../../src/nba_ou/modeling/meta_learner_training_data.py#L207))
 hardcodes `total_line_col()`, i.e. `TOTAL_LINE_bet365`. So the target is *not*
 freely parameterisable, and left alone the pipeline would define the target
 against the **closing** line while we intended the snapshot line.
@@ -257,9 +261,9 @@ implementation found it is worse than first documented. **Four** columns carry a
 
 | column | source | severity |
 |---|---|---|
-| `THIS_GAME_CROSSBOOK_TOTAL_STD_BEFORE` | [global_market_features.py:554](src/nba_ou/data_processing/merged_home_away_data/global_market_features.py#L554), from lines 296–312 | dispersion of this game's closing lines |
+| `THIS_GAME_CROSSBOOK_TOTAL_STD_BEFORE` | [global_market_features.py:554](../../src/nba_ou/data_processing/merged_home_away_data/global_market_features.py#L554), from lines 296–312 | dispersion of this game's closing lines |
 | `THIS_GAME_CROSSBOOK_TOTAL_RANGE_BEFORE` | same | same |
-| `IMPLIED_PTS_HOME_BEFORE` | [add_features_after_merging.py:349](src/nba_ou/data_processing/merged_home_away_data/add_features_after_merging.py#L349) | **critical** |
+| `IMPLIED_PTS_HOME_BEFORE` | [add_features_after_merging.py:349](../../src/nba_ou/data_processing/merged_home_away_data/add_features_after_merging.py#L349) | **critical** |
 | `IMPLIED_PTS_AWAY_BEFORE` | same | **critical** |
 
 The `IMPLIED_PTS_*` pair was not in the original plan and is the more dangerous
@@ -280,7 +284,7 @@ strictly earlier dates.
 
 **L3 — the entire `odds_*` family.** `engineer_odds_features` is, per its own
 docstring, "focused on **close-time** TOTAL/SPREAD/ML data"
-([odds_feature_engeneer.py:80](src/nba_ou/data_processing/merged_home_away_data/odds_feature_engeneer.py#L80)).
+([odds_feature_engeneer.py:80](../../src/nba_ou/data_processing/merged_home_away_data/odds_feature_engeneer.py#L80)).
 Every `odds_`-prefixed column is close-time for the current game. All excluded;
 the useful ones (consensus, dispersion, vig, no-vig probability) get **rebuilt at
 snapshot time** in block D.
@@ -312,10 +316,10 @@ prices only**, never inherited from the closing-line version.
 accident, so it must be pinned.** Six rows per game share all of block E, so a
 random split would put the same game in train and validation. Verified: it
 cannot happen with the existing splitters. `split_latest_days_holdout` cuts on
-the date ([splits.py:19-49](training_pipeline/splits.py#L19-L49)), and
+the date ([splits.py:19-49](../../training_pipeline/splits.py#L19-L49)), and
 `make_test_anchored_walk_forward_splits` builds test windows from whole
 `unique_dates` and takes the train pool as `_date < test_start_date`
-([modeling.py:843-895](src/nba_ou/modeling/modeling.py#L843-L895)). Rows sharing
+([modeling.py:843-895](../../src/nba_ou/modeling/modeling.py#L843-L895)). Rows sharing
 a `GAME_DATE` always land on the same side.
 
 **The condition this rests on:** `data.date_col` must stay `GAME_DATE` — the
@@ -376,7 +380,7 @@ tests/test_intermediate_column_leakage.py
 ```
 
 `connect_line_history_db()` already exists in
-[db_config.py:284](src/nba_ou/postgre_db/config/db_config.py#L284) — no config
+[db_config.py:284](../../src/nba_ou/postgre_db/config/db_config.py#L284) — no config
 change needed.
 
 ### Coexistence guarantees
@@ -507,7 +511,7 @@ Per-market encoding notes from the store:
 
 The current pipeline centres asymmetrically priced totals onto an estimated 50/50
 line at −110/−110 via `normalize_total_lines_inplace`
-([normalize_total_lines.py:169](src/nba_ou/data_processing/odds/normalize_total_lines.py#L169)),
+([normalize_total_lines.py:169](../../src/nba_ou/data_processing/odds/normalize_total_lines.py#L169)),
 controlled by `create_df_to_predict(normalize_total_lines=True)`. The snapshot
 dataset does the same so that a line at T means the same thing as a line in the
 existing dataset, and so that lines are comparable across books and across
@@ -524,7 +528,7 @@ market-agnostic given a `sigma`, but `_total_market_prefixes` discovers only
   margin std of 15.57 and a totals sigma of 15.70. Using the totals sigma here
   would bias every centered spread. One concrete trap: `round_to_increment`
   rejects negative values
-  ([line 67](src/nba_ou/data_processing/odds/normalize_total_lines.py#L67)), and
+  ([line 67](../../src/nba_ou/data_processing/odds/normalize_total_lines.py#L67)), and
   spreads are signed — round the magnitude and reapply the sign, which also
   keeps the mirror symmetric (a fair ±3.25 must land on ∓3.5, not on −3.0/+3.5
   as half-up would give).
@@ -557,7 +561,7 @@ row-counted setting in `experiments/_base.yaml` without raising anything.
 ### Windows are counted in rows, not days
 
 `walk_forward.train_games` is applied as `train_pool.tail(train_games)`
-([modeling.py:894](src/nba_ou/modeling/modeling.py#L894)) and `test_games`
+([modeling.py:894](../../src/nba_ou/modeling/modeling.py#L894)) and `test_games`
 accumulates `date_counts` per date. Despite the name, these count **rows**. At 6
 snapshots per game, the inherited defaults would silently cover one sixth of the
 calendar history they were reasoned for:
@@ -772,7 +776,7 @@ were *silent* — the dataset built cleanly and looked reasonable throughout.
 Closing lines were kept in the training frame behind a `CLOSING_` prefix, on the
 assumption that the `feature_columns()` helper would filter them. **It does
 not.** `training_pipeline.data.build_feature_matrix` builds `X` by dropping only
-the *configured* exclusions ([data.py:341](training_pipeline/data.py#L341)) and
+the *configured* exclusions ([data.py:341](../../training_pipeline/data.py#L341)) and
 never consults that helper, so all seven closing columns would have entered `X`.
 Any result from the first build would have been contaminated by the outcome the
 model is meant to predict.
@@ -823,7 +827,7 @@ value came from the centered line. Measuring a centered "now" against a raw
 
 The closing-line rename swept up `TOTAL_LINE_consensus_opener`, so the
 `betting.comparison_line_cols` baseline configured in
-[`experiments/_base.yaml`](experiments/_base.yaml) silently matched nothing. The
+[`experiments/_base.yaml`](../../experiments/_base.yaml) silently matched nothing. The
 opener is *safe* at every snapshot — openers land a median ~25h before tip,
 outside the whole grid — so it should never have been treated as a closing line.
 It now survives under its own name and is asserted by test.
@@ -878,7 +882,7 @@ The decay with separation is the geometric grid working as designed, but the
 short pairs carry little independent information. Consequences:
 
 - `n_unique_games` in CV betting counts **row positions**, not games
-  ([cv_betting.py:304](training_pipeline/cv_betting.py#L304)), so it reports up
+  ([cv_betting.py:304](../../training_pipeline/cv_betting.py#L304)), so it reports up
   to 6× the real figure.
 - Any Wilson interval computed on bet counts is correspondingly too narrow.
 

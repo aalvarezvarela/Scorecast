@@ -16,7 +16,7 @@ Examples::
     python scripts/line_history/load_line_history_to_aiven.py --seasons 2024-25
 
     # include the two COVID seasons whose timezone is unresolved (see
-    # docs/line_history_phase0_findings.md)
+    # docs/odds/line_history_phase0_findings.md)
     python scripts/line_history/load_line_history_to_aiven.py --include-low-confidence
 
     # start over

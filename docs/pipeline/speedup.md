@@ -1,5 +1,10 @@
 # Speeding up the 2_5 data pipelines
 
+Status: **Partial** (checked 2026-10-22) — phases 0–4 are merged, and the
+season partitions (`season_partitions.py`) carry out phase 5. Still open: the
+cost of the layers on full history, the intermediate partition update speed and
+a live prediction-mode test.
+
 Scope: the closing-line builder (`create_df_to_predict`) and the
 intermediate-line builder (`create_intermediate_line_df`) at schema `2_5`, for
 three uses: historical training builds, the daily refit, and same-day
@@ -530,7 +535,7 @@ live replay equal (2026-03-01, dataset and scoring); intermediate tonight-only
 parity over every line-history season equal on 2024-04-16 and 2026-04-10;
 2,476 tests pass.
 
-Live serving (step 4.4 of `docs/live_intermediate_prediction_plan.md`):
+Live serving (step 4.4 of `docs/intermediate/live_prediction.md`):
 tonight's injury reports are parsed in memory and read with the store's own
 SQL (`injury_report_aiven.live`; equal to the stored reads at all 192 passed
 snapshots of 2026-04-10), the days just finished are stored daily
@@ -561,7 +566,7 @@ With 0.4 passing, a game's row depends only on data before it. Then:
   or a DB correction invalidates it.
 
 This is what the daily intermediate refit is blocked on
-(`modeling/refit.py`, `docs/model_registry_reorg_plan.md` section 5), and it
+(`modeling/refit.py`, `docs/serving/model_registry.md` section 5), and it
 removes the full closing rebuild from the retrain job.
 
 **Checksum caveat.** Campaign configs pin `data.expected_checksum` to a file.

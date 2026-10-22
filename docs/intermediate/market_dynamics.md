@@ -1,7 +1,10 @@
 # Intermediate snapshots: injury news, market reaction, continuation and cross-market features
 
-Status: **implemented** on `feat/intermediate-market-dynamics` (G1–G4; §7 lists where the
-code differs from this plan). Not yet ablated (§6). Schema stays `2_5`. The measurements below
+Status: **Implemented** (checked 2026-10-22) — G1–G4 are merged and part of the
+`2_5` intermediate dataset (§7 lists where the code differs from this plan); the
+group ablations of §6 have not been run.
+
+The measurements below
 come from exploratory scripts run on 2026-09-16. They cover the line-history
 store's seven seasons (`season_year` 2019–2025: 8,884 games, all three markets,
 all books) and the injury-report store (2018 onward).
@@ -16,7 +19,7 @@ The plan now assumes that branch is merged first. G4 reuses its Ridge engine
 instead of the cached XGBoost models proposed originally (§1.6, §3 G4). §1.8
 measures the branch's features.
 
-This plan builds on [intermediate_line_feature_engineering_plan.md](intermediate_line_feature_engineering_plan.md).
+This plan builds on [docs/intermediate/feature_engineering_round2.md](feature_engineering_round2.md).
 Its Tier 6, cross-market coherence, was never built; §3 G3 below is that tier,
 now backed by measurements.
 

@@ -1,5 +1,8 @@
 # Yahoo percentage features, schema 2_5 rebuild
 
+Status: **Reference** (checked 2026-10-22) — the compact Yahoo contract in
+`nba_ou.config.yahoo_features`.
+
 Closing historical builds and same-day prediction builds retain exactly 36
 Yahoo percentage inputs. The contract lives in `nba_ou.config.yahoo_features`.
 

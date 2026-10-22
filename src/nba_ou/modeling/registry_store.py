@@ -10,7 +10,7 @@ convention:
    uploads the model and the fit and returns; only a separate ``set_channel``
    makes it visible. A reader can therefore never catch a build half-written.
 
-Resolution order for a served model (see ``docs/model_registry_reorg_plan.md``
+Resolution order for a served model (see ``docs/serving/model_registry.md``
 section 2.3)::
 
     channels/production.json   -> fit_id

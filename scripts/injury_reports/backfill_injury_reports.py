@@ -14,7 +14,7 @@ Stop it with Ctrl-C at any point and re-run the same command to continue.
 
 The CDN answers "missing" and "throttled" with the same ``403``, so a canary URL
 adjudicates every 403 and the run stops rather than record a false absence
-(see ``docs/injury_report_archive_plan.md`` §4.2).
+(see ``docs/injuries/report_archive.md`` §4.2).
 
 Examples::
 

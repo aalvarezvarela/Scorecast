@@ -40,7 +40,7 @@ class ServerTimeout(RuntimeError):
 
 
 #: A 5xx answered faster than this is the NBA refusing the game outright (the
-#: deterministic sub-second 500 of ``docs/lineup_projection_plan.md`` section
+#: deterministic sub-second 500 of ``docs/lineups/lineup_projection.md`` section
 #: 2.4). A slower one is the backend giving up after its ~30 s limit. Measured
 #: 2026-09-24: fast 500s took 0.3-0.5 s, slow ones 30.4-30.7 s, nothing between.
 SLOW_SERVER_ERROR_SECONDS = 5.0

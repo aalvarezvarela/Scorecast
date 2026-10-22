@@ -12,7 +12,7 @@ report was published:
 
 So a label is decoded through its *era*, and the resulting ``America/New_York``
 wall-clock instant -- not the label -- is what names the object and drives every
-join. See ``docs/injury_report_archive_plan.md`` for the measurements behind the
+join. See ``docs/injuries/report_archive.md`` for the measurements behind the
 era boundaries.
 
 Two DST rules fall out of the wall-clock model, both verified against the CDN:

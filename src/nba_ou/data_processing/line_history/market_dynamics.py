@@ -8,7 +8,7 @@ with the existing movement family. Reading ticks directly, rather than the
 panel's ``move_last_<w>`` columns, keeps these features independent of the
 configured ``windows`` and lets the pre-news anchor sit at any instant.
 
-Measurements behind the definitions: ``docs/intermediate_market_dynamics_plan.md``
+Measurements behind the definitions: ``docs/intermediate/market_dynamics.md``
 sections 1.4-1.5 and 3.
 """
 

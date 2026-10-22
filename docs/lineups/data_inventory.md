@@ -1,5 +1,8 @@
 # Player lineup and matchup data: what we hold
 
+Status: **Reference** (checked 2026-10-22) — the stint and matchup data on disk,
+measured on 2026-10-05.
+
 This is an inventory of the **player-interaction data** in the repo: who was on
 the floor together, and who guarded whom.
 

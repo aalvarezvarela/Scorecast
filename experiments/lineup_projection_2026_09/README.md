@@ -2,10 +2,10 @@
 
 **Status (2026-10-05): not run.** The four configurations below are the
 prepared closing comparison of starter history versus starter history plus
-`LU_*`. The updated plan (`docs/lineup_projection_plan.md`, §§8-10) adds a
+`LU_*`. The updated plan (`docs/lineups/lineup_projection.md`, §§8-10) adds a
 2_5 base arm and an intermediate campaign with the now-implemented snapshot projection. Those additional configurations and datasets are still pending.
 
-The go/no-go G campaign of `docs/lineup_projection_plan.md` (§8.4, §8.5). Four
+The go/no-go G campaign of `docs/lineups/lineup_projection.md` (§8.4, §8.5). Four
 cells, two per totals strategy, and each pair differs **only** in its dataset file:
 
 | Cell | Strategy | Dataset |

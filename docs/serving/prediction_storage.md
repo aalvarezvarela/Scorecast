@@ -1,10 +1,10 @@
 # Prediction storage: Aiven tables + S3 run archive
 
-Updated: 2026-10-21. Status: implemented on branch
-`feat/prediction-storage-aiven` (see "Implementation status"); the Aiven
-schema was created on 2026-10-21 and is empty until the branch serves.
-It replaces the 2026-10-17 draft (one wide fact table with results and
-settlement columns).
+Status: **Implemented** (checked 2026-10-22) — merged in PR #49; the Aiven
+schema was created on 2026-10-21 (see "Implementation status").
+
+Updated 2026-10-21. It replaces the 2026-10-17 draft (one wide fact table with
+results and settlement columns).
 
 ## Goals
 
@@ -36,9 +36,9 @@ output. They are removed from the prediction path and not stored; see
 ## How predictions are produced
 
 Two workflows write predictions
-([nba_predictor_daily.yml](../.github/workflows/nba_predictor_daily.yml),
-[nba_predict_past_snapshots.yml](../.github/workflows/nba_predict_past_snapshots.yml);
-details in [live_intermediate_prediction_plan.md](live_intermediate_prediction_plan.md)):
+([nba_predictor_daily.yml](../../.github/workflows/nba_predictor_daily.yml),
+[nba_predict_past_snapshots.yml](../../.github/workflows/nba_predict_past_snapshots.yml);
+details in [docs/intermediate/live_prediction.md](../intermediate/live_prediction.md)):
 
 | Run | When | Closing slots | Intermediate slots |
 | --- | --- | --- | --- |

@@ -1,7 +1,7 @@
 """Create the Aiven prediction store (schema ``prediction``).
 
 Five tables, a BRIN index and the ``predictions_full`` view; see
-``docs/prediction_storage_plan.md``. Idempotent (``IF NOT EXISTS`` / ``CREATE
+``docs/serving/prediction_storage.md``. Idempotent (``IF NOT EXISTS`` / ``CREATE
 OR REPLACE VIEW``). ``--print`` shows the SQL without connecting.
 
     python scripts/prediction_store/create_prediction_store.py --print

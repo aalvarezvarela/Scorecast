@@ -1,10 +1,8 @@
 # Injury report statuses in the closing-line dataset
 
-Branch: `lab/injury-status-tiers` (from `lab/injury-report-intermediate-times`).
-Status (2026-09-16): **implemented**, and the database issues in §7 are fixed.
-Schema 2_4 (status block) is built and measured in §8; schema 2_5 (three
-availability groups, §3.1) is coded and unit-tested but **not yet built** -- no
-dataset on disk carries it. The experiments in §5 Phase 4 have not been run.
+Status: **Implemented** (checked 2026-10-22) — the three availability groups
+(§3.1) are part of the frozen `2_5` base (`data_processing/injury_status/`).
+Written on `lab/injury-status-tiers`; the 2_4 measurements are in §8.
 
 **Scope.** Feature engineering for the closing-line training dataset only.
 Production parity and intermediate (multi-horizon) features come later.

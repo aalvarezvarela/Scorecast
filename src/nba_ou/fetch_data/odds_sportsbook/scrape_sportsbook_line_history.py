@@ -3,7 +3,7 @@
 The rendered line-history table is drawn client-side in the *browser's* local
 timezone and carries no offset. That is why the CSV-era scrape silently
 depended on the machine it ran from, and why ``Europe/Madrid`` had to be
-recovered after the fact from DST steps (``docs/line_history_phase0_findings.md``).
+recovered after the fact from DST steps (``docs/odds/line_history_phase0_findings.md``).
 
 The same page ships a ``__NEXT_DATA__`` payload whose ``oddsDate`` values are
 explicit UTC, so this module reads that instead and the timezone question never

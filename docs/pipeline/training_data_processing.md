@@ -1,5 +1,8 @@
 # Training Data Processing
 
+Status: **Reference** (checked 2026-10-22) — the closing-line pipeline as the
+code builds it (frozen base `2_5`).
+
 This document describes how this project builds the training and prediction feature
 set for NBA over/under models. It is written as an implementation reference for
 future agents, so it focuses on the actual pipeline in the codebase rather than
@@ -1452,7 +1455,7 @@ cache and stint data in that environment. Daily rating refresh and intermediate
 live/refit integration remain separate work.
 
 Leakage tests: `tests/test_lineup_leakage.py`. Evidence and evaluation:
-`docs/lineup_projection_plan.md` §8.5-8.6, `scripts/lineups/evaluate_game_projection.py`.
+`docs/lineups/lineup_projection.md` §8.5-8.6, `scripts/lineups/evaluate_game_projection.py`.
 
 ### Intermediate snapshot calculation (2_6)
 

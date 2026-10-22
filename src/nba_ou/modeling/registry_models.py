@@ -155,7 +155,7 @@ class SpecProvenance(_Strict):
     selected_trial_number: int | None = None
     #: Which concrete CSV generation the hyperparameters were tuned on, and its
     #: exact bytes. The schema version alone does not identify a dataset: see
-    #: ``docs/model_registry_reorg_plan.md`` section 2.5.
+    #: ``docs/serving/model_registry.md`` section 2.5.
     source_dataset_build_id: str | None = None
     source_dataset_checksum: str | None = None
     vouching_metrics: dict[str, float | None] = Field(default_factory=dict)
