@@ -245,9 +245,10 @@ s3://adrian-nba-model-registry-eu-west-1/train_data/odds_sources/oddstrader/
   FanDuel, BetMGM, BetRivers and Caesars. A future merge therefore lands them
   on the same `lh_book` rows. Books without a confident name are stored as
   `oddstrader_<paid>`.
-- **Seasons in the tables:** `nba_games` starts with 2014-15, so the tables
-  cover 2014-15 onward. Older games stay in `raw/` and are counted as
-  unmatched in the manifest.
+- **Seasons: 2014-15 onward**, in `raw/` and in the tables. The source goes
+  back to 2006-07, with 23 to 32 books per game through 2014-17 as well, but
+  `nba_games` starts with 2014-15, so older games could not get a `game_id`
+  and were not fetched (`FIRST_SEASON` in `backfill.py`).
 - **Reading:** `nba_ou.fetch_data.odds_oddstrader.store.load_ticks(seasons)`
   returns the frame `fetch_pregame_ticks` returns for the Aiven store.
 
@@ -257,7 +258,7 @@ Commands, under `scripts/line_history/oddstrader/`:
   - fetches the raw archive, season by season in priority order (2021-24
     first);
   - is resumable, and `--dry-run` reports what is left;
-  - takes about 2.5 s per game, roughly 18 h for every season since 2006-07.
+  - takes about 2.5 s per game, roughly 12 h for 2014-15 to today.
 - `build_oddstrader_line_history.py` turns `raw/` into `line_history/`.
 - `compare_oddstrader_vs_sbr.py` reports coverage, freshness, the spread and
   moneyline orientation against realised margins, and parity with SBR.

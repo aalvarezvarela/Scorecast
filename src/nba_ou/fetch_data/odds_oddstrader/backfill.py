@@ -36,17 +36,17 @@ from .client import (
 from .parse import BUNDLE_FORMAT, side_partids
 from .store import OddsTraderStore, events_key, game_key
 
-#: First season with line history (2006-07; nothing on 2006-01-16).
-FIRST_SEASON = 2006
+#: First season archived. The source goes back to 2006-07 (nothing on
+#: 2006-01-16), but ``nba_games`` starts with 2014-15, so older games could not
+#: be resolved to a ``game_id`` and are not fetched.
+FIRST_SEASON = 2014
 
 #: Default fetch order, most valuable first in case the API closes mid-run:
 #: the seasons with all five model books, then the rest of the SBR overlap, the
-#: offshore-only seasons, the 2014-18 seasons ``nba_games`` covers, and last the
-#: seasons only the raw archive will hold.
+#: offshore-only seasons, and last 2014-18.
 PRIORITY_SEASONS: tuple[int, ...] = (
     2021, 2022, 2023, 2024, 2019, 2020, 2025, 2026,
     2018, 2017, 2016, 2015, 2014,
-    2013, 2012, 2011, 2010, 2009, 2008, 2007, 2006,
 )  # fmt: skip
 
 #: Pause before re-asking the queries of a game that errored.

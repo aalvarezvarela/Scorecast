@@ -14,7 +14,7 @@ Usage:
         --start 2024-01-15 --end 2024-01-16
     python scripts/line_history/oddstrader/backfill_oddstrader_raw.py --dry-run
 
-Long runs (about a day for every season): start them with
+Long runs (about 12 h for every season since 2014-15): start them with
 ``systemd-run --user --unit oddstrader-backfill <python> <this script>``.
 """
 

@@ -18,8 +18,8 @@ Deterministic, so a rebuild reproduces the tables:
   ``duplicate_event_for_game``.
 
 Games ``nba_games`` does not carry are dropped and counted, as for SBR: the
-preseason, and every game before 2014-15, where the table starts. Those stay in
-the raw archive only.
+preseason (and any game before 2014-15, where the table starts, although the
+backfill does not fetch those seasons). They stay in the raw archive only.
 """
 
 from __future__ import annotations
