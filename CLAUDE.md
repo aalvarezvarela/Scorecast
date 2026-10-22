@@ -191,6 +191,20 @@ results. In short:
   marked `SNAPSHOT_PASSED` (False = built from the ticks so far, not the
   trained snapshot). A failing slot does not stop the others; the run exits 1
   at the end. `--no-persist` predicts without storing.
+- Intermediate input mode (`INTERMEDIATE_INPUT_MODE` under
+  `[PredictionModels]`, `--intermediate-input` per run): in `latest` (the
+  configured default) the slots in `LATEST_INPUT_SLOTS` (default `all`)
+  predict each game's latest snapshot, the run's own moment, limited to what
+  their training rows carried (`nba_ou.prediction.input_limits`); in `own`
+  every slot reads the row of its own horizon. `scripts/predict_past_snapshots.py`
+  is the end-of-day `own` run. Details: `docs/intermediate/live_prediction.md`.
+- TabPFN runs on its own (`scripts/predict_tabpfn.py`, dispatch-only workflow
+  `nba_predictor_daily_tabpfn_client.yml`): one target and one line per run
+  (default `line_error` at the closing line; `--line intermediate` follows a
+  fixed horizon, T-360 by default). TabPFN keeps no model, so each run fits it
+  with `tabpfn-client` on the rows, features, NaN budget and window of that
+  slot's production spec, read from the season partitions, and predicts
+  tonight's rows. Stored as `model_builds.kind` 3 / `runs.workflow` 3.
 
 ## Adding or changing features
 
