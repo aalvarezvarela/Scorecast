@@ -1,10 +1,14 @@
 name: NBA Predictor TabPFN (Local Runner)
 
-# TabPFN on its own: one target per run, fitted on the closing frame the daily
-# refit stores in S3 and the features of the target's production spec, on
-# tonight's rows built at run time. Triggered from an external cron:
+# TabPFN on its own: one target and one line per run, fitted on the rows and
+# features of that slot's production build (closing: the frame the daily refit
+# stores in S3; intermediate: the horizon's rows of the dataset the build was
+# fitted on), on tonight's rows built at run time. Triggered from an external
+# cron:
 #
 #     gh workflow run nba_predictor_daily_tabpfn_client.yml -f target=line_error
+#     gh workflow run nba_predictor_daily_tabpfn_client.yml -f target=line_error \
+#         -f line=intermediate -f horizon_minutes=360
 on:
     workflow_dispatch:
         inputs:
@@ -16,6 +20,17 @@ on:
                     - total_points
                     - spread_error
                 default: line_error
+            line:
+                description: "Follow the closing slot, or the slot at a fixed time before tip-off"
+                type: choice
+                options:
+                    - closing
+                    - intermediate
+                default: closing
+            horizon_minutes:
+                description: "With line=intermediate: minutes before tip-off (an enabled slot's horizon)"
+                type: string
+                default: "360"
             update_db:
                 description: "Update the databases first (off when another job just did)"
                 type: boolean
@@ -55,6 +70,9 @@ jobs:
             ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
             TABPFN_ACCESS_TOKEN: ${{ secrets.TABPFN_ACCESS_TOKEN }}
             S3_AWS_PROFILE: ""
+            # Local copies of the season partitions, outside the checkout
+            # (actions/checkout cleans it): finished seasons download once.
+            NBA_OU_PARTITION_CACHE_DIR: ~/.cache/nba_ou/season_partitions
 
             # Cron runs in UTC; keep runtime consistent
             TZ: UTC
@@ -87,5 +105,7 @@ jobs:
             - name: Run TabPFN predictor
               run: |
                   python scripts/predict_tabpfn.py --target ${{ inputs.target }} \
+                      --line ${{ inputs.line }} \
+                      ${{ inputs.line == 'intermediate' && format('--horizon-minutes {0}', inputs.horizon_minutes) || '' }} \
                       ${{ !inputs.update_db && '--skip-db-update' || '' }} \
                       ${{ !inputs.persist && '--no-persist' || '' }}

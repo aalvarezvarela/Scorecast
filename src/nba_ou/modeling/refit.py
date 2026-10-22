@@ -7,16 +7,17 @@ one before and nothing was ever a fixed reference -- a value that was once
 wrong stayed wrong indefinitely. Here the spec is the reference, and a refit
 cannot change it.
 
-What is deliberately NOT here: how the day's training frame is produced. That
-is work item 10 in ``docs/model_registry_reorg_plan.md`` and it is a real
-design problem (the intermediate dataset is 4.4 GB, and its snapshot grid is
-frozen at build time). :func:`resolve_training_frame` is the seam; the
-closing-line half works today and the intermediate half says what it needs.
+The day's training frame comes from the season partitions
+(``nba_ou.create_training_data.season_partitions``): each dataset kept in S3
+one season per file, brought up to date by the daily job before it refits.
+:func:`resolve_training_frame` reads them -- every season for a closing spec,
+one horizon of every season for an intermediate one.
 """
 
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
@@ -26,6 +27,10 @@ from nba_ou.config.constants import SEASON_TYPE_MAP, TRAINING_SEASON_TYPES
 from nba_ou.config.market_columns import HOME_MARGIN_COL, SPREAD_ERROR_COL, spread_error
 from nba_ou.config.odds_columns import spread_line_home_col, total_line_col
 from nba_ou.config.yahoo_features import compact_yahoo_columns
+from nba_ou.create_training_data.season_partitions import (
+    PartitionedFrame,
+    SeasonPartitions,
+)
 from nba_ou.data_processing.missing_data.clean_df_for_training import basic_cleaning
 from nba_ou.modeling.meta_learner_training_data import _ensure_line_error_column
 from nba_ou.modeling.registry_models import FitRecord, ModelSpec, build_model_name
@@ -242,24 +247,22 @@ def count_games(df: pd.DataFrame, *, game_id_col: str | None = GAME_ID_COLUMN) -
 def resolve_training_frame(
     spec: ModelSpec,
     *,
-    limit_date: str | None = None,
-    base_frames: dict[tuple[str, str | None], pd.DataFrame] | None = None,
+    partitions: Mapping[str, SeasonPartitions],
+    base_frames: dict[str, PartitionedFrame] | None = None,
     layer_context=None,
 ) -> TrainingFrame:
-    """Produce the frame this spec should be refitted on.
+    """The frame this spec is refitted on, from its dataset's season partitions.
 
-    Closing-line specs are built in-process, as the daily job already does: the
-    builder produces the base schema, and a spec of a newer version gets that
-    frame plus its layers (``nba_ou.create_training_data.schema_layers``).
-    Pass the same ``base_frames`` dict (and ``layer_context``) for every spec of
-    one run and the base is built, and each layer input loaded, only once.
+    ``partitions`` maps a dataset type to its partitions at the base schema
+    version. A closing spec reads every season, and a spec of a newer version
+    gets that frame plus its layers (``nba_ou.create_training_data.
+    schema_layers``); pass the same ``base_frames`` dict (and
+    ``layer_context``) for every spec of one run and the seasons are read, and
+    each layer input loaded, only once. An intermediate spec reads its own
+    horizon of every season.
 
-    Intermediate-line specs are NOT yet supported, and the gap is a design
-    decision rather than a missing function: the intermediate dataset is built
-    by its own entry point, the current one is 4.4 GB, and its snapshot grid is
-    frozen at build time -- so a daily refit needs a settled answer on rebuild
-    strategy, storage, build selection and staleness before it can be wired up.
-    See section 5 and work item 10 of the plan.
+    The frame is the full build's, row order included (``SeasonPartitions.
+    load``), which the training window and the seeded subsampling depend on.
     """
     from nba_ou.create_training_data.schema_layers import (
         CLOSING_LINE,
@@ -268,27 +271,25 @@ def resolve_training_frame(
         is_layered,
     )
 
-    dataset_type = spec.identity.dataset_type
+    dataset_type = str(spec.identity.dataset_type)
     schema_version = spec.identity.schema_version
-    if dataset_type == "closing_line":
+    store = partitions.get(dataset_type)
+    if store is None:
+        raise TrainingFrameUnavailable(
+            f"Spec {spec.spec_id} needs {dataset_type!r} season partitions, and "
+            "none were given."
+        )
+    if dataset_type == CLOSING_LINE:
         if is_layered(schema_version) and schema_version not in available_versions():
             raise TrainingFrameUnavailable(
                 f"Spec {spec.spec_id} needs a {schema_version} dataset, and this "
                 f"checkout builds only {', '.join(available_versions())}."
             )
         cache = base_frames if base_frames is not None else {}
-        key = (dataset_type, limit_date)
-        if key not in cache:
-            from nba_ou.create_training_data.create_df_to_predict import (
-                create_df_to_predict,
-            )
-
-            cache[key] = create_df_to_predict(
-                todays_prediction=False,
-                recent_limit_to_include=limit_date,
-                older_season_limit=None,
-            )
-        df = cache[key]
+        if dataset_type not in cache:
+            cache[dataset_type] = store.load()
+        loaded = cache[dataset_type]
+        df = loaded.df
         if is_layered(schema_version):
             df = apply_layers(
                 df,
@@ -296,13 +297,28 @@ def resolve_training_frame(
                 dataset_type=CLOSING_LINE,
                 ctx=layer_context,
             )
-        return TrainingFrame(df=with_residual_targets(df), build_id=None, checksum=None)
+        return TrainingFrame(
+            df=with_residual_targets(df),
+            build_id=loaded.build_id,
+            checksum=loaded.checksum,
+        )
 
-    raise TrainingFrameUnavailable(
-        f"Spec {spec.spec_id} needs a {dataset_type!r} dataset, and the daily "
-        "build for it is not implemented yet (plan section 5, work item 10). "
-        "Until then, refit this slot by hand with "
-        "`python -m training_pipeline.promote <run_dir> --csv <build> --to-s3`."
+    if is_layered(schema_version):
+        raise TrainingFrameUnavailable(
+            f"Spec {spec.spec_id} is a {schema_version} {dataset_type} spec, and "
+            "the intermediate dataset has no schema-layer step yet."
+        )
+    horizon = spec.identity.horizon_minutes
+    if horizon is None:
+        raise TrainingFrameUnavailable(
+            f"Spec {spec.spec_id} is pooled over every horizon; only one-horizon "
+            "intermediate specs are refitted."
+        )
+    loaded = store.load(horizon=horizon)
+    return TrainingFrame(
+        df=with_residual_targets(loaded.df),
+        build_id=loaded.build_id,
+        checksum=loaded.checksum,
     )
 
 

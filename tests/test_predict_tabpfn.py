@@ -1,4 +1,4 @@
-"""TabPFN on its own: the daily frame it fits on and the output it stores.
+"""TabPFN on its own: the rows it fits on and the output it stores.
 
 The hosted client is never called: a stand-in regressor takes its place, so
 what is under test is everything around the fit -- which rows and columns it
@@ -13,15 +13,6 @@ from zoneinfo import ZoneInfo
 import numpy as np
 import pandas as pd
 import pytest
-from nba_ou.create_training_data.daily_frame_store import (
-    latest_daily_frame,
-    load_daily_frame,
-    upload_daily_frame,
-)
-from nba_ou.create_training_data.train_data_store import (
-    daily_frame_key,
-    parse_daily_frame_key,
-)
 from nba_ou.modeling.refit import with_residual_targets
 from nba_ou.modeling.registry_models import (
     SpecCleaning,
@@ -39,68 +30,14 @@ from nba_ou.prediction.prediction_tabpfn_client import (
     feature_slot_for,
     model_variant,
     predict_with_tabpfn,
+    rows_of_horizon,
     tabpfn_training_set,
 )
-
-from tests.fake_s3 import FakeS3Client
 
 BUCKET = "b"
 FEATURES = ["FEAT_A", "FEAT_B"]
 LINE = "ODDS_TOTAL_LINE_bet365"
 PREDICTION_AT = datetime(2026, 10, 21, 18, 0, tzinfo=ZoneInfo("Europe/Madrid"))
-
-
-# --- the daily frame in S3 ---------------------------------------------------
-
-
-def test_the_daily_key_is_named_like_a_local_dataset():
-    key = daily_frame_key(
-        dataset_type="closing_line", schema_version="2_5", limit_date="20261021"
-    )
-    assert key == "train_data/2_5/daily/closing_line_data_2_5_20261021.parquet"
-    assert parse_daily_frame_key(key) == ("closing_line", "2_5", "20261021")
-    assert parse_daily_frame_key("train_data/2_5/other.parquet") is None
-
-
-def test_the_newest_frame_is_found_and_older_ones_pruned():
-    s3 = FakeS3Client()
-    # Not a daily frame of this kind: never listed, never pruned.
-    s3.put_object(Bucket=BUCKET, Key="train_data/2_5/daily/notes.txt", Body=b"x")
-    frame = pd.DataFrame({"GAME_ID": ["1"], "VALUE": [1.5]})
-    for day in range(1, 6):
-        upload_daily_frame(
-            frame.assign(VALUE=float(day)),
-            s3_client=s3,
-            bucket=BUCKET,
-            dataset_type="closing_line",
-            schema_version="2_5",
-            limit_date=f"2026-10-0{day}",
-            keep=3,
-        )
-
-    daily = sorted(k for k in s3.store if k.endswith(".parquet"))
-    assert [parse_daily_frame_key(k)[2] for k in daily] == [
-        "20261003",
-        "20261004",
-        "20261005",
-    ]
-    assert "train_data/2_5/daily/notes.txt" in s3.store
-
-    key, limit_date = latest_daily_frame(
-        s3_client=s3, bucket=BUCKET, dataset_type="closing_line", schema_version="2_5"
-    )
-    assert limit_date.isoformat() == "2026-10-05"
-    loaded = load_daily_frame(s3_client=s3, bucket=BUCKET, key=key)
-    assert loaded["VALUE"].tolist() == [5.0]
-    assert (
-        latest_daily_frame(
-            s3_client=s3,
-            bucket=BUCKET,
-            dataset_type="closing_line",
-            schema_version="2_6",
-        )
-        is None
-    )
 
 
 # --- which slot, which rows ------------------------------------------------
@@ -125,19 +62,28 @@ def test_the_features_come_from_the_closing_slot_of_the_target():
         feature_slot_for("spread_error", slots)
 
 
+def test_an_intermediate_run_takes_the_slot_of_its_horizon():
+    slots = [_slot("line_error"), _slot("line_error", horizon=360)]
+    assert feature_slot_for("line_error", slots, horizon_minutes=360) == _slot(
+        "line_error", horizon=360
+    )
+    with pytest.raises(ValueError, match="t0060"):
+        feature_slot_for("line_error", slots, horizon_minutes=60)
+
+
 def test_the_variant_names_the_model_version():
     assert model_variant("v3.5") == "tabpfn_v3_5"
     assert model_variant("v3.5-fast") == "tabpfn_v3_5_fast"
 
 
-def _spec(*, train_games=4, max_na_per_row=0):
+def _spec(*, train_games=4, max_na_per_row=0, horizon=0):
     return finalize_spec(
         identity=SpecIdentity(
             schema_version="2_5",
             target=ModelTarget.LINE_ERROR,
             prediction_strategy="line_error_regressor",
-            horizon_minutes=0,
-            dataset_type="closing_line",
+            horizon_minutes=horizon,
+            dataset_type="intermediate_line" if horizon else "closing_line",
         ),
         features=SpecFeatures(feature_names=FEATURES, n_features=len(FEATURES)),
         cleaning=SpecCleaning(nan_threshold=5.0, max_na_per_row=max_na_per_row),
@@ -209,6 +155,39 @@ def test_playoff_and_preseason_games_are_not_trained_on():
 
     assert training_set.n_games == 4
     assert str(training_set.train_date_max.date()) == "2026-03-06"
+
+
+def _snapshots(frame: pd.DataFrame, horizons=(360, 60)) -> pd.DataFrame:
+    """``frame``'s games at each horizon, each with its own line and residual:
+    an intermediate frame ships LINE_ERROR against the snapshot's line."""
+    parts = []
+    for step, horizon in enumerate(horizons):
+        part = frame.assign(TIME_TO_MATCH_MIN=horizon)
+        part[LINE] = part[LINE] + step
+        part["LINE_ERROR"] = part["TOTAL_POINTS"] - part[LINE]
+        part["FEAT_B"] = part["FEAT_B"] + 10 * step
+        parts.append(part)
+    return pd.concat(parts, ignore_index=True)
+
+
+def test_an_intermediate_spec_trains_on_its_horizon_only():
+    history = _history()
+    training_set = tabpfn_training_set(
+        _snapshots(history), _spec(horizon=360), frame_key="k"
+    )
+
+    assert training_set.n_games == 4
+    assert len(training_set.X) == 4
+    expected = history.iloc[4:]
+    assert training_set.y.tolist() == pytest.approx(expected["LINE_ERROR"].tolist())
+    assert training_set.X["FEAT_B"].tolist() == pytest.approx(
+        expected["FEAT_B"].tolist()
+    )
+
+
+def test_an_intermediate_spec_refuses_a_frame_without_snapshots():
+    with pytest.raises(ValueError, match="TIME_TO_MATCH_MIN"):
+        rows_of_horizon(_history(), _spec(horizon=360))
 
 
 def test_the_window_can_be_overridden():
@@ -312,3 +291,55 @@ def test_a_tabpfn_output_is_stored_as_a_tabpfn_build(monkeypatch):
     assert build["spec_id"] == spec.spec_id
     assert build["s3_build_prefix"] == "train_data/k"
     assert len(tables.predictions) == 2
+
+
+def test_an_intermediate_output_is_stored_at_its_horizon(monkeypatch):
+    monkeypatch.setattr(
+        prediction_module,
+        "upload_predictions_to_postgre",
+        lambda df: pytest.fail("TabPFN wrote to Supabase"),
+    )
+    spec = _spec(horizon=360)
+    training_set = tabpfn_training_set(
+        _snapshots(_history()), spec, frame_key="train_data/2_5/k.parquet"
+    )
+    model = FittedTabPFN(
+        _MeanRegressor().fit(training_set.X, training_set.y),
+        model_version="v3.5",
+        client_version="0.6.1",
+    )
+
+    tonight = _snapshots(_tonight().assign(TOTAL_POINTS=np.nan))
+    tonight["SNAPSHOT_TS_UTC"] = pd.Timestamp("2026-10-21 17:00", tz="UTC")
+    tonight["SNAPSHOT_PASSED"] = tonight["TIME_TO_MATCH_MIN"].eq(360)
+    rows = rows_of_horizon(tonight, spec)
+    predictions = predict_with_tabpfn(
+        df=rows,
+        spec=spec,
+        model=model,
+        training_set=training_set,
+        prediction_datetime=PREDICTION_AT,
+        passthrough_columns=("SNAPSHOT_TS_UTC", "SNAPSHOT_PASSED", "TIME_TO_MATCH_MIN"),
+    )
+    assert len(predictions) == 2
+    assert predictions["TIME_TO_MATCH_MIN"].tolist() == [360, 360]
+    assert predictions["INPUT_MODE"].unique().tolist() == ["own"]
+    assert predictions["MODEL_HORIZON_MINUTES"].unique().tolist() == [360]
+    assert predictions["MODEL_DATASET_TYPE"].unique().tolist() == ["intermediate_line"]
+
+    recorder = PredictionRunRecorder(
+        workflow=store_schema.WORKFLOW_TABPFN, game_date="2026-10-21", book="bet365"
+    )
+    recorder.set_schedule(_schedule())
+    recorder.add_frame("intermediate_line", rows, version="2_5")
+    rejected = recorder.add_tabpfn(
+        predictions, label="2_5/line_error/t0360/tabpfn_v3_5"
+    )
+    assert rejected is None
+
+    tables = recorder.tables(status=store_schema.RUN_STATUS_OK)
+    build = tables.model_builds.iloc[0]
+    assert build["kind"] == store_schema.KIND_TABPFN
+    assert build["horizon_minutes"] == 360
+    assert build["s3_build_prefix"] == "train_data/2_5/k.parquet"
+    assert tables.predictions["snapshot_horizon_minutes"].tolist() == [360, 360]

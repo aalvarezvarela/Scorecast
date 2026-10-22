@@ -539,6 +539,18 @@ serves each intermediate slot its horizon's passed snapshot.
 
 ### Phase 5 — Incremental daily datasets (both pipelines)
 
+**Implemented 2026-10-22** as the season partitions
+(`nba_ou/create_training_data/season_partitions.py`, CLI
+`scripts/create_train_data/build_season_partitions.py`). Each season is
+rewritten in place rather than stored as a new file per day: one file per
+season, and only the current season changes. Every update rebuilds the last
+three days and reports stored rows that came back different. Measured before
+building it: a target build of all of 2025-26 (limit 2026-10-21) equals the
+2026-10-16 file, except the hash-seed ROSTER columns at <= 4.4e-16, in 40:41 at
+8.9 GB. That build ran its injury horizons in turn, because the forked pool hit
+`FORKED_TIMEOUT_SECONDS`. Point-in-time check: a build stopped at 2026-02-01
+(artifacts/perf/season_partition_27e1942).
+
 With 0.4 passing, a game's row depends only on data before it. Then:
 
 - store each dataset partitioned by season in Parquet, under
