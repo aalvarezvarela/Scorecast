@@ -10,9 +10,13 @@ Two bug classes are pinned down here, both of which shipped:
 
 import hashlib
 import json
+import os
+import sys
 
 import pytest
 from nba_ou.postgre_db import backup_core as bc
+
+from scripts.backup import backup_db_to_s3 as cli
 
 # (nspname, relation_count) as the discovery query reports it.
 NAMESPACE_ROWS = [
@@ -89,9 +93,7 @@ class _S3:
 
         return {"Body": _Body(self.objects[Key])}
 
-    def list_objects_v2(
-        self, Bucket, Prefix, Delimiter=None, MaxKeys=None
-    ):  # noqa: N803
+    def list_objects_v2(self, Bucket, Prefix, Delimiter=None, MaxKeys=None):  # noqa: N803
         keys = [k for k in self.objects if k.startswith(Prefix)]
         result = {"KeyCount": len(keys)}
         if Delimiter:
@@ -296,6 +298,102 @@ class TestLayout:
             progress=False,
         )
         assert all(k.startswith("backups/db/2026-09-21/lineups/") for k in s3.objects)
+
+
+class _DatabaseConn:
+    """Serve catalog queries for a database with several distinct schemas."""
+
+    def __init__(self, schemas):
+        self.schemas = schemas
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def cursor(self):
+        schemas = self.schemas
+
+        class _CatalogCursor(_Cursor):
+            def execute(self, query, params=None):
+                if params is None:
+                    self._rows = [(name, len(rows)) for name, rows in schemas.items()]
+                else:
+                    self._rows = schemas[params[0]]
+
+        return _CatalogCursor([])
+
+
+class TestAllDatabaseBackups:
+    def test_workflow_backs_up_and_verifies_every_schema_without_collisions(
+        self, monkeypatch
+    ):
+        import yaml
+
+        # Exercise the actual workflow's command, provider selection and S3 source
+        # against two catalogs sharing a schema AND table name.
+        with open(".github/workflows/db_backup.yml") as workflow_file:
+            workflow = yaml.safe_load(workflow_file)
+        job = workflow["jobs"]["backup"]
+        databases = {
+            "supabase": _DatabaseConn({"public": [("shared", "r", False)]}),
+            "aiven": _DatabaseConn(
+                {
+                    "public": [("shared", "r", False)],
+                    "line_history": [
+                        ("lh_line", "p", False),
+                        ("lh_line_2026", "r", True),
+                    ],
+                    "new_schema": [("new_table", "r", False)],
+                }
+            ),
+        }
+        s3 = _S3()
+        monkeypatch.setattr(
+            cli, "connect_nba_db", lambda: databases[os.environ["DB_ENV"]]
+        )
+        monkeypatch.setattr(bc, "make_s3_client", lambda **kwargs: s3)
+        monkeypatch.setattr(
+            bc,
+            "export_table_to_parquet",
+            lambda conn, schema, table: (os.environ["DB_ENV"].encode(), 1),
+        )
+        for step in job["steps"]:
+            if not step["name"].startswith(("Back up ", "Verify ")):
+                continue
+            assert "scripts/backup/backup_db_to_s3.py" in step["run"]
+            assert "--schemas" not in step["run"]
+            env = job["env"] | step.get("env", {})
+            monkeypatch.setenv("DB_ENV", env["DB_ENV"])
+            monkeypatch.setenv("S3_BACKUP_SOURCE", env["S3_BACKUP_SOURCE"])
+            args = ["backup_db_to_s3.py", "--date-tag", "2026-10-22"]
+            if step["name"].startswith("Verify "):
+                args.append("--verify")
+            monkeypatch.setattr(sys, "argv", args)
+            assert cli.main() == 0
+
+        prefix = "backups/db/2026-10-22"
+        assert s3.objects[f"{prefix}/supabase/public/shared.parquet"] == b"supabase"
+        assert s3.objects[f"{prefix}/aiven/public/shared.parquet"] == b"aiven"
+        assert f"{prefix}/aiven/new_schema/new_table.parquet" in s3.objects
+        assert f"{prefix}/aiven/line_history/lh_line_2026.parquet" in s3.objects
+        assert f"{prefix}/aiven/line_history/lh_line.parquet" not in s3.objects
+
+        # Verification must also discover schemas added since the export.
+        databases["aiven"].schemas["added_later"] = [("another", "r", False)]
+        assert cli.main() == 1
+
+    def test_listing_only_includes_dates_for_the_selected_source(self, monkeypatch):
+        s3 = _S3()
+        for source, tag in (("aiven", "2026-10-22"), ("supabase", "2026-10-21")):
+            s3.objects[f"backups/db/{tag}/{source}/public/t.parquet"] = b"X"
+        s3.objects["backups/db/2026-10-20/line_history/t.parquet"] = b"legacy"
+        monkeypatch.setenv("S3_BACKUP_SOURCE", "aiven")
+        assert bc.list_backup_dates(s3_client=s3) == ["2026-10-22"]
+        assert bc.list_backup_dates(schema="public", s3_client=s3) == ["2026-10-22"]
+        monkeypatch.setenv("S3_BACKUP_SOURCE", "supabase")
+        assert bc.list_backup_dates(s3_client=s3) == ["2026-10-21"]
 
 
 class TestRetentionTagging:

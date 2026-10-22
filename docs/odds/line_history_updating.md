@@ -198,21 +198,33 @@ same shape as pre-game ones. `is_pregame` and `mins_to_tip` remain the only
 separation, and feature queries should keep using
 `fetch.DEFAULT_MIN_MINUTES_BEFORE_TIP`.
 
-## Monthly backup
+## Database backups
 
-`.github/workflows/monthly_line_history_backup.yml` runs on the 1st of each
-month and calls `scripts/backup/backup_line_history_to_s3.py`, which writes the whole
-`line_history` schema to
-`s3://<BUCKET>/backups/db/<YYYY-MM-DD>/line_history/<table>.parquet` — the same
-layout the Supabase backup uses, so a restore reads the same way for both.
+`.github/workflows/db_backup.yml` backs up Supabase and Aiven on the same UTC
+date, weekly on Mondays in November–June and monthly on the 1st in July–October.
+Both use `scripts/backup/backup_db_to_s3.py`, which discovers all project schemas
+containing tables, including new schemas and partitions. Aiven is no longer
+restricted to `line_history`. Platform schemas such as `auth`, `storage`,
+`vault` and PostgreSQL internals remain excluded. These are data exports in
+Parquet, not SQL dumps of definitions, functions, indexes or permissions.
+
+Files are stored at
+`s3://<BUCKET>/backups/db/<YYYY-MM-DD>/<provider>/<schema>/<table>.parquet`,
+with `provider` set to `supabase` or `aiven` so matching schema names cannot
+overwrite each other. Verification and backup listings use the same provider
+folder. Each schema has a manifest, and verification fails if a live schema or
+table is missing from the manifests.
 
 ```bash
-python scripts/backup/backup_line_history_to_s3.py            # back it up
-python scripts/backup/backup_line_history_to_s3.py --dry-run  # list, upload nothing
-python scripts/backup/backup_line_history_to_s3.py --list     # existing backup dates
+DB_ENV=aiven S3_BACKUP_SOURCE=aiven python scripts/backup/backup_db_to_s3.py
+DB_ENV=aiven S3_BACKUP_SOURCE=aiven python scripts/backup/backup_db_to_s3.py --dry-run
+DB_ENV=aiven S3_BACKUP_SOURCE=aiven python scripts/backup/backup_db_to_s3.py --verify
+DB_ENV=supabase S3_BACKUP_SOURCE=supabase python scripts/backup/backup_db_to_s3.py --list
 ```
 
-Each run writes under its own date tag, so runs never overwrite one another.
+Older backups remain in `backups/db/<YYYY-MM-DD>/<schema>/`. To inspect them,
+leave `S3_BACKUP_SOURCE` unset. The legacy `backup_line_history_to_s3.py` entry
+point remains available for exports restricted to that schema.
 
 **`lh_line` is exported one partition per file, and the partitioned parent is
 skipped.** This is not cosmetic: `information_schema.tables` reports the parent
@@ -221,7 +233,8 @@ all 1.8M rows twice. Discovery goes through `pg_class.relkind` instead. Per
 partition also bounds peak memory to one season and makes a single season
 restorable on its own.
 
-Nine files per run, roughly 15 MB total — the 236 MB database compresses hard
-because the fact table is almost entirely small integers. At that size a year of
-monthly backups is under 200 MB, so there is no retention policy; add one only
-if that changes.
+Backups in days 1–7 of each month receive `retention=monthly`; the rest receive
+`retention=weekly`. Bucket lifecycle rules configured by
+`scripts/backup/setup_backup_bucket.sh` expire weekly backups after 90 days and
+monthly backups after three years, transitioning monthly backups to Glacier
+after 90 days.

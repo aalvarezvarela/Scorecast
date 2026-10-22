@@ -1,8 +1,9 @@
 """Shared backup machinery for both Postgres instances.
 
-Supabase and Aiven are backed up by different entry points but must behave
-identically, because a restore reads them the same way:
-``s3://<bucket>/backups/db/<YYYY-MM-DD>/<schema>/<table>.parquet``.
+Supabase and Aiven use the same backup entry point and layout:
+``s3://<bucket>/backups/db/<YYYY-MM-DD>/<source>/<schema>/<table>.parquet``.
+``S3_BACKUP_SOURCE`` isolates providers; when unset, the legacy layout without
+the source folder is preserved.
 
 Two rules live here rather than in either caller, because both got them wrong
 independently at some point:
@@ -28,6 +29,7 @@ from __future__ import annotations
 import hashlib
 import io
 import json
+import os
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
@@ -40,6 +42,7 @@ from nba_ou.utils.s3_models import make_s3_client
 
 #: Shared by both databases so a restore reads the same way either side.
 S3_BACKUP_PREFIX = "backups/db"
+
 
 #: Rows per SELECT batch. Bounds the driver's buffer, not the final frame.
 CHUNK_SIZE = 100_000
@@ -78,6 +81,13 @@ EXCLUDED_SCHEMAS = frozenset(
 
 #: ``pg_catalog``, ``pg_toast``, ``pg_temp_*`` and friends.
 EXCLUDED_SCHEMA_PREFIXES = ("pg_",)
+
+
+def backup_date_prefix(date_tag: str) -> str:
+    """Separate databases within a date; unset source keeps the legacy layout."""
+    source = os.getenv("S3_BACKUP_SOURCE", "").strip("/")
+    prefix = f"{S3_BACKUP_PREFIX}/{date_tag}"
+    return f"{prefix}/{source}" if source else prefix
 
 
 @dataclass
@@ -190,8 +200,6 @@ def retention_class(date_tag: str) -> str:
 
 def get_s3_settings() -> dict[str, str | None]:
     """Bucket / region / profile from ``[S3]``, overridable by env vars."""
-    import os
-
     config = get_config()
     profile = os.getenv("S3_AWS_PROFILE", config.get("S3", "AWS_PROFILE", fallback=""))
     return {
@@ -321,7 +329,7 @@ def backup_schema(
     tagging_state: TaggingState | None = None,
 ) -> SchemaResult:
     """Export every relation in *schema* and write its manifest."""
-    prefix = f"{S3_BACKUP_PREFIX}/{date_tag}/{schema}"
+    prefix = f"{backup_date_prefix(date_tag)}/{schema}"
     tagging = f"{RETENTION_TAG_KEY}={retention_class(date_tag)}"
     state = tagging_state if tagging_state is not None else TaggingState()
     result = SchemaResult(schema=schema)
@@ -414,7 +422,7 @@ def backup_database(
     settings = get_s3_settings()
     bucket = str(settings["bucket"])
 
-    result = BackupResult(bucket=bucket, prefix=f"{S3_BACKUP_PREFIX}/{tag}")
+    result = BackupResult(bucket=bucket, prefix=backup_date_prefix(tag))
 
     if schemas is None:
         schemas = discover_schemas(conn)
@@ -463,7 +471,7 @@ def list_backup_dates(
     s3_client: Any = None,
     limit: int = 24,
 ) -> list[str]:
-    """Date tags holding a backup, newest first.
+    """Date tags holding a backup for the configured source, newest first.
 
     With *schema*, only tags that actually contain that schema are returned --
     the two databases share the date namespace, so a tag existing says nothing
@@ -487,13 +495,16 @@ def list_backup_dates(
                 tags.add(tag)
 
     dated = sorted(tags, reverse=True)
-    if schema is None:
+    if schema is None and not os.getenv("S3_BACKUP_SOURCE"):
         return dated[:limit]
 
     keep: list[str] = []
     for tag in dated:
+        prefix = backup_date_prefix(tag)
+        if schema is not None:
+            prefix = f"{prefix}/{schema}"
         response = s3_client.list_objects_v2(
-            Bucket=bucket, Prefix=f"{S3_BACKUP_PREFIX}/{tag}/{schema}/", MaxKeys=1
+            Bucket=bucket, Prefix=f"{prefix}/", MaxKeys=1
         )
         if response.get("KeyCount"):
             keep.append(tag)
@@ -508,7 +519,7 @@ def list_backed_up_schemas(
     s3_client: Any = None,
     bucket: str | None = None,
 ) -> set[str]:
-    """Schema folders present under *date_tag*."""
+    """Schema folders present under *date_tag* for the configured source."""
     settings = get_s3_settings()
     bucket = bucket or str(settings["bucket"])
     if s3_client is None:
@@ -519,12 +530,12 @@ def list_backed_up_schemas(
     paginator = s3_client.get_paginator("list_objects_v2")
     found: set[str] = set()
     for page in paginator.paginate(
-        Bucket=bucket, Prefix=f"{S3_BACKUP_PREFIX}/{date_tag}/", Delimiter="/"
+        Bucket=bucket, Prefix=f"{backup_date_prefix(date_tag)}/", Delimiter="/"
     ):
         for entry in page.get("CommonPrefixes") or []:
             name = (
                 entry["Prefix"]
-                .removeprefix(f"{S3_BACKUP_PREFIX}/{date_tag}/")
+                .removeprefix(f"{backup_date_prefix(date_tag)}/")
                 .strip("/")
             )
             if name:
@@ -547,7 +558,7 @@ def read_manifest(
             profile=settings["profile"], region=str(settings["region"])
         )
 
-    key = f"{S3_BACKUP_PREFIX}/{date_tag}/{schema}/{MANIFEST_NAME}"
+    key = f"{backup_date_prefix(date_tag)}/{schema}/{MANIFEST_NAME}"
     try:
         response = s3_client.get_object(Bucket=bucket, Key=key)
     except Exception:

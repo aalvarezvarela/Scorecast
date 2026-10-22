@@ -1,9 +1,9 @@
-"""Back up the Supabase PostgreSQL schemas to S3 as Parquet.
+"""Back up all project PostgreSQL schemas to S3 as Parquet.
 
-The counterpart to ``backup_line_history_to_s3.py``, which covers Aiven. Both
-write to ``s3://<BUCKET>/backups/db/<YYYY-MM-DD>/<schema>/<table>.parquet`` and
-share their machinery via ``nba_ou.postgre_db.backup_core``, so a restore reads
-the same way whichever database a table came from.
+``DB_ENV`` selects Supabase or Aiven. Set ``S3_BACKUP_SOURCE`` to the same
+provider to isolate identically named schemas in the two databases. The workflow
+writes ``s3://<BUCKET>/backups/db/<YYYY-MM-DD>/<provider>/<schema>/<table>.parquet``.
+Without ``S3_BACKUP_SOURCE``, the legacy date/schema layout is used.
 
 Schemas are discovered, not listed: everything except platform infrastructure
 (Supabase internals, the pooler, ``pg_*``) is in scope. ``--schemas`` narrows a
@@ -11,6 +11,7 @@ run for ad hoc use, but the scheduled backup should always take the default.
 
 Usage:
     python scripts/backup/backup_db_to_s3.py                    # back up everything
+    DB_ENV=aiven S3_BACKUP_SOURCE=aiven python scripts/backup/backup_db_to_s3.py
     python scripts/backup/backup_db_to_s3.py --schemas lineups  # just these
     python scripts/backup/backup_db_to_s3.py --dry-run          # list, upload nothing
     python scripts/backup/backup_db_to_s3.py --verify           # check today's backup
