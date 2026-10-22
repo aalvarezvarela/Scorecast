@@ -15,7 +15,7 @@ Keep `--no-deps`: the requirements file already pins everything, and a plain
 
 | File | Poetry groups | Used by |
 |---|---|---|
-| `core.txt` | main | `update_finished_matches_daily`, `db_backup` |
+| `core.txt` | main | `update_finished_matches_daily`, `db_backup`, `schedule_snapshot_triggers` |
 | `db-update.txt` | main, scrape | `update_database_daily` |
 | `predict-cuda.txt` | main, cuda, scrape | `nba_predictor_daily`, `nba_predict_past_snapshots` |
 | `predict-cpu.txt` | main, cpu, scrape | not used yet |
