@@ -2,7 +2,8 @@
 
 Status: **Implemented** (checked 2026-10-22) — the daily refit reads the season
 partitions (item 10) and slots have been promoted since 2026-10-05 (item 13).
-Section 7 says what each item landed as. The retirement sweep (item 12) ran on
+Section 7 says what each item landed as; section 1 is the pre-reorganisation
+state. The retirement sweep (item 12) ran on
 2026-09-21: all 751 objects of the old tree now live under
 `models/retired/20260921/`.
 
@@ -56,6 +57,11 @@ along with the season-window variants. So:
 ---
 
 ## 1. What exists today — verified, not assumed
+
+> **Historical.** This section describes the registry *before* the
+> reorganisation, as verified in September 2026. `src/nba_ou/modeling/model_registry.py`,
+> cited below by line, was removed in 58a1bc2; read it with
+> `git show 58a1bc2^:src/nba_ou/modeling/model_registry.py`.
 
 ### 1.1 Layout
 
@@ -126,7 +132,7 @@ one was". This is the single most important thing the plan changes.
   (`models/<family>/<window_dir_label>/`, via
   [naming.py:25-30](../../training_pipeline/naming.py#L25-L30)) and has no idea S3
   exists.
-- [`model_registry.promote_prediction_models`](src/nba_ou/modeling/model_registry.py#L129)
+- `model_registry.promote_prediction_models` (`model_registry.py:129`)
   moves S3 objects between `staging/`, `production/` and `archive/`, and has no
   idea where they came from.
 
@@ -155,7 +161,7 @@ outright rather than deprecated:
   `get_latest_model_bundle_from_prefix` sorts candidates by S3 `LastModified`
   ([s3_models.py:115](../../src/nba_ou/utils/s3_models.py#L115)); `extract_single_bundle`
   raises unless the prefix holds *exactly* two objects
-  ([model_registry.py:45-78](src/nba_ou/modeling/model_registry.py#L45-L78)).
+  (`model_registry.py:45-78`).
   `LastModified` is set by the copy, so restoring an archived bundle reshuffles
   which one is "latest".
 - **Model and metadata are two independent writes.** `save_retrained_bundle_to_staging`
@@ -165,7 +171,7 @@ outright rather than deprecated:
   metadata. §2.2 removes the possibility rather than narrowing the window.
 - **Archive layout is inconsistent in every family.** The first archived bundle
   lands loose, later ones get a timestamp directory
-  ([model_registry.py:169-172](src/nba_ou/modeling/model_registry.py#L169-L172)).
+  (`model_registry.py:169-172`).
   Live counts: 49–65 timestamp dirs plus 2–3 loose objects per family.
 - **Four naming vocabularies for three windows.** Folders say
   `full_dataset` / `last_3_seasons` / `last_5_seasons`; filenames say
@@ -425,7 +431,7 @@ Nothing in the bucket will serve again, so this is a sweep, not a migration.
 
 **Move all ten families to `models/retired/{YYYYMMDD}/`** in one pass —
 server-side copy then delete, the operation `move_bundle` already performs
-([model_registry.py:94](src/nba_ou/modeling/model_registry.py#L94)). Roughly 700
+(`model_registry.py:94`). Roughly 700
 objects. Afterwards `models/` contains `retired/` and `2_5/`, and the live tree
 is the one without a date in its name.
 
@@ -503,7 +509,7 @@ class ModelSlot:
 ```
 
 `derive_staging_prefix` / `derive_archive_prefix`
-([model_registry.py:21-35](src/nba_ou/modeling/model_registry.py#L21-L35)) are
+(`model_registry.py:21-35`) are
 deleted along with the string surgery on `/production/`.
 
 ### 4.2 Config
@@ -533,7 +539,7 @@ do" rather than raising, so the system is runnable before the first promotion.
 Today all three entry points raise
 ([retrain_prediction_models.py:75-80](../../scripts/retrain_prediction_models.py#L75-L80),
 [predict_nba_games.py:103-108](../../scripts/predict_nba_games.py#L103-L108),
-[model_registry.py:130-133](src/nba_ou/modeling/model_registry.py#L130-L133)).
+`model_registry.py:130-133`).
 
 ### 4.3 Target handling
 
@@ -712,7 +718,9 @@ per-slot storage is correct and this stays as written.
 ## 7. Work items
 
 Items 1–9 build against an empty tree. Item 10 is the critical path for daily
-horizon refits; item 13 validates the whole chain.
+horizon refits; item 13 validates the whole chain. All thirteen are done
+(updated 2026-10-22); the item 9 `ALTER` is a manual DB write this document does
+not track.
 
 1. **`registry_paths.py`** — *DONE*. `ModelSlot`, key builders, `parse()`, round-trip
    tests. *Small.*
@@ -744,10 +752,14 @@ horizon refits; item 13 validates the whole chain.
    `python -m nba_ou.postgre_db.predictions.create.create_ou_predictions_db
    --add-columns`. *Small, but it is a DB write you will want
    to run yourself.*
-10. **Daily dataset build** — *NOT DONE; the one real gap*. Settle §5 and implement it: rebuild strategy,
-    storage, build selection, grid contract, missing-build behaviour. *Large;
-    everything about daily horizon refits waits on it.*
-11. **Refit from spec** — *DONE for closing_line; intermediate waits on 10*.
+10. **Daily dataset build** — *DONE, as season partitions*. Each dataset lives
+    in S3 one file per season
+    (`train_data/2_5/seasons/<dataset_type>/season=YYYY.parquet`,
+    [season_partitions.py](../../src/nba_ou/create_training_data/season_partitions.py));
+    the daily job builds only the games since the last cutoff and rewrites
+    their season. This replaces the options weighed in §5.
+11. **Refit from spec** — *DONE*, for closing and one-horizon intermediate
+    slots; pooled or layered intermediate specs keep their build.
     `refit_from_spec` replacing
     `build_retraining_settings_from_artifacts`, with the game-ID-counted window
     ([promote.py:191-198](../../training_pipeline/promote.py#L191-L198)). Depends on
@@ -757,8 +769,9 @@ horizon refits; item 13 validates the whole chain.
     delete, byte sizes unchanged, and a second dry run finds nothing (it does
     not nest `retired/` inside itself). `models/` now holds only `retired/`.
     *Small.*
-13. **First real promotion** — *WAITING on the experiments*. One slot end to
-    end once they settle:
+13. **First real promotion** — *DONE, 2026-10-05* (17 `line_error` slots);
+    all 51 slots of the three targets were promoted on 2026-10-20. The chain as
+    planned:
     `promote-config` → smoke test → `promote-build` → one day of predictions →
     check the row. Do this for a single slot before the campaign helper touches a
     dozen. *Small, and it is what validates items 1–9.*
