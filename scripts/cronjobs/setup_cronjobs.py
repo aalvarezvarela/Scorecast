@@ -17,39 +17,34 @@ The jobs expire at the end of ``SEASON_END`` (10 July) and simply stop running;
 nothing needs deleting. Re-run ``--apply`` before the next season starts: it
 sets the next season's expiry and re-enables the jobs.
 
-Secrets (never printed), each read from the environment first, then from any
-section of ``config.secrets.ini`` (repo root, then ``src/nba_ou/``):
-  - ``CRONJOB_API_KEY``: cron-job.org Console -> Settings -> API.
-  - ``CRONJOB_GITHUB_DISPATCH_TOKEN``: fine-grained PAT on this repo only, with
-    "Actions: Read and write". cron-job.org stores it in the job's headers.
+Secrets: ``CRONJOB_API_KEY`` and ``CRONJOB_GITHUB_DISPATCH_TOKEN``, read by
+``nba_ou.scheduling.cronjob_org.read_secret`` (environment, then
+``config.secrets.ini``).
 """
 
 from __future__ import annotations
 
 import argparse
-import configparser
 import json
-import os
 import sys
 from dataclasses import dataclass
 from datetime import date
-from pathlib import Path
 
 import requests
+from nba_ou.scheduling.cronjob_org import (
+    GITHUB_REPO,
+    REQUEST_METHOD_POST,
+    cronjob_request,
+    dispatch_body,
+    github_headers,
+    read_secret,
+    redacted,
+)
+from nba_ou.scheduling.cronjob_org import dispatch_url as workflow_dispatch_url
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
-SECRETS_FILES = [
-    REPO_ROOT / "config.secrets.ini",
-    REPO_ROOT / "src/nba_ou/config.secrets.ini",
-]
-
-GITHUB_REPO = "aalvarezvarela/Scorecast"
-GITHUB_REF = "main"
 TIMEZONE = "Europe/Madrid"
 # (month, day) the jobs stop running: after the Finals, before Summer League.
 SEASON_END = (7, 10)
-CRONJOB_API = "https://api.cron-job.org"
-REQUEST_METHOD_POST = 1
 
 
 @dataclass(frozen=True)
@@ -70,23 +65,6 @@ JOBS = [
 ]
 
 
-def read_secret(name: str) -> str:
-    value = os.getenv(name, "").strip()
-    if value:
-        return value
-    for path in SECRETS_FILES:
-        if not path.exists():
-            continue
-        parser = configparser.ConfigParser(interpolation=None)
-        parser.optionxform = str  # keep key case
-        parser.read(path)
-        for section in parser.sections():
-            for key, raw in parser.items(section):
-                if key.upper() == name and raw.strip():
-                    return raw.strip().strip('"').strip("'")
-    sys.exit(f"Missing secret {name}: set it in the environment or config.secrets.ini")
-
-
 def season_expiry(today: date | None = None) -> int:
     """The next SEASON_END, as cron-job.org's YYYYMMDDhhmmss in TIMEZONE."""
     today = today or date.today()
@@ -97,19 +75,7 @@ def season_expiry(today: date | None = None) -> int:
 
 
 def dispatch_url(job: WorkflowJob) -> str:
-    return (
-        f"https://api.github.com/repos/{GITHUB_REPO}"
-        f"/actions/workflows/{job.workflow_file}/dispatches"
-    )
-
-
-def github_headers(token: str) -> dict[str, str]:
-    return {
-        "Accept": "application/vnd.github+json",
-        "Authorization": f"Bearer {token}",
-        "X-GitHub-Api-Version": "2022-11-28",
-        "Content-Type": "application/json",
-    }
+    return workflow_dispatch_url(job.workflow_file)
 
 
 def job_payload(job: WorkflowJob, github_token: str) -> dict:
@@ -137,15 +103,9 @@ def job_payload(job: WorkflowJob, github_token: str) -> dict:
         },
         "extendedData": {
             "headers": github_headers(github_token),
-            "body": json.dumps({"ref": GITHUB_REF}),
+            "body": dispatch_body(),
         },
     }
-
-
-def redacted(payload: dict) -> dict:
-    shown = json.loads(json.dumps(payload))
-    shown["extendedData"]["headers"]["Authorization"] = "Bearer <redacted>"
-    return shown
 
 
 def check_token(github_token: str) -> bool:
@@ -161,24 +121,10 @@ def check_token(github_token: str) -> bool:
             print(f"OK   {job.workflow_file}: state={resp.json().get('state')}")
         else:
             ok = False
-            print(f"FAIL {job.workflow_file}: HTTP {resp.status_code} {resp.text[:200]}")
+            print(
+                f"FAIL {job.workflow_file}: HTTP {resp.status_code} {resp.text[:200]}"
+            )
     return ok
-
-
-def cronjob_request(method: str, path: str, api_key: str, body: dict | None = None):
-    resp = requests.request(
-        method,
-        f"{CRONJOB_API}{path}",
-        headers={
-            "Authorization": f"Bearer {api_key}",
-            "Content-Type": "application/json",
-        },
-        json=body,
-        timeout=30,
-    )
-    if resp.status_code != 200:
-        sys.exit(f"cron-job.org {method} {path}: HTTP {resp.status_code} {resp.text[:300]}")
-    return resp.json()
 
 
 def apply_jobs(api_key: str, github_token: str) -> None:
