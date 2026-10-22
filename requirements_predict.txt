@@ -1,11 +1,11 @@
-# Runtime dependencies of `scripts/predict_nba_games.py --no-tabpfn`
+# Runtime dependencies of `scripts/predict_nba_games.py`
 # (.github/workflows/nba_predictor_daily.yml). Direct imports only; pip
 # resolves the transitive ones. Versions match requirements.txt / pyproject.
 #
 # Derived from the static import closure of the script (module-level and
-# function-level imports alike, 209 modules). tabpfn-client is imported lazily
-# and only with TabPFN enabled, so it is left out; dev tools, Jupyter and
-# plotting are too. Verified 2026-10-20 in a clean Python 3.12 venv: every
+# function-level imports alike, 209 modules). TabPFN runs in its own job
+# (requirements_predict_tabpfn.txt); dev tools, Jupyter and plotting are left
+# out. Verified 2026-10-20 in a clean Python 3.12 venv: every
 # reachable module imports and a full dry run predicts all 51 slots.
 #
 # Install the repo itself WITHOUT its Poetry dependencies, which pull in the

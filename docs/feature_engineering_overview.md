@@ -21,6 +21,7 @@ Snapshot of the code as of 2026-10-05, schema version `2_6`
 | `docs/intermediate_market_dynamics_plan.md` | G1–G4: injury news, news reaction, cross-market coherence, move-to-close Ridges |
 | `docs/injury_report_db_plan.md`, `docs/injury_report_archive_plan.md`, `docs/injury_status_tiers_plan.md`, `docs/injury_availability_improvement_plan.md` | Official injury-report archive and the availability features built on it |
 | `docs/line_history_phase0_findings.md`, `docs/line_history_updating.md` | Line-history store: data findings and daily update |
+| `docs/odds_source_alternatives.md` | Odds APIs and the OddsTrader GraphQL as backup or extra books for SBR (research only) |
 | `.claude/skills/feature-engineering/` | Portable, sport-agnostic rules and families; no repo paths |
 | `.claude/skills/odds-data-architecture/`, `.claude/skills/sports-data-architecture/` | Portable ingestion and storage design |
 

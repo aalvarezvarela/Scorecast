@@ -130,21 +130,13 @@ def test_baselines_read_history_from_the_layer_inputs(monkeypatch):
             return pd.Timestamp("2025-11-03 12:00", tz=tz).to_pydatetime()
 
     monkeypatch.setattr(job, "datetime", _Now)
-    job.predict_nba_games(run_tabpfn_client=False)
+    job.predict_nba_games()
 
     assert built["target_game_ids"] == ["g5"]
     average = uploaded[HISTORICAL_AVERAGE_LINE_ERROR_BASELINE_MODEL_NAME]
     assert average["PRED_TOTAL_POINTS"].tolist() == [
         np.mean([210.0, 220.0, 230.0, 240.0])
     ]
-
-
-def test_tabpfn_is_refused_before_any_work(monkeypatch):
-    monkeypatch.setattr(
-        job, "update_all_databases", lambda **_: pytest.fail("work was started")
-    )
-    with pytest.raises(SystemExit, match="--no-tabpfn"):
-        job.predict_nba_games(run_tabpfn_client=True)
 
 
 def test_a_failing_slot_does_not_stop_the_others(monkeypatch, capsys):
@@ -223,7 +215,7 @@ def test_a_failing_slot_does_not_stop_the_others(monkeypatch, capsys):
 
     monkeypatch.setattr(job, "datetime", _Now)
     with pytest.raises(SystemExit) as exit_info:
-        job.predict_nba_games(run_tabpfn_client=False, persist=False)
+        job.predict_nba_games(persist=False)
 
     assert exit_info.value.code == 1
     assert served == ["line_error", "total_points"]
@@ -308,7 +300,7 @@ def test_a_failing_supabase_write_does_not_cost_the_prediction_store(
 
     monkeypatch.setattr(job, "datetime", _Now)
     with pytest.raises(SystemExit) as exit_info:
-        job.predict_nba_games(run_tabpfn_client=False)
+        job.predict_nba_games()
 
     assert exit_info.value.code == 1
     # The slot and both baselines reached the store, the slot without having

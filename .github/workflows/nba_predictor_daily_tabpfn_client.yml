@@ -1,17 +1,49 @@
-name: Daily NBA Predictor TABPFN Client (Local Runner)
+name: NBA Predictor TabPFN (Local Runner)
 
+# TabPFN on its own: one target and one line per run, fitted on the rows and
+# features of that slot's production build (closing: the frame the daily refit
+# stores in S3; intermediate: the horizon's rows of the dataset the build was
+# fitted on), on tonight's rows built at run time. Triggered from an external
+# cron:
+#
+#     gh workflow run nba_predictor_daily_tabpfn_client.yml -f target=line_error
+#     gh workflow run nba_predictor_daily_tabpfn_client.yml -f target=line_error \
+#         -f line=intermediate -f horizon_minutes=360
 on:
     workflow_dispatch:
-    # schedule:
-    #     # Every day at 21:01 UTC
-    #     - cron: "01 19 * * *"
-    #     # Every day at 21:01 UTC
-    #     - cron: "01 21 * * *"
-    #     - cron: "01 18 * * *"
+        inputs:
+            target:
+                description: "Target to fit and predict"
+                type: choice
+                options:
+                    - line_error
+                    - total_points
+                    - spread_error
+                default: line_error
+            line:
+                description: "Follow the closing slot, or the slot at a fixed time before tip-off"
+                type: choice
+                options:
+                    - closing
+                    - intermediate
+                default: closing
+            horizon_minutes:
+                description: "With line=intermediate: minutes before tip-off (an enabled slot's horizon)"
+                type: string
+                default: "360"
+            update_db:
+                description: "Update the databases first (off when another job just did)"
+                type: boolean
+                default: true
+            persist:
+                description: "Store the predictions (off = dry run: no store rows, no S3 archive)"
+                type: boolean
+                default: true
 
+# Queue, never cancel: a fit already paid for must finish.
 concurrency:
-    group: daily-nba-predictor-tabpfn-client
-    cancel-in-progress: true
+    group: nba-predictor-tabpfn
+    cancel-in-progress: false
 
 permissions:
     contents: read
@@ -20,6 +52,7 @@ permissions:
 jobs:
     run:
         runs-on: self-hosted
+        timeout-minutes: 60
         env:
             PYTHONWARNINGS: "ignore::UserWarning,ignore::DeprecationWarning,ignore::FutureWarning"
             TQDM_DISABLE: "1"
@@ -30,9 +63,16 @@ jobs:
             DB_ENV: supabase
             SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
             SUPABASE_DB_PASSWORD: ${{ secrets.SUPABASE_DB_PASSWORD }}
+            # Aiven: the SBR line history, the injury-report timelines and the
+            # prediction store.
             AIVEN_DB_URL: ${{ secrets.AIVEN_DB_URL }}
+            AIVEN_DB_PASSWORD: ${{ secrets.AIVEN_DB_PASSWORD }}
+            ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
             TABPFN_ACCESS_TOKEN: ${{ secrets.TABPFN_ACCESS_TOKEN }}
             S3_AWS_PROFILE: ""
+            # Local copies of the season partitions, outside the checkout
+            # (actions/checkout cleans it): finished seasons download once.
+            NBA_OU_PARTITION_CACHE_DIR: ~/.cache/nba_ou/season_partitions
 
             # Cron runs in UTC; keep runtime consistent
             TZ: UTC
@@ -55,7 +95,17 @@ jobs:
             - name: Install dependencies
               run: |
                   python -m pip install --upgrade pip
-                  pip install -r requirements_tabpfn.txt
+                  pip install -r requirements_predict_tabpfn.txt
+                  pip install --no-deps -e .
 
-            - name: Run NBA predictor
-              run: python scripts/predict_nba_games.py
+            # The scheduled-games odds scrape drives a browser.
+            - name: Install Playwright browsers
+              run: playwright install chromium
+
+            - name: Run TabPFN predictor
+              run: |
+                  python scripts/predict_tabpfn.py --target ${{ inputs.target }} \
+                      --line ${{ inputs.line }} \
+                      ${{ inputs.line == 'intermediate' && format('--horizon-minutes {0}', inputs.horizon_minutes) || '' }} \
+                      ${{ !inputs.update_db && '--skip-db-update' || '' }} \
+                      ${{ !inputs.persist && '--no-persist' || '' }}
