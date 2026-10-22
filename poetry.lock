@@ -6,7 +6,7 @@ version = "2.3.1"
 description = "Abseil Python Common Libraries, see https://github.com/abseil/abseil-py."
 optional = false
 python-versions = ">=3.8"
-groups = ["main", "timeseries"]
+groups = ["lab", "timeseries"]
 files = [
     {file = "absl_py-2.3.1-py3-none-any.whl", hash = "sha256:eeecf07f0c2a93ace0772c92e596ace6d3d3996c042b2128459aaae2a76de11d"},
     {file = "absl_py-2.3.1.tar.gz", hash = "sha256:a97820526f7fbfd2ec1bce83f3f25e3a14840dac0d8e02a0b71cd75db3f77fc9"},
@@ -18,7 +18,7 @@ version = "1.12.0"
 description = "Accelerate"
 optional = false
 python-versions = ">=3.10.0"
-groups = ["main", "timeseries"]
+groups = ["lab", "timeseries"]
 files = [
     {file = "accelerate-1.12.0-py3-none-any.whl", hash = "sha256:3e2091cd341423207e2f084a6654b1efcd250dc326f2a37d6dde446e07cabb11"},
     {file = "accelerate-1.12.0.tar.gz", hash = "sha256:70988c352feb481887077d2ab845125024b2a137a5090d6d7a32b57d03a45df6"},
@@ -51,7 +51,7 @@ version = "0.2.6"
 description = "The Dag IO Framework for Fugue projects"
 optional = false
 python-versions = ">=3.8"
-groups = ["main", "timeseries"]
+groups = ["lab", "timeseries"]
 files = [
     {file = "adagio-0.2.6-py3-none-any.whl", hash = "sha256:1bb8317d41bfff8b11373bc03c9859ff166c498214bb2b7ce1e21638c0babb2c"},
     {file = "adagio-0.2.6.tar.gz", hash = "sha256:0c32768f3aba0e05273b36f9420a482034f2510f059171040d7e98ba34128d7a"},
@@ -90,7 +90,7 @@ version = "2.6.1"
 description = "Happy Eyeballs for asyncio"
 optional = false
 python-versions = ">=3.9"
-groups = ["main", "timeseries"]
+groups = ["lab", "timeseries"]
 files = [
     {file = "aiohappyeyeballs-2.6.1-py3-none-any.whl", hash = "sha256:f349ba8f4b75cb25c99c5c2d84e997e485204d2902a9597802b0371f09331fb8"},
     {file = "aiohappyeyeballs-2.6.1.tar.gz", hash = "sha256:c3f9d0113123803ccadfdf3f0faa505bc78e6a72d1cc4806cbd719826e943558"},
@@ -102,7 +102,7 @@ version = "3.13.3"
 description = "Async http client/server framework (asyncio)"
 optional = false
 python-versions = ">=3.9"
-groups = ["main", "timeseries"]
+groups = ["lab", "timeseries"]
 files = [
     {file = "aiohttp-3.13.3-cp310-cp310-macosx_10_9_universal2.whl", hash = "sha256:d5a372fd5afd301b3a89582817fdcdb6c34124787c70dbcc616f259013e7eef7"},
     {file = "aiohttp-3.13.3-cp310-cp310-macosx_10_9_x86_64.whl", hash = "sha256:147e422fd1223005c22b4fe080f5d93ced44460f5f9c105406b753612b587821"},
@@ -244,7 +244,7 @@ version = "0.8.1"
 description = "CORS support for aiohttp"
 optional = false
 python-versions = ">=3.9"
-groups = ["main"]
+groups = ["lab"]
 markers = "python_version != \"3.13\" or platform_system != \"Windows\""
 files = [
     {file = "aiohttp_cors-0.8.1-py3-none-any.whl", hash = "sha256:3180cf304c5c712d626b9162b195b1db7ddf976a2a25172b35bb2448b890a80d"},
@@ -272,7 +272,7 @@ version = "1.4.0"
 description = "aiosignal: a list of registered asynchronous callbacks"
 optional = false
 python-versions = ">=3.9"
-groups = ["main", "timeseries"]
+groups = ["lab", "timeseries"]
 files = [
     {file = "aiosignal-1.4.0-py3-none-any.whl", hash = "sha256:053243f8b92b990551949e63930a839ff0cf0b0ebbe0597b0f3fb19e1a0fe82e"},
     {file = "aiosignal-1.4.0.tar.gz", hash = "sha256:f47eecd9468083c2029cc99945502cb7708b082c232f9aca65da147157b251c7"},
@@ -288,7 +288,7 @@ version = "1.18.1"
 description = "A database migration tool for SQLAlchemy."
 optional = false
 python-versions = ">=3.10"
-groups = ["main", "timeseries"]
+groups = ["lab", "timeseries", "train"]
 files = [
     {file = "alembic-1.18.1-py3-none-any.whl", hash = "sha256:f1c3b0920b87134e851c25f1f7f236d8a332c34b75416802d06971df5d1b7810"},
     {file = "alembic-1.18.1.tar.gz", hash = "sha256:83ac6b81359596816fb3b893099841a0862f2117b2963258e965d70dc62fb866"},
@@ -308,7 +308,7 @@ version = "6.0.0"
 description = "Vega-Altair: A declarative statistical visualization library for Python."
 optional = false
 python-versions = ">=3.9"
-groups = ["main"]
+groups = ["dashboard"]
 files = [
     {file = "altair-6.0.0-py3-none-any.whl", hash = "sha256:09ae95b53d5fe5b16987dccc785a7af8588f2dca50de1e7a156efa8a461515f8"},
     {file = "altair-6.0.0.tar.gz", hash = "sha256:614bf5ecbe2337347b590afb111929aa9c16c9527c4887d96c9bc7f6640756b4"},
@@ -333,7 +333,7 @@ version = "0.7.0"
 description = "Reusable constraint types to use with typing.Annotated"
 optional = false
 python-versions = ">=3.8"
-groups = ["main", "timeseries"]
+groups = ["main", "lab", "tabpfn", "timeseries"]
 files = [
     {file = "annotated_types-0.7.0-py3-none-any.whl", hash = "sha256:1f02e8b43a8fbbc3f3e0d4f0f4bfc8131bcb4eebe8849b8e5c773f3a1c582a53"},
     {file = "annotated_types-0.7.0.tar.gz", hash = "sha256:aff07c09a53a08bc8cfccb9c85b05f1aa9a2a6f23728d790723543408344ce89"},
@@ -345,7 +345,7 @@ version = "4.9.3"
 description = "ANTLR 4.9.3 runtime for Python 3.7"
 optional = false
 python-versions = "*"
-groups = ["main", "timeseries"]
+groups = ["lab", "tabpfn", "timeseries"]
 files = [
     {file = "antlr4-python3-runtime-4.9.3.tar.gz", hash = "sha256:f224469b4168294902bb1efa80a8bf7855f24c99aef99cbefc1bcd3cce77881b"},
 ]
@@ -356,7 +356,7 @@ version = "4.12.1"
 description = "High-level concurrency and networking framework on top of asyncio or Trio"
 optional = false
 python-versions = ">=3.9"
-groups = ["main", "timeseries"]
+groups = ["lab", "tabpfn", "timeseries"]
 files = [
     {file = "anyio-4.12.1-py3-none-any.whl", hash = "sha256:d405828884fc140aa80a3c667b8beed277f1dfedec42ba031bd6ac3db606ab6c"},
     {file = "anyio-4.12.1.tar.gz", hash = "sha256:41cfcc3a4c85d3f05c932da7c26d0201ac36f72abd4435ba90d0464a3ffed703"},
@@ -375,7 +375,7 @@ version = "0.1.4"
 description = "Disable App Nap on macOS >= 10.9"
 optional = false
 python-versions = ">=3.6"
-groups = ["main"]
+groups = ["lab"]
 markers = "platform_system == \"Darwin\""
 files = [
     {file = "appnope-0.1.4-py2.py3-none-any.whl", hash = "sha256:502575ee11cd7a28c0205f379b525beefebab9d161b7c964670864014ed7213c"},
@@ -388,7 +388,7 @@ version = "3.51.2.0"
 description = "Another Python SQLite Wrapper"
 optional = false
 python-versions = ">=3.10"
-groups = ["main"]
+groups = ["lab"]
 files = [
     {file = "apsw-3.51.2.0-cp310-cp310-macosx_10_9_x86_64.whl", hash = "sha256:70b3742424ba705fc676507f85ded34301d9727ca4096fb17ee8b534df128cc8"},
     {file = "apsw-3.51.2.0-cp310-cp310-macosx_11_0_arm64.whl", hash = "sha256:b68bb359c23b7a8dd22548bdabbca76b23a65153d60428f9c50bf77e9ae51a8c"},
@@ -477,7 +477,7 @@ version = "0.1.2"
 description = "A fork of sqlite-minutils for apsw"
 optional = false
 python-versions = ">=3.9"
-groups = ["main"]
+groups = ["lab"]
 files = [
     {file = "apswutils-0.1.2-py3-none-any.whl", hash = "sha256:9cd73744f9ae83c2e6f4337d4fcb092f5ea2f1814037e9ff7d953e2bc9c8362a"},
     {file = "apswutils-0.1.2.tar.gz", hash = "sha256:7992828cc4f7261925685e9e40ab189728050bdee049648481ce6a52ddb5d5dd"},
@@ -493,7 +493,7 @@ version = "3.0.0"
 description = "Annotate AST trees with source code positions"
 optional = false
 python-versions = ">=3.8"
-groups = ["main"]
+groups = ["lab"]
 files = [
     {file = "asttokens-3.0.0-py3-none-any.whl", hash = "sha256:e3078351a059199dd5138cb1c706e6430c05eff2ff136af5eb4790f9d28932e2"},
     {file = "asttokens-3.0.0.tar.gz", hash = "sha256:0dcd8baa8d62b0c1d118b399b2ddba3c4aff271d0d7a9e0d4c1681c79035bbc7"},
@@ -509,7 +509,7 @@ version = "25.4.0"
 description = "Classes Without Boilerplate"
 optional = false
 python-versions = ">=3.9"
-groups = ["main", "timeseries"]
+groups = ["dashboard", "lab", "timeseries"]
 files = [
     {file = "attrs-25.4.0-py3-none-any.whl", hash = "sha256:adcf7e2a1fb3b36ac48d97835bb6d8ade15b8dcce26aba8bf1d14847b57a3373"},
     {file = "attrs-25.4.0.tar.gz", hash = "sha256:16d5969b87f0859ef33a48b35d55ac1be6e42ae49d5e853b597db70c35c57e11"},
@@ -521,7 +521,7 @@ version = "1.5.0"
 description = "Fast and Accurate ML in 3 Lines of Code"
 optional = false
 python-versions = "<3.14,>=3.10"
-groups = ["main"]
+groups = ["lab"]
 files = [
     {file = "autogluon-1.5.0-py3-none-any.whl", hash = "sha256:0e622b9dd5e2019fce41a16e1c2d3eee51b035b40815706a6e31f6cf5764006d"},
     {file = "autogluon-1.5.0.tar.gz", hash = "sha256:b0f9cc220e92b4fa5411dc78843af72a88ac3389d52c21ec1967229a4ba160a8"},
@@ -543,7 +543,7 @@ version = "1.5.0"
 description = "Fast and Accurate ML in 3 Lines of Code"
 optional = false
 python-versions = "<3.14,>=3.10"
-groups = ["main", "timeseries"]
+groups = ["lab", "timeseries"]
 files = [
     {file = "autogluon_common-1.5.0-py3-none-any.whl", hash = "sha256:8d7f348acafe9c32c2ff49905dbcd652064ca8bb9359516dac05c32dd27409ad"},
     {file = "autogluon_common-1.5.0.tar.gz", hash = "sha256:ce6177a8e8c5cb129ecf3a392a8292d65b748590397dc8faf3511f0ba933e8b0"},
@@ -569,7 +569,7 @@ version = "1.5.0"
 description = "Fast and Accurate ML in 3 Lines of Code"
 optional = false
 python-versions = "<3.14,>=3.10"
-groups = ["main", "timeseries"]
+groups = ["lab", "timeseries"]
 files = [
     {file = "autogluon_core-1.5.0-py3-none-any.whl", hash = "sha256:df60d751d4093decdbc5fbcc4498d3e6b3d66eba27761020a9f5d89c7b735a48"},
     {file = "autogluon_core-1.5.0.tar.gz", hash = "sha256:7a523c23e3e9605f671e8ed3894498a9049252bcc63e1f734bb822c705ac77c5"},
@@ -616,7 +616,7 @@ version = "1.5.0"
 description = "Fast and Accurate ML in 3 Lines of Code"
 optional = false
 python-versions = "<3.14,>=3.10"
-groups = ["main", "timeseries"]
+groups = ["lab", "timeseries"]
 files = [
     {file = "autogluon_features-1.5.0-py3-none-any.whl", hash = "sha256:5c8a7dd60c66b532b42122ff87a2d140adf7952632b6db24fe6255bb75f8d90e"},
     {file = "autogluon_features-1.5.0.tar.gz", hash = "sha256:56545cf9c21c9c5fdee3f5a09ba023893d6dca4f54fb0a2c4ac720b8abe19de6"},
@@ -634,7 +634,7 @@ version = "1.5.0"
 description = "Fast and Accurate ML in 3 Lines of Code"
 optional = false
 python-versions = "<3.14,>=3.10"
-groups = ["main"]
+groups = ["lab"]
 files = [
     {file = "autogluon_multimodal-1.5.0-py3-none-any.whl", hash = "sha256:dd7a9f9b09dcfe304186f5f6f2885642f7aa7bc7347e2ec5a1ad49eeda11298f"},
     {file = "autogluon_multimodal-1.5.0.tar.gz", hash = "sha256:5d5c3d48f1be331cc785d9eee7913f38b1e21155da6e94c80731cb4a48c7e418"},
@@ -686,7 +686,7 @@ version = "1.5.0"
 description = "Fast and Accurate ML in 3 Lines of Code"
 optional = false
 python-versions = "<3.14,>=3.10"
-groups = ["main", "timeseries"]
+groups = ["lab", "timeseries"]
 files = [
     {file = "autogluon_tabular-1.5.0-py3-none-any.whl", hash = "sha256:62ba6ee7fc88f60effc5e11ee6f55f86a0917b55f2c2ff881cd9a611267cdceb"},
     {file = "autogluon_tabular-1.5.0.tar.gz", hash = "sha256:7d7a4bbaa1574fe823ba08059d58e6cbb264716fc429892bfec3f402edaeb550"},
@@ -752,7 +752,7 @@ version = "1.5.0"
 description = "Fast and Accurate ML in 3 Lines of Code"
 optional = false
 python-versions = "<3.14,>=3.10"
-groups = ["main", "timeseries"]
+groups = ["lab", "timeseries"]
 files = [
     {file = "autogluon_timeseries-1.5.0-py3-none-any.whl", hash = "sha256:8c27218906a557f1ec784ace90259fc17646feb47efd3f425e56eb25dd76a41d"},
     {file = "autogluon_timeseries-1.5.0.tar.gz", hash = "sha256:b29c908a90618bceb93e902626f256e112d161f22045fff8d4249955cb742016"},
@@ -799,7 +799,7 @@ version = "2.2.1"
 description = "Function decoration for backoff and retry"
 optional = false
 python-versions = ">=3.7,<4.0"
-groups = ["timeseries"]
+groups = ["tabpfn", "timeseries"]
 files = [
     {file = "backoff-2.2.1-py3-none-any.whl", hash = "sha256:63579f9a0628e06278f7e47b7d7d5b6ce20dc65c5e96a6f3ca99a6adca0396e8"},
     {file = "backoff-2.2.1.tar.gz", hash = "sha256:03f829f5bb1923180821643f8753b0502c3b682293992485b0eef2807afa5cba"},
@@ -811,7 +811,7 @@ version = "0.22.9"
 description = "Unbearably fast near-real-time pure-Python runtime-static type-checker."
 optional = false
 python-versions = ">=3.10"
-groups = ["main"]
+groups = ["lab"]
 files = [
     {file = "beartype-0.22.9-py3-none-any.whl", hash = "sha256:d16c9bbc61ea14637596c5f6fbff2ee99cbe3573e46a716401734ef50c3060c2"},
     {file = "beartype-0.22.9.tar.gz", hash = "sha256:8f82b54aa723a2848a56008d18875f91c1db02c32ef6a62319a002e3e25a975f"},
@@ -831,7 +831,7 @@ version = "4.14.2"
 description = "Screen-scraping library"
 optional = false
 python-versions = ">=3.7.0"
-groups = ["main"]
+groups = ["lab", "scrape"]
 files = [
     {file = "beautifulsoup4-4.14.2-py3-none-any.whl", hash = "sha256:5ef6fa3a8cbece8488d66985560f97ed091e22bbc4e9c2338508a9d5de6d4515"},
     {file = "beautifulsoup4-4.14.2.tar.gz", hash = "sha256:2a98ab9f944a11acee9cc848508ec28d9228abfd522ef0fad6a02a72e0ded69e"},
@@ -899,7 +899,7 @@ version = "1.9.0"
 description = "Fast, simple object-to-object and broadcast signaling"
 optional = false
 python-versions = ">=3.9"
-groups = ["main"]
+groups = ["dashboard"]
 files = [
     {file = "blinker-1.9.0-py3-none-any.whl", hash = "sha256:ba0efaa9080b619ff2f3459d1d500c57bddea4a6b424b60a91141db6fd2f08bc"},
     {file = "blinker-1.9.0.tar.gz", hash = "sha256:b4ce2265a7abece45e7cc896e98dbebe6cead56bcf805a3d23136d145f5445bf"},
@@ -911,7 +911,7 @@ version = "1.3.3"
 description = "The Blis BLAS-like linear algebra library, as a self-contained C-extension."
 optional = false
 python-versions = "<3.15,>=3.9"
-groups = ["main"]
+groups = ["lab"]
 files = [
     {file = "blis-1.3.3-cp310-cp310-macosx_10_9_x86_64.whl", hash = "sha256:650f1d2b28e3c875927c63deebda463a6f9d237dff30e445bfe2127718c1a344"},
     {file = "blis-1.3.3-cp310-cp310-macosx_11_0_arm64.whl", hash = "sha256:9b0d42420ddd543eec51ccb99d38364a0c0833b6895eced37127822de6ecacff"},
@@ -960,7 +960,7 @@ version = "1.42.49"
 description = "The AWS SDK for Python"
 optional = false
 python-versions = ">=3.9"
-groups = ["main", "timeseries"]
+groups = ["main", "lab", "timeseries"]
 files = [
     {file = "boto3-1.42.49-py3-none-any.whl", hash = "sha256:99e1df4361c3f6ff6ade65803c043ea96314826134962dd3b385433b309eb819"},
     {file = "boto3-1.42.49.tar.gz", hash = "sha256:9cd252f640567b86e92b0a8ffdd4ade9a3018ee357c724bff6a21b8c8a41be0c"},
@@ -980,7 +980,7 @@ version = "1.42.49"
 description = "Low-level, data-driven core of boto 3."
 optional = false
 python-versions = ">=3.9"
-groups = ["main", "timeseries"]
+groups = ["main", "lab", "timeseries"]
 files = [
     {file = "botocore-1.42.49-py3-none-any.whl", hash = "sha256:1c33544f72101eed4ccf903ebb667a803e14e25b2af4e0836e4b871da1c0af37"},
     {file = "botocore-1.42.49.tar.gz", hash = "sha256:333115a64a507697b0c450ade7e2d82bc8b4e21c0051542514532b455712bdcc"},
@@ -1000,7 +1000,7 @@ version = "6.2.6"
 description = "Extensible memoizing collections and decorators"
 optional = false
 python-versions = ">=3.9"
-groups = ["main"]
+groups = ["dashboard"]
 files = [
     {file = "cachetools-6.2.6-py3-none-any.whl", hash = "sha256:8c9717235b3c651603fff0076db52d6acbfd1b338b8ed50256092f7ce9c85bda"},
     {file = "cachetools-6.2.6.tar.gz", hash = "sha256:16c33e1f276b9a9c0b49ab5782d901e3ad3de0dd6da9bf9bcd29ac5672f2f9e6"},
@@ -1012,7 +1012,7 @@ version = "2.0.10"
 description = "Super lightweight function registries for your library"
 optional = false
 python-versions = ">=3.6"
-groups = ["main"]
+groups = ["lab"]
 files = [
     {file = "catalogue-2.0.10-py3-none-any.whl", hash = "sha256:58c2de0020aa90f4a2da7dfad161bf7b3b054c86a5f09fcedc0b2b740c109a9f"},
     {file = "catalogue-2.0.10.tar.gz", hash = "sha256:4f56daa940913d3f09d589c191c74e5a6d51762b3a9e37dd53b7437afd6cda15"},
@@ -1024,7 +1024,7 @@ version = "1.2.8"
 description = "CatBoost Python Package"
 optional = false
 python-versions = "*"
-groups = ["main", "timeseries"]
+groups = ["lab", "timeseries"]
 files = [
     {file = "catboost-1.2.8-cp310-cp310-macosx_11_0_universal2.whl", hash = "sha256:8409c8a2e547469070d73681aa615b5e0b0d78367203d201b2f2b25c33cdcbad"},
     {file = "catboost-1.2.8-cp310-cp310-manylinux2014_aarch64.whl", hash = "sha256:063020755d21de4f5434663a9b1d7cc1507c5b9254e2e8cd9cce9cd3b9ba4bbe"},
@@ -1071,7 +1071,7 @@ version = "2025.1.31"
 description = "Python package for providing Mozilla's CA Bundle."
 optional = false
 python-versions = ">=3.6"
-groups = ["main", "timeseries"]
+groups = ["main", "dashboard", "lab", "tabpfn", "timeseries"]
 files = [
     {file = "certifi-2025.1.31-py3-none-any.whl", hash = "sha256:ca78db4565a652026a4db2bcdf68f2fb589ea80d0be70e03929ed730746b84fe"},
     {file = "certifi-2025.1.31.tar.gz", hash = "sha256:3d5da6925056f6f18f119200434a4780a94263f10d1c21d032a6f6b2baa20651"},
@@ -1083,7 +1083,7 @@ version = "2.0.0"
 description = "Foreign Function Interface for Python calling C code."
 optional = false
 python-versions = ">=3.9"
-groups = ["main"]
+groups = ["lab"]
 markers = "implementation_name == \"pypy\""
 files = [
     {file = "cffi-2.0.0-cp310-cp310-macosx_10_13_x86_64.whl", hash = "sha256:0cf2d91ecc3fcc0625c2c530fe004f82c110405f101548512cce44322fa8ac44"},
@@ -1181,7 +1181,7 @@ version = "3.4.1"
 description = "The Real First Universal Charset Detector. Open, modern and actively maintained alternative to Chardet."
 optional = false
 python-versions = ">=3.7"
-groups = ["main", "timeseries"]
+groups = ["main", "dashboard", "lab", "tabpfn", "timeseries"]
 files = [
     {file = "charset_normalizer-3.4.1-cp310-cp310-macosx_10_9_universal2.whl", hash = "sha256:91b36a978b5ae0ee86c394f5a54d6ef44db1de0815eb43de826d41d21e4af3de"},
     {file = "charset_normalizer-3.4.1-cp310-cp310-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:7461baadb4dc00fd9e0acbe254e3d7d2112e7f92ced2adc96e54ef6501c5f176"},
@@ -1283,7 +1283,7 @@ version = "2.2.2"
 description = "Chronos: Pretrained models for time series forecasting"
 optional = false
 python-versions = ">=3.10"
-groups = ["main", "timeseries"]
+groups = ["lab", "timeseries"]
 files = [
     {file = "chronos_forecasting-2.2.2-py3-none-any.whl", hash = "sha256:1ff681451361f8c0a5fd6920cc1a0d8139f46c85f77a7d6d34fd554390bc76d9"},
     {file = "chronos_forecasting-2.2.2.tar.gz", hash = "sha256:3611bc0f31fa5a77ef710a10857772f80bef20f537ee87f959b0a949dbecd8d0"},
@@ -1309,7 +1309,7 @@ version = "8.1.8"
 description = "Composable command line interface toolkit"
 optional = false
 python-versions = ">=3.7"
-groups = ["main", "dev"]
+groups = ["dashboard", "dev", "lab"]
 files = [
     {file = "click-8.1.8-py3-none-any.whl", hash = "sha256:63c132bbbed01578a06712a2d1f497bb62d9c1c0d329b7903a866228027263b2"},
     {file = "click-8.1.8.tar.gz", hash = "sha256:ed53c9d8990d83c2a27deae68e4ee337473f6330c040a31d4225c9574d16096a"},
@@ -1324,7 +1324,7 @@ version = "0.23.0"
 description = "pathlib-style classes for cloud storage services."
 optional = false
 python-versions = ">=3.9"
-groups = ["main"]
+groups = ["lab"]
 files = [
     {file = "cloudpathlib-0.23.0-py3-none-any.whl", hash = "sha256:8520b3b01468fee77de37ab5d50b1b524ea6b4a8731c35d1b7407ac0cd716002"},
     {file = "cloudpathlib-0.23.0.tar.gz", hash = "sha256:eb38a34c6b8a048ecfd2b2f60917f7cbad4a105b7c979196450c2f541f4d6b4b"},
@@ -1342,7 +1342,7 @@ version = "3.1.2"
 description = "Pickler class to extend the standard pickle.Pickler functionality"
 optional = false
 python-versions = ">=3.8"
-groups = ["main", "timeseries"]
+groups = ["lab", "timeseries", "train"]
 files = [
     {file = "cloudpickle-3.1.2-py3-none-any.whl", hash = "sha256:9acb47f6afd73f60dc1df93bb801b472f05ff42fa6c84167d25cb206be1fbf4a"},
     {file = "cloudpickle-3.1.2.tar.gz", hash = "sha256:7fda9eb655c9c230dab534f1983763de5835249750e85fbcef43aaa30a9a2414"},
@@ -1354,12 +1354,12 @@ version = "0.4.6"
 description = "Cross-platform colored terminal text."
 optional = false
 python-versions = "!=3.0.*,!=3.1.*,!=3.2.*,!=3.3.*,!=3.4.*,!=3.5.*,!=3.6.*,>=2.7"
-groups = ["main", "dev", "timeseries"]
+groups = ["main", "dashboard", "dev", "lab", "tabpfn", "timeseries", "train"]
 files = [
     {file = "colorama-0.4.6-py2.py3-none-any.whl", hash = "sha256:4f1d9991f5acc0ca119f9d443620b77f9d6b33703e51011c16baf57afb285fc6"},
     {file = "colorama-0.4.6.tar.gz", hash = "sha256:08695f5cb7ed6e0531a20572697297273c47b8cae5a63ffc6d6ed5c201be6e44"},
 ]
-markers = {dev = "platform_system == \"Windows\"", timeseries = "platform_system == \"Windows\" or sys_platform == \"win32\""}
+markers = {main = "platform_system == \"Windows\"", dashboard = "platform_system == \"Windows\"", dev = "platform_system == \"Windows\" or sys_platform == \"win32\"", tabpfn = "platform_system == \"Windows\"", timeseries = "platform_system == \"Windows\" or sys_platform == \"win32\"", train = "platform_system == \"Windows\" or sys_platform == \"win32\""}
 
 [[package]]
 name = "colorful"
@@ -1367,7 +1367,7 @@ version = "0.5.8"
 description = "Terminal string styling done right, in Python."
 optional = false
 python-versions = "*"
-groups = ["main"]
+groups = ["lab"]
 markers = "python_version != \"3.13\" or platform_system != \"Windows\""
 files = [
     {file = "colorful-0.5.8-py2.py3-none-any.whl", hash = "sha256:a9381fdda3337fbaba5771991020abc69676afa102646650b759927892875992"},
@@ -1383,7 +1383,7 @@ version = "6.10.1"
 description = "Add colours to the output of Python's logging module."
 optional = false
 python-versions = ">=3.6"
-groups = ["main", "timeseries"]
+groups = ["lab", "timeseries", "train"]
 files = [
     {file = "colorlog-6.10.1-py3-none-any.whl", hash = "sha256:2d7e8348291948af66122cff006c9f8da6255d224e7cf8e37d8de2df3bad8c9c"},
     {file = "colorlog-6.10.1.tar.gz", hash = "sha256:eb4ae5cb65fe7fec7773c2306061a8e63e02efc2c72eba9d27b0fa23c94f1321"},
@@ -1401,7 +1401,7 @@ version = "0.2.2"
 description = "Jupyter Python Comm implementation, for usage in ipykernel, xeus-python etc."
 optional = false
 python-versions = ">=3.8"
-groups = ["main"]
+groups = ["lab"]
 files = [
     {file = "comm-0.2.2-py3-none-any.whl", hash = "sha256:e6fb86cb70ff661ee8c9c14e7d36d6de3b4066f1441be4063df9c5009f0a64d3"},
     {file = "comm-0.2.2.tar.gz", hash = "sha256:3fd7a84065306e07bea1773df6eb8282de51ba82f77c72f9c85716ab11fe980e"},
@@ -1419,7 +1419,7 @@ version = "0.1.5"
 description = "The sweetest config system for Python"
 optional = false
 python-versions = ">=3.6"
-groups = ["main"]
+groups = ["lab"]
 files = [
     {file = "confection-0.1.5-py3-none-any.whl", hash = "sha256:e29d3c3f8eac06b3f77eb9dfb4bf2fc6bcc9622a98ca00a698e3d019c6430b14"},
     {file = "confection-0.1.5.tar.gz", hash = "sha256:8e72dd3ca6bd4f48913cd220f10b8275978e740411654b6e8ca6d7008c590f0e"},
@@ -1435,7 +1435,7 @@ version = "1.3.1"
 description = "Python library for calculating contours of 2D quadrilateral grids"
 optional = false
 python-versions = ">=3.10"
-groups = ["main", "timeseries"]
+groups = ["lab", "timeseries", "train"]
 files = [
     {file = "contourpy-1.3.1-cp310-cp310-macosx_10_9_x86_64.whl", hash = "sha256:a045f341a77b77e1c5de31e74e966537bba9f3c4099b35bf4c2e3939dd54cdab"},
     {file = "contourpy-1.3.1-cp310-cp310-macosx_11_0_arm64.whl", hash = "sha256:500360b77259914f7805af7462e41f9cb7ca92ad38e9f94d6c8641b089338124"},
@@ -1509,7 +1509,7 @@ version = "0.0.16"
 description = "Fast implementations of common forecasting routines"
 optional = false
 python-versions = ">=3.9"
-groups = ["main", "timeseries"]
+groups = ["lab", "timeseries"]
 files = [
     {file = "coreforecast-0.0.16-cp310-cp310-macosx_10_9_x86_64.whl", hash = "sha256:6a640eaf5e56b436ce5a6acb1c88b9da67b64798cf7ec1dcd51bb56908cc1a44"},
     {file = "coreforecast-0.0.16-cp310-cp310-macosx_11_0_arm64.whl", hash = "sha256:1c7c97711ed832df4790bfd3cc54e6356afc0469fe8f36177416f852f43bb929"},
@@ -1551,7 +1551,7 @@ version = "0.12.1"
 description = "Composable style cycles"
 optional = false
 python-versions = ">=3.8"
-groups = ["main", "timeseries"]
+groups = ["lab", "timeseries", "train"]
 files = [
     {file = "cycler-0.12.1-py3-none-any.whl", hash = "sha256:85cef7cff222d8644161529808465972e51340599459b8ac3ccbac5a854e0d30"},
     {file = "cycler-0.12.1.tar.gz", hash = "sha256:88bb128f02ba341da8ef447245a9e138fae777f6a23943da4540077d3601eb1c"},
@@ -1567,7 +1567,7 @@ version = "2.0.13"
 description = "Manage calls to calloc/free through Cython"
 optional = false
 python-versions = "<3.15,>=3.9"
-groups = ["main"]
+groups = ["lab"]
 files = [
     {file = "cymem-2.0.13-cp310-cp310-macosx_10_9_x86_64.whl", hash = "sha256:8efc4f308169237aade0e82877a65a563833dec32eb7ab2326120253e0e9e918"},
     {file = "cymem-2.0.13-cp310-cp310-macosx_11_0_arm64.whl", hash = "sha256:e03bb575a96c59bc210d7d59862747f0012696b0dac3427ce8af33c7afb3d4a2"},
@@ -1642,7 +1642,7 @@ version = "3.6.0"
 description = "HuggingFace community-driven open-source library of datasets"
 optional = false
 python-versions = ">=3.9.0"
-groups = ["main", "timeseries"]
+groups = ["lab", "timeseries"]
 files = [
     {file = "datasets-3.6.0-py3-none-any.whl", hash = "sha256:25000c4a2c0873a710df127d08a202a06eab7bf42441a6bc278b499c2f72cd1b"},
     {file = "datasets-3.6.0.tar.gz", hash = "sha256:1b2bf43b19776e2787e181cfd329cb0ca1a358ea014780c3581e0f276375e041"},
@@ -1686,7 +1686,7 @@ version = "1.8.12"
 description = "An implementation of the Debug Adapter Protocol for Python"
 optional = false
 python-versions = ">=3.8"
-groups = ["main"]
+groups = ["lab"]
 files = [
     {file = "debugpy-1.8.12-cp310-cp310-macosx_14_0_x86_64.whl", hash = "sha256:a2ba7ffe58efeae5b8fad1165357edfe01464f9aef25e814e891ec690e7dd82a"},
     {file = "debugpy-1.8.12-cp310-cp310-manylinux_2_5_x86_64.manylinux1_x86_64.manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:cbbd4149c4fc5e7d508ece083e78c17442ee13b0e69bfa6bd63003e486770f45"},
@@ -1722,7 +1722,7 @@ version = "5.1.1"
 description = "Decorators for Humans"
 optional = false
 python-versions = ">=3.5"
-groups = ["main"]
+groups = ["lab"]
 files = [
     {file = "decorator-5.1.1-py3-none-any.whl", hash = "sha256:b8c3f85900b9dc423225913c5aace94729fe1fa9763b38939a95226f02d37186"},
     {file = "decorator-5.1.1.tar.gz", hash = "sha256:637996211036b6385ef91435e4fae22989472f9d571faba8927ba8253acbc330"},
@@ -1734,7 +1734,7 @@ version = "0.7.1"
 description = "XML bomb protection for Python stdlib modules"
 optional = false
 python-versions = ">=2.7, !=3.0.*, !=3.1.*, !=3.2.*, !=3.3.*, !=3.4.*"
-groups = ["main"]
+groups = ["lab"]
 files = [
     {file = "defusedxml-0.7.1-py2.py3-none-any.whl", hash = "sha256:a352e7e428770286cc899e2542b6cdaedb2b4953ff269a210103ec58f6198a61"},
     {file = "defusedxml-0.7.1.tar.gz", hash = "sha256:1bb3032db185915b62d7c6209c5a8792be6a32ab2fedacc84e01b52c51aa3e69"},
@@ -1746,7 +1746,7 @@ version = "0.3.8"
 description = "serialize all of Python"
 optional = false
 python-versions = ">=3.8"
-groups = ["main", "timeseries"]
+groups = ["lab", "timeseries"]
 files = [
     {file = "dill-0.3.8-py3-none-any.whl", hash = "sha256:c36ca9ffb54365bdd2f8eb3eff7d2a21237f8452b57ace88b1ac615b7e815bd7"},
     {file = "dill-0.3.8.tar.gz", hash = "sha256:3ebe3c479ad625c4553aca177444d89b486b1d84982eeacded644afc0cf797ca"},
@@ -1762,7 +1762,7 @@ version = "0.4.0"
 description = "Distribution utilities"
 optional = false
 python-versions = "*"
-groups = ["main"]
+groups = ["lab"]
 markers = "python_version != \"3.13\" or platform_system != \"Windows\""
 files = [
     {file = "distlib-0.4.0-py2.py3-none-any.whl", hash = "sha256:9659f7d87e46584a30b5780e43ac7a2143098441670ff0a49d5f9034c54a6c16"},
@@ -1775,7 +1775,7 @@ version = "1.9.0"
 description = "Distro - an OS platform information API"
 optional = false
 python-versions = ">=3.6"
-groups = ["timeseries"]
+groups = ["tabpfn", "timeseries"]
 files = [
     {file = "distro-1.9.0-py3-none-any.whl", hash = "sha256:7bffd925d65168f85027d8da9af6bddab658135b840670a223589bc0c8ef02b2"},
     {file = "distro-1.9.0.tar.gz", hash = "sha256:2fa77c6fd8940f116ee1d6b94a2f90b13b5ea8d019b98bc8bafdcabcdd9bdbed"},
@@ -1787,7 +1787,7 @@ version = "0.8.1"
 description = "A new flavour of deep learning operations"
 optional = false
 python-versions = ">=3.8"
-groups = ["main", "timeseries"]
+groups = ["lab", "timeseries"]
 files = [
     {file = "einops-0.8.1-py3-none-any.whl", hash = "sha256:919387eb55330f5757c6bea9165c5ff5cfe63a642682ea788a6d472576d81737"},
     {file = "einops-0.8.1.tar.gz", hash = "sha256:de5d960a7a761225532e0f1959e5315ebeafc0cd43394732f103ca44b9837e84"},
@@ -1799,7 +1799,7 @@ version = "0.3.0"
 description = "Universal Tensor Operations in Einstein-Inspired Notation for Python"
 optional = false
 python-versions = ">=3.8"
-groups = ["main"]
+groups = ["lab"]
 files = [
     {file = "einx-0.3.0-py3-none-any.whl", hash = "sha256:367d62bab8dbb8c4937308512abb6f746cc0920990589892ba0d281356d39345"},
     {file = "einx-0.3.0.tar.gz", hash = "sha256:17ff87c6a0f68ab358c1da489f00e95f1de106fd12ff17d0fb3e210aaa1e5f8c"},
@@ -1835,7 +1835,7 @@ version = "0.4.6"
 description = "HuggingFace community-driven open-source library of evaluation"
 optional = false
 python-versions = ">=3.8.0"
-groups = ["main"]
+groups = ["lab"]
 files = [
     {file = "evaluate-0.4.6-py3-none-any.whl", hash = "sha256:bca85bc294f338377b7ac2f861e21c308b11b2a285f510d7d5394d5df437db29"},
     {file = "evaluate-0.4.6.tar.gz", hash = "sha256:e07036ca12b3c24331f83ab787f21cc2dbf3631813a1631e63e40897c69a3f21"},
@@ -1871,7 +1871,7 @@ version = "2.2.0"
 description = "Get the currently executing AST node of a frame, and other information"
 optional = false
 python-versions = ">=3.8"
-groups = ["main"]
+groups = ["lab"]
 files = [
     {file = "executing-2.2.0-py2.py3-none-any.whl", hash = "sha256:11387150cad388d62750327a53d3339fad4888b39a6fe233c3afbb54ecffd3aa"},
     {file = "executing-2.2.0.tar.gz", hash = "sha256:5d108c028108fe2551d1a7b2e8b713341e2cb4fc0aa7dcf966fa4327a5226755"},
@@ -1886,7 +1886,7 @@ version = "2.8.6"
 description = "fastai simplifies training fast and accurate neural nets using modern best practices"
 optional = false
 python-versions = ">=3.10"
-groups = ["main"]
+groups = ["lab"]
 files = [
     {file = "fastai-2.8.6-py3-none-any.whl", hash = "sha256:6dcaa2e0f9d1cc6a1bd462d38f907ab908e09b9070542fee7b271018c2a2e0da"},
     {file = "fastai-2.8.6.tar.gz", hash = "sha256:7995bde94a6882beaac2cea50fc797da4cb0b819935ec6c6eef69028bc31f72f"},
@@ -1921,7 +1921,7 @@ version = "1.12.4"
 description = "Python supercharged for fastai development"
 optional = false
 python-versions = ">=3.10"
-groups = ["main"]
+groups = ["lab"]
 files = [
     {file = "fastcore-1.12.4-py3-none-any.whl", hash = "sha256:3aec3fcc6c6c95d2ccbafae0c84f3708314c137c3e2404676e37c86fed3c78b2"},
     {file = "fastcore-1.12.4.tar.gz", hash = "sha256:a53cd91c7dbad125939b7ffe8d6e583949ba036419742ab1f57bb71cce01705d"},
@@ -1939,7 +1939,7 @@ version = "0.0.7"
 description = "A general purpose data downloading library."
 optional = false
 python-versions = ">=3.6"
-groups = ["main"]
+groups = ["lab"]
 files = [
     {file = "fastdownload-0.0.7-py3-none-any.whl", hash = "sha256:b791fa3406a2da003ba64615f03c60e2ea041c3c555796450b9a9a601bc0bbac"},
     {file = "fastdownload-0.0.7.tar.gz", hash = "sha256:20507edb8e89406a1fbd7775e6e2a3d81a4dd633dd506b0e9cf0e1613e831d6a"},
@@ -1955,7 +1955,7 @@ version = "0.2.4"
 description = "A bit of extra usability for sqlite"
 optional = false
 python-versions = ">=3.10"
-groups = ["main"]
+groups = ["lab"]
 files = [
     {file = "fastlite-0.2.4-py3-none-any.whl", hash = "sha256:869d96791b06535845b42f7ddef6e12f8e14f6b120f96b9701a4f16867189c63"},
     {file = "fastlite-0.2.4.tar.gz", hash = "sha256:f1ac4329fe18c7bf027a09d05e856215ae9c2fc8e1c0044e110f9a8a36ea1995"},
@@ -1974,7 +1974,7 @@ version = "1.1.3"
 description = "A nested progress with plotting options for fastai"
 optional = false
 python-versions = ">=3.10"
-groups = ["main"]
+groups = ["lab"]
 files = [
     {file = "fastprogress-1.1.3-py3-none-any.whl", hash = "sha256:b7ad6a1a589407174ceaa3368c212bf13136548f9b4a85d3f6c6e489289ffdad"},
     {file = "fastprogress-1.1.3.tar.gz", hash = "sha256:2f7071beb93ce261ddb51d66b243a8517b421563a0107498e5885ed2d9136fca"},
@@ -1990,7 +1990,7 @@ version = "0.0.2"
 description = "Transform is the main building block of data pipelines in fastai. And elsewhere if you want."
 optional = false
 python-versions = ">=3.9"
-groups = ["main"]
+groups = ["lab"]
 files = [
     {file = "fasttransform-0.0.2-py3-none-any.whl", hash = "sha256:72fd7f5d577797370e95255a005a5fd4eb43a3d863f5dbab338562421ab660e1"},
     {file = "fasttransform-0.0.2.tar.gz", hash = "sha256:18ea6964128be779a1c483d4775f1b5a2e452f915c2d30dfa2d91adca98453d7"},
@@ -2030,7 +2030,7 @@ version = "3.20.3"
 description = "A platform independent file lock."
 optional = false
 python-versions = ">=3.10"
-groups = ["main", "timeseries"]
+groups = ["lab", "tabpfn", "timeseries"]
 files = [
     {file = "filelock-3.20.3-py3-none-any.whl", hash = "sha256:4b0dda527ee31078689fc205ec4f1c1bf7d56cf88b6dc9426c4f230e46c2dce1"},
     {file = "filelock-3.20.3.tar.gz", hash = "sha256:18c57ee915c7ec61cff0ecf7f0f869936c7c30191bb0cf406f1341778d0834e1"},
@@ -2042,7 +2042,7 @@ version = "4.56.0"
 description = "Tools to manipulate font files"
 optional = false
 python-versions = ">=3.8"
-groups = ["main", "timeseries"]
+groups = ["lab", "timeseries", "train"]
 files = [
     {file = "fonttools-4.56.0-cp310-cp310-macosx_10_9_universal2.whl", hash = "sha256:331954d002dbf5e704c7f3756028e21db07097c19722569983ba4d74df014000"},
     {file = "fonttools-4.56.0-cp310-cp310-macosx_10_9_x86_64.whl", hash = "sha256:8d1613abd5af2f93c05867b3a3759a56e8bf97eb79b1da76b2bc10892f96ff16"},
@@ -2116,7 +2116,7 @@ version = "2.4.7"
 description = "A simple immutable dictionary"
 optional = false
 python-versions = ">=3.6"
-groups = ["main"]
+groups = ["lab"]
 files = [
     {file = "frozendict-2.4.7-cp310-cp310-macosx_10_9_universal2.whl", hash = "sha256:bd37c087a538944652363cfd77fb7abe8100cc1f48afea0b88b38bf0f469c3d2"},
     {file = "frozendict-2.4.7-cp310-cp310-macosx_10_9_x86_64.whl", hash = "sha256:2b96f224a5431889f04b2bc99c0e9abe285679464273ead83d7d7f2a15907d35"},
@@ -2217,7 +2217,7 @@ version = "1.8.0"
 description = "A list-like structure which implements collections.abc.MutableSequence"
 optional = false
 python-versions = ">=3.9"
-groups = ["main", "timeseries"]
+groups = ["lab", "timeseries"]
 files = [
     {file = "frozenlist-1.8.0-cp310-cp310-macosx_10_9_universal2.whl", hash = "sha256:b37f6d31b3dcea7deb5e9696e529a6aa4a898adc33db82da12e4c60a7c4d2011"},
     {file = "frozenlist-1.8.0-cp310-cp310-macosx_10_9_x86_64.whl", hash = "sha256:ef2b7b394f208233e471abc541cc6991f907ffd47dc72584acee3147899d6565"},
@@ -2357,7 +2357,7 @@ version = "2025.3.0"
 description = "File-system specification"
 optional = false
 python-versions = ">=3.8"
-groups = ["main", "timeseries"]
+groups = ["lab", "timeseries"]
 files = [
     {file = "fsspec-2025.3.0-py3-none-any.whl", hash = "sha256:efb87af3efa9103f94ca91a7f8cb7a4df91af9f74fc106c9c7ea0efd7277c1b3"},
     {file = "fsspec-2025.3.0.tar.gz", hash = "sha256:a935fd1ea872591f2b5148907d103488fc523295e6c64b835cfad8c3eca44972"},
@@ -2400,7 +2400,7 @@ version = "0.9.4"
 description = "An abstraction layer for distributed computation"
 optional = false
 python-versions = ">=3.8"
-groups = ["main", "timeseries"]
+groups = ["lab", "timeseries"]
 files = [
     {file = "fugue-0.9.4-py3-none-any.whl", hash = "sha256:299729a2fd523097673174244a7bef9b89732870977665d6f09906f578403331"},
     {file = "fugue-0.9.4.tar.gz", hash = "sha256:3725eeb3f06301d7e2812940a099e9bc2db9b863987b80124e39a6399024503f"},
@@ -2428,7 +2428,7 @@ version = "1.0.0"
 description = "Clean single-source support for Python 3 and 2"
 optional = false
 python-versions = ">=2.6, !=3.0.*, !=3.1.*, !=3.2.*"
-groups = ["main"]
+groups = ["lab"]
 files = [
     {file = "future-1.0.0-py3-none-any.whl", hash = "sha256:929292d34f5872e70396626ef385ec22355a1fae8ad29e1a734c3e43f9fbc216"},
     {file = "future-1.0.0.tar.gz", hash = "sha256:bd2968309307861edae1458a4f8a4f3598c03be43b97521076aebf5d94c07b05"},
@@ -2440,7 +2440,7 @@ version = "5.2.1"
 description = "Google Drive Public File/Folder Downloader"
 optional = false
 python-versions = ">=3.8"
-groups = ["main"]
+groups = ["lab"]
 files = [
     {file = "gdown-5.2.1-py3-none-any.whl", hash = "sha256:391f0480d495fb87644d1a1ee3ddfeb2144e1de31408fbc74f7e3b3ba927052b"},
     {file = "gdown-5.2.1.tar.gz", hash = "sha256:247c2ad1f579db5b66b54c04e6a871995fc8fd7021708b950b8ba7b32cf90323"},
@@ -2461,7 +2461,7 @@ version = "4.0.12"
 description = "Git Object Database"
 optional = false
 python-versions = ">=3.7"
-groups = ["main"]
+groups = ["dashboard"]
 files = [
     {file = "gitdb-4.0.12-py3-none-any.whl", hash = "sha256:67073e15955400952c6565cc3e707c554a4eea2e428946f7a4c162fab9bd9bcf"},
     {file = "gitdb-4.0.12.tar.gz", hash = "sha256:5ef71f855d191a3326fcfbc0d5da835f26b13fbcba60c32c21091c349ffdb571"},
@@ -2476,7 +2476,7 @@ version = "3.1.46"
 description = "GitPython is a Python library used to interact with Git repositories"
 optional = false
 python-versions = ">=3.7"
-groups = ["main"]
+groups = ["dashboard"]
 files = [
     {file = "gitpython-3.1.46-py3-none-any.whl", hash = "sha256:79812ed143d9d25b6d176a10bb511de0f9c67b1fa641d82097b0ab90398a2058"},
     {file = "gitpython-3.1.46.tar.gz", hash = "sha256:400124c7d0ef4ea03f7310ac2fbf7151e09ff97f2a3288d64a440c584a29c37f"},
@@ -2495,7 +2495,7 @@ version = "0.16.2"
 description = "Probabilistic time series modeling in Python."
 optional = false
 python-versions = ">=3.7"
-groups = ["main", "timeseries"]
+groups = ["lab", "timeseries"]
 files = [
     {file = "gluonts-0.16.2-py3-none-any.whl", hash = "sha256:351497c37bd0dd13776310f132b7f110f45821559cbc1a03c24908051fcf8155"},
     {file = "gluonts-0.16.2.tar.gz", hash = "sha256:1fef7fff186b567edf9db7cd052c10ee82fb74bb4b4914b925340ba33d494548"},
@@ -2526,7 +2526,7 @@ version = "2.29.0"
 description = "Google API client core library"
 optional = false
 python-versions = ">=3.7"
-groups = ["main"]
+groups = ["lab"]
 markers = "python_version != \"3.13\" or platform_system != \"Windows\""
 files = [
     {file = "google_api_core-2.29.0-py3-none-any.whl", hash = "sha256:d30bc60980daa36e314b5d5a3e5958b0200cb44ca8fa1be2b614e932b75a3ea9"},
@@ -2555,7 +2555,7 @@ version = "2.47.0"
 description = "Google Authentication Library"
 optional = false
 python-versions = ">=3.8"
-groups = ["main"]
+groups = ["lab"]
 markers = "python_version != \"3.13\" or platform_system != \"Windows\""
 files = [
     {file = "google_auth-2.47.0-py3-none-any.whl", hash = "sha256:c516d68336bfde7cf0da26aab674a36fedcf04b37ac4edd59c597178760c3498"},
@@ -2578,12 +2578,55 @@ testing = ["aiohttp (<3.10.0)", "aiohttp (>=3.6.2,<4.0.0)", "aioresponses", "cry
 urllib3 = ["packaging", "urllib3"]
 
 [[package]]
+name = "google-crc32c"
+version = "1.8.0"
+description = "A python wrapper of the C library 'Google CRC32C'"
+optional = false
+python-versions = ">=3.9"
+groups = ["tabpfn", "timeseries"]
+files = [
+    {file = "google_crc32c-1.8.0-cp310-cp310-macosx_12_0_arm64.whl", hash = "sha256:0470b8c3d73b5f4e3300165498e4cf25221c7eb37f1159e221d1825b6df8a7ff"},
+    {file = "google_crc32c-1.8.0-cp310-cp310-macosx_12_0_x86_64.whl", hash = "sha256:119fcd90c57c89f30040b47c211acee231b25a45d225e3225294386f5d258288"},
+    {file = "google_crc32c-1.8.0-cp310-cp310-manylinux1_x86_64.manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_5_x86_64.whl", hash = "sha256:6f35aaffc8ccd81ba3162443fabb920e65b1f20ab1952a31b13173a67811467d"},
+    {file = "google_crc32c-1.8.0-cp310-cp310-manylinux2014_aarch64.manylinux_2_17_aarch64.whl", hash = "sha256:864abafe7d6e2c4c66395c1eb0fe12dc891879769b52a3d56499612ca93b6092"},
+    {file = "google_crc32c-1.8.0-cp310-cp310-win_amd64.whl", hash = "sha256:db3fe8eaf0612fc8b20fa21a5f25bd785bc3cd5be69f8f3412b0ac2ffd49e733"},
+    {file = "google_crc32c-1.8.0-cp311-cp311-macosx_12_0_arm64.whl", hash = "sha256:014a7e68d623e9a4222d663931febc3033c5c7c9730785727de2a81f87d5bab8"},
+    {file = "google_crc32c-1.8.0-cp311-cp311-macosx_12_0_x86_64.whl", hash = "sha256:86cfc00fe45a0ac7359e5214a1704e51a99e757d0272554874f419f79838c5f7"},
+    {file = "google_crc32c-1.8.0-cp311-cp311-manylinux1_x86_64.manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_5_x86_64.whl", hash = "sha256:19b40d637a54cb71e0829179f6cb41835f0fbd9e8eb60552152a8b52c36cbe15"},
+    {file = "google_crc32c-1.8.0-cp311-cp311-manylinux2014_aarch64.manylinux_2_17_aarch64.whl", hash = "sha256:17446feb05abddc187e5441a45971b8394ea4c1b6efd88ab0af393fd9e0a156a"},
+    {file = "google_crc32c-1.8.0-cp311-cp311-win_amd64.whl", hash = "sha256:71734788a88f551fbd6a97be9668a0020698e07b2bf5b3aa26a36c10cdfb27b2"},
+    {file = "google_crc32c-1.8.0-cp312-cp312-macosx_12_0_arm64.whl", hash = "sha256:4b8286b659c1335172e39563ab0a768b8015e88e08329fa5321f774275fc3113"},
+    {file = "google_crc32c-1.8.0-cp312-cp312-macosx_12_0_x86_64.whl", hash = "sha256:2a3dc3318507de089c5384cc74d54318401410f82aa65b2d9cdde9d297aca7cb"},
+    {file = "google_crc32c-1.8.0-cp312-cp312-manylinux1_x86_64.manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_5_x86_64.whl", hash = "sha256:14f87e04d613dfa218d6135e81b78272c3b904e2a7053b841481b38a7d901411"},
+    {file = "google_crc32c-1.8.0-cp312-cp312-manylinux2014_aarch64.manylinux_2_17_aarch64.whl", hash = "sha256:cb5c869c2923d56cb0c8e6bcdd73c009c36ae39b652dbe46a05eb4ef0ad01454"},
+    {file = "google_crc32c-1.8.0-cp312-cp312-win_amd64.whl", hash = "sha256:3cc0c8912038065eafa603b238abf252e204accab2a704c63b9e14837a854962"},
+    {file = "google_crc32c-1.8.0-cp313-cp313-macosx_12_0_arm64.whl", hash = "sha256:3ebb04528e83b2634857f43f9bb8ef5b2bbe7f10f140daeb01b58f972d04736b"},
+    {file = "google_crc32c-1.8.0-cp313-cp313-macosx_12_0_x86_64.whl", hash = "sha256:450dc98429d3e33ed2926fc99ee81001928d63460f8538f21a5d6060912a8e27"},
+    {file = "google_crc32c-1.8.0-cp313-cp313-manylinux1_x86_64.manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_5_x86_64.whl", hash = "sha256:3b9776774b24ba76831609ffbabce8cdf6fa2bd5e9df37b594221c7e333a81fa"},
+    {file = "google_crc32c-1.8.0-cp313-cp313-manylinux2014_aarch64.manylinux_2_17_aarch64.whl", hash = "sha256:89c17d53d75562edfff86679244830599ee0a48efc216200691de8b02ab6b2b8"},
+    {file = "google_crc32c-1.8.0-cp313-cp313-win_amd64.whl", hash = "sha256:57a50a9035b75643996fbf224d6661e386c7162d1dfdab9bc4ca790947d1007f"},
+    {file = "google_crc32c-1.8.0-cp314-cp314-macosx_12_0_arm64.whl", hash = "sha256:e6584b12cb06796d285d09e33f63309a09368b9d806a551d8036a4207ea43697"},
+    {file = "google_crc32c-1.8.0-cp314-cp314-macosx_12_0_x86_64.whl", hash = "sha256:f4b51844ef67d6cf2e9425983274da75f18b1597bb2c998e1c0a0e8d46f8f651"},
+    {file = "google_crc32c-1.8.0-cp314-cp314-manylinux1_x86_64.manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_5_x86_64.whl", hash = "sha256:b0d1a7afc6e8e4635564ba8aa5c0548e3173e41b6384d7711a9123165f582de2"},
+    {file = "google_crc32c-1.8.0-cp314-cp314-manylinux2014_aarch64.manylinux_2_17_aarch64.whl", hash = "sha256:8b3f68782f3cbd1bce027e48768293072813469af6a61a86f6bb4977a4380f21"},
+    {file = "google_crc32c-1.8.0-cp314-cp314-win_amd64.whl", hash = "sha256:d511b3153e7011a27ab6ee6bb3a5404a55b994dc1a7322c0b87b29606d9790e2"},
+    {file = "google_crc32c-1.8.0-cp39-cp39-macosx_12_0_arm64.whl", hash = "sha256:ba6aba18daf4d36ad4412feede6221414692f44d17e5428bdd81ad3fc1eee5dc"},
+    {file = "google_crc32c-1.8.0-cp39-cp39-macosx_12_0_x86_64.whl", hash = "sha256:87b0072c4ecc9505cfa16ee734b00cd7721d20a0f595be4d40d3d21b41f65ae2"},
+    {file = "google_crc32c-1.8.0-cp39-cp39-manylinux1_x86_64.manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_5_x86_64.whl", hash = "sha256:3d488e98b18809f5e322978d4506373599c0c13e6c5ad13e53bb44758e18d215"},
+    {file = "google_crc32c-1.8.0-cp39-cp39-manylinux2014_aarch64.manylinux_2_17_aarch64.whl", hash = "sha256:01f126a5cfddc378290de52095e2c7052be2ba7656a9f0caf4bcd1bfb1833f8a"},
+    {file = "google_crc32c-1.8.0-cp39-cp39-win_amd64.whl", hash = "sha256:61f58b28e0b21fcb249a8247ad0db2e64114e201e2e9b4200af020f3b6242c9f"},
+    {file = "google_crc32c-1.8.0-pp311-pypy311_pp73-manylinux1_x86_64.manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_5_x86_64.whl", hash = "sha256:87fa445064e7db928226b2e6f0d5304ab4cd0339e664a4e9a25029f384d9bb93"},
+    {file = "google_crc32c-1.8.0-pp311-pypy311_pp73-manylinux2014_aarch64.manylinux_2_17_aarch64.whl", hash = "sha256:f639065ea2042d5c034bf258a9f085eaa7af0cd250667c0635a3118e8f92c69c"},
+    {file = "google_crc32c-1.8.0.tar.gz", hash = "sha256:a428e25fb7691024de47fecfbff7ff957214da51eddded0da0ae0e0f03a2cf79"},
+]
+
+[[package]]
 name = "googleapis-common-protos"
 version = "1.72.0"
 description = "Common protobufs used in Google APIs"
 optional = false
 python-versions = ">=3.7"
-groups = ["main"]
+groups = ["lab"]
 markers = "python_version != \"3.13\" or platform_system != \"Windows\""
 files = [
     {file = "googleapis_common_protos-1.72.0-py3-none-any.whl", hash = "sha256:4299c5a82d5ae1a9702ada957347726b167f9f8d1fc352477702a1e851ff4038"},
@@ -2602,7 +2645,7 @@ version = "0.21"
 description = "Simple Python interface for Graphviz"
 optional = false
 python-versions = ">=3.9"
-groups = ["main", "timeseries"]
+groups = ["lab", "timeseries"]
 files = [
     {file = "graphviz-0.21-py3-none-any.whl", hash = "sha256:54f33de9f4f911d7e84e4191749cac8cc5653f815b06738c54db9a15ab8b1e42"},
     {file = "graphviz-0.21.tar.gz", hash = "sha256:20743e7183be82aaaa8ad6c93f8893c923bd6658a04c32ee115edb3c8a835f78"},
@@ -2619,7 +2662,7 @@ version = "3.3.0"
 description = "Lightweight in-process concurrent programming"
 optional = false
 python-versions = ">=3.10"
-groups = ["main", "dev", "timeseries"]
+groups = ["lab", "scrape", "timeseries", "train"]
 files = [
     {file = "greenlet-3.3.0-cp310-cp310-macosx_11_0_universal2.whl", hash = "sha256:6f8496d434d5cb2dce025773ba5597f71f5410ae499d5dd9533e0653258cdb3d"},
     {file = "greenlet-3.3.0-cp310-cp310-manylinux_2_24_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:b96dc7eef78fd404e022e165ec55327f935b9b52ff355b067eb4a0267fc1cffb"},
@@ -2670,7 +2713,7 @@ files = [
     {file = "greenlet-3.3.0-cp314-cp314t-musllinux_1_2_x86_64.whl", hash = "sha256:6c10513330af5b8ae16f023e8ddbfb486ab355d04467c4679c5cfe4659975dd9"},
     {file = "greenlet-3.3.0.tar.gz", hash = "sha256:a82bb225a4e9e4d653dd2fb7b8b2d36e4fb25bc0165422a11e48b88e9e6f78fb"},
 ]
-markers = {main = "sys_platform == \"darwin\" and platform_machine == \"x86_64\" or (sys_platform != \"darwin\" or platform_machine != \"x86_64\") and (platform_machine == \"aarch64\" or platform_machine == \"ppc64le\" or platform_machine == \"x86_64\" or platform_machine == \"amd64\" or platform_machine == \"AMD64\" or platform_machine == \"win32\" or platform_machine == \"WIN32\")", timeseries = "sys_platform == \"darwin\" and platform_machine == \"x86_64\" or (sys_platform != \"darwin\" or platform_machine != \"x86_64\") and (platform_machine == \"aarch64\" or platform_machine == \"ppc64le\" or platform_machine == \"x86_64\" or platform_machine == \"amd64\" or platform_machine == \"AMD64\" or platform_machine == \"win32\" or platform_machine == \"WIN32\")"}
+markers = {lab = "sys_platform == \"darwin\" and platform_machine == \"x86_64\" or (sys_platform != \"darwin\" or platform_machine != \"x86_64\") and (platform_machine == \"aarch64\" or platform_machine == \"ppc64le\" or platform_machine == \"x86_64\" or platform_machine == \"amd64\" or platform_machine == \"AMD64\" or platform_machine == \"win32\" or platform_machine == \"WIN32\")", timeseries = "sys_platform == \"darwin\" and platform_machine == \"x86_64\" or (sys_platform != \"darwin\" or platform_machine != \"x86_64\") and (platform_machine == \"aarch64\" or platform_machine == \"ppc64le\" or platform_machine == \"x86_64\" or platform_machine == \"amd64\" or platform_machine == \"AMD64\" or platform_machine == \"win32\" or platform_machine == \"WIN32\")", train = "sys_platform == \"darwin\" and platform_machine == \"x86_64\" or (sys_platform != \"darwin\" or platform_machine != \"x86_64\") and (platform_machine == \"aarch64\" or platform_machine == \"ppc64le\" or platform_machine == \"x86_64\" or platform_machine == \"amd64\" or platform_machine == \"AMD64\" or platform_machine == \"win32\" or platform_machine == \"WIN32\")"}
 
 [package.extras]
 docs = ["Sphinx", "furo"]
@@ -2682,7 +2725,7 @@ version = "1.76.0"
 description = "HTTP/2-based RPC framework"
 optional = false
 python-versions = ">=3.9"
-groups = ["main", "timeseries"]
+groups = ["lab", "timeseries"]
 files = [
     {file = "grpcio-1.76.0-cp310-cp310-linux_armv7l.whl", hash = "sha256:65a20de41e85648e00305c1bb09a3598f840422e522277641145a32d42dcefcc"},
     {file = "grpcio-1.76.0-cp310-cp310-macosx_11_0_universal2.whl", hash = "sha256:40ad3afe81676fd9ec6d9d406eda00933f218038433980aa19d401490e46ecde"},
@@ -2759,27 +2802,11 @@ version = "0.16.0"
 description = "A pure-Python, bring-your-own-I/O implementation of HTTP/1.1"
 optional = false
 python-versions = ">=3.8"
-groups = ["main", "timeseries"]
+groups = ["lab", "tabpfn", "timeseries"]
 files = [
     {file = "h11-0.16.0-py3-none-any.whl", hash = "sha256:63cf8bbe7522de3bf65932fda1d9c2772064ffb3dae62d55932da54b31cb6c86"},
     {file = "h11-0.16.0.tar.gz", hash = "sha256:4e35b956cf45792e4caa5885e69fba00bdbc6ffafbfa020300e549b208ee5ff1"},
 ]
-
-[[package]]
-name = "h2"
-version = "4.3.0"
-description = "Pure-Python HTTP/2 protocol implementation"
-optional = false
-python-versions = ">=3.9"
-groups = ["timeseries"]
-files = [
-    {file = "h2-4.3.0-py3-none-any.whl", hash = "sha256:c438f029a25f7945c69e0ccf0fb951dc3f73a5f6412981daee861431b70e2bdd"},
-    {file = "h2-4.3.0.tar.gz", hash = "sha256:6c59efe4323fa18b47a632221a1888bd7fde6249819beda254aeca909f221bf1"},
-]
-
-[package.dependencies]
-hpack = ">=4.1,<5"
-hyperframe = ">=6.1,<7"
 
 [[package]]
 name = "hf-xet"
@@ -2787,7 +2814,7 @@ version = "1.2.0"
 description = "Fast transfer of large files with the Hugging Face Hub."
 optional = false
 python-versions = ">=3.8"
-groups = ["main", "timeseries"]
+groups = ["lab", "timeseries"]
 markers = "platform_machine == \"x86_64\" or platform_machine == \"amd64\" or platform_machine == \"arm64\" or platform_machine == \"aarch64\""
 files = [
     {file = "hf_xet-1.2.0-cp313-cp313t-macosx_10_12_x86_64.whl", hash = "sha256:ceeefcd1b7aed4956ae8499e2199607765fbd1c60510752003b6cc0b8413b649"},
@@ -2818,24 +2845,12 @@ files = [
 tests = ["pytest"]
 
 [[package]]
-name = "hpack"
-version = "4.1.0"
-description = "Pure-Python HPACK header encoding"
-optional = false
-python-versions = ">=3.9"
-groups = ["timeseries"]
-files = [
-    {file = "hpack-4.1.0-py3-none-any.whl", hash = "sha256:157ac792668d995c657d93111f46b4535ed114f0c9c8d672271bbec7eae1b496"},
-    {file = "hpack-4.1.0.tar.gz", hash = "sha256:ec5eca154f7056aa06f196a557655c5b009b382873ac8d1e66e79e87535f1dca"},
-]
-
-[[package]]
 name = "httpcore"
 version = "1.0.9"
 description = "A minimal low-level HTTP client."
 optional = false
 python-versions = ">=3.8"
-groups = ["main", "timeseries"]
+groups = ["lab", "tabpfn", "timeseries"]
 files = [
     {file = "httpcore-1.0.9-py3-none-any.whl", hash = "sha256:2d400746a40668fc9dec9810239072b40b4484b640a8c38fd654a024c7a1bf55"},
     {file = "httpcore-1.0.9.tar.gz", hash = "sha256:6e34463af53fd2ab5d807f399a9b45ea31c3dfa2276f15a2c3f00afff6e176e8"},
@@ -2857,7 +2872,7 @@ version = "0.7.1"
 description = "A collection of framework independent HTTP protocol utils."
 optional = false
 python-versions = ">=3.9"
-groups = ["main"]
+groups = ["lab"]
 files = [
     {file = "httptools-0.7.1-cp310-cp310-macosx_10_9_universal2.whl", hash = "sha256:11d01b0ff1fe02c4c32d60af61a4d613b74fad069e47e06e9067758c01e9ac78"},
     {file = "httptools-0.7.1-cp310-cp310-macosx_11_0_arm64.whl", hash = "sha256:84d86c1e5afdc479a6fdabf570be0d3eb791df0ae727e8dbc0259ed1249998d4"},
@@ -2910,7 +2925,7 @@ version = "0.28.1"
 description = "The next generation HTTP client."
 optional = false
 python-versions = ">=3.8"
-groups = ["main", "timeseries"]
+groups = ["lab", "tabpfn", "timeseries"]
 files = [
     {file = "httpx-0.28.1-py3-none-any.whl", hash = "sha256:d909fcccc110f8c7faf814ca82a9a4d816bc5a6dbfea25d6591d6985b8ba59ad"},
     {file = "httpx-0.28.1.tar.gz", hash = "sha256:75e98c5f16b0f35b567856f597f06ff2270a374470a5c2392242528e3e3e42fc"},
@@ -2919,7 +2934,6 @@ files = [
 [package.dependencies]
 anyio = "*"
 certifi = "*"
-h2 = {version = ">=3,<5", optional = true, markers = "extra == \"http2\""}
 httpcore = "==1.*"
 idna = "*"
 
@@ -2936,7 +2950,7 @@ version = "0.36.0"
 description = "Client library to download and publish models, datasets and other repos on the huggingface.co hub"
 optional = false
 python-versions = ">=3.8.0"
-groups = ["main", "timeseries"]
+groups = ["lab", "timeseries"]
 files = [
     {file = "huggingface_hub-0.36.0-py3-none-any.whl", hash = "sha256:7bcc9ad17d5b3f07b57c78e79d527102d08313caa278a641993acddcb894548d"},
     {file = "huggingface_hub-0.36.0.tar.gz", hash = "sha256:47b3f0e2539c39bf5cde015d63b72ec49baff67b6931c3d97f3f84532e2b8d25"},
@@ -2972,24 +2986,12 @@ torch = ["safetensors[torch]", "torch"]
 typing = ["types-PyYAML", "types-requests", "types-simplejson", "types-toml", "types-tqdm", "types-urllib3", "typing-extensions (>=4.8.0)"]
 
 [[package]]
-name = "hyperframe"
-version = "6.1.0"
-description = "Pure-Python HTTP/2 framing"
-optional = false
-python-versions = ">=3.9"
-groups = ["timeseries"]
-files = [
-    {file = "hyperframe-6.1.0-py3-none-any.whl", hash = "sha256:b03380493a519fce58ea5af42e4a42317bf9bd425596f7a0835ffce80f1a42e5"},
-    {file = "hyperframe-6.1.0.tar.gz", hash = "sha256:f630908a00854a7adeabd6382b43923a4c4cd4b821fcb527e6ab9e15382a3b08"},
-]
-
-[[package]]
 name = "hyperopt"
 version = "0.2.7"
 description = "Distributed Asynchronous Hyperparameter Optimization"
 optional = false
 python-versions = "*"
-groups = ["main"]
+groups = ["lab"]
 files = [
     {file = "hyperopt-0.2.7-py2.py3-none-any.whl", hash = "sha256:f3046d91fe4167dbf104365016596856b2524a609d22f047a066fc1ac796427c"},
     {file = "hyperopt-0.2.7.tar.gz", hash = "sha256:1bf89ae58050bbd32c7307199046117feee245c2fd9ab6255c7308522b7ca149"},
@@ -3017,7 +3019,7 @@ version = "3.10"
 description = "Internationalized Domain Names in Applications (IDNA)"
 optional = false
 python-versions = ">=3.6"
-groups = ["main", "timeseries"]
+groups = ["main", "dashboard", "lab", "tabpfn", "timeseries"]
 files = [
     {file = "idna-3.10-py3-none-any.whl", hash = "sha256:946d195a0d259cbba61165e88e65941f16e9b36ea6ddb97f00452bae8b1287d3"},
     {file = "idna-3.10.tar.gz", hash = "sha256:12f65c9b470abda6dc35cf8e63cc574b1c52b11df2c86030af0ac09b01b13ea9"},
@@ -3032,7 +3034,7 @@ version = "2.37.2"
 description = "Read and write images and video across all major formats. Supports scientific and volumetric data."
 optional = false
 python-versions = ">=3.9"
-groups = ["main"]
+groups = ["lab"]
 files = [
     {file = "imageio-2.37.2-py3-none-any.whl", hash = "sha256:ad9adfb20335d718c03de457358ed69f141021a333c40a53e57273d8a5bd0b9b"},
     {file = "imageio-2.37.2.tar.gz", hash = "sha256:0212ef2727ac9caa5ca4b2c75ae89454312f440a756fcfc8ef1993e718f50f8a"},
@@ -3066,7 +3068,7 @@ version = "0.14.1"
 description = "Toolbox for imbalanced dataset in machine learning"
 optional = false
 python-versions = ">=3.10"
-groups = ["main"]
+groups = ["lab"]
 files = [
     {file = "imbalanced_learn-0.14.1-py3-none-any.whl", hash = "sha256:fcdff8d27870d6992ea3496230788b97ff98e24302e7f6c598701da525ae440f"},
     {file = "imbalanced_learn-0.14.1.tar.gz", hash = "sha256:46eeb5773a96b6fa92426356da66f3e4390a7ed8e715a633c6fb68ee4a3ccdcb"},
@@ -3095,7 +3097,7 @@ version = "0.0"
 description = "Toolbox for imbalanced dataset in machine learning."
 optional = false
 python-versions = "*"
-groups = ["main"]
+groups = ["lab"]
 files = [
     {file = "imblearn-0.0-py2.py3-none-any.whl", hash = "sha256:d42c2d709d22c00d2b9a91e638d57240a8b79b4014122d92181fcd2549a2f79a"},
     {file = "imblearn-0.0.tar.gz", hash = "sha256:d8fbb662919c1b16f438ad91a8256220e53bcf6815c9ad5502c518b798de34f2"},
@@ -3110,7 +3112,7 @@ version = "8.7.1"
 description = "Read metadata from Python packages"
 optional = false
 python-versions = ">=3.9"
-groups = ["main"]
+groups = ["lab"]
 markers = "python_version != \"3.13\" or platform_system != \"Windows\""
 files = [
     {file = "importlib_metadata-8.7.1-py3-none-any.whl", hash = "sha256:5a1f80bf1daa489495071efbb095d75a634cf28a8bc299581244063b53176151"},
@@ -3130,12 +3132,24 @@ test = ["flufl.flake8", "jaraco.test (>=5.4)", "packaging", "pyfakefs", "pytest 
 type = ["mypy (<1.19) ; platform_python_implementation == \"PyPy\"", "pytest-mypy (>=1.0.1)"]
 
 [[package]]
+name = "iniconfig"
+version = "2.3.1"
+description = "brain-dead simple config-ini parsing"
+optional = false
+python-versions = ">=3.10"
+groups = ["dev"]
+files = [
+    {file = "iniconfig-2.3.1-py3-none-any.whl", hash = "sha256:9121e2c1fdb355232495be3194c8dfe87ccc2d5dee45947b78e68f499790d7a7"},
+    {file = "iniconfig-2.3.1.tar.gz", hash = "sha256:67f4b9c50da0dedf52af349e7749a80a9057a5031199791b906c3bb3ae878960"},
+]
+
+[[package]]
 name = "ipykernel"
 version = "6.29.5"
 description = "IPython Kernel for Jupyter"
 optional = false
 python-versions = ">=3.8"
-groups = ["main"]
+groups = ["lab"]
 files = [
     {file = "ipykernel-6.29.5-py3-none-any.whl", hash = "sha256:afdb66ba5aa354b09b91379bac28ae4afebbb30e8b39510c9690afb7a10421b5"},
     {file = "ipykernel-6.29.5.tar.gz", hash = "sha256:f093a22c4a40f8828f8e330a9c297cb93dcab13bd9678ded6de8e5cf81c56215"},
@@ -3169,7 +3183,7 @@ version = "8.32.0"
 description = "IPython: Productive Interactive Computing"
 optional = false
 python-versions = ">=3.10"
-groups = ["main"]
+groups = ["lab"]
 files = [
     {file = "ipython-8.32.0-py3-none-any.whl", hash = "sha256:cae85b0c61eff1fc48b0a8002de5958b6528fa9c8defb1894da63f42613708aa"},
     {file = "ipython-8.32.0.tar.gz", hash = "sha256:be2c91895b0b9ea7ba49d33b23e2040c352b33eb6a519cca7ce6e0c743444251"},
@@ -3207,7 +3221,7 @@ version = "8.1.8"
 description = "Jupyter interactive widgets"
 optional = false
 python-versions = ">=3.7"
-groups = ["main"]
+groups = ["lab"]
 files = [
     {file = "ipywidgets-8.1.8-py3-none-any.whl", hash = "sha256:ecaca67aed704a338f88f67b1181b58f821ab5dc89c1f0f5ef99db43c1c2921e"},
     {file = "ipywidgets-8.1.8.tar.gz", hash = "sha256:61f969306b95f85fba6b6986b7fe45d73124d1d9e3023a8068710d47a22ea668"},
@@ -3244,7 +3258,7 @@ version = "2.2.0"
 description = "Safely pass data to untrusted environments and back."
 optional = false
 python-versions = ">=3.8"
-groups = ["main"]
+groups = ["lab"]
 files = [
     {file = "itsdangerous-2.2.0-py3-none-any.whl", hash = "sha256:c6242fc49e35958c8b15141343aa660db5fc54d4f13a1db01a3f5891b98700ef"},
     {file = "itsdangerous-2.2.0.tar.gz", hash = "sha256:e0050c0b7da1eea53ffaf149c0cfbb5c6e2e2b69c4bef22c81fa6eb73e5f6173"},
@@ -3256,7 +3270,7 @@ version = "0.19.2"
 description = "An autocompletion tool for Python that can be used for text editors."
 optional = false
 python-versions = ">=3.6"
-groups = ["main"]
+groups = ["lab"]
 files = [
     {file = "jedi-0.19.2-py2.py3-none-any.whl", hash = "sha256:a8ef22bde8490f57fe5c7681a3c83cb58874daf72b4784de3cce5b6ef6edb5b9"},
     {file = "jedi-0.19.2.tar.gz", hash = "sha256:4770dc3de41bde3966b02eb84fbcf557fb33cce26ad23da12c742fb50ecb11f0"},
@@ -3276,7 +3290,7 @@ version = "3.1.6"
 description = "A very fast and expressive template engine."
 optional = false
 python-versions = ">=3.7"
-groups = ["main", "timeseries"]
+groups = ["dashboard", "lab", "timeseries"]
 files = [
     {file = "jinja2-3.1.6-py3-none-any.whl", hash = "sha256:85ece4451f492d0c13c5dd7c13a64681a86afae63a5f347908daf103ce6d2f67"},
     {file = "jinja2-3.1.6.tar.gz", hash = "sha256:0137fb05990d35f1275a587e9aee6d56da821fc83491a0fb838183be43f66d6d"},
@@ -3294,7 +3308,7 @@ version = "1.1.0"
 description = "JSON Matching Expressions"
 optional = false
 python-versions = ">=3.9"
-groups = ["main", "timeseries"]
+groups = ["main", "lab", "timeseries"]
 files = [
     {file = "jmespath-1.1.0-py3-none-any.whl", hash = "sha256:a5663118de4908c91729bea0acadca56526eb2698e83de10cd116ae0f4e97c64"},
     {file = "jmespath-1.1.0.tar.gz", hash = "sha256:472c87d80f36026ae83c6ddd0f1d05d4e510134ed462851fd5f754c8c3cbb88d"},
@@ -3306,7 +3320,7 @@ version = "1.4.2"
 description = "Lightweight pipelining with Python functions"
 optional = false
 python-versions = ">=3.8"
-groups = ["main", "timeseries"]
+groups = ["main", "lab", "tabpfn", "timeseries", "train"]
 files = [
     {file = "joblib-1.4.2-py3-none-any.whl", hash = "sha256:06d478d5674cbc267e7496a410ee875abd68e4340feff4490bcb7afb88060ae6"},
     {file = "joblib-1.4.2.tar.gz", hash = "sha256:2382c5816b2636fbd20a09e0f4e9dad4736765fdfb7dca582943b9c1366b3f0e"},
@@ -3318,7 +3332,7 @@ version = "4.23.0"
 description = "An implementation of JSON Schema validation for Python"
 optional = false
 python-versions = ">=3.8"
-groups = ["main"]
+groups = ["dashboard", "lab"]
 files = [
     {file = "jsonschema-4.23.0-py3-none-any.whl", hash = "sha256:fbadb6f8b144a8f8cf9f0b89ba94501d143e50411a1278633f56a7acf7fd5566"},
     {file = "jsonschema-4.23.0.tar.gz", hash = "sha256:d71497fef26351a33265337fa77ffeb82423f3ea21283cd9467bb03999266bc4"},
@@ -3340,7 +3354,7 @@ version = "2025.9.1"
 description = "The JSON Schema meta-schemas and vocabularies, exposed as a Registry"
 optional = false
 python-versions = ">=3.9"
-groups = ["main"]
+groups = ["dashboard", "lab"]
 files = [
     {file = "jsonschema_specifications-2025.9.1-py3-none-any.whl", hash = "sha256:98802fee3a11ee76ecaca44429fda8a41bff98b00a0f2838151b113f210cc6fe"},
     {file = "jsonschema_specifications-2025.9.1.tar.gz", hash = "sha256:b540987f239e745613c7a9176f3edb72b832a4ac465cf02712288397832b5e8d"},
@@ -3355,7 +3369,7 @@ version = "8.6.3"
 description = "Jupyter protocol implementation and client libraries"
 optional = false
 python-versions = ">=3.8"
-groups = ["main"]
+groups = ["lab"]
 files = [
     {file = "jupyter_client-8.6.3-py3-none-any.whl", hash = "sha256:e8a19cc986cc45905ac3362915f410f3af85424b4c0905e94fa5f2cb08e8f23f"},
     {file = "jupyter_client-8.6.3.tar.gz", hash = "sha256:35b3a0947c4a6e9d589eb97d7d4cd5e90f910ee73101611f01283732bd6d9419"},
@@ -3378,7 +3392,7 @@ version = "5.7.2"
 description = "Jupyter core package. A base package on which Jupyter projects rely."
 optional = false
 python-versions = ">=3.8"
-groups = ["main"]
+groups = ["lab"]
 files = [
     {file = "jupyter_core-5.7.2-py3-none-any.whl", hash = "sha256:4f7315d2f6b4bcf2e3e7cb6e46772eba760ae459cd1f59d29eb57b0a01bd7409"},
     {file = "jupyter_core-5.7.2.tar.gz", hash = "sha256:aa5f8d32bbf6b431ac830496da7392035d6f61b4f54872f15c4bd2a9c3f536d9"},
@@ -3399,7 +3413,7 @@ version = "3.0.16"
 description = "Jupyter interactive widgets for JupyterLab"
 optional = false
 python-versions = ">=3.7"
-groups = ["main"]
+groups = ["lab"]
 files = [
     {file = "jupyterlab_widgets-3.0.16-py3-none-any.whl", hash = "sha256:45fa36d9c6422cf2559198e4db481aa243c7a32d9926b500781c830c80f7ecf8"},
     {file = "jupyterlab_widgets-3.0.16.tar.gz", hash = "sha256:423da05071d55cf27a9e602216d35a3a65a3e41cdf9c5d3b643b814ce38c19e0"},
@@ -3411,7 +3425,7 @@ version = "1.4.8"
 description = "A fast implementation of the Cassowary constraint solver"
 optional = false
 python-versions = ">=3.10"
-groups = ["main", "timeseries"]
+groups = ["lab", "timeseries", "train"]
 files = [
     {file = "kiwisolver-1.4.8-cp310-cp310-macosx_10_9_universal2.whl", hash = "sha256:88c6f252f6816a73b1f8c904f7bbe02fd67c09a69f7cb8a0eecdbf5ce78e63db"},
     {file = "kiwisolver-1.4.8-cp310-cp310-macosx_10_9_x86_64.whl", hash = "sha256:c72941acb7b67138f35b879bbe85be0f6c6a70cab78fe3ef6db9c024d9223e5b"},
@@ -3501,7 +3515,7 @@ version = "0.4"
 description = "Makes it easy to load subpackages and functions on demand."
 optional = false
 python-versions = ">=3.7"
-groups = ["main"]
+groups = ["lab"]
 files = [
     {file = "lazy_loader-0.4-py3-none-any.whl", hash = "sha256:342aa8e14d543a154047afb4ba8ef17f5563baad3fc610d7b15b213b0f119efc"},
     {file = "lazy_loader-0.4.tar.gz", hash = "sha256:47c75182589b91a4e1a85a136c074285a5ad4d9f39c63e0d7fb76391c4574cd1"},
@@ -3521,7 +3535,7 @@ version = "4.6.0"
 description = "LightGBM Python-package"
 optional = false
 python-versions = ">=3.7"
-groups = ["main", "timeseries"]
+groups = ["lab", "timeseries"]
 files = [
     {file = "lightgbm-4.6.0-py3-none-macosx_10_15_x86_64.whl", hash = "sha256:b7a393de8a334d5c8e490df91270f0763f83f959574d504c7ccb9eee4aef70ed"},
     {file = "lightgbm-4.6.0-py3-none-macosx_12_0_arm64.whl", hash = "sha256:2dafd98d4e02b844ceb0b61450a660681076b1ea6c7adb8c566dfd66832aafad"},
@@ -3547,7 +3561,7 @@ version = "2.5.6"
 description = "The Deep Learning framework to train, deploy, and ship AI products Lightning fast."
 optional = false
 python-versions = ">=3.9"
-groups = ["main", "timeseries"]
+groups = ["lab", "timeseries"]
 files = [
     {file = "lightning-2.5.6-py3-none-any.whl", hash = "sha256:25bb2053078c2efc57c082fda89dfbd975dfa76beb08def191947c2b571a8c8a"},
     {file = "lightning-2.5.6.tar.gz", hash = "sha256:57b6abe87080895bc237fb7f36b7b4abaa2793760cbca00e3907e56607e0ed27"},
@@ -3590,7 +3604,7 @@ version = "0.15.2"
 description = "Lightning toolbox for across the our ecosystem."
 optional = false
 python-versions = ">=3.9"
-groups = ["main", "timeseries"]
+groups = ["lab", "timeseries"]
 files = [
     {file = "lightning_utilities-0.15.2-py3-none-any.whl", hash = "sha256:ad3ab1703775044bbf880dbf7ddaaac899396c96315f3aa1779cec9d618a9841"},
     {file = "lightning_utilities-0.15.2.tar.gz", hash = "sha256:cdf12f530214a63dacefd713f180d1ecf5d165338101617b4742e8f22c032e24"},
@@ -3612,7 +3626,7 @@ version = "0.45.1"
 description = "lightweight wrapper around basic LLVM functionality"
 optional = false
 python-versions = ">=3.10"
-groups = ["main", "timeseries"]
+groups = ["lab", "timeseries", "train"]
 markers = "sys_platform == \"darwin\" and platform_machine == \"x86_64\""
 files = [
     {file = "llvmlite-0.45.1-cp310-cp310-macosx_10_15_x86_64.whl", hash = "sha256:1b1af0c910af0978aa55fa4f60bbb3e9f39b41e97c2a6d94d199897be62ba07a"},
@@ -3644,7 +3658,7 @@ version = "0.46.0"
 description = "lightweight wrapper around basic LLVM functionality"
 optional = false
 python-versions = ">=3.10"
-groups = ["main", "timeseries"]
+groups = ["lab", "timeseries", "train"]
 markers = "sys_platform != \"darwin\" or platform_machine != \"x86_64\""
 files = [
     {file = "llvmlite-0.46.0-cp310-cp310-macosx_11_0_arm64.whl", hash = "sha256:4323177e936d61ae0f73e653e2e614284d97d14d5dd12579adc92b6c2b0597b0"},
@@ -3676,7 +3690,7 @@ version = "0.7.3"
 description = "Python logging made (stupidly) simple"
 optional = false
 python-versions = "<4.0,>=3.5"
-groups = ["main"]
+groups = ["lab"]
 files = [
     {file = "loguru-0.7.3-py3-none-any.whl", hash = "sha256:31a33c10c8e1e10422bfd431aeb5d351c7cf7fa671e3c4df004162264b28220c"},
     {file = "loguru-0.7.3.tar.gz", hash = "sha256:19480589e77d47b8d85b2c827ad95d49bf31b0dcde16593892eb51dd18706eb6"},
@@ -3695,7 +3709,7 @@ version = "6.0.2"
 description = "Powerful and Pythonic XML processing library combining libxml2/libxslt with the ElementTree API."
 optional = false
 python-versions = ">=3.8"
-groups = ["main"]
+groups = ["scrape"]
 files = [
     {file = "lxml-6.0.2-cp310-cp310-macosx_10_9_universal2.whl", hash = "sha256:e77dd455b9a16bbd2a5036a63ddbd479c19572af81b624e79ef422f929eef388"},
     {file = "lxml-6.0.2-cp310-cp310-macosx_10_9_x86_64.whl", hash = "sha256:5d444858b9f07cefff6455b983aea9a67f7462ba1f6cbe4a21e8bf6791bf2153"},
@@ -3851,7 +3865,7 @@ version = "1.3.10"
 description = "A super-fast templating language that borrows the best ideas from the existing templating languages."
 optional = false
 python-versions = ">=3.8"
-groups = ["main", "timeseries"]
+groups = ["lab", "timeseries", "train"]
 files = [
     {file = "mako-1.3.10-py3-none-any.whl", hash = "sha256:baef24a52fc4fc514a0887ac600f9f1cff3d82c61d4d700a1fa84d597b88db59"},
     {file = "mako-1.3.10.tar.gz", hash = "sha256:99579a6f39583fa7e5630a28c3c1f440e4e97a414b80372649c0ce338da2ea28"},
@@ -3871,7 +3885,7 @@ version = "3.10.1"
 description = "Python implementation of John Gruber's Markdown."
 optional = false
 python-versions = ">=3.10"
-groups = ["main", "timeseries"]
+groups = ["lab", "timeseries"]
 files = [
     {file = "markdown-3.10.1-py3-none-any.whl", hash = "sha256:867d788939fe33e4b736426f5b9f651ad0c0ae0ecf89df0ca5d1176c70812fe3"},
     {file = "markdown-3.10.1.tar.gz", hash = "sha256:1c19c10bd5c14ac948c53d0d762a04e2fa35a6d58a6b7b1e6bfcbe6fefc0001a"},
@@ -3887,7 +3901,7 @@ version = "4.0.0"
 description = "Python port of markdown-it. Markdown parsing, done right!"
 optional = false
 python-versions = ">=3.10"
-groups = ["main"]
+groups = ["lab", "tabpfn", "timeseries"]
 files = [
     {file = "markdown_it_py-4.0.0-py3-none-any.whl", hash = "sha256:87327c59b172c5011896038353a81343b6754500a08cd7a4973bb48c6d578147"},
     {file = "markdown_it_py-4.0.0.tar.gz", hash = "sha256:cb0a2b4aa34f932c007117b194e945bd74e0ec24133ceb5bac59009cda1cb9f3"},
@@ -3911,7 +3925,7 @@ version = "3.0.3"
 description = "Safely add untrusted strings to HTML/XML markup."
 optional = false
 python-versions = ">=3.9"
-groups = ["main", "timeseries"]
+groups = ["dashboard", "lab", "timeseries", "train"]
 files = [
     {file = "markupsafe-3.0.3-cp310-cp310-macosx_10_9_x86_64.whl", hash = "sha256:2f981d352f04553a7171b8e44369f2af4055f888dfb147d55e42d29e29e74559"},
     {file = "markupsafe-3.0.3-cp310-cp310-macosx_11_0_arm64.whl", hash = "sha256:e1c1493fb6e50ab01d20a22826e57520f1284df32f2d8601fdd90b6304601419"},
@@ -4010,7 +4024,7 @@ version = "3.10.0"
 description = "Python plotting package"
 optional = false
 python-versions = ">=3.10"
-groups = ["main", "timeseries"]
+groups = ["lab", "timeseries", "train"]
 files = [
     {file = "matplotlib-3.10.0-cp310-cp310-macosx_10_12_x86_64.whl", hash = "sha256:2c5829a5a1dd5a71f0e31e6e8bb449bc0ee9dbfb05ad28fc0c6b55101b3a4be6"},
     {file = "matplotlib-3.10.0-cp310-cp310-macosx_11_0_arm64.whl", hash = "sha256:a2a43cbefe22d653ab34bb55d42384ed30f611bcbdea1f8d7f431011a2e1c62e"},
@@ -4068,7 +4082,7 @@ version = "0.1.7"
 description = "Inline Matplotlib backend for Jupyter"
 optional = false
 python-versions = ">=3.8"
-groups = ["main"]
+groups = ["lab"]
 files = [
     {file = "matplotlib_inline-0.1.7-py3-none-any.whl", hash = "sha256:df192d39a4ff8f21b1895d72e6a13f5fcc5099f00fa84384e0ea28c2cc0653ca"},
     {file = "matplotlib_inline-0.1.7.tar.gz", hash = "sha256:8423b23ec666be3d16e16b60bdd8ac4e86e840ebd1dd11a30b9f117f2fa0ab90"},
@@ -4083,7 +4097,7 @@ version = "0.1.2"
 description = "Markdown URL utilities"
 optional = false
 python-versions = ">=3.7"
-groups = ["main"]
+groups = ["lab", "tabpfn", "timeseries"]
 files = [
     {file = "mdurl-0.1.2-py3-none-any.whl", hash = "sha256:84008a41e51615a49fc9966191ff91509e3c40b939176e643fd50a5c2196b8f8"},
     {file = "mdurl-0.1.2.tar.gz", hash = "sha256:bb413d29f5eea38f31dd4754dd7377d4465116fb207585f97bf925588687c1ba"},
@@ -4095,7 +4109,7 @@ version = "0.14.0"
 description = "Scalable machine learning based time series forecasting"
 optional = false
 python-versions = ">=3.8"
-groups = ["main", "timeseries"]
+groups = ["lab", "timeseries"]
 files = [
     {file = "mlforecast-0.14.0-py3-none-any.whl", hash = "sha256:7418fc8a97cf505e2b33f859bdc0b336da64cc034f10acab260a5a19f47fa9e5"},
     {file = "mlforecast-0.14.0.tar.gz", hash = "sha256:2bc11ad747d82e08107444939bf292c7eb20d6d951ad3109697233588e7be4d8"},
@@ -4130,7 +4144,7 @@ version = "0.1.11"
 description = "Create a source of truth for ML model results and browse it on Papers with Code"
 optional = false
 python-versions = "*"
-groups = ["main"]
+groups = ["lab"]
 files = [
     {file = "model-index-0.1.11.tar.gz", hash = "sha256:2f9870200f3b00813881b07b90d2c67291663534e43915c75fe476b6977bf2ad"},
     {file = "model_index-0.1.11-py3-none-any.whl", hash = "sha256:a2a4d4431cd44e571d31e223cc4b0432663a62689de453bdb666e56a514b0e07"},
@@ -4148,7 +4162,7 @@ version = "1.3.0"
 description = "Python library for arbitrary-precision floating-point arithmetic"
 optional = false
 python-versions = "*"
-groups = ["main", "timeseries"]
+groups = ["lab", "timeseries"]
 files = [
     {file = "mpmath-1.3.0-py3-none-any.whl", hash = "sha256:a0b2b9fe80bbcd81a6647ff13108738cfb482d481d826cc0e02f5b35e5c88d2c"},
     {file = "mpmath-1.3.0.tar.gz", hash = "sha256:7a28eb2a9774d00c7bc92411c19a89209d5da7c4c9a9e227be8330a23a25b91f"},
@@ -4166,7 +4180,7 @@ version = "1.1.2"
 description = "MessagePack serializer"
 optional = false
 python-versions = ">=3.9"
-groups = ["main"]
+groups = ["lab"]
 markers = "python_version != \"3.13\" or platform_system != \"Windows\""
 files = [
     {file = "msgpack-1.1.2-cp310-cp310-macosx_10_9_x86_64.whl", hash = "sha256:0051fffef5a37ca2cd16978ae4f0aef92f164df86823871b5162812bebecd8e2"},
@@ -4239,7 +4253,7 @@ version = "6.7.0"
 description = "multidict implementation"
 optional = false
 python-versions = ">=3.9"
-groups = ["main", "timeseries"]
+groups = ["lab", "timeseries"]
 files = [
     {file = "multidict-6.7.0-cp310-cp310-macosx_10_9_universal2.whl", hash = "sha256:9f474ad5acda359c8758c8accc22032c6abe6dc87a8be2440d097785e27a9349"},
     {file = "multidict-6.7.0-cp310-cp310-macosx_10_9_x86_64.whl", hash = "sha256:4b7a9db5a870f780220e931d0002bbfd88fb53aceb6293251e2c839415c1b20e"},
@@ -4395,7 +4409,7 @@ version = "0.70.16"
 description = "better multiprocessing and multithreading in Python"
 optional = false
 python-versions = ">=3.8"
-groups = ["main", "timeseries"]
+groups = ["lab", "timeseries"]
 files = [
     {file = "multiprocess-0.70.16-pp310-pypy310_pp73-macosx_10_13_x86_64.whl", hash = "sha256:476887be10e2f59ff183c006af746cb6f1fd0eadcfd4ef49e605cbe2659920ee"},
     {file = "multiprocess-0.70.16-pp310-pypy310_pp73-manylinux_2_28_x86_64.whl", hash = "sha256:d951bed82c8f73929ac82c61f01a7b5ce8f3e5ef40f5b52553b4f547ce2b08ec"},
@@ -4420,7 +4434,7 @@ version = "1.0.15"
 description = "Cython bindings for MurmurHash"
 optional = false
 python-versions = "<3.15,>=3.6"
-groups = ["main"]
+groups = ["lab"]
 files = [
     {file = "murmurhash-1.0.15-cp310-cp310-macosx_10_9_x86_64.whl", hash = "sha256:f4989c16053a9a83b02c520dd00a31f0877d5fd2ab8a9b6b75ed9eba0e25c489"},
     {file = "murmurhash-1.0.15-cp310-cp310-macosx_11_0_arm64.whl", hash = "sha256:899068ba3d7c371e7edd093852c634cce802fefd9aaddfcc0d2fda1d7433c7f9"},
@@ -4555,7 +4569,7 @@ version = "1.0.0"
 description = "Type system extensions for programs checked with the mypy type checker."
 optional = false
 python-versions = ">=3.5"
-groups = ["main", "dev"]
+groups = ["dev"]
 files = [
     {file = "mypy_extensions-1.0.0-py3-none-any.whl", hash = "sha256:4392f6c0eb8a5668a69e23d168ffa70f0be9ccfd32b5cc2d26a34ae5b844552d"},
     {file = "mypy_extensions-1.0.0.tar.gz", hash = "sha256:75dbf8955dc00442a438fc4d0666508a9a97b6bd41aa2f0ffe9d2f2725af0782"},
@@ -4567,7 +4581,7 @@ version = "2.15.0"
 description = "Extremely lightweight compatibility layer between dataframe libraries"
 optional = false
 python-versions = ">=3.9"
-groups = ["main", "timeseries"]
+groups = ["dashboard", "lab", "timeseries"]
 files = [
     {file = "narwhals-2.15.0-py3-none-any.whl", hash = "sha256:cbfe21ca19d260d9fd67f995ec75c44592d1f106933b03ddd375df7ac841f9d6"},
     {file = "narwhals-2.15.0.tar.gz", hash = "sha256:a9585975b99d95084268445a1fdd881311fa26ef1caa18020d959d5b2ff9a965"},
@@ -4615,7 +4629,7 @@ version = "1.6.0"
 description = "Patch asyncio to allow nested event loops"
 optional = false
 python-versions = ">=3.5"
-groups = ["main"]
+groups = ["lab"]
 files = [
     {file = "nest_asyncio-1.6.0-py3-none-any.whl", hash = "sha256:87af6efd6b5e897c81050477ef65c62e2b2f35d51703cae01aff2905b1852e1c"},
     {file = "nest_asyncio-1.6.0.tar.gz", hash = "sha256:6f172d5449aca15afd6c646851f4e31e02c598d553a667e38cafa997cfec55fe"},
@@ -4627,7 +4641,7 @@ version = "3.6.1"
 description = "Python package for creating and manipulating graphs and networks"
 optional = false
 python-versions = "!=3.14.1,>=3.11"
-groups = ["main", "timeseries"]
+groups = ["lab", "timeseries"]
 files = [
     {file = "networkx-3.6.1-py3-none-any.whl", hash = "sha256:d47fbf302e7d9cbbb9e2555a0d267983d2aa476bac30e90dfbe5669bd57f3762"},
     {file = "networkx-3.6.1.tar.gz", hash = "sha256:26b7c357accc0c8cde558ad486283728b65b6a95d85ee1cd66bafab4c8168509"},
@@ -4650,7 +4664,7 @@ version = "1.1.11"
 description = "Natural language processing augmentation library for deep neural networks"
 optional = false
 python-versions = ">=3.7"
-groups = ["main"]
+groups = ["lab"]
 files = [
     {file = "nlpaug-1.1.11-py3-none-any.whl", hash = "sha256:01d3befce09e46cb7d990839e0b7dd80ba3e991485f772e678d329ffeb97fd80"},
 ]
@@ -4667,7 +4681,7 @@ version = "3.9.2"
 description = "Natural Language Toolkit"
 optional = false
 python-versions = ">=3.9"
-groups = ["main"]
+groups = ["lab"]
 files = [
     {file = "nltk-3.9.2-py3-none-any.whl", hash = "sha256:1e209d2b3009110635ed9709a67a1a3e33a10f799490fa71cf4bec218c11c88a"},
     {file = "nltk-3.9.2.tar.gz", hash = "sha256:0f409e9b069ca4177c1903c3e843eef90c7e92992fa4931ae607da6de49e1419"},
@@ -4693,7 +4707,7 @@ version = "0.62.1"
 description = "compiling Python code using LLVM"
 optional = false
 python-versions = ">=3.10"
-groups = ["main", "timeseries"]
+groups = ["lab", "timeseries", "train"]
 markers = "sys_platform == \"darwin\" and platform_machine == \"x86_64\""
 files = [
     {file = "numba-0.62.1-cp310-cp310-macosx_10_15_x86_64.whl", hash = "sha256:a323df9d36a0da1ca9c592a6baaddd0176d9f417ef49a65bb81951dce69d941a"},
@@ -4729,7 +4743,7 @@ version = "0.63.1"
 description = "compiling Python code using LLVM"
 optional = false
 python-versions = ">=3.10"
-groups = ["main", "timeseries"]
+groups = ["lab", "timeseries", "train"]
 markers = "sys_platform != \"darwin\" or platform_machine != \"x86_64\""
 files = [
     {file = "numba-0.63.1-cp310-cp310-macosx_11_0_arm64.whl", hash = "sha256:c6d6bf5bf00f7db629305caaec82a2ffb8abe2bf45eaad0d0738dc7de4113779"},
@@ -4765,7 +4779,7 @@ version = "2.1.3"
 description = "Fundamental package for array computing in Python"
 optional = false
 python-versions = ">=3.10"
-groups = ["main", "timeseries"]
+groups = ["main", "cpu", "cuda", "dashboard", "lab", "tabpfn", "timeseries", "train"]
 files = [
     {file = "numpy-2.1.3-cp310-cp310-macosx_10_9_x86_64.whl", hash = "sha256:c894b4305373b9c5576d7a12b473702afdf48ce5369c074ba304cc5ad8730dff"},
     {file = "numpy-2.1.3-cp310-cp310-macosx_11_0_arm64.whl", hash = "sha256:b47fbb433d3260adcd51eb54f92a2ffbc90a4595f8970ee00e064c644ac788f5"},
@@ -4830,7 +4844,7 @@ version = "12.8.4.1"
 description = "CUBLAS native runtime libraries"
 optional = false
 python-versions = ">=3"
-groups = ["main", "timeseries"]
+groups = ["lab", "timeseries"]
 markers = "platform_system == \"Linux\" and platform_machine == \"x86_64\""
 files = [
     {file = "nvidia_cublas_cu12-12.8.4.1-py3-none-manylinux_2_27_aarch64.whl", hash = "sha256:b86f6dd8935884615a0683b663891d43781b819ac4f2ba2b0c9604676af346d0"},
@@ -4844,7 +4858,7 @@ version = "12.8.90"
 description = "CUDA profiling tools runtime libs."
 optional = false
 python-versions = ">=3"
-groups = ["main", "timeseries"]
+groups = ["lab", "timeseries"]
 markers = "platform_system == \"Linux\" and platform_machine == \"x86_64\""
 files = [
     {file = "nvidia_cuda_cupti_cu12-12.8.90-py3-none-manylinux2014_aarch64.manylinux_2_17_aarch64.whl", hash = "sha256:4412396548808ddfed3f17a467b104ba7751e6b58678a4b840675c56d21cf7ed"},
@@ -4858,7 +4872,7 @@ version = "12.8.93"
 description = "NVRTC native runtime libraries"
 optional = false
 python-versions = ">=3"
-groups = ["main", "timeseries"]
+groups = ["lab", "timeseries"]
 markers = "platform_system == \"Linux\" and platform_machine == \"x86_64\""
 files = [
     {file = "nvidia_cuda_nvrtc_cu12-12.8.93-py3-none-manylinux2010_x86_64.manylinux_2_12_x86_64.whl", hash = "sha256:a7756528852ef889772a84c6cd89d41dfa74667e24cca16bb31f8f061e3e9994"},
@@ -4872,7 +4886,7 @@ version = "12.8.90"
 description = "CUDA Runtime native Libraries"
 optional = false
 python-versions = ">=3"
-groups = ["main", "timeseries"]
+groups = ["lab", "timeseries"]
 markers = "platform_system == \"Linux\" and platform_machine == \"x86_64\""
 files = [
     {file = "nvidia_cuda_runtime_cu12-12.8.90-py3-none-manylinux2014_aarch64.manylinux_2_17_aarch64.whl", hash = "sha256:52bf7bbee900262ffefe5e9d5a2a69a30d97e2bc5bb6cc866688caa976966e3d"},
@@ -4886,7 +4900,7 @@ version = "9.10.2.21"
 description = "cuDNN runtime libraries"
 optional = false
 python-versions = ">=3"
-groups = ["main", "timeseries"]
+groups = ["lab", "timeseries"]
 markers = "platform_system == \"Linux\" and platform_machine == \"x86_64\""
 files = [
     {file = "nvidia_cudnn_cu12-9.10.2.21-py3-none-manylinux_2_27_aarch64.whl", hash = "sha256:c9132cc3f8958447b4910a1720036d9eff5928cc3179b0a51fb6d167c6cc87d8"},
@@ -4903,7 +4917,7 @@ version = "11.3.3.83"
 description = "CUFFT native runtime libraries"
 optional = false
 python-versions = ">=3"
-groups = ["main", "timeseries"]
+groups = ["lab", "timeseries"]
 markers = "platform_system == \"Linux\" and platform_machine == \"x86_64\""
 files = [
     {file = "nvidia_cufft_cu12-11.3.3.83-py3-none-manylinux2014_aarch64.manylinux_2_17_aarch64.whl", hash = "sha256:848ef7224d6305cdb2a4df928759dca7b1201874787083b6e7550dd6765ce69a"},
@@ -4920,7 +4934,7 @@ version = "1.13.1.3"
 description = "cuFile GPUDirect libraries"
 optional = false
 python-versions = ">=3"
-groups = ["main", "timeseries"]
+groups = ["lab", "timeseries"]
 markers = "platform_system == \"Linux\" and platform_machine == \"x86_64\""
 files = [
     {file = "nvidia_cufile_cu12-1.13.1.3-py3-none-manylinux2014_x86_64.manylinux_2_17_x86_64.whl", hash = "sha256:1d069003be650e131b21c932ec3d8969c1715379251f8d23a1860554b1cb24fc"},
@@ -4933,7 +4947,7 @@ version = "10.3.9.90"
 description = "CURAND native runtime libraries"
 optional = false
 python-versions = ">=3"
-groups = ["main", "timeseries"]
+groups = ["lab", "timeseries"]
 markers = "platform_system == \"Linux\" and platform_machine == \"x86_64\""
 files = [
     {file = "nvidia_curand_cu12-10.3.9.90-py3-none-manylinux_2_27_aarch64.whl", hash = "sha256:dfab99248034673b779bc6decafdc3404a8a6f502462201f2f31f11354204acd"},
@@ -4947,7 +4961,7 @@ version = "11.7.3.90"
 description = "CUDA solver native runtime libraries"
 optional = false
 python-versions = ">=3"
-groups = ["main", "timeseries"]
+groups = ["lab", "timeseries"]
 markers = "platform_system == \"Linux\" and platform_machine == \"x86_64\""
 files = [
     {file = "nvidia_cusolver_cu12-11.7.3.90-py3-none-manylinux_2_27_aarch64.whl", hash = "sha256:db9ed69dbef9715071232caa9b69c52ac7de3a95773c2db65bdba85916e4e5c0"},
@@ -4966,7 +4980,7 @@ version = "12.5.8.93"
 description = "CUSPARSE native runtime libraries"
 optional = false
 python-versions = ">=3"
-groups = ["main", "timeseries"]
+groups = ["lab", "timeseries"]
 markers = "platform_system == \"Linux\" and platform_machine == \"x86_64\""
 files = [
     {file = "nvidia_cusparse_cu12-12.5.8.93-py3-none-manylinux2014_aarch64.manylinux_2_17_aarch64.whl", hash = "sha256:9b6c161cb130be1a07a27ea6923df8141f3c295852f4b260c65f18f3e0a091dc"},
@@ -4983,7 +4997,7 @@ version = "0.7.1"
 description = "NVIDIA cuSPARSELt"
 optional = false
 python-versions = "*"
-groups = ["main", "timeseries"]
+groups = ["lab", "timeseries"]
 markers = "platform_system == \"Linux\" and platform_machine == \"x86_64\""
 files = [
     {file = "nvidia_cusparselt_cu12-0.7.1-py3-none-manylinux2014_aarch64.whl", hash = "sha256:8878dce784d0fac90131b6817b607e803c36e629ba34dc5b433471382196b6a5"},
@@ -4997,7 +5011,7 @@ version = "7.352.0"
 description = "Python Bindings for the NVIDIA Management Library"
 optional = false
 python-versions = "*"
-groups = ["main"]
+groups = ["lab"]
 files = [
     {file = "nvidia-ml-py3-7.352.0.tar.gz", hash = "sha256:390f02919ee9d73fe63a98c73101061a6b37fa694a793abf56673320f1f51277"},
 ]
@@ -5008,7 +5022,7 @@ version = "2.27.5"
 description = "NVIDIA Collective Communication Library (NCCL) Runtime"
 optional = false
 python-versions = ">=3"
-groups = ["main", "timeseries"]
+groups = ["cuda", "lab", "timeseries"]
 markers = "platform_system == \"Linux\" and platform_machine != \"aarch64\""
 files = [
     {file = "nvidia_nccl_cu12-2.27.5-py3-none-manylinux2014_aarch64.manylinux_2_17_aarch64.whl", hash = "sha256:31432ad4d1fb1004eb0c56203dc9bc2178a1ba69d1d9e02d64a6938ab5e40e7a"},
@@ -5021,7 +5035,7 @@ version = "12.8.93"
 description = "Nvidia JIT LTO Library"
 optional = false
 python-versions = ">=3"
-groups = ["main", "timeseries"]
+groups = ["lab", "timeseries"]
 markers = "platform_system == \"Linux\" and platform_machine == \"x86_64\""
 files = [
     {file = "nvidia_nvjitlink_cu12-12.8.93-py3-none-manylinux2010_x86_64.manylinux_2_12_x86_64.whl", hash = "sha256:81ff63371a7ebd6e6451970684f916be2eab07321b73c9d244dc2b4da7f73b88"},
@@ -5035,7 +5049,7 @@ version = "3.3.20"
 description = "NVSHMEM creates a global address space that provides efficient and scalable communication for NVIDIA GPU clusters."
 optional = false
 python-versions = ">=3"
-groups = ["main", "timeseries"]
+groups = ["lab", "timeseries"]
 markers = "platform_system == \"Linux\" and platform_machine == \"x86_64\""
 files = [
     {file = "nvidia_nvshmem_cu12-3.3.20-py3-none-manylinux2014_aarch64.manylinux_2_17_aarch64.whl", hash = "sha256:0b0b960da3842212758e4fa4696b94f129090b30e5122fea3c5345916545cff0"},
@@ -5048,7 +5062,7 @@ version = "12.8.90"
 description = "NVIDIA Tools Extension"
 optional = false
 python-versions = ">=3"
-groups = ["main", "timeseries"]
+groups = ["lab", "timeseries"]
 markers = "platform_system == \"Linux\" and platform_machine == \"x86_64\""
 files = [
     {file = "nvidia_nvtx_cu12-12.8.90-py3-none-manylinux2014_aarch64.manylinux_2_17_aarch64.whl", hash = "sha256:d7ad891da111ebafbf7e015d34879f7112832fc239ff0d7d776b6cb685274615"},
@@ -5062,7 +5076,7 @@ version = "3.3.1"
 description = "A generic, spec-compliant, thorough implementation of the OAuth request-signing logic"
 optional = false
 python-versions = ">=3.8"
-groups = ["main"]
+groups = ["lab"]
 files = [
     {file = "oauthlib-3.3.1-py3-none-any.whl", hash = "sha256:88119c938d2b8fb88561af5f6ee0eec8cc8d552b7bb1f712743136eb7523b7a1"},
     {file = "oauthlib-3.3.1.tar.gz", hash = "sha256:0f0f8aa759826a193cf66c12ea1af1637f87b9b4622d46e866952bb022e538c9"},
@@ -5079,7 +5093,7 @@ version = "2.3.0"
 description = "A flexible configuration library"
 optional = false
 python-versions = ">=3.6"
-groups = ["main", "timeseries"]
+groups = ["lab", "tabpfn", "timeseries"]
 files = [
     {file = "omegaconf-2.3.0-py3-none-any.whl", hash = "sha256:7b4df175cdb08ba400f45cae3bdcae7ba8365db4d165fc65fd04b050ab63b46b"},
     {file = "omegaconf-2.3.0.tar.gz", hash = "sha256:d5d4b6d29955cc50ad50c46dc269bcd92c6e00f5f90d23ab5fee7bfca4ba4cc7"},
@@ -5095,7 +5109,7 @@ version = "0.11.4"
 description = "A stats collection and distributed tracing framework"
 optional = false
 python-versions = "*"
-groups = ["main"]
+groups = ["lab"]
 markers = "python_version != \"3.13\" or platform_system != \"Windows\""
 files = [
     {file = "opencensus-0.11.4-py2.py3-none-any.whl", hash = "sha256:a18487ce68bc19900336e0ff4655c5a116daf10c1b3685ece8d971bddad6a864"},
@@ -5113,7 +5127,7 @@ version = "0.1.3"
 description = "OpenCensus Runtime Context"
 optional = false
 python-versions = "*"
-groups = ["main"]
+groups = ["lab"]
 markers = "python_version != \"3.13\" or platform_system != \"Windows\""
 files = [
     {file = "opencensus-context-0.1.3.tar.gz", hash = "sha256:a03108c3c10d8c80bb5ddf5c8a1f033161fa61972a9917f9b9b3a18517f0088c"},
@@ -5126,7 +5140,7 @@ version = "0.0.10"
 description = "OpenDataLab Python SDK"
 optional = false
 python-versions = ">=3.7"
-groups = ["main"]
+groups = ["lab"]
 files = [
     {file = "opendatalab-0.0.10-py3-none-any.whl", hash = "sha256:b6a317785b7db418739933d4af6d981a0e45f6cf20a3e113bef63ed9b4488251"},
     {file = "opendatalab-0.0.10.tar.gz", hash = "sha256:9b1382f974bd76a961747dc33308fce5b024d337c02cf3acb728c64952ca9aaf"},
@@ -5148,7 +5162,7 @@ version = "0.3.9"
 description = "MIM Installs OpenMMLab packages"
 optional = false
 python-versions = ">=3.6"
-groups = ["main"]
+groups = ["lab"]
 files = [
     {file = "openmim-0.3.9-py2.py3-none-any.whl", hash = "sha256:71581498b68767f8e1f340575b91c9994ccc93656901639f11300e46247da263"},
     {file = "openmim-0.3.9.tar.gz", hash = "sha256:b3977b92232b4b8c4d987cbc73e4515826d5543ccd3a66d49fcfc602cc5b3352"},
@@ -5175,7 +5189,7 @@ version = "1.39.1"
 description = "OpenTelemetry Python API"
 optional = false
 python-versions = ">=3.9"
-groups = ["main"]
+groups = ["lab"]
 markers = "python_version != \"3.13\" or platform_system != \"Windows\""
 files = [
     {file = "opentelemetry_api-1.39.1-py3-none-any.whl", hash = "sha256:2edd8463432a7f8443edce90972169b195e7d6a05500cd29e6d13898187c9950"},
@@ -5192,7 +5206,7 @@ version = "0.60b1"
 description = "Prometheus Metric Exporter for OpenTelemetry"
 optional = false
 python-versions = ">=3.9"
-groups = ["main"]
+groups = ["lab"]
 markers = "python_version != \"3.13\" or platform_system != \"Windows\""
 files = [
     {file = "opentelemetry_exporter_prometheus-0.60b1-py3-none-any.whl", hash = "sha256:49f59178de4f4590e3cef0b8b95cf6e071aae70e1f060566df5546fad773b8fd"},
@@ -5210,7 +5224,7 @@ version = "1.39.1"
 description = "OpenTelemetry Python Proto"
 optional = false
 python-versions = ">=3.9"
-groups = ["main"]
+groups = ["lab"]
 markers = "python_version != \"3.13\" or platform_system != \"Windows\""
 files = [
     {file = "opentelemetry_proto-1.39.1-py3-none-any.whl", hash = "sha256:22cdc78efd3b3765d09e68bfbd010d4fc254c9818afd0b6b423387d9dee46007"},
@@ -5226,7 +5240,7 @@ version = "1.39.1"
 description = "OpenTelemetry Python SDK"
 optional = false
 python-versions = ">=3.9"
-groups = ["main"]
+groups = ["lab"]
 markers = "python_version != \"3.13\" or platform_system != \"Windows\""
 files = [
     {file = "opentelemetry_sdk-1.39.1-py3-none-any.whl", hash = "sha256:4d5482c478513ecb0a5d938dcc61394e647066e0cc2676bee9f3af3f3f45f01c"},
@@ -5244,7 +5258,7 @@ version = "0.60b1"
 description = "OpenTelemetry Semantic Conventions"
 optional = false
 python-versions = ">=3.9"
-groups = ["main"]
+groups = ["lab"]
 markers = "python_version != \"3.13\" or platform_system != \"Windows\""
 files = [
     {file = "opentelemetry_semantic_conventions-0.60b1-py3-none-any.whl", hash = "sha256:9fa8c8b0c110da289809292b0591220d3a7b53c1526a23021e977d68597893fb"},
@@ -5261,7 +5275,7 @@ version = "0.0.11"
 description = "openxlab tools"
 optional = false
 python-versions = ">=3.8"
-groups = ["main"]
+groups = ["lab"]
 files = [
     {file = "openxlab-0.0.11-py3-none-any.whl", hash = "sha256:ab594a0f8c6f74501ab6c82a823c17bd2d038f72ee47a41fbac2c801df68565a"},
     {file = "openxlab-0.0.11.tar.gz", hash = "sha256:bacc3ff3052432f4c3241cab7711e2cd6a4c4b80605dc3e8f2c157eddabd0cda"},
@@ -5273,7 +5287,7 @@ version = "4.7.0"
 description = "A hyperparameter optimization framework"
 optional = false
 python-versions = ">=3.9"
-groups = ["main", "timeseries"]
+groups = ["lab", "timeseries", "train"]
 files = [
     {file = "optuna-4.7.0-py3-none-any.whl", hash = "sha256:e41ec84018cecc10eabf28143573b1f0bde0ba56dba8151631a590ecbebc1186"},
     {file = "optuna-4.7.0.tar.gz", hash = "sha256:d91817e2079825557bd2e97de2e8c9ae260bfc99b32712502aef8a5095b2d2c0"},
@@ -5300,7 +5314,7 @@ version = "4.1.0"
 description = "An OrderedSet is a custom MutableSet that remembers its order, so that every"
 optional = false
 python-versions = ">=3.7"
-groups = ["main"]
+groups = ["lab"]
 files = [
     {file = "ordered-set-4.1.0.tar.gz", hash = "sha256:694a8e44c87657c59292ede72891eb91d34131f6531463aab3009191c77364a8"},
     {file = "ordered_set-4.1.0-py3-none-any.whl", hash = "sha256:046e1132c71fcf3330438a539928932caf51ddbc582496833e23de611de14562"},
@@ -5315,7 +5329,7 @@ version = "3.11.5"
 description = "Fast, correct Python JSON library supporting dataclasses, datetimes, and numpy"
 optional = false
 python-versions = ">=3.9"
-groups = ["main", "timeseries"]
+groups = ["lab", "timeseries"]
 files = [
     {file = "orjson-3.11.5-cp310-cp310-macosx_10_15_x86_64.macosx_11_0_arm64.macosx_10_15_universal2.whl", hash = "sha256:df9eadb2a6386d5ea2bfd81309c505e125cfc9ba2b1b99a97e60985b0b3665d1"},
     {file = "orjson-3.11.5-cp310-cp310-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:ccc70da619744467d8f1f49a8cadae5ec7bbe054e5232d95f92ed8737f8c5870"},
@@ -5412,7 +5426,7 @@ version = "24.2"
 description = "Core utilities for Python packages"
 optional = false
 python-versions = ">=3.8"
-groups = ["main", "dev", "timeseries"]
+groups = ["dashboard", "dev", "lab", "timeseries", "train"]
 files = [
     {file = "packaging-24.2-py3-none-any.whl", hash = "sha256:09abb1bccd265c01f4a3aa3f7a7db064b36514d2cba19a2f694fe6150451a759"},
     {file = "packaging-24.2.tar.gz", hash = "sha256:c228a6dc5e932d346bc5739379109d49e8853dd8223571c7c5b55260edc0b97f"},
@@ -5424,7 +5438,7 @@ version = "2.2.3"
 description = "Powerful data structures for data analysis, time series, and statistics"
 optional = false
 python-versions = ">=3.9"
-groups = ["main", "timeseries"]
+groups = ["main", "dashboard", "lab", "tabpfn", "timeseries", "train"]
 files = [
     {file = "pandas-2.2.3-cp310-cp310-macosx_10_9_x86_64.whl", hash = "sha256:1948ddde24197a0f7add2bdc4ca83bf2b1ef84a1bc8ccffd95eda17fd836ecb5"},
     {file = "pandas-2.2.3-cp310-cp310-macosx_11_0_arm64.whl", hash = "sha256:381175499d3802cde0eabbaf6324cce0c4f5d52ca6f8c377c29ad442f50f6348"},
@@ -5510,7 +5524,7 @@ version = "0.8.4"
 description = "A Python Parser"
 optional = false
 python-versions = ">=3.6"
-groups = ["main"]
+groups = ["lab"]
 files = [
     {file = "parso-0.8.4-py2.py3-none-any.whl", hash = "sha256:a418670a20291dacd2dddc80c377c5c3791378ee1e8d12bffc35420643d43f18"},
     {file = "parso-0.8.4.tar.gz", hash = "sha256:eb3a7b58240fb99099a345571deecc0f9540ea5f4dd2fe14c2a99d6b281ab92d"},
@@ -5526,7 +5540,7 @@ version = "0.0.3.post2"
 description = "Password strength and validation"
 optional = false
 python-versions = "*"
-groups = ["timeseries"]
+groups = ["tabpfn", "timeseries"]
 files = [
     {file = "password_strength-0.0.3.post2-py2.py3-none-any.whl", hash = "sha256:6739357c2863d707b7c7f247ff7c6882a70904a18d12c9aaf98f8b95da176fb9"},
     {file = "password_strength-0.0.3.post2.tar.gz", hash = "sha256:bf4df10a58fcd3abfa182367307b4fd7b1cec518121dd83bf80c1c42ba796762"},
@@ -5541,7 +5555,7 @@ version = "0.12.1"
 description = "Utility library for gitignore style pattern matching of file paths."
 optional = false
 python-versions = ">=3.8"
-groups = ["main", "dev"]
+groups = ["dev"]
 files = [
     {file = "pathspec-0.12.1-py3-none-any.whl", hash = "sha256:a0d503e138a4c123b27490a4f7beda6a01c6f288df0e4a8b79c7eb0dc7b4cc08"},
     {file = "pathspec-0.12.1.tar.gz", hash = "sha256:a482d51503a1ab33b1c67a6c3813a26953dbdc71c31dacaef9a838c4e29f5712"},
@@ -5553,7 +5567,7 @@ version = "1.0.2"
 description = "A Python package for describing statistical models and for building design matrices."
 optional = false
 python-versions = ">=3.6"
-groups = ["main", "timeseries"]
+groups = ["lab", "timeseries"]
 files = [
     {file = "patsy-1.0.2-py2.py3-none-any.whl", hash = "sha256:37bfddbc58fcf0362febb5f54f10743f8b21dd2aa73dec7e7ef59d1b02ae668a"},
     {file = "patsy-1.0.2.tar.gz", hash = "sha256:cdc995455f6233e90e22de72c37fcadb344e7586fb83f06696f54d92f8ce74c0"},
@@ -5571,7 +5585,7 @@ version = "7.0.3"
 description = "Python Build Reasonableness"
 optional = false
 python-versions = ">=2.6"
-groups = ["main"]
+groups = ["lab"]
 files = [
     {file = "pbr-7.0.3-py2.py3-none-any.whl", hash = "sha256:ff223894eb1cd271a98076b13d3badff3bb36c424074d26334cd25aebeecea6b"},
     {file = "pbr-7.0.3.tar.gz", hash = "sha256:b46004ec30a5324672683ec848aed9e8fc500b0d261d40a3229c2d2bbfcedc29"},
@@ -5586,7 +5600,7 @@ version = "1.17.0"
 description = "A wrapper around the pdftoppm and pdftocairo command line tools to convert PDF to a PIL Image list."
 optional = false
 python-versions = "*"
-groups = ["main"]
+groups = ["lab"]
 files = [
     {file = "pdf2image-1.17.0-py3-none-any.whl", hash = "sha256:ecdd58d7afb810dffe21ef2b1bbc057ef434dabbac6c33778a38a3f7744a27e2"},
     {file = "pdf2image-1.17.0.tar.gz", hash = "sha256:eaa959bc116b420dd7ec415fcae49b98100dda3dd18cd2fdfa86d09f112f6d57"},
@@ -5601,7 +5615,7 @@ version = "0.17.1"
 description = "Parameter-Efficient Fine-Tuning (PEFT)"
 optional = false
 python-versions = ">=3.9.0"
-groups = ["main", "timeseries"]
+groups = ["lab", "timeseries"]
 files = [
     {file = "peft-0.17.1-py3-none-any.whl", hash = "sha256:3d129d64def3d74779c32a080d2567e5f7b674e77d546e3585138216d903f99e"},
     {file = "peft-0.17.1.tar.gz", hash = "sha256:e6002b42517976c290b3b8bbb9829a33dd5d470676b2dec7cb4df8501b77eb9f"},
@@ -5631,7 +5645,8 @@ version = "4.9.0"
 description = "Pexpect allows easy control of interactive console applications."
 optional = false
 python-versions = "*"
-groups = ["main"]
+groups = ["lab"]
+markers = "sys_platform != \"win32\" and sys_platform != \"emscripten\""
 files = [
     {file = "pexpect-4.9.0-py2.py3-none-any.whl", hash = "sha256:7236d1e080e4936be2dc3e326cec0af72acf9212a7e1d060210e70a47e253523"},
     {file = "pexpect-4.9.0.tar.gz", hash = "sha256:ee7d41123f3c9911050ea2c2dac107568dc43b2d3b0c7557a33212c398ead30f"},
@@ -5646,7 +5661,7 @@ version = "11.1.0"
 description = "Python Imaging Library (Fork)"
 optional = false
 python-versions = ">=3.9"
-groups = ["main", "timeseries"]
+groups = ["dashboard", "lab", "timeseries", "train"]
 files = [
     {file = "pillow-11.1.0-cp310-cp310-macosx_10_10_x86_64.whl", hash = "sha256:e1abe69aca89514737465752b4bcaf8016de61b3be1397a8fc260ba33321b3a8"},
     {file = "pillow-11.1.0-cp310-cp310-macosx_11_0_arm64.whl", hash = "sha256:c640e5a06869c75994624551f45e5506e4256562ead981cce820d5ab39ae2192"},
@@ -5735,7 +5750,7 @@ version = "25.3"
 description = "The PyPA recommended tool for installing Python packages."
 optional = false
 python-versions = ">=3.9"
-groups = ["main"]
+groups = ["lab"]
 files = [
     {file = "pip-25.3-py3-none-any.whl", hash = "sha256:9655943313a94722b7774661c21049070f6bbb0a1516bf02f7c8d5d9201514cd"},
     {file = "pip-25.3.tar.gz", hash = "sha256:8d0538dbbd7babbd207f261ed969c65de439f6bc9e5dbd3b3b9a77f25d95f343"},
@@ -5747,7 +5762,7 @@ version = "4.3.6"
 description = "A small Python package for determining appropriate platform-specific dirs, e.g. a `user data dir`."
 optional = false
 python-versions = ">=3.8"
-groups = ["main", "dev", "timeseries"]
+groups = ["dev", "lab", "tabpfn", "timeseries"]
 files = [
     {file = "platformdirs-4.3.6-py3-none-any.whl", hash = "sha256:73e575e1408ab8103900836b97580d5307456908a03e92031bab39e4554cc3fb"},
     {file = "platformdirs-4.3.6.tar.gz", hash = "sha256:357fb2acbc885b0419afd3ce3ed34564c13c9b95c89360cd9563f73aa5e2b907"},
@@ -5764,7 +5779,7 @@ version = "1.57.0"
 description = "A high-level API to automate web browsers"
 optional = false
 python-versions = ">=3.9"
-groups = ["dev"]
+groups = ["scrape"]
 files = [
     {file = "playwright-1.57.0-py3-none-macosx_10_13_x86_64.whl", hash = "sha256:9351c1ac3dfd9b3820fe7fc4340d96c0d3736bb68097b9b7a69bd45d25e9370c"},
     {file = "playwright-1.57.0-py3-none-macosx_11_0_arm64.whl", hash = "sha256:a4a9d65027bce48eeba842408bcc1421502dfd7e41e28d207e94260fa93ca67e"},
@@ -5786,7 +5801,7 @@ version = "6.5.2"
 description = "An open-source interactive data visualization library for Python"
 optional = false
 python-versions = ">=3.8"
-groups = ["main", "timeseries"]
+groups = ["lab", "timeseries"]
 files = [
     {file = "plotly-6.5.2-py3-none-any.whl", hash = "sha256:91757653bd9c550eeea2fa2404dba6b85d1e366d54804c340b2c874e5a7eb4a4"},
     {file = "plotly-6.5.2.tar.gz", hash = "sha256:7478555be0198562d1435dee4c308268187553cc15516a2f4dd034453699e393"},
@@ -5805,12 +5820,24 @@ express = ["numpy"]
 kaleido = ["kaleido (>=1.1.0)"]
 
 [[package]]
+name = "pluggy"
+version = "1.7.0"
+description = "plugin and hook calling mechanisms for python"
+optional = false
+python-versions = ">=3.10"
+groups = ["dev"]
+files = [
+    {file = "pluggy-1.7.0-py3-none-any.whl", hash = "sha256:7dd7b0d8832ba3cb632c306926ded123429211b83641b35dc5c41ad2d34f9bec"},
+    {file = "pluggy-1.7.0.tar.gz", hash = "sha256:d1eaa46ebb595891b860ab086b4d09c8588af65ebd4361b8e8f4bb8920b90ba8"},
+]
+
+[[package]]
 name = "plum-dispatch"
 version = "2.6.1"
 description = "Multiple dispatch in Python"
 optional = false
 python-versions = ">=3.10"
-groups = ["main"]
+groups = ["lab"]
 files = [
     {file = "plum_dispatch-2.6.1-py3-none-any.whl", hash = "sha256:49cd83027498e35eac32c7a93ecd6a99970d72d90f4141cc93be760c7ba831c4"},
     {file = "plum_dispatch-2.6.1.tar.gz", hash = "sha256:05d14f31bf2ac8550d7742426d5c5a3fa532d8ed7cc12ffd695c4b452cffbdfa"},
@@ -5827,7 +5854,7 @@ version = "6.9.3"
 description = "Integrate PostHog into any python application."
 optional = false
 python-versions = ">=3.9"
-groups = ["timeseries"]
+groups = ["tabpfn", "timeseries"]
 files = [
     {file = "posthog-6.9.3-py3-none-any.whl", hash = "sha256:c71e9cb7ac4ef13eb604f04c3161edd10b1d08a32499edd54437ba5eab591c58"},
     {file = "posthog-6.9.3.tar.gz", hash = "sha256:7d201774ea9eba156f1de46d34313e30b2384d523900fe8e425accc92486cc34"},
@@ -5852,7 +5879,7 @@ version = "3.0.12"
 description = "Cython hash table that trusts the keys are pre-hashed"
 optional = false
 python-versions = "<3.15,>=3.6"
-groups = ["main"]
+groups = ["lab"]
 files = [
     {file = "preshed-3.0.12-cp310-cp310-macosx_10_9_x86_64.whl", hash = "sha256:d8f0bc207bb5bfe69e3a232367c264cac900dc14e9219cd061b98eaca9e7da61"},
     {file = "preshed-3.0.12-cp310-cp310-macosx_11_0_arm64.whl", hash = "sha256:0c8a8d571c044ddab5369d30d172c87545f44daa1510bde92b7e0144a8f4f92b"},
@@ -5923,7 +5950,7 @@ version = "0.24.1"
 description = "Python client for the Prometheus monitoring system."
 optional = false
 python-versions = ">=3.9"
-groups = ["main"]
+groups = ["lab"]
 markers = "python_version != \"3.13\" or platform_system != \"Windows\""
 files = [
     {file = "prometheus_client-0.24.1-py3-none-any.whl", hash = "sha256:150db128af71a5c2482b36e588fc8a6b95e498750da4b17065947c16070f4055"},
@@ -5941,7 +5968,7 @@ version = "3.0.50"
 description = "Library for building powerful interactive command lines in Python"
 optional = false
 python-versions = ">=3.8.0"
-groups = ["main"]
+groups = ["lab"]
 files = [
     {file = "prompt_toolkit-3.0.50-py3-none-any.whl", hash = "sha256:9b6427eb19e479d98acff65196a307c555eb567989e6d88ebbb1b509d9779198"},
     {file = "prompt_toolkit-3.0.50.tar.gz", hash = "sha256:544748f3860a2623ca5cd6d2795e7a14f3d0e1c3c9728359013f79877fc89bab"},
@@ -5956,7 +5983,7 @@ version = "0.4.1"
 description = "Accelerated property cache"
 optional = false
 python-versions = ">=3.9"
-groups = ["main", "timeseries"]
+groups = ["lab", "timeseries"]
 files = [
     {file = "propcache-0.4.1-cp310-cp310-macosx_10_9_universal2.whl", hash = "sha256:7c2d1fa3201efaf55d730400d945b5b3ab6e672e100ba0f9a409d950ab25d7db"},
     {file = "propcache-0.4.1-cp310-cp310-macosx_10_9_x86_64.whl", hash = "sha256:1eb2994229cc8ce7fe9b3db88f5465f5fd8651672840b2e426b88cdb1a30aac8"},
@@ -6088,7 +6115,7 @@ version = "1.27.0"
 description = "Beautiful, Pythonic protocol buffers"
 optional = false
 python-versions = ">=3.7"
-groups = ["main"]
+groups = ["lab"]
 markers = "python_version < \"3.13\" or platform_system != \"Windows\""
 files = [
     {file = "proto_plus-1.27.0-py3-none-any.whl", hash = "sha256:1baa7f81cf0f8acb8bc1f6d085008ba4171eaf669629d1b6d1673b21ed1c0a82"},
@@ -6107,7 +6134,7 @@ version = "6.33.4"
 description = ""
 optional = false
 python-versions = ">=3.9"
-groups = ["main", "timeseries"]
+groups = ["dashboard", "lab", "timeseries"]
 files = [
     {file = "protobuf-6.33.4-cp310-abi3-win32.whl", hash = "sha256:918966612c8232fc6c24c78e1cd89784307f5814ad7506c308ee3cf86662850d"},
     {file = "protobuf-6.33.4-cp310-abi3-win_amd64.whl", hash = "sha256:8f11ffae31ec67fc2554c2ef891dcb561dae9a2a3ed941f9e134c2db06657dbc"},
@@ -6127,7 +6154,7 @@ version = "7.0.0"
 description = "Cross-platform lib for process and system monitoring in Python.  NOTE: the syntax of this script MUST be kept compatible with Python 2.7."
 optional = false
 python-versions = ">=3.6"
-groups = ["main", "timeseries"]
+groups = ["lab", "timeseries"]
 files = [
     {file = "psutil-7.0.0-cp36-abi3-macosx_10_9_x86_64.whl", hash = "sha256:101d71dc322e3cffd7cea0650b09b3d08b8e7c4109dd6809fe452dfd00e58b25"},
     {file = "psutil-7.0.0-cp36-abi3-macosx_11_0_arm64.whl", hash = "sha256:39db632f6bb862eeccf56660871433e111b6ea58f2caea825571951d4b6aa3da"},
@@ -6242,7 +6269,8 @@ version = "0.7.0"
 description = "Run a subprocess in a pseudo terminal"
 optional = false
 python-versions = "*"
-groups = ["main"]
+groups = ["lab"]
+markers = "sys_platform != \"win32\" and sys_platform != \"emscripten\""
 files = [
     {file = "ptyprocess-0.7.0-py2.py3-none-any.whl", hash = "sha256:4b41f3967fce3af57cc7e94b888626c18bf37a083e3651ca8feeb66d492fef35"},
     {file = "ptyprocess-0.7.0.tar.gz", hash = "sha256:5c5d0a3b48ceee0b48485e0c26037c0acd7d29765ca3fbb5cb3831d347423220"},
@@ -6254,7 +6282,7 @@ version = "0.2.3"
 description = "Safely evaluate AST nodes without side effects"
 optional = false
 python-versions = "*"
-groups = ["main"]
+groups = ["lab"]
 files = [
     {file = "pure_eval-0.2.3-py3-none-any.whl", hash = "sha256:1db8e35b67b3d218d818ae653e27f06c3aa420901fa7b081ca98cbedc874e0d0"},
     {file = "pure_eval-0.2.3.tar.gz", hash = "sha256:5f4e983f40564c576c7c8635ae88db5956bb2229d7e9237d03b3c0b0190eaf42"},
@@ -6269,7 +6297,7 @@ version = "0.4.1"
 description = ""
 optional = false
 python-versions = "*"
-groups = ["main"]
+groups = ["lab"]
 markers = "python_version != \"3.13\" or platform_system != \"Windows\""
 files = [
     {file = "py_spy-0.4.1-py2.py3-none-macosx_10_12_x86_64.macosx_11_0_arm64.macosx_10_12_universal2.whl", hash = "sha256:809094208c6256c8f4ccadd31e9a513fe2429253f48e20066879239ba12cd8cc"},
@@ -6291,7 +6319,7 @@ version = "0.10.9.9"
 description = "Enables Python programs to dynamically access arbitrary Java objects"
 optional = false
 python-versions = "*"
-groups = ["main"]
+groups = ["lab"]
 files = [
     {file = "py4j-0.10.9.9-py2.py3-none-any.whl", hash = "sha256:c7c26e4158defb37b0bb124933163641a2ff6e3a3913f7811b0ddbe07ed61533"},
     {file = "py4j-0.10.9.9.tar.gz", hash = "sha256:f694cad19efa5bd1dee4f3e5270eb406613c974394035e5bfc4ec1aba870b879"},
@@ -6303,7 +6331,7 @@ version = "20.0.0"
 description = "Python library for Apache Arrow"
 optional = false
 python-versions = ">=3.9"
-groups = ["main", "timeseries"]
+groups = ["main", "dashboard", "lab", "tabpfn", "timeseries"]
 files = [
     {file = "pyarrow-20.0.0-cp310-cp310-macosx_12_0_arm64.whl", hash = "sha256:c7dd06fd7d7b410ca5dc839cc9d485d2bc4ae5240851bcd45d85105cc90a47d7"},
     {file = "pyarrow-20.0.0-cp310-cp310-macosx_12_0_x86_64.whl", hash = "sha256:d5382de8dc34c943249b01c19110783d0d64b207167c728461add1ecc2db88e4"},
@@ -6371,7 +6399,7 @@ version = "0.6.2"
 description = "Pure-Python implementation of ASN.1 types and DER/BER/CER codecs (X.208)"
 optional = false
 python-versions = ">=3.8"
-groups = ["main"]
+groups = ["lab"]
 markers = "python_version != \"3.13\" or platform_system != \"Windows\""
 files = [
     {file = "pyasn1-0.6.2-py3-none-any.whl", hash = "sha256:1eb26d860996a18e9b6ed05e7aae0e9fc21619fcee6af91cca9bad4fbea224bf"},
@@ -6384,7 +6412,7 @@ version = "0.4.2"
 description = "A collection of ASN.1-based protocols modules"
 optional = false
 python-versions = ">=3.8"
-groups = ["main"]
+groups = ["lab"]
 markers = "python_version != \"3.13\" or platform_system != \"Windows\""
 files = [
     {file = "pyasn1_modules-0.4.2-py3-none-any.whl", hash = "sha256:29253a9207ce32b64c3ac6600edc75368f98473906e8fd1043bd6b5b1de2c14a"},
@@ -6400,7 +6428,7 @@ version = "2.23"
 description = "C parser in Python"
 optional = false
 python-versions = ">=3.8"
-groups = ["main"]
+groups = ["lab"]
 markers = "implementation_name == \"pypy\""
 files = [
     {file = "pycparser-2.23-py3-none-any.whl", hash = "sha256:e5c6e8d3fbad53479cab09ac03729e0a9faf2bee3db8208a550daf5af81a5934"},
@@ -6413,7 +6441,7 @@ version = "3.23.0"
 description = "Cryptographic library for Python"
 optional = false
 python-versions = "!=3.0.*,!=3.1.*,!=3.2.*,!=3.3.*,!=3.4.*,!=3.5.*,!=3.6.*,>=2.7"
-groups = ["main"]
+groups = ["lab"]
 files = [
     {file = "pycryptodome-3.23.0-cp27-cp27m-macosx_10_9_x86_64.whl", hash = "sha256:a176b79c49af27d7f6c12e4b178b0824626f40a7b9fed08f712291b6d54bf566"},
     {file = "pycryptodome-3.23.0-cp27-cp27m-manylinux2010_i686.whl", hash = "sha256:573a0b3017e06f2cffd27d92ef22e46aa3be87a2d317a5abf7cc0e84e321bd75"},
@@ -6464,7 +6492,7 @@ version = "2.11.10"
 description = "Data validation using Python type hints"
 optional = false
 python-versions = ">=3.9"
-groups = ["main", "timeseries"]
+groups = ["main", "lab", "tabpfn", "timeseries"]
 files = [
     {file = "pydantic-2.11.10-py3-none-any.whl", hash = "sha256:802a655709d49bd004c31e865ef37da30b540786a46bfce02333e0e24b5fe29a"},
     {file = "pydantic-2.11.10.tar.gz", hash = "sha256:dc280f0982fbda6c38fada4e476dc0a4f3aeaf9c6ad4c28df68a666ec3c61423"},
@@ -6486,7 +6514,7 @@ version = "2.33.2"
 description = "Core functionality for Pydantic validation and serialization"
 optional = false
 python-versions = ">=3.9"
-groups = ["main", "timeseries"]
+groups = ["main", "lab", "tabpfn", "timeseries"]
 files = [
     {file = "pydantic_core-2.33.2-cp310-cp310-macosx_10_12_x86_64.whl", hash = "sha256:2b3d326aaef0c0399d9afffeb6367d5e26ddc24d351dbc9c636840ac355dc5d8"},
     {file = "pydantic_core-2.33.2-cp310-cp310-macosx_11_0_arm64.whl", hash = "sha256:0e5b2671f05ba48b94cb90ce55d8bdcaaedb8ba00cc5359f6810fc918713983d"},
@@ -6594,14 +6622,14 @@ typing-extensions = ">=4.6.0,<4.7.0 || >4.7.0"
 
 [[package]]
 name = "pydantic-settings"
-version = "2.12.0"
+version = "2.15.0"
 description = "Settings management using Pydantic"
 optional = false
 python-versions = ">=3.10"
-groups = ["timeseries"]
+groups = ["tabpfn", "timeseries"]
 files = [
-    {file = "pydantic_settings-2.12.0-py3-none-any.whl", hash = "sha256:fddb9fd99a5b18da837b29710391e945b1e30c135477f484084ee513adb93809"},
-    {file = "pydantic_settings-2.12.0.tar.gz", hash = "sha256:005538ef951e3c2a68e1c08b292b5f2e71490def8589d4221b95dab00dafcfd0"},
+    {file = "pydantic_settings-2.15.0-py3-none-any.whl", hash = "sha256:0ba092c291c94baceb5eff768aa0d56400a457585bc0175925a5a5510303da42"},
+    {file = "pydantic_settings-2.15.0.tar.gz", hash = "sha256:694b793e84f766ba76a90ebdefc01d0a9a045dab0382bee70393da93712ad117"},
 ]
 
 [package.dependencies]
@@ -6610,7 +6638,7 @@ python-dotenv = ">=0.21.0"
 typing-inspection = ">=0.4.0"
 
 [package.extras]
-aws-secrets-manager = ["boto3 (>=1.35.0)", "boto3-stubs[secretsmanager]"]
+aws-secrets-manager = ["boto3 (>=1.35.0)"]
 azure-key-vault = ["azure-identity (>=1.16.0)", "azure-keyvault-secrets (>=4.8.0)"]
 gcp-secret-manager = ["google-cloud-secret-manager (>=2.23.1)"]
 toml = ["tomli (>=2.0.1)"]
@@ -6622,7 +6650,7 @@ version = "0.9.1"
 description = "Widget for deck.gl maps"
 optional = false
 python-versions = ">=3.8"
-groups = ["main"]
+groups = ["dashboard"]
 files = [
     {file = "pydeck-0.9.1-py2.py3-none-any.whl", hash = "sha256:b3f75ba0d273fc917094fa61224f3f6076ca8752b93d46faf3bcfd9f9d59b038"},
     {file = "pydeck-0.9.1.tar.gz", hash = "sha256:f74475ae637951d63f2ee58326757f8d4f9cd9f2a457cf42950715003e2cb605"},
@@ -6642,7 +6670,7 @@ version = "13.0.0"
 description = "A rough port of Node.js's EventEmitter to Python with a few tricks of its own"
 optional = false
 python-versions = ">=3.8"
-groups = ["dev"]
+groups = ["scrape"]
 files = [
     {file = "pyee-13.0.0-py3-none-any.whl", hash = "sha256:48195a3cddb3b1515ce0695ed76036b5ccc2ef3a9f963ff9f77aec0139845498"},
     {file = "pyee-13.0.0.tar.gz", hash = "sha256:b391e3c5a434d1f5118a25615001dbc8f669cf410ab67d04c4d4e07c55481c37"},
@@ -6660,7 +6688,7 @@ version = "2.19.1"
 description = "Pygments is a syntax highlighting package written in Python."
 optional = false
 python-versions = ">=3.8"
-groups = ["main"]
+groups = ["dev", "lab", "tabpfn", "timeseries"]
 files = [
     {file = "pygments-2.19.1-py3-none-any.whl", hash = "sha256:9ea1544ad55cecf4b8242fab6dd35a93bbce657034b0611ee383099054ab6d8c"},
     {file = "pygments-2.19.1.tar.gz", hash = "sha256:61c16d2a8576dc0649d9f39e089b5f02bcd27fba10d8fb4dcc28173f7a45151f"},
@@ -6675,7 +6703,7 @@ version = "1.26.6"
 description = "A high performance Python library for data extraction, analysis, conversion & manipulation of PDF (and other) documents."
 optional = false
 python-versions = ">=3.10"
-groups = ["main"]
+groups = ["scrape"]
 files = [
     {file = "pymupdf-1.26.6-cp310-abi3-macosx_10_9_x86_64.whl", hash = "sha256:e46f320a136ad55e5219e8f0f4061bdf3e4c12b126d2740d5a49f73fae7ea176"},
     {file = "pymupdf-1.26.6-cp310-abi3-macosx_11_0_arm64.whl", hash = "sha256:6844cd2396553c0fa06de4869d5d5ecb1260e6fc3b9d85abe8fa35f14dd9d688"},
@@ -6692,7 +6720,7 @@ version = "3.2.1"
 description = "pyparsing module - Classes and methods to define and execute parsing grammars"
 optional = false
 python-versions = ">=3.9"
-groups = ["main", "timeseries"]
+groups = ["lab", "timeseries", "train"]
 files = [
     {file = "pyparsing-3.2.1-py3-none-any.whl", hash = "sha256:506ff4f4386c4cec0590ec19e6302d3aedb992fdc02c761e90416f158dacf8e1"},
     {file = "pyparsing-3.2.1.tar.gz", hash = "sha256:61980854fd66de3a90028d679a954d5f2623e83144b5afe5ee86f43d762e5f0a"},
@@ -6707,7 +6735,7 @@ version = "1.7.1"
 description = "A Python SOCKS client module. See https://github.com/Anorov/PySocks for more information."
 optional = false
 python-versions = ">=2.7, !=3.0.*, !=3.1.*, !=3.2.*, !=3.3.*"
-groups = ["main"]
+groups = ["lab"]
 files = [
     {file = "PySocks-1.7.1-py27-none-any.whl", hash = "sha256:08e69f092cc6dbe92a0fdd16eeb9b9ffbc13cadfe5ca4c7bd92ffb078b293299"},
     {file = "PySocks-1.7.1-py3-none-any.whl", hash = "sha256:2725bd0a9925919b9b51739eea5f9e2bae91e83288108a9ad338b2e3a4435ee5"},
@@ -6720,7 +6748,7 @@ version = "0.3.13"
 description = "Python-tesseract is a python wrapper for Google's Tesseract-OCR"
 optional = false
 python-versions = ">=3.8"
-groups = ["main"]
+groups = ["lab"]
 files = [
     {file = "pytesseract-0.3.13-py3-none-any.whl", hash = "sha256:7a99c6c2ac598360693d83a416e36e0b33a67638bb9d77fdcac094a3589d4b34"},
     {file = "pytesseract-0.3.13.tar.gz", hash = "sha256:4bf5f880c99406f52a3cfc2633e42d9dc67615e69d8a509d74867d3baddb5db9"},
@@ -6731,12 +6759,34 @@ packaging = ">=21.3"
 Pillow = ">=8.0.0"
 
 [[package]]
+name = "pytest"
+version = "9.1.1"
+description = "pytest: simple powerful testing with Python"
+optional = false
+python-versions = ">=3.10"
+groups = ["dev"]
+files = [
+    {file = "pytest-9.1.1-py3-none-any.whl", hash = "sha256:37a86b45efb9a47a61a36449063e8e18d0cab3161329fc099eb21783169c4f0c"},
+    {file = "pytest-9.1.1.tar.gz", hash = "sha256:1088fbde8f2b49d95a549a195707afa7a76a3ce9bcadc26b6d71f0ffda5fe313"},
+]
+
+[package.dependencies]
+colorama = {version = ">=0.4", markers = "sys_platform == \"win32\""}
+iniconfig = ">=1.0.1"
+packaging = ">=22"
+pluggy = ">=1.5,<2"
+pygments = ">=2.7.2"
+
+[package.extras]
+dev = ["argcomplete", "attrs (>=19.2)", "hypothesis (>=3.56)", "mock", "requests", "setuptools", "xmlschema"]
+
+[[package]]
 name = "python-dateutil"
 version = "2.9.0.post0"
 description = "Extensions to the standard Python datetime module"
 optional = false
 python-versions = "!=3.0.*,!=3.1.*,!=3.2.*,>=2.7"
-groups = ["main", "timeseries"]
+groups = ["main", "dashboard", "lab", "tabpfn", "timeseries", "train"]
 files = [
     {file = "python-dateutil-2.9.0.post0.tar.gz", hash = "sha256:37dd54208da7e1cd875388217d5e00ebd4179249f90fb72437e91a35459a0ad3"},
     {file = "python_dateutil-2.9.0.post0-py2.py3-none-any.whl", hash = "sha256:a8b2bc7bffae282281c8140a97d3aa9c14da0b136dfe83f850eea9a5f7470427"},
@@ -6751,7 +6801,7 @@ version = "1.2.1"
 description = "Read key-value pairs from a .env file and set them as environment variables"
 optional = false
 python-versions = ">=3.9"
-groups = ["main", "timeseries"]
+groups = ["lab", "tabpfn", "timeseries"]
 files = [
     {file = "python_dotenv-1.2.1-py3-none-any.whl", hash = "sha256:b81ee9561e9ca4004139c6cbba3a238c32b03e4894671e181b671e8cb8425d61"},
     {file = "python_dotenv-1.2.1.tar.gz", hash = "sha256:42667e897e16ab0d66954af0e60a9caa94f0fd4ecf3aaf6d2d260eec1aa36ad6"},
@@ -6766,7 +6816,7 @@ version = "0.12.39"
 description = "The fastest way to create an HTML app"
 optional = false
 python-versions = ">=3.10"
-groups = ["main"]
+groups = ["lab"]
 files = [
     {file = "python_fasthtml-0.12.39-py3-none-any.whl", hash = "sha256:d9d2a173714852f906d1821f5eeb40640db2ef2b2f997edee63471feb58127be"},
     {file = "python_fasthtml-0.12.39.tar.gz", hash = "sha256:ae324b34a1586698b052cad8e9ff9255bd6cb486b01b946e95b9b63f220a5532"},
@@ -6793,7 +6843,7 @@ version = "0.0.21"
 description = "A streaming multipart parser for Python"
 optional = false
 python-versions = ">=3.10"
-groups = ["main"]
+groups = ["lab"]
 files = [
     {file = "python_multipart-0.0.21-py3-none-any.whl", hash = "sha256:cf7a6713e01c87aa35387f4774e812c4361150938d20d232800f75ffcf266090"},
     {file = "python_multipart-0.0.21.tar.gz", hash = "sha256:7137ebd4d3bbf70ea1622998f902b97a29434a9e8dc40eb203bbcf7c2a2cba92"},
@@ -6805,7 +6855,7 @@ version = "2.6.0"
 description = "PyTorch Lightning is the lightweight PyTorch wrapper for ML researchers. Scale your models. Write less boilerplate."
 optional = false
 python-versions = ">=3.9"
-groups = ["main", "timeseries"]
+groups = ["lab", "timeseries"]
 files = [
     {file = "pytorch_lightning-2.6.0-py3-none-any.whl", hash = "sha256:ee72cff4b8c983ecfaae8599382544bd5236d9eb300adc7dd305f359195f4e79"},
     {file = "pytorch_lightning-2.6.0.tar.gz", hash = "sha256:25b0d4f05e1f33b72be0920c34d0465777fe5f623228f9d6252b4b0f685d7037"},
@@ -6836,7 +6886,7 @@ version = "2.8.1"
 description = "The easiest way to use deep metric learning in your application. Modular, flexible, and extensible. Written in PyTorch."
 optional = false
 python-versions = ">=3.0"
-groups = ["main"]
+groups = ["lab"]
 files = [
     {file = "pytorch-metric-learning-2.8.1.tar.gz", hash = "sha256:fcc4d3b4a805e5fce25fb2e67505c47ba6fea0563fc09c5655ea1f08d1e8ed93"},
     {file = "pytorch_metric_learning-2.8.1-py3-none-any.whl", hash = "sha256:aba6da0508d29ee9661a67fbfee911cdf62e65fc07e404b167d82871ca7e3e88"},
@@ -6860,7 +6910,7 @@ version = "2025.1"
 description = "World timezone definitions, modern and historical"
 optional = false
 python-versions = "*"
-groups = ["main", "timeseries"]
+groups = ["main", "dashboard", "lab", "tabpfn", "timeseries", "train"]
 files = [
     {file = "pytz-2025.1-py2.py3-none-any.whl", hash = "sha256:89dd22dca55b46eac6eda23b2d72721bf1bdfef212645d81513ef5d03038de57"},
     {file = "pytz-2025.1.tar.gz", hash = "sha256:c2db42be2a2518b28e65f9207c4d05e6ff547d1efa4086469ef855e4ab70178e"},
@@ -6872,7 +6922,7 @@ version = "311"
 description = "Python for Window Extensions"
 optional = false
 python-versions = "*"
-groups = ["main"]
+groups = ["lab"]
 markers = "(platform_system == \"Windows\" or sys_platform == \"win32\") and (platform_system == \"Windows\" or platform_python_implementation != \"PyPy\")"
 files = [
     {file = "pywin32-311-cp310-cp310-win32.whl", hash = "sha256:d03ff496d2a0cd4a5893504789d4a15399133fe82517455e78bad62efbb7f0a3"},
@@ -6903,7 +6953,7 @@ version = "6.0.3"
 description = "YAML parser and emitter for Python"
 optional = false
 python-versions = ">=3.8"
-groups = ["main", "timeseries"]
+groups = ["lab", "tabpfn", "timeseries", "train"]
 files = [
     {file = "PyYAML-6.0.3-cp38-cp38-macosx_10_13_x86_64.whl", hash = "sha256:c2514fceb77bc5e7a2f7adfaa1feb2fb311607c9cb518dbc378688ec73d8292f"},
     {file = "PyYAML-6.0.3-cp38-cp38-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:9c57bb8c96f6d1808c030b1687b9b5fb476abaa47f0db9c0101f5e9f394e97f4"},
@@ -6986,7 +7036,7 @@ version = "26.2.1"
 description = "Python bindings for 0MQ"
 optional = false
 python-versions = ">=3.7"
-groups = ["main"]
+groups = ["lab"]
 files = [
     {file = "pyzmq-26.2.1-cp310-cp310-macosx_10_15_universal2.whl", hash = "sha256:f39d1227e8256d19899d953e6e19ed2ccb689102e6d85e024da5acf410f301eb"},
     {file = "pyzmq-26.2.1-cp310-cp310-macosx_10_9_x86_64.whl", hash = "sha256:a23948554c692df95daed595fdd3b76b420a4939d7a8a28d6d7dea9711878641"},
@@ -7108,7 +7158,7 @@ version = "2.52.1"
 description = "Ray provides a simple, universal API for building distributed applications."
 optional = false
 python-versions = ">=3.9"
-groups = ["main"]
+groups = ["lab"]
 markers = "python_version != \"3.13\" or platform_system != \"Windows\""
 files = [
     {file = "ray-2.52.1-cp310-cp310-macosx_12_0_arm64.whl", hash = "sha256:993194a8be70540e0f819862031bbf19a64401fbe6c31b42065fd313ba466d34"},
@@ -7183,7 +7233,7 @@ version = "0.37.0"
 description = "JSON Referencing + Python"
 optional = false
 python-versions = ">=3.10"
-groups = ["main"]
+groups = ["dashboard", "lab"]
 files = [
     {file = "referencing-0.37.0-py3-none-any.whl", hash = "sha256:381329a9f99628c9069361716891d34ad94af76e461dcb0335825aecc7692231"},
     {file = "referencing-0.37.0.tar.gz", hash = "sha256:44aefc3142c5b842538163acb373e24cce6632bd54bdb01b21ad5863489f50d8"},
@@ -7200,7 +7250,7 @@ version = "2026.1.15"
 description = "Alternative regular expression module, to replace re."
 optional = false
 python-versions = ">=3.9"
-groups = ["main", "timeseries"]
+groups = ["lab", "timeseries"]
 files = [
     {file = "regex-2026.1.15-cp310-cp310-macosx_10_9_universal2.whl", hash = "sha256:4e3dd93c8f9abe8aa4b6c652016da9a3afa190df5ad822907efe6b206c09896e"},
     {file = "regex-2026.1.15-cp310-cp310-macosx_10_9_x86_64.whl", hash = "sha256:97499ff7862e868b1977107873dd1a06e151467129159a6ffd07b66706ba3a9f"},
@@ -7341,7 +7391,7 @@ version = "2.32.5"
 description = "Python HTTP for Humans."
 optional = false
 python-versions = ">=3.9"
-groups = ["main", "timeseries"]
+groups = ["main", "dashboard", "lab", "tabpfn", "timeseries"]
 files = [
     {file = "requests-2.32.5-py3-none-any.whl", hash = "sha256:2462f94637a34fd532264295e186976db0f5d453d1cdd31473c85a6a161affb6"},
     {file = "requests-2.32.5.tar.gz", hash = "sha256:dbba0bac56e100853db0ea71b82b4dfd5fe2bf6d3754a8893c3af500cec7d7cf"},
@@ -7364,7 +7414,7 @@ version = "14.2.0"
 description = "Render rich text, tables, progress bars, syntax highlighting, markdown and more to the terminal"
 optional = false
 python-versions = ">=3.8.0"
-groups = ["main"]
+groups = ["lab", "tabpfn", "timeseries"]
 files = [
     {file = "rich-14.2.0-py3-none-any.whl", hash = "sha256:76bc51fe2e57d2b1be1f96c524b890b816e334ab4c1e45888799bfaab0021edd"},
     {file = "rich-14.2.0.tar.gz", hash = "sha256:73ff50c7c0c1c77c8243079283f4edb376f0f6442433aecb8ce7e6d0b92d1fe4"},
@@ -7383,7 +7433,7 @@ version = "0.30.0"
 description = "Python bindings to Rust's persistent data structures (rpds)"
 optional = false
 python-versions = ">=3.10"
-groups = ["main"]
+groups = ["dashboard", "lab"]
 files = [
     {file = "rpds_py-0.30.0-cp310-cp310-macosx_10_12_x86_64.whl", hash = "sha256:679ae98e00c0e8d68a7fda324e16b90fd5260945b45d3b824c892cec9eea3288"},
     {file = "rpds_py-0.30.0-cp310-cp310-macosx_11_0_arm64.whl", hash = "sha256:4cc2206b76b4f576934f0ed374b10d7ca5f457858b157ca52064bdfc26b9fc00"},
@@ -7508,7 +7558,7 @@ version = "4.9.1"
 description = "Pure-Python RSA implementation"
 optional = false
 python-versions = "<4,>=3.6"
-groups = ["main"]
+groups = ["lab"]
 markers = "python_version != \"3.13\" or platform_system != \"Windows\""
 files = [
     {file = "rsa-4.9.1-py3-none-any.whl", hash = "sha256:68635866661c6836b8d39430f97a996acbd61bfa49406748ea243539fe239762"},
@@ -7524,7 +7574,7 @@ version = "0.15.0"
 description = "An extremely fast Python linter and code formatter, written in Rust."
 optional = false
 python-versions = ">=3.7"
-groups = ["dev", "timeseries"]
+groups = ["dev", "tabpfn", "timeseries"]
 files = [
     {file = "ruff-0.15.0-py3-none-linux_armv6l.whl", hash = "sha256:aac4ebaa612a82b23d45964586f24ae9bc23ca101919f5590bdb368d74ad5455"},
     {file = "ruff-0.15.0-py3-none-macosx_10_12_x86_64.whl", hash = "sha256:dcd4be7cc75cfbbca24a98d04d0b9b36a270d0833241f776b788d59f4142b14d"},
@@ -7572,7 +7622,7 @@ version = "0.16.0"
 description = "An Amazon S3 Transfer Manager"
 optional = false
 python-versions = ">=3.9"
-groups = ["main", "timeseries"]
+groups = ["main", "lab", "timeseries"]
 files = [
     {file = "s3transfer-0.16.0-py3-none-any.whl", hash = "sha256:18e25d66fed509e3868dc1572b3f427ff947dd2c56f844a5bf09481ad3f3b2fe"},
     {file = "s3transfer-0.16.0.tar.gz", hash = "sha256:8e990f13268025792229cd52fa10cb7163744bf56e719e0b9cb925ab79abf920"},
@@ -7590,7 +7640,7 @@ version = "0.7.0"
 description = ""
 optional = false
 python-versions = ">=3.9"
-groups = ["main", "timeseries"]
+groups = ["lab", "timeseries"]
 files = [
     {file = "safetensors-0.7.0-cp38-abi3-macosx_10_12_x86_64.whl", hash = "sha256:c82f4d474cf725255d9e6acf17252991c3c8aac038d6ef363a4bf8be2f6db517"},
     {file = "safetensors-0.7.0-cp38-abi3-macosx_11_0_arm64.whl", hash = "sha256:94fd4858284736bb67a897a41608b5b0c2496c9bdb3bf2af1fa3409127f20d57"},
@@ -7642,7 +7692,7 @@ version = "0.25.2"
 description = "Image processing in Python"
 optional = false
 python-versions = ">=3.10"
-groups = ["main"]
+groups = ["lab"]
 files = [
     {file = "scikit_image-0.25.2-cp310-cp310-macosx_10_9_x86_64.whl", hash = "sha256:d3278f586793176599df6a4cf48cb6beadae35c31e58dc01a98023af3dc31c78"},
     {file = "scikit_image-0.25.2-cp310-cp310-macosx_12_0_arm64.whl", hash = "sha256:5c311069899ce757d7dbf1d03e32acb38bb06153236ae77fcd820fd62044c063"},
@@ -7692,7 +7742,7 @@ version = "1.6.1"
 description = "A set of python modules for machine learning and data mining"
 optional = false
 python-versions = ">=3.9"
-groups = ["main", "timeseries"]
+groups = ["main", "lab", "tabpfn", "timeseries", "train"]
 files = [
     {file = "scikit_learn-1.6.1-cp310-cp310-macosx_10_9_x86_64.whl", hash = "sha256:d056391530ccd1e501056160e3c9673b4da4805eb67eb2bdf4e983e1f9c9204e"},
     {file = "scikit_learn-1.6.1-cp310-cp310-macosx_12_0_arm64.whl", hash = "sha256:0c8d036eb937dbb568c6242fa598d551d88fb4399c0344d95c001980ec1c7d36"},
@@ -7747,7 +7797,7 @@ version = "1.15.2"
 description = "Fundamental algorithms for scientific computing in Python"
 optional = false
 python-versions = ">=3.10"
-groups = ["main", "timeseries"]
+groups = ["main", "cpu", "cuda", "lab", "tabpfn", "timeseries", "train"]
 files = [
     {file = "scipy-1.15.2-cp310-cp310-macosx_10_13_x86_64.whl", hash = "sha256:a2ec871edaa863e8213ea5df811cd600734f6400b4af272e1c011e69401218e9"},
     {file = "scipy-1.15.2-cp310-cp310-macosx_12_0_arm64.whl", hash = "sha256:6f223753c6ea76983af380787611ae1291e3ceb23917393079dcc746ba60cfb5"},
@@ -7811,7 +7861,7 @@ version = "0.2.1"
 description = "Unsupervised text tokenizer and detokenizer."
 optional = false
 python-versions = ">=3.9"
-groups = ["main", "timeseries"]
+groups = ["lab", "timeseries"]
 files = [
     {file = "sentencepiece-0.2.1-cp310-cp310-macosx_10_9_universal2.whl", hash = "sha256:e10fa50bdbaa5e2445dbd387979980d391760faf0ec99a09bd7780ff37eaec44"},
     {file = "sentencepiece-0.2.1-cp310-cp310-macosx_10_9_x86_64.whl", hash = "sha256:2f27ae6deea72efdb6f361750c92f6c21fd0ad087445082770cc34015213c526"},
@@ -7890,7 +7940,7 @@ version = "1.2.2"
 description = "Testing framework for sequence labeling"
 optional = false
 python-versions = "*"
-groups = ["main"]
+groups = ["lab"]
 files = [
     {file = "seqeval-1.2.2.tar.gz", hash = "sha256:f28e97c3ab96d6fcd32b648f6438ff2e09cfba87f05939da9b3970713ec56e6f"},
 ]
@@ -7905,7 +7955,7 @@ version = "80.10.1"
 description = "Easily download, build, install, upgrade, and uninstall Python packages"
 optional = false
 python-versions = ">=3.9"
-groups = ["main", "timeseries"]
+groups = ["lab", "timeseries"]
 files = [
     {file = "setuptools-80.10.1-py3-none-any.whl", hash = "sha256:fc30c51cbcb8199a219c12cc9c281b5925a4978d212f84229c909636d9f6984e"},
     {file = "setuptools-80.10.1.tar.gz", hash = "sha256:bf2e513eb8144c3298a3bd28ab1a5edb739131ec5c22e045ff93cd7f5319703a"},
@@ -7926,7 +7976,7 @@ version = "0.51.0"
 description = "A unified approach to explain the output of any machine learning model."
 optional = false
 python-versions = ">=3.11"
-groups = ["main"]
+groups = ["train"]
 files = [
     {file = "shap-0.51.0-cp311-cp311-macosx_10_9_x86_64.whl", hash = "sha256:4b4b81d7401bc821490148a694a9f149f8ef488fa973b49fdc8a7916a572750f"},
     {file = "shap-0.51.0-cp311-cp311-macosx_11_0_arm64.whl", hash = "sha256:9b92f7371644c4a19660f734e0b0fe299d0eff273102230c9cf191e310576619"},
@@ -7997,7 +8047,7 @@ version = "1.17.0"
 description = "Python 2 and 3 compatibility utilities"
 optional = false
 python-versions = "!=3.0.*,!=3.1.*,!=3.2.*,>=2.7"
-groups = ["main", "timeseries"]
+groups = ["main", "dashboard", "lab", "tabpfn", "timeseries", "train"]
 files = [
     {file = "six-1.17.0-py2.py3-none-any.whl", hash = "sha256:4721f391ed90541fddacab5acf947aa0d3dc7d27b2e1e8eda2be8970586c3274"},
     {file = "six-1.17.0.tar.gz", hash = "sha256:ff70335d468e7eb6ec65b95b99d3a2836546063f63acc5171de367e834932a81"},
@@ -8009,7 +8059,7 @@ version = "0.1.5"
 description = "Ease support for compatible scikit-learn estimators across versions"
 optional = false
 python-versions = ">=3.8"
-groups = ["main"]
+groups = ["lab"]
 files = [
     {file = "sklearn_compat-0.1.5-py3-none-any.whl", hash = "sha256:dddd00c442027b6a2c2fd4a86667b804a7353cdb5093bfd0d5431f5e3c135fce"},
     {file = "sklearn_compat-0.1.5.tar.gz", hash = "sha256:1a0c3a2f384100e034def49ee5a6cfe984a826f79d032eb559f10445e012b02c"},
@@ -8030,7 +8080,7 @@ version = "0.0.8"
 description = "A small package for big slicing."
 optional = false
 python-versions = ">=3.6"
-groups = ["main"]
+groups = ["train"]
 files = [
     {file = "slicer-0.0.8-py3-none-any.whl", hash = "sha256:6c206258543aecd010d497dc2eca9d2805860a0b3758673903456b7df7934dc3"},
     {file = "slicer-0.0.8.tar.gz", hash = "sha256:2e7553af73f0c0c2d355f4afcc3ecf97c6f2156fcf4593955c3f56cf6c4d6eb7"},
@@ -8042,7 +8092,7 @@ version = "7.5.0"
 description = "Utils for streaming large files (S3, HDFS, GCS, SFTP, Azure Blob Storage, gzip, bz2, zst...)"
 optional = false
 python-versions = "<4.0,>=3.9"
-groups = ["main"]
+groups = ["lab"]
 files = [
     {file = "smart_open-7.5.0-py3-none-any.whl", hash = "sha256:87e695c5148bbb988f15cec00971602765874163be85acb1c9fb8abc012e6599"},
     {file = "smart_open-7.5.0.tar.gz", hash = "sha256:f394b143851d8091011832ac8113ea4aba6b92e6c35f6e677ddaaccb169d7cb9"},
@@ -8068,7 +8118,7 @@ version = "5.0.2"
 description = "A pure Python implementation of a sliding window memory map manager"
 optional = false
 python-versions = ">=3.7"
-groups = ["main"]
+groups = ["dashboard"]
 files = [
     {file = "smmap-5.0.2-py3-none-any.whl", hash = "sha256:b30115f0def7d7531d22a0fb6502488d879e75b260a9db4d0819cfb25403af5e"},
     {file = "smmap-5.0.2.tar.gz", hash = "sha256:26ea65a03958fa0c8a1c7e8c7a58fdc77221b8910f6be2131affade476898ad5"},
@@ -8080,7 +8130,7 @@ version = "2.8"
 description = "A modern CSS selector implementation for Beautiful Soup."
 optional = false
 python-versions = ">=3.9"
-groups = ["main"]
+groups = ["lab", "scrape"]
 files = [
     {file = "soupsieve-2.8-py3-none-any.whl", hash = "sha256:0cc76456a30e20f5d7f2e14a98a4ae2ee4e5abdc7c5ea0aafe795f344bc7984c"},
     {file = "soupsieve-2.8.tar.gz", hash = "sha256:e2dd4a40a628cb5f28f6d4b0db8800b8f581b65bb380b97de22ba5ca8d72572f"},
@@ -8092,7 +8142,7 @@ version = "3.8.11"
 description = "Industrial-strength Natural Language Processing (NLP) in Python"
 optional = false
 python-versions = "<3.15,>=3.9"
-groups = ["main"]
+groups = ["lab"]
 files = [
     {file = "spacy-3.8.11-cp310-cp310-macosx_10_9_x86_64.whl", hash = "sha256:f9cc7f775cfc41ccb8be63bd6258a1ec4613d4ad3859f2ba2c079f34240b21f6"},
     {file = "spacy-3.8.11-cp310-cp310-macosx_11_0_arm64.whl", hash = "sha256:be9d665be8581926fba4303543ba189d34e8517803052551b000cf1a1af33b87"},
@@ -8189,7 +8239,7 @@ version = "3.0.12"
 description = "Legacy registered functions for spaCy backwards compatibility"
 optional = false
 python-versions = ">=3.6"
-groups = ["main"]
+groups = ["lab"]
 files = [
     {file = "spacy-legacy-3.0.12.tar.gz", hash = "sha256:b37d6e0c9b6e1d7ca1cf5bc7152ab64a4c4671f59c85adaf7a3fcb870357a774"},
     {file = "spacy_legacy-3.0.12-py2.py3-none-any.whl", hash = "sha256:476e3bd0d05f8c339ed60f40986c07387c0a71479245d6d0f4298dbd52cda55f"},
@@ -8201,7 +8251,7 @@ version = "1.0.5"
 description = "Logging utilities for SpaCy"
 optional = false
 python-versions = ">=3.6"
-groups = ["main"]
+groups = ["lab"]
 files = [
     {file = "spacy-loggers-1.0.5.tar.gz", hash = "sha256:d60b0bdbf915a60e516cc2e653baeff946f0cfc461b452d11a4d5458c6fe5f24"},
     {file = "spacy_loggers-1.0.5-py3-none-any.whl", hash = "sha256:196284c9c446cc0cdb944005384270d775fdeaf4f494d8e269466cfa497ef645"},
@@ -8213,7 +8263,7 @@ version = "2.0.46"
 description = "Database Abstraction Library"
 optional = false
 python-versions = ">=3.7"
-groups = ["main", "timeseries"]
+groups = ["lab", "timeseries", "train"]
 files = [
     {file = "sqlalchemy-2.0.46-cp310-cp310-macosx_11_0_arm64.whl", hash = "sha256:895296687ad06dc9b11a024cf68e8d9d3943aa0b4964278d2553b86f1b267735"},
     {file = "sqlalchemy-2.0.46-cp310-cp310-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:ab65cb2885a9f80f979b85aa4e9c9165a31381ca322cbde7c638fe6eefd1ec39"},
@@ -8311,7 +8361,7 @@ version = "2.5.2"
 description = "Modern high-performance serialization utilities for Python"
 optional = false
 python-versions = "<3.15,>=3.9"
-groups = ["main"]
+groups = ["lab"]
 files = [
     {file = "srsly-2.5.2-cp310-cp310-macosx_10_9_x86_64.whl", hash = "sha256:5491fe0683da900cd0c563538510c70a007380e1f6b29ebbb5225e7590981e2a"},
     {file = "srsly-2.5.2-cp310-cp310-macosx_11_0_arm64.whl", hash = "sha256:7375c2955935b73a6cad3851fe819c2f4ec506504afe7ca92b917555e6850fae"},
@@ -8374,7 +8424,7 @@ version = "1.8.0"
 description = "SSE client for Python"
 optional = false
 python-versions = "*"
-groups = ["timeseries"]
+groups = ["tabpfn", "timeseries"]
 files = [
     {file = "sseclient-py-1.8.0.tar.gz", hash = "sha256:c547c5c1a7633230a38dc599a21a2dc638f9b5c297286b48b46b935c71fac3e8"},
     {file = "sseclient_py-1.8.0-py2.py3-none-any.whl", hash = "sha256:4ecca6dc0b9f963f8384e9d7fd529bf93dd7d708144c4fb5da0e0a1a926fee83"},
@@ -8386,7 +8436,7 @@ version = "0.6.3"
 description = "Extract data from python stack frames and tracebacks for informative displays"
 optional = false
 python-versions = "*"
-groups = ["main"]
+groups = ["lab"]
 files = [
     {file = "stack_data-0.6.3-py3-none-any.whl", hash = "sha256:d5558e0c25a4cb0853cddad3d77da9891a08cb85dd9f9f91b9f8cd66e511e695"},
     {file = "stack_data-0.6.3.tar.gz", hash = "sha256:836a778de4fec4dcd1dcd89ed8abff8a221f58308462e1c4aa2a3cf30148f0b9"},
@@ -8406,7 +8456,7 @@ version = "0.52.1"
 description = "The little ASGI library that shines."
 optional = false
 python-versions = ">=3.10"
-groups = ["main"]
+groups = ["lab"]
 files = [
     {file = "starlette-0.52.1-py3-none-any.whl", hash = "sha256:0029d43eb3d273bc4f83a08720b4912ea4b071087a3b48db01b7c839f7954d74"},
     {file = "starlette-0.52.1.tar.gz", hash = "sha256:834edd1b0a23167694292e94f597773bc3f89f362be6effee198165a35d62933"},
@@ -8425,7 +8475,7 @@ version = "2.0.1"
 description = "Time series forecasting suite using statistical models"
 optional = false
 python-versions = ">=3.9"
-groups = ["main", "timeseries"]
+groups = ["lab", "timeseries"]
 files = [
     {file = "statsforecast-2.0.1-cp310-cp310-macosx_10_9_x86_64.whl", hash = "sha256:f6839c3c033d7de25ab71d95e7e813830ea4026d2eeb88e28421022eed48a702"},
     {file = "statsforecast-2.0.1-cp310-cp310-macosx_11_0_arm64.whl", hash = "sha256:d4991c88c901b2d14a383616e59d64e950e7ab277d3f9748b55145f06c409cf5"},
@@ -8478,7 +8528,7 @@ version = "0.14.6"
 description = "Statistical computations and models for Python"
 optional = false
 python-versions = ">=3.9"
-groups = ["main", "timeseries"]
+groups = ["lab", "timeseries"]
 files = [
     {file = "statsmodels-0.14.6-cp310-cp310-macosx_10_9_x86_64.whl", hash = "sha256:f4ff0649a2df674c7ffb6fa1a06bffdb82a6adf09a48e90e000a15a6aaa734b0"},
     {file = "statsmodels-0.14.6-cp310-cp310-macosx_11_0_arm64.whl", hash = "sha256:109012088b3e370080846ab053c76d125268631410142daad2f8c10770e8e8d9"},
@@ -8536,7 +8586,7 @@ version = "5.4.1"
 description = "Manage dynamic plugins for Python applications"
 optional = false
 python-versions = ">=3.9"
-groups = ["main"]
+groups = ["lab"]
 files = [
     {file = "stevedore-5.4.1-py3-none-any.whl", hash = "sha256:d10a31c7b86cba16c1f6e8d15416955fc797052351a56af15e608ad20811fcfe"},
     {file = "stevedore-5.4.1.tar.gz", hash = "sha256:3135b5ae50fe12816ef291baff420acb727fcd356106e3e9cbfa9e5985cd6f4b"},
@@ -8551,7 +8601,7 @@ version = "1.54.0"
 description = "A faster way to build and share data apps"
 optional = false
 python-versions = ">=3.10"
-groups = ["main"]
+groups = ["dashboard"]
 files = [
     {file = "streamlit-1.54.0-py3-none-any.whl", hash = "sha256:a7b67d6293a9f5f6b4d4c7acdbc4980d7d9f049e78e404125022ecb1712f79fc"},
     {file = "streamlit-1.54.0.tar.gz", hash = "sha256:09965e6ae7eb0357091725de1ce2a3f7e4be155c2464c505c40a3da77ab69dd8"},
@@ -8593,7 +8643,7 @@ version = "1.14.0"
 description = "Computer algebra system (CAS) in Python"
 optional = false
 python-versions = ">=3.9"
-groups = ["main", "timeseries"]
+groups = ["lab", "timeseries"]
 files = [
     {file = "sympy-1.14.0-py3-none-any.whl", hash = "sha256:e091cc3e99d2141a0ba2847328f5479b05d94a6635cb96148ccb3f34671bd8f5"},
     {file = "sympy-1.14.0.tar.gz", hash = "sha256:d3d3fe8df1e5a0b42f0e7bdf50541697dbe7d23746e894990c030e2b05e72517"},
@@ -8634,30 +8684,37 @@ typing_extensions = ">=4.12.0"
 
 [[package]]
 name = "tabpfn-client"
-version = "0.2.6"
+version = "0.6.1"
 description = "API access for TabPFN: Foundation model for tabular data"
 optional = false
-python-versions = ">=3.9"
-groups = ["timeseries"]
+python-versions = ">=3.10"
+groups = ["tabpfn", "timeseries"]
 files = [
-    {file = "tabpfn_client-0.2.6-py3-none-any.whl", hash = "sha256:7e0699c834e836b96194a4b2e7c738ff78013369ad99c75dec41a844f0b5b72e"},
-    {file = "tabpfn_client-0.2.6.tar.gz", hash = "sha256:526532dcd2fcd1900d1e1b614aac0342342b6c2ec61b199c5f9ca7f7bdd2678e"},
+    {file = "tabpfn_client-0.6.1-py3-none-any.whl", hash = "sha256:40c49a5f06ab7b9f4e9c697433d8fc0fefba8bcf18971d372d9a2737ccda8133"},
+    {file = "tabpfn_client-0.6.1.tar.gz", hash = "sha256:682b96888809372651eff86f2b34ec96a4f38be1ff1cbea8ef9c2921e2df566d"},
 ]
 
 [package.dependencies]
 backoff = ">=2.2.0,<=2.2.1"
-httpx = {version = ">=0.25.0,<=0.28.1", extras = ["http2"]}
+google-crc32c = ">=1.5.0,<=1.8.0"
+httpx = ">=0.25.0,<=0.28.1"
 omegaconf = ">=2.1.2,<=2.3.0"
 pandas = ">=2.1.2,<=2.3.3"
 password-strength = "0.0.3.post2"
-scikit-learn = ">=1.3.1,<=1.6.1"
-sseclient-py = "1.8.0"
-tqdm = ">=4.63.0,<=4.67.1"
-typing-extensions = ">=4.12.2,<=4.15.0"
-xxhash = ">=1.1.0,<=3.6.0"
+pyarrow = ">=14.0.0,<=25.0.1"
+pydantic = ">=2.11.7,<=2.13.4"
+pydantic-settings = ">=2.14.2,<=2.15.0"
+rich = ">=13.7.0,<=15.0.0"
+scikit-learn = ">=1.3.1,<=1.9.0"
+sseclient-py = ">=1.8.0,<=1.9.0"
+tabpfn-common-utils = ">=0.2.10,<=0.2.19"
+tqdm = ">=4.63.0,<=4.70.0"
+typing-extensions = ">=4.12.2,<=4.16.0"
+xxhash = ">=1.1.0,<=3.8.1"
 
 [package.extras]
-dev = ["pre-commit (==4.2.0)", "pytest (==8.4.2)", "respx (==0.22.0)", "ruff (==0.11.9)", "scikit-learn (==1.6.1)", "typing-extensions (==4.15.0)"]
+sagemaker = ["boto3 (>=1.34)"]
+viz = ["matplotlib (>=3.7.0,<=3.11.1)"]
 
 [[package]]
 name = "tabpfn-common-utils"
@@ -8665,7 +8722,7 @@ version = "0.2.15"
 description = "Utilities shared between TabPFN codebases"
 optional = false
 python-versions = ">=3.9"
-groups = ["timeseries"]
+groups = ["tabpfn", "timeseries"]
 files = [
     {file = "tabpfn_common_utils-0.2.15-py3-none-any.whl", hash = "sha256:5be865992d0bf3aac5afb591bdd2e67c38602d53f6e262498d56e736d930aa1e"},
     {file = "tabpfn_common_utils-0.2.15.tar.gz", hash = "sha256:7aeca8b8d20a188635a7d67dcd1e7d8db2fb5bb2bfe4ed5f5643d9dabba67d45"},
@@ -8719,7 +8776,7 @@ version = "0.9.0"
 description = "Pretty-print tabular data"
 optional = false
 python-versions = ">=3.7"
-groups = ["main"]
+groups = ["lab"]
 files = [
     {file = "tabulate-0.9.0-py3-none-any.whl", hash = "sha256:024ca478df22e9340661486f85298cff5f6dcdba14f3813e8830015b9ed1948f"},
     {file = "tabulate-0.9.0.tar.gz", hash = "sha256:0095b12bf5966de529c0feb1fa08671671b3368eec77d7ef7ab114be2c068b3c"},
@@ -8734,7 +8791,7 @@ version = "9.1.4"
 description = "Retry code until it succeeds"
 optional = false
 python-versions = ">=3.10"
-groups = ["main"]
+groups = ["dashboard"]
 files = [
     {file = "tenacity-9.1.4-py3-none-any.whl", hash = "sha256:6095a360c919085f28c6527de529e76a06ad89b23659fa881ae0649b867a9d55"},
     {file = "tenacity-9.1.4.tar.gz", hash = "sha256:adb31d4c263f2bd041081ab33b498309a57c77f9acf2db65aadf0898179cf93a"},
@@ -8750,7 +8807,7 @@ version = "2.20.0"
 description = "TensorBoard lets you watch Tensors Flow"
 optional = false
 python-versions = ">=3.9"
-groups = ["main", "timeseries"]
+groups = ["lab", "timeseries"]
 files = [
     {file = "tensorboard-2.20.0-py3-none-any.whl", hash = "sha256:9dc9f978cb84c0723acf9a345d96c184f0293d18f166bb8d59ee098e6cfaaba6"},
 ]
@@ -8773,7 +8830,7 @@ version = "0.7.2"
 description = "Fast data loading for TensorBoard"
 optional = false
 python-versions = ">=3.7"
-groups = ["main", "timeseries"]
+groups = ["lab", "timeseries"]
 files = [
     {file = "tensorboard_data_server-0.7.2-py3-none-any.whl", hash = "sha256:7e0610d205889588983836ec05dc098e80f97b7e7bbff7e994ebb78f578d0ddb"},
     {file = "tensorboard_data_server-0.7.2-py3-none-macosx_10_9_x86_64.whl", hash = "sha256:9fe5d24221b29625dbc7328b0436ca7fc1c23de4acf4d272f1180856e32f9f60"},
@@ -8786,7 +8843,7 @@ version = "2.6.4"
 description = "TensorBoardX lets you watch Tensors Flow without Tensorflow"
 optional = false
 python-versions = ">=3.9"
-groups = ["main"]
+groups = ["lab"]
 markers = "python_version != \"3.13\" or platform_system != \"Windows\""
 files = [
     {file = "tensorboardx-2.6.4-py3-none-any.whl", hash = "sha256:5970cf3a1f0a6a6e8b180ccf46f3fe832b8a25a70b86e5a237048a7c0beb18e2"},
@@ -8804,7 +8861,7 @@ version = "1.3"
 description = "The most basic Text::Unidecode port"
 optional = false
 python-versions = "*"
-groups = ["main"]
+groups = ["lab"]
 files = [
     {file = "text-unidecode-1.3.tar.gz", hash = "sha256:bad6603bb14d279193107714b288be206cac565dfa49aa5b105294dd5c4aab93"},
     {file = "text_unidecode-1.3-py2.py3-none-any.whl", hash = "sha256:1311f10e8b895935241623731c2ba64f4c455287888b18189350b67134a822e8"},
@@ -8816,7 +8873,7 @@ version = "8.3.10"
 description = "A refreshing functional take on deep learning, compatible with your favorite libraries"
 optional = false
 python-versions = "<3.15,>=3.10"
-groups = ["main"]
+groups = ["lab"]
 files = [
     {file = "thinc-8.3.10-cp310-cp310-macosx_10_9_x86_64.whl", hash = "sha256:fbe0313cb3c898f4e6a3f13b704af51f4bf8f927078deb0fe2d6eaf3c6c5b31b"},
     {file = "thinc-8.3.10-cp310-cp310-macosx_11_0_arm64.whl", hash = "sha256:892ac91cf7cc8d3ac9a4527c68ead37a96e87132c9f589de56b057b50358e895"},
@@ -8906,7 +8963,7 @@ version = "3.5.0"
 description = "threadpoolctl"
 optional = false
 python-versions = ">=3.8"
-groups = ["main", "timeseries"]
+groups = ["main", "lab", "tabpfn", "timeseries", "train"]
 files = [
     {file = "threadpoolctl-3.5.0-py3-none-any.whl", hash = "sha256:56c1e26c150397e58c4926da8eeee87533b1e32bef131bd4bf6a2f45f3185467"},
     {file = "threadpoolctl-3.5.0.tar.gz", hash = "sha256:082433502dd922bf738de0d8bcc4fdcbf0979ff44c42bd40f5af8a282f6fa107"},
@@ -8918,7 +8975,7 @@ version = "2026.1.14"
 description = "Read and write TIFF files"
 optional = false
 python-versions = ">=3.11"
-groups = ["main"]
+groups = ["lab"]
 files = [
     {file = "tifffile-2026.1.14-py3-none-any.whl", hash = "sha256:29cf4adb43562a4624fc959018ab1b44e0342015d3db4581b983fe40e05f5924"},
     {file = "tifffile-2026.1.14.tar.gz", hash = "sha256:a423c583e1eecd9ca255642d47f463efa8d7f2365a0e110eb0167570493e0c8c"},
@@ -8941,7 +8998,7 @@ version = "1.0.3"
 description = "PyTorch Image Models"
 optional = false
 python-versions = ">=3.8"
-groups = ["main"]
+groups = ["lab"]
 files = [
     {file = "timm-1.0.3-py3-none-any.whl", hash = "sha256:d1ec86f7765aa79fbc7491508fa6e285d38a38f10bf4fe44ba2e9c70f91f0f5b"},
     {file = "timm-1.0.3.tar.gz", hash = "sha256:83920a7efe2cfd503b2a1257dc8808d6ff7dcd18a4b79f451c283e7d71497329"},
@@ -8960,7 +9017,7 @@ version = "0.22.2"
 description = ""
 optional = false
 python-versions = ">=3.9"
-groups = ["main", "timeseries"]
+groups = ["lab", "timeseries"]
 files = [
     {file = "tokenizers-0.22.2-cp39-abi3-macosx_10_12_x86_64.whl", hash = "sha256:544dd704ae7238755d790de45ba8da072e9af3eea688f698b137915ae959281c"},
     {file = "tokenizers-0.22.2-cp39-abi3-macosx_11_0_arm64.whl", hash = "sha256:1e418a55456beedca4621dbab65a318981467a2b188e982a23e117f115ce5001"},
@@ -9002,7 +9059,7 @@ version = "0.10.2"
 description = "Python Library for Tom's Obvious, Minimal Language"
 optional = false
 python-versions = ">=2.6, !=3.0.*, !=3.1.*, !=3.2.*"
-groups = ["main"]
+groups = ["dashboard"]
 files = [
     {file = "toml-0.10.2-py2.py3-none-any.whl", hash = "sha256:806143ae5bfb6a3c6e736a764057db0e6a0e05e338b5630894a5f779cabb4f9b"},
     {file = "toml-0.10.2.tar.gz", hash = "sha256:b3bda1d108d5dd99f4a20d24d9c348e91c4db7ab1b749200bded2f839ccbe68f"},
@@ -9014,7 +9071,7 @@ version = "0.12.1"
 description = "List processing tools and functional utilities"
 optional = false
 python-versions = ">=3.7"
-groups = ["main", "timeseries"]
+groups = ["lab", "timeseries"]
 files = [
     {file = "toolz-0.12.1-py3-none-any.whl", hash = "sha256:d22731364c07d72eea0a0ad45bafb2c2937ab6fd38a3507bf55eae8744aa7d85"},
     {file = "toolz-0.12.1.tar.gz", hash = "sha256:ecca342664893f177a13dac0e6b41cbd8ac25a358e5f215316d43e2100224f4d"},
@@ -9026,7 +9083,7 @@ version = "2.9.1"
 description = "Tensors and Dynamic neural networks in Python with strong GPU acceleration"
 optional = false
 python-versions = ">=3.10"
-groups = ["main", "timeseries"]
+groups = ["lab", "timeseries"]
 files = [
     {file = "torch-2.9.1-cp310-cp310-manylinux_2_28_aarch64.whl", hash = "sha256:1cc208435f6c379f9b8fdfd5ceb5be1e3b72a6bdf1cb46c0d2812aa73472db9e"},
     {file = "torch-2.9.1-cp310-cp310-manylinux_2_28_x86_64.whl", hash = "sha256:9fd35c68b3679378c11f5eb73220fdcb4e6f4592295277fbb657d31fd053237c"},
@@ -9094,7 +9151,7 @@ version = "1.7.4"
 description = "PyTorch native Metrics"
 optional = false
 python-versions = ">=3.9"
-groups = ["main", "timeseries"]
+groups = ["lab", "timeseries"]
 files = [
     {file = "torchmetrics-1.7.4-py3-none-any.whl", hash = "sha256:9298ad0e893b0cf2956bee95b0f7eecdc65205ab84ddb4f6762eff157c240518"},
     {file = "torchmetrics-1.7.4.tar.gz", hash = "sha256:506a1a5c7c304cd77ba323ca4b009e46b814fd2be9dcf0f4ccc2e5c0f5b4b0c1"},
@@ -9124,7 +9181,7 @@ version = "0.24.1"
 description = "image and video datasets and models for torch deep learning"
 optional = false
 python-versions = ">=3.10"
-groups = ["main"]
+groups = ["lab"]
 files = [
     {file = "torchvision-0.24.1-cp310-cp310-macosx_11_0_arm64.whl", hash = "sha256:ded5e625788572e4e1c4d155d1bbc48805c113794100d70e19c76e39e4d53465"},
     {file = "torchvision-0.24.1-cp310-cp310-manylinux_2_28_aarch64.whl", hash = "sha256:54ed17c3d30e718e08d8da3fd5b30ea44b0311317e55647cb97077a29ecbc25b"},
@@ -9171,7 +9228,7 @@ version = "6.4.2"
 description = "Tornado is a Python web framework and asynchronous networking library, originally developed at FriendFeed."
 optional = false
 python-versions = ">=3.8"
-groups = ["main"]
+groups = ["dashboard", "lab"]
 files = [
     {file = "tornado-6.4.2-cp38-abi3-macosx_10_9_universal2.whl", hash = "sha256:e828cce1123e9e44ae2a50a9de3055497ab1d0aeb440c5ac23064d9e44880da1"},
     {file = "tornado-6.4.2-cp38-abi3-macosx_10_9_x86_64.whl", hash = "sha256:072ce12ada169c5b00b7d92a99ba089447ccc993ea2143c9ede887e0937aa803"},
@@ -9192,7 +9249,7 @@ version = "4.67.1"
 description = "Fast, Extensible Progress Meter"
 optional = false
 python-versions = ">=3.7"
-groups = ["main", "timeseries"]
+groups = ["main", "lab", "tabpfn", "timeseries", "train"]
 files = [
     {file = "tqdm-4.67.1-py3-none-any.whl", hash = "sha256:26445eca388f82e72884e0d580d5464cd801a3ea01e63e5601bdff9ba6a48de2"},
     {file = "tqdm-4.67.1.tar.gz", hash = "sha256:f8aef9c52c08c13a65f30ea34f4e5aac3fd1a34959879d7e59e63027286627f2"},
@@ -9214,7 +9271,7 @@ version = "5.14.3"
 description = "Traitlets Python configuration system"
 optional = false
 python-versions = ">=3.8"
-groups = ["main"]
+groups = ["lab"]
 files = [
     {file = "traitlets-5.14.3-py3-none-any.whl", hash = "sha256:b74e89e397b1ed28cc831db7aea759ba6640cb3de13090ca145426688ff1ac4f"},
     {file = "traitlets-5.14.3.tar.gz", hash = "sha256:9ed0579d3502c94b4b3732ac120375cda96f923114522847de4b3bb98b96b6b7"},
@@ -9230,7 +9287,7 @@ version = "4.57.6"
 description = "State-of-the-art Machine Learning for JAX, PyTorch and TensorFlow"
 optional = false
 python-versions = ">=3.9.0"
-groups = ["main", "timeseries"]
+groups = ["lab", "timeseries"]
 files = [
     {file = "transformers-4.57.6-py3-none-any.whl", hash = "sha256:4c9e9de11333ddfe5114bc872c9f370509198acf0b87a832a0ab9458e2bd0550"},
     {file = "transformers-4.57.6.tar.gz", hash = "sha256:55e44126ece9dc0a291521b7e5492b572e6ef2766338a610b9ab5afbb70689d3"},
@@ -9307,7 +9364,7 @@ version = "1.0.0"
 description = "A collection of python utils for Fugue projects"
 optional = false
 python-versions = ">=3.9"
-groups = ["main", "timeseries"]
+groups = ["lab", "timeseries"]
 files = [
     {file = "triad-1.0.0-py3-none-any.whl", hash = "sha256:0d9b638541e26c24ef6ad8c8f29b5df92eaa436f54cfd02ae1c48b4b0acd6e92"},
     {file = "triad-1.0.0.tar.gz", hash = "sha256:0bbaf627dfdee8fa05bafe02d87da03460892abd666944da048de8a467e1519d"},
@@ -9329,7 +9386,7 @@ version = "3.5.1"
 description = "A language and compiler for custom Deep Learning operations"
 optional = false
 python-versions = "<3.15,>=3.10"
-groups = ["main", "timeseries"]
+groups = ["lab", "timeseries"]
 markers = "platform_system == \"Linux\" and platform_machine == \"x86_64\""
 files = [
     {file = "triton-3.5.1-cp310-cp310-manylinux_2_27_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:f63e34dcb32d7bd3a1d0195f60f30d2aee8b08a69a0424189b71017e23dfc3d2"},
@@ -9359,7 +9416,7 @@ version = "0.21.1"
 description = "Typer, build great CLIs. Easy to code. Based on Python type hints."
 optional = false
 python-versions = ">=3.9"
-groups = ["main"]
+groups = ["lab"]
 files = [
     {file = "typer_slim-0.21.1-py3-none-any.whl", hash = "sha256:6e6c31047f171ac93cc5a973c9e617dbc5ab2bddc4d0a3135dc161b4e2020e0d"},
     {file = "typer_slim-0.21.1.tar.gz", hash = "sha256:73495dd08c2d0940d611c5a8c04e91c2a0a98600cbd4ee19192255a233b6dbfd"},
@@ -9378,7 +9435,7 @@ version = "4.12.2"
 description = "Backported and Experimental Type Hints for Python 3.8+"
 optional = false
 python-versions = ">=3.8"
-groups = ["main", "dev", "timeseries"]
+groups = ["main", "dashboard", "dev", "lab", "scrape", "tabpfn", "timeseries", "train"]
 files = [
     {file = "typing_extensions-4.12.2-py3-none-any.whl", hash = "sha256:04e5ca0351e0f3f85c6853954072df659d0d13fac324d0072316b67d7794700d"},
     {file = "typing_extensions-4.12.2.tar.gz", hash = "sha256:1a7ead55c7e559dd4dee8856e3a88b41225abfe1ce8df57b7c13915fe121ffb8"},
@@ -9390,7 +9447,7 @@ version = "0.4.2"
 description = "Runtime typing introspection tools"
 optional = false
 python-versions = ">=3.9"
-groups = ["main", "timeseries"]
+groups = ["main", "lab", "tabpfn", "timeseries"]
 files = [
     {file = "typing_inspection-0.4.2-py3-none-any.whl", hash = "sha256:4ed1cacbdc298c220f1bd249ed5287caa16f34d44ef4e9c3d0cbad5b521545e7"},
     {file = "typing_inspection-0.4.2.tar.gz", hash = "sha256:ba561c48a67c5958007083d386c3295464928b01faa735ab8547c5692e87f464"},
@@ -9405,7 +9462,7 @@ version = "2025.1"
 description = "Provider of IANA time zone data"
 optional = false
 python-versions = ">=2"
-groups = ["main", "timeseries"]
+groups = ["main", "dashboard", "lab", "tabpfn", "timeseries", "train"]
 files = [
     {file = "tzdata-2025.1-py2.py3-none-any.whl", hash = "sha256:7e127113816800496f027041c570f50bcd464a020098a3b6b199517772303639"},
     {file = "tzdata-2025.1.tar.gz", hash = "sha256:24894909e88cdb28bd1636c6887801df64cb485bd593f2fd83ef29075a81d694"},
@@ -9417,7 +9474,7 @@ version = "2.3.0"
 description = "HTTP library with thread-safe connection pooling, file post, and more."
 optional = false
 python-versions = ">=3.9"
-groups = ["main", "timeseries"]
+groups = ["main", "dashboard", "lab", "tabpfn", "timeseries"]
 files = [
     {file = "urllib3-2.3.0-py3-none-any.whl", hash = "sha256:1cee9ad369867bfdbbb48b7dd50374c0967a0bb7710050facf0dd6911440e3df"},
     {file = "urllib3-2.3.0.tar.gz", hash = "sha256:f8c5449b3cf0861679ce7e0503c7b44b5ec981bec0d1d3795a07f1ba96f0204d"},
@@ -9435,7 +9492,7 @@ version = "0.2.11"
 description = "Forecasting utilities"
 optional = false
 python-versions = ">=3.8"
-groups = ["main", "timeseries"]
+groups = ["lab", "timeseries"]
 files = [
     {file = "utilsforecast-0.2.11-py3-none-any.whl", hash = "sha256:6f9f6fd07f37e194b3bdaf14f8d333d7d46ce165c74dda519fc106824f875397"},
     {file = "utilsforecast-0.2.11.tar.gz", hash = "sha256:04a897a11708eb730e6e18e2493318b188f9828eb0e2ea73b2a5e1e301d655b1"},
@@ -9457,7 +9514,7 @@ version = "0.40.0"
 description = "The lightning-fast ASGI server."
 optional = false
 python-versions = ">=3.10"
-groups = ["main"]
+groups = ["lab"]
 files = [
     {file = "uvicorn-0.40.0-py3-none-any.whl", hash = "sha256:c6c8f55bc8bf13eb6fa9ff87ad62308bbbc33d0b67f84293151efe87e0d5f2ee"},
     {file = "uvicorn-0.40.0.tar.gz", hash = "sha256:839676675e87e73694518b5574fd0f24c9d97b46bea16df7b8c05ea1a51071ea"},
@@ -9483,7 +9540,7 @@ version = "0.22.1"
 description = "Fast implementation of asyncio event loop on top of libuv"
 optional = false
 python-versions = ">=3.8.1"
-groups = ["main"]
+groups = ["lab"]
 markers = "sys_platform != \"win32\" and sys_platform != \"cygwin\" and platform_python_implementation != \"PyPy\""
 files = [
     {file = "uvloop-0.22.1-cp310-cp310-macosx_10_9_universal2.whl", hash = "sha256:ef6f0d4cc8a9fa1f6a910230cd53545d9a14479311e87e3cb225495952eb672c"},
@@ -9548,7 +9605,7 @@ version = "20.36.1"
 description = "Virtual Python Environment builder"
 optional = false
 python-versions = ">=3.8"
-groups = ["main"]
+groups = ["lab"]
 markers = "python_version != \"3.13\" or platform_system != \"Windows\""
 files = [
     {file = "virtualenv-20.36.1-py3-none-any.whl", hash = "sha256:575a8d6b124ef88f6f51d56d656132389f961062a9177016a50e4f507bbcc19f"},
@@ -9570,7 +9627,7 @@ version = "1.1.3"
 description = "A lightweight console printing and formatting toolkit"
 optional = false
 python-versions = ">=3.6"
-groups = ["main"]
+groups = ["lab"]
 files = [
     {file = "wasabi-1.1.3-py3-none-any.whl", hash = "sha256:f76e16e8f7e79f8c4c8be49b4024ac725713ab10cd7f19350ad18a8e3f71728c"},
     {file = "wasabi-1.1.3.tar.gz", hash = "sha256:4bb3008f003809db0c3e28b4daf20906ea871a2bb43f9914197d540f4f2e0878"},
@@ -9585,7 +9642,7 @@ version = "6.0.0"
 description = "Filesystem events monitoring"
 optional = false
 python-versions = ">=3.9"
-groups = ["main"]
+groups = ["dashboard"]
 markers = "platform_system != \"Darwin\""
 files = [
     {file = "watchdog-6.0.0-cp310-cp310-macosx_10_9_universal2.whl", hash = "sha256:d1cdb490583ebd691c012b3d6dae011000fe42edb7a82ece80965b42abd61f26"},
@@ -9629,7 +9686,7 @@ version = "1.1.1"
 description = "Simple, modern and high performance file watching and code reload in python."
 optional = false
 python-versions = ">=3.9"
-groups = ["main"]
+groups = ["lab"]
 files = [
     {file = "watchfiles-1.1.1-cp310-cp310-macosx_10_12_x86_64.whl", hash = "sha256:eef58232d32daf2ac67f42dea51a2c80f0d03379075d44a587051e63cc2e368c"},
     {file = "watchfiles-1.1.1-cp310-cp310-macosx_11_0_arm64.whl", hash = "sha256:03fa0f5237118a0c5e496185cafa92878568b652a2e9a9382a5151b1a0380a43"},
@@ -9751,7 +9808,7 @@ version = "0.2.13"
 description = "Measures the displayed width of unicode strings in a terminal"
 optional = false
 python-versions = "*"
-groups = ["main"]
+groups = ["lab"]
 files = [
     {file = "wcwidth-0.2.13-py2.py3-none-any.whl", hash = "sha256:3da69048e4540d84af32131829ff948f1e022c1c6bdb8d6102117aac784f6859"},
     {file = "wcwidth-0.2.13.tar.gz", hash = "sha256:72ea0c06399eb286d978fdedb6923a9eb47e1c486ce63e9b4e64fc18303972b5"},
@@ -9763,7 +9820,7 @@ version = "0.4.3"
 description = "Weasel: A small and easy workflow system"
 optional = false
 python-versions = ">=3.7"
-groups = ["main"]
+groups = ["lab"]
 files = [
     {file = "weasel-0.4.3-py3-none-any.whl", hash = "sha256:08f65b5d0dbded4879e08a64882de9b9514753d9eaa4c4e2a576e33666ac12cf"},
     {file = "weasel-0.4.3.tar.gz", hash = "sha256:f293d6174398e8f478c78481e00c503ee4b82ea7a3e6d0d6a01e46a6b1396845"},
@@ -9786,7 +9843,7 @@ version = "16.0"
 description = "An implementation of the WebSocket Protocol (RFC 6455 & 7692)"
 optional = false
 python-versions = ">=3.10"
-groups = ["main"]
+groups = ["lab"]
 files = [
     {file = "websockets-16.0-cp310-cp310-macosx_10_9_universal2.whl", hash = "sha256:04cdd5d2d1dacbad0a7bf36ccbcd3ccd5a30ee188f2560b7a62a30d14107b31a"},
     {file = "websockets-16.0-cp310-cp310-macosx_10_9_x86_64.whl", hash = "sha256:8ff32bb86522a9e5e31439a58addbb0166f0204d64066fb955265c4e214160f0"},
@@ -9857,7 +9914,7 @@ version = "3.1.5"
 description = "The comprehensive WSGI web application library."
 optional = false
 python-versions = ">=3.9"
-groups = ["main", "timeseries"]
+groups = ["lab", "timeseries"]
 files = [
     {file = "werkzeug-3.1.5-py3-none-any.whl", hash = "sha256:5111e36e91086ece91f93268bb39b4a35c1e6f1feac762c9c822ded0a4e322dc"},
     {file = "werkzeug-3.1.5.tar.gz", hash = "sha256:6a548b0e88955dd07ccb25539d7d0cc97417ee9e179677d22c7041c8f078ce67"},
@@ -9875,7 +9932,7 @@ version = "4.0.15"
 description = "Jupyter interactive widgets for Jupyter Notebook"
 optional = false
 python-versions = ">=3.7"
-groups = ["main"]
+groups = ["lab"]
 files = [
     {file = "widgetsnbextension-4.0.15-py3-none-any.whl", hash = "sha256:8156704e4346a571d9ce73b84bee86a29906c9abfd7223b7228a28899ccf3366"},
     {file = "widgetsnbextension-4.0.15.tar.gz", hash = "sha256:de8610639996f1567952d763a5a41af8af37f2575a41f9852a38f947eb82a3b9"},
@@ -9887,7 +9944,7 @@ version = "1.2.0"
 description = "A small Python utility to set file creation time on Windows"
 optional = false
 python-versions = ">=3.5"
-groups = ["main"]
+groups = ["lab"]
 markers = "sys_platform == \"win32\""
 files = [
     {file = "win32_setctime-1.2.0-py3-none-any.whl", hash = "sha256:95d644c4e708aba81dc3704a116d8cbc974d70b3bdb8be1d150e36be6e9d1390"},
@@ -9903,7 +9960,7 @@ version = "0.0.15"
 description = "Implementations of window operations such as rolling and expanding."
 optional = false
 python-versions = ">=3.6"
-groups = ["main", "timeseries"]
+groups = ["lab", "timeseries"]
 files = [
     {file = "window_ops-0.0.15-py3-none-any.whl", hash = "sha256:7dbd18b467939ac5db3f6834c07e7ffb723691f5d86c22a39e707713d8ac86e3"},
     {file = "window_ops-0.0.15.tar.gz", hash = "sha256:3c762d35a38d562f34cda33a272ced2c8d5dd88bd050c13bc82a592cf668a535"},
@@ -9922,7 +9979,7 @@ version = "2.0.1"
 description = "Module for decorators, wrappers and monkey patching."
 optional = false
 python-versions = ">=3.8"
-groups = ["main", "timeseries"]
+groups = ["lab", "timeseries"]
 files = [
     {file = "wrapt-2.0.1-cp310-cp310-macosx_10_9_universal2.whl", hash = "sha256:64b103acdaa53b7caf409e8d45d39a8442fe6dcfec6ba3f3d141e0cc2b5b4dbd"},
     {file = "wrapt-2.0.1-cp310-cp310-macosx_10_9_x86_64.whl", hash = "sha256:91bcc576260a274b169c3098e9a3519fb01f2989f6d3d386ef9cbf8653de1374"},
@@ -10042,7 +10099,7 @@ version = "2.1.4"
 description = "XGBoost Python Package"
 optional = false
 python-versions = ">=3.8"
-groups = ["main", "timeseries"]
+groups = ["cuda", "lab", "timeseries"]
 files = [
     {file = "xgboost-2.1.4-py3-none-macosx_10_15_x86_64.macosx_11_0_x86_64.macosx_12_0_x86_64.whl", hash = "sha256:78d88da184562deff25c820d943420342014dd55e0f4c017cc4563c2148df5ee"},
     {file = "xgboost-2.1.4-py3-none-macosx_12_0_arm64.whl", hash = "sha256:523db01d4e74b05c61a985028bde88a4dd380eadc97209310621996d7d5d14a7"},
@@ -10068,12 +10125,37 @@ pyspark = ["cloudpickle", "pyspark", "scikit-learn"]
 scikit-learn = ["scikit-learn"]
 
 [[package]]
+name = "xgboost-cpu"
+version = "2.1.4"
+description = "XGBoost Python Package"
+optional = false
+python-versions = ">=3.8"
+groups = ["cpu"]
+files = [
+    {file = "xgboost_cpu-2.1.4-py3-none-manylinux2014_aarch64.whl", hash = "sha256:f2eb1997a490789a9866abad46179e0a4e1ea01c1673cb5b586b630dc6b18232"},
+    {file = "xgboost_cpu-2.1.4-py3-none-manylinux2014_x86_64.whl", hash = "sha256:ac3281127b2f77f6c62e8699216b0974a1c4a442ee6162eb94256c01df7cd1f5"},
+    {file = "xgboost_cpu-2.1.4-py3-none-win_amd64.whl", hash = "sha256:5bd5017085fcf1756306eadd6548973a8ef05f18ad2eec529f5b54c00843cecf"},
+]
+
+[package.dependencies]
+numpy = "*"
+scipy = "*"
+
+[package.extras]
+dask = ["dask", "distributed", "pandas"]
+datatable = ["datatable"]
+pandas = ["pandas (>=1.2)"]
+plotting = ["graphviz", "matplotlib"]
+pyspark = ["cloudpickle", "pyspark", "scikit-learn"]
+scikit-learn = ["scikit-learn"]
+
+[[package]]
 name = "xlsxwriter"
 version = "3.2.2"
 description = "A Python module for creating Excel XLSX files."
 optional = false
 python-versions = ">=3.6"
-groups = ["main"]
+groups = ["lab"]
 files = [
     {file = "XlsxWriter-3.2.2-py3-none-any.whl", hash = "sha256:272ce861e7fa5e82a4a6ebc24511f2cb952fde3461f6c6e1a1e81d3272db1471"},
     {file = "xlsxwriter-3.2.2.tar.gz", hash = "sha256:befc7f92578a85fed261639fb6cde1fd51b79c5e854040847dde59d4317077dc"},
@@ -10085,7 +10167,7 @@ version = "3.6.0"
 description = "Python binding for xxHash"
 optional = false
 python-versions = ">=3.7"
-groups = ["main", "timeseries"]
+groups = ["lab", "tabpfn", "timeseries"]
 files = [
     {file = "xxhash-3.6.0-cp310-cp310-macosx_10_9_x86_64.whl", hash = "sha256:87ff03d7e35c61435976554477a7f4cd1704c3596a89a8300d5ce7fc83874a71"},
     {file = "xxhash-3.6.0-cp310-cp310-macosx_11_0_arm64.whl", hash = "sha256:f572dfd3d0e2eb1a57511831cf6341242f5a9f8298a45862d085f5b93394a27d"},
@@ -10235,7 +10317,7 @@ version = "1.22.0"
 description = "Yet another URL library"
 optional = false
 python-versions = ">=3.9"
-groups = ["main", "timeseries"]
+groups = ["lab", "timeseries"]
 files = [
     {file = "yarl-1.22.0-cp310-cp310-macosx_10_9_universal2.whl", hash = "sha256:c7bd6683587567e5a49ee6e336e0612bec8329be1b7d4c8af5687dcdeb67ee1e"},
     {file = "yarl-1.22.0-cp310-cp310-macosx_10_9_x86_64.whl", hash = "sha256:5cdac20da754f3a723cceea5b3448e1a2074866406adeb4ef35b469d089adb8f"},
@@ -10380,7 +10462,7 @@ version = "3.23.0"
 description = "Backport of pathlib-compatible object wrapper for zip files"
 optional = false
 python-versions = ">=3.9"
-groups = ["main"]
+groups = ["lab"]
 markers = "python_version != \"3.13\" or platform_system != \"Windows\""
 files = [
     {file = "zipp-3.23.0-py3-none-any.whl", hash = "sha256:071652d6115ed432f5ce1d34c336c0adfd6a884660d1e9712a256d3d3bd4b14e"},
@@ -10398,4 +10480,4 @@ type = ["pytest-mypy"]
 [metadata]
 lock-version = "2.1"
 python-versions = ">=3.11,<3.14"
-content-hash = "e81b3136873b9e03a268bc3b024792998de43026feeb944bd5ba172967835131"
+content-hash = "f15dfe01b205229f7795395cb7ca3a5675796157a2302e1837ade15115c28f1e"

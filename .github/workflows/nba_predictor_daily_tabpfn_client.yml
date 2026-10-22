@@ -92,10 +92,18 @@ jobs:
                   role-to-assume: ${{ secrets.AWS_ROLE_TO_ASSUME }}
                   aws-region: eu-west-1
 
+            # A fresh venv per run: the runner's tool-cache Python is shared by
+            # every job, so packages another job left there would hide a missing
+            # dependency here.
+            - name: Create job venv
+              run: |
+                  python -m venv "$RUNNER_TEMP/venv"
+                  echo "$RUNNER_TEMP/venv/bin" >> "$GITHUB_PATH"
+
             - name: Install dependencies
               run: |
                   python -m pip install --upgrade pip
-                  pip install -r requirements_predict_tabpfn.txt
+                  pip install -r requirements/predict-tabpfn-cuda.txt
                   pip install --no-deps -e .
 
             # The scheduled-games odds scrape drives a browser.

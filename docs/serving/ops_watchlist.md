@@ -134,27 +134,26 @@ unknown.
 fails, so one failing source leaves the S3 input cache stale for the predictor.
 Consider `if: always()` (or `!cancelled()`) on that step.
 
-### 6. `requirements_predict.txt` not yet tested in CI (2026-10-20)
+### 6. Per-job requirements not yet run on the runner (2026-10-22)
 
-`nba_predictor_daily.yml` now installs `requirements_predict.txt`, a minimal
-set traced from the imports of `predict_nba_games.py` (no TabPFN, no dev or
-Jupyter tools). It was checked in a clean Python 3.12 venv (all module-level
-imports load), but no real prediction has run with it. The last
-`nba_predictor_daily` run on GitHub is from June.
+Every workflow now installs one file from `requirements/`, exported from
+`poetry.lock` with only the Poetry groups the job uses (`requirements/README.md`),
+then `pip install --no-deps -e .`. The self-hosted jobs install into a fresh
+venv under `$RUNNER_TEMP`, so packages another job left in the shared
+tool-cache Python can no longer hide a missing dependency. This also ends the
+~10 min install of `update_database_daily` (2026-10-20: `pip install -e .`
+pulled every Poetry dependency, autogluon and torch included).
 
-**Check:** dispatch it once by hand and read the log. Note that on the
-self-hosted runner `setup-python` installs into a shared tool-cache
-interpreter, so packages left by `requirements.txt` are still present and a
-missing dependency could stay hidden. A dedicated venv would make the test real.
+Checked locally in clean Python 3.12 venvs: each file installs, every module
+its scripts reach imports (retrain: all but the scraper and PDF modules, which
+the refit never calls), the test suite passes on `tests-cpu.txt`, and the S3
+smoke test loads all 51 slots with `retrain-cpu.txt`. No workflow has run with
+them yet.
 
-### 7. `update_database_daily` installs every Poetry dependency (~10 min)
-
-"Install dependencies" ran 12:47–12:58 on 2026-10-20. Besides
-`requirements.txt`, the step runs `pip install -e .`, which also installs every
-dependency in `pyproject.toml`, including `autogluon` (and torch), `streamlit`,
-`optuna` and `ipywidgets`. The job uses none of them. `pip install -e .
---no-deps` should be enough. Part of the planned requirements reorganisation
-(per-job files under a `requirements/` folder, `xgboost-cpu` for serving).
+**Check:** the first run of each self-hosted job (predict, past snapshots,
+TabPFN, retrain, both DB updates): the install step's duration, and that the
+job gets past its imports. The venv is rebuilt every run from the runner's pip
+cache; if that is slow, keep one venv per job under the runner's work dir.
 
 ## Season-rollover sources to keep an eye on
 
