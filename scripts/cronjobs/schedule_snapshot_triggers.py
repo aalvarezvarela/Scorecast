@@ -12,6 +12,16 @@ apart share one run, fired at the last of them, so every snapshot of the group
 has passed. The T-30 snapshot (``EXACT_HORIZONS``) always gets a run at its own
 time.
 
+Also one TabPFN run (``nba_predictor_daily_tabpfn_client.yml``, ``TABPFN``:
+line_error on its T-360 intermediate slot, every game) at the first tip-off
+minus ``--tabpfn-lead-minutes`` (360): the first game's snapshot has just
+passed, the later games read their ticks so far.
+
+And, after the last game, whose end is estimated as its tip-off plus
+``GAME_LENGTH_MINUTES``: the past-snapshot predictions of the date
+(``nba_predict_past_snapshots.yml``, ``game_date`` passed) 30 min after it, and
+the final scores (``update_finished_matches_daily.yml``) an hour after it.
+
 Left out: times already past, and times outside the game date in US/Pacific --
 the predictor predicts the slate of its run's Pacific date, so a trigger before
 Pacific midnight (03:00 ET; an early tip's T-1080, a noon game's T-720) would
@@ -57,7 +67,36 @@ from nba_ou.scheduling.cronjob_org import (
     read_secret,
 )
 
-WORKFLOW_FILE = "nba_predictor_daily.yml"
+
+@dataclass(frozen=True)
+class Dispatch:
+    """A workflow to dispatch and its inputs (strings; the rest take defaults)."""
+
+    workflow_file: str
+    inputs: tuple[tuple[str, str], ...] = ()
+
+
+# Every enabled slot.
+PREDICTOR = Dispatch("nba_predictor_daily.yml")
+# TabPFN line_error on the T-360 slot; the predictor runs keep the databases
+# current, so no update of its own.
+TABPFN = Dispatch(
+    "nba_predictor_daily_tabpfn_client.yml",
+    (
+        ("target", "line_error"),
+        ("line", "intermediate"),
+        ("horizon_minutes", "360"),
+        ("update_db", "false"),
+    ),
+)
+DEFAULT_TABPFN_LEAD_MINUTES = 360
+FINISHED_MATCHES = Dispatch("update_finished_matches_daily.yml")
+PAST_SNAPSHOTS_WORKFLOW = "nba_predict_past_snapshots.yml"
+# Tip-off to final buzzer: about 2 h 15 min, more with overtime.
+GAME_LENGTH_MINUTES = 150
+# After the last game's estimated end.
+PAST_SNAPSHOTS_AFTER_END_MINUTES = 30
+FINISHED_MATCHES_AFTER_END_MINUTES = 60
 POOL_PREFIX = "Scorecast - snapshot trigger "
 # A busy night needs about 10 jobs; more than this means something is off.
 MAX_POOL = 30
@@ -82,11 +121,12 @@ SKIP_STATUSES = ("TBD", "PPD", "POSTPONED", "CANCEL")
 
 @dataclass(frozen=True)
 class ScheduleGroup:
-    """The runs of one UTC date that share a minute of the hour."""
+    """The runs of one workflow on one UTC date that share a minute of the hour."""
 
     day: date
     minute: int
     hours: tuple[int, ...]
+    dispatch: Dispatch = PREDICTOR
 
     def fire_times(self) -> list[datetime]:
         return [
@@ -209,14 +249,68 @@ def trigger_times(
     return dict(sorted(runs.items()))
 
 
-def group_schedules(times: Iterable[datetime]) -> list[ScheduleGroup]:
+def tabpfn_time(
+    tipoffs: Iterable[tuple[str, datetime]],
+    now: datetime,
+    lead_minutes: int = DEFAULT_TABPFN_LEAD_MINUTES,
+    window: tuple[datetime, datetime] | None = None,
+) -> datetime | None:
+    """The TabPFN run: the first tip-off minus ``lead_minutes``, or None when
+    there is no game, ``lead_minutes`` is 0, or the time is past or outside
+    ``window``."""
+    tips = [tipoff for _, tipoff in tipoffs]
+    if not tips or lead_minutes <= 0:
+        return None
+    at = min(tips) - timedelta(minutes=lead_minutes)
+    at = at.astimezone(UTC).replace(second=0, microsecond=0)
+    if at <= now + MIN_LEAD:
+        print(f"! TabPFN at {_clock(at)} skipped: already past")
+        return None
+    if window is not None and not window[0] <= at < window[1]:
+        print(f"! TabPFN at {_clock(at)} skipped: outside the predictor's date")
+        return None
+    return at
+
+
+def post_game_runs(
+    tipoffs: Iterable[tuple[str, datetime]], game_date: str, now: datetime
+) -> list[tuple[datetime, Dispatch]]:
+    """The runs after the last game's estimated end: the date's past-snapshot
+    predictions, then the final scores. Empty without games; a time already
+    past is left out."""
+    tips = [tipoff for _, tipoff in tipoffs]
+    if not tips:
+        return []
+    end = max(tips) + timedelta(minutes=GAME_LENGTH_MINUTES)
+    runs = [
+        (
+            end + timedelta(minutes=PAST_SNAPSHOTS_AFTER_END_MINUTES),
+            Dispatch(PAST_SNAPSHOTS_WORKFLOW, (("game_date", game_date),)),
+        ),
+        (end + timedelta(minutes=FINISHED_MATCHES_AFTER_END_MINUTES), FINISHED_MATCHES),
+    ]
+    kept = []
+    for at, dispatch in runs:
+        at = at.astimezone(UTC).replace(second=0, microsecond=0)
+        if at <= now + MIN_LEAD:
+            print(f"! {dispatch.workflow_file} at {_clock(at)} skipped: already past")
+            continue
+        kept.append((at, dispatch))
+    return kept
+
+
+def group_schedules(
+    times: Iterable[datetime], dispatch: Dispatch = PREDICTOR
+) -> list[ScheduleGroup]:
     """One group per (UTC date, minute): it fires at exactly ``times``."""
     hours: dict[tuple[date, int], set[int]] = defaultdict(set)
     for at in times:
         at = at.astimezone(UTC)
         hours[(at.date(), at.minute)].add(at.hour)
     groups = [
-        ScheduleGroup(day=day, minute=minute, hours=tuple(sorted(hrs)))
+        ScheduleGroup(
+            day=day, minute=minute, hours=tuple(sorted(hrs)), dispatch=dispatch
+        )
         for (day, minute), hrs in hours.items()
     ]
     return sorted(groups, key=lambda group: group.fire_times()[0])
@@ -244,7 +338,7 @@ def plan_pool(existing_jobs: list[dict], n_groups: int) -> PoolPlan:
 def job_payload(title: str, group: ScheduleGroup, github_token: str) -> dict:
     return {
         "title": title,
-        "url": dispatch_url(WORKFLOW_FILE),
+        "url": dispatch_url(group.dispatch.workflow_file),
         "enabled": True,
         "saveResponses": True,
         "requestTimeout": 30,
@@ -258,7 +352,7 @@ def job_payload(title: str, group: ScheduleGroup, github_token: str) -> dict:
         },
         "extendedData": {
             "headers": github_headers(github_token),
-            "body": dispatch_body(),
+            "body": dispatch_body(dict(group.dispatch.inputs)),
         },
     }
 
@@ -329,6 +423,12 @@ def main() -> None:
         default=DEFAULT_OFFSET_MINUTES,
         help="fire this long after each snapshot",
     )
+    parser.add_argument(
+        "--tabpfn-lead-minutes",
+        type=int,
+        default=DEFAULT_TABPFN_LEAD_MINUTES,
+        help="TabPFN run this long before the first tip-off (0 = none)",
+    )
     args = parser.parse_args()
 
     now = datetime.now(UTC)
@@ -345,16 +445,31 @@ def main() -> None:
 
     window = predictor_window(game_date)
     triggers = trigger_times(tipoffs, horizons, now, args.offset_minutes, window)
+    tabpfn_at = tabpfn_time(tipoffs, now, args.tabpfn_lead_minutes, window)
+    after_games = post_game_runs(tipoffs, game_date, now)
     groups = group_schedules(triggers)
-    print(f"\n{len(triggers)} run(s) still ahead, on {len(groups)} job(s):")
+    if tabpfn_at is not None:
+        groups += group_schedules([tabpfn_at], TABPFN)
+    for at, dispatch in after_games:
+        groups += group_schedules([at], dispatch)
+    groups.sort(key=lambda group: group.fire_times()[0])
+    print(f"\n{len(triggers)} predictor run(s) still ahead:")
     for at, reasons in triggers.items():
         print(f"  {_clock(at)}  {', '.join(reasons)}")
+    if tabpfn_at is not None:
+        print(f"TabPFN line_error T-360: {_clock(tabpfn_at)}")
+    for at, dispatch in after_games:
+        print(f"After the last game: {dispatch.workflow_file} at {_clock(at)}")
+    print(f"{len(groups)} job(s)")
     if len(groups) > MAX_POOL:
         sys.exit(f"{len(groups)} jobs needed, more than MAX_POOL={MAX_POOL}")
 
     if not args.apply:
         for i, group in enumerate(groups, start=1):
-            print(f"  {pool_title(i)}: {json.dumps(group.schedule())}")
+            print(
+                f"  {pool_title(i)} -> {group.dispatch.workflow_file}: "
+                f"{json.dumps(group.schedule())}"
+            )
         print("\nDry run. Re-run with --apply to book these jobs.")
         return
 

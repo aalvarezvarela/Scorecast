@@ -11,7 +11,18 @@ the daily workflows are instead started by cron-job.org, which calls the
 (daylight saving handled for us). Each workflow must keep ``workflow_dispatch``.
 
 Jobs are matched by title, so ``--apply`` is idempotent: an existing job is
-patched, a missing one is created. Add a workflow by appending to ``JOBS``.
+patched, a missing one is created. Add a workflow by appending to ``JOBS``; a
+job taken out of ``JOBS`` goes in ``RETIRED_TITLES``, which ``--apply``
+disables (a job left on cron-job.org would keep firing).
+
+The day, Madrid time, on the one self-hosted runner:
+
+    09:00  database update, then -- on a game day -- refit, smoke test and
+           promotion
+    10:00  booking of the day's runs (schedule_snapshot_triggers.py): the
+           predictor at every snapshot time, TabPFN line_error at the first
+           tip-off - 6 h, and after the last game's estimated end the
+           past-snapshot predictions (+30 min) and final scores (+1 h)
 
 The jobs expire at the end of ``SEASON_END`` (10 July) and simply stop running;
 nothing needs deleting. Re-run ``--apply`` before the next season starts: it
@@ -27,7 +38,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date
 
 import requests
@@ -53,16 +64,22 @@ class WorkflowJob:
     workflow_file: str
     hour: int
     minute: int
+    # workflow_dispatch inputs, as strings; the ones left out take their default.
+    inputs: dict[str, str] = field(default_factory=dict)
 
 
 JOBS = [
+    # The database update runs as the retrain workflow's first job, so the
+    # refit never reads a half-updated database; the refit then promotes what
+    # passes the smoke test.
     WorkflowJob(
-        title="Scorecast - update databases daily",
-        workflow_file="update_database_daily.yml",
+        title="Scorecast - update databases and retrain",
+        workflow_file="retrain_prediction_models.yml",
         hour=9,
         minute=0,
+        inputs={"update_database": "true", "promote": "true"},
     ),
-    # Books the day's snapshot-time predictor runs (one-off jobs in UTC, see
+    # Books the day's snapshot-time runs (one-off jobs in UTC, see
     # schedule_snapshot_triggers.py). 10:00 Madrid is after Pacific midnight
     # all year, so the game date is already the predictor's.
     WorkflowJob(
@@ -71,6 +88,21 @@ JOBS = [
         hour=10,
         minute=0,
     ),
+]
+
+# Jobs taken out of JOBS: --apply disables them if they still exist.
+RETIRED_TITLES = [
+    # Replaced by the retrain job, whose first job is the same update.
+    "Scorecast - update databases daily",
+]
+
+# Workflows dispatched by the jobs schedule_snapshot_triggers.py books, which
+# the token must also reach.
+BOOKED_WORKFLOWS = [
+    "nba_predictor_daily.yml",
+    "nba_predictor_daily_tabpfn_client.yml",
+    "nba_predict_past_snapshots.yml",
+    "update_finished_matches_daily.yml",
 ]
 
 
@@ -112,7 +144,7 @@ def job_payload(job: WorkflowJob, github_token: str) -> dict:
         },
         "extendedData": {
             "headers": github_headers(github_token),
-            "body": dispatch_body(),
+            "body": dispatch_body(job.inputs),
         },
     }
 
@@ -120,19 +152,17 @@ def job_payload(job: WorkflowJob, github_token: str) -> dict:
 def check_token(github_token: str) -> bool:
     """Read-only check that the token sees each workflow; it dispatches nothing."""
     ok = True
-    for job in JOBS:
+    for workflow_file in [job.workflow_file for job in JOBS] + BOOKED_WORKFLOWS:
         url = (
             f"https://api.github.com/repos/{GITHUB_REPO}"
-            f"/actions/workflows/{job.workflow_file}"
+            f"/actions/workflows/{workflow_file}"
         )
         resp = requests.get(url, headers=github_headers(github_token), timeout=30)
         if resp.status_code == 200:
-            print(f"OK   {job.workflow_file}: state={resp.json().get('state')}")
+            print(f"OK   {workflow_file}: state={resp.json().get('state')}")
         else:
             ok = False
-            print(
-                f"FAIL {job.workflow_file}: HTTP {resp.status_code} {resp.text[:200]}"
-            )
+            print(f"FAIL {workflow_file}: HTTP {resp.status_code} {resp.text[:200]}")
     return ok
 
 
@@ -150,6 +180,13 @@ def apply_jobs(api_key: str, github_token: str) -> None:
             job_id = cronjob_request("PUT", "/jobs", api_key, payload)["jobId"]
             print(f"Created job {job_id}: {job.title}")
         print(f"  {job.hour:02d}:{job.minute:02d} {TIMEZONE} -> {dispatch_url(job)}")
+    for title in RETIRED_TITLES:
+        if title in existing:
+            job_id = existing[title]
+            cronjob_request(
+                "PATCH", f"/jobs/{job_id}", api_key, {"job": {"enabled": False}}
+            )
+            print(f"Disabled retired job {job_id}: {title}")
 
 
 def main() -> None:
@@ -169,6 +206,8 @@ def main() -> None:
         return
     for job in JOBS:
         print(json.dumps(redacted(job_payload(job, github_token)), indent=2))
+    for title in RETIRED_TITLES:
+        print(f"Would disable, if it exists: {title}")
     print("\nDry run. Re-run with --apply to create/update these jobs.")
 
 

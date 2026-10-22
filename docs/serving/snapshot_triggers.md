@@ -1,7 +1,8 @@
 # Snapshot triggers: running the predictor at each snapshot time
 
-Status: **Implemented** (2026-10-22). The scheduler's own daily job (10:00
-Madrid) is a row in `scripts/cronjobs/setup_cronjobs.py`, not applied yet.
+Status: **Implemented** (2026-10-22). The daily jobs (09:00 and 10:00 Madrid,
+see "The day's schedule") are rows in `scripts/cronjobs/setup_cronjobs.py`, not
+applied yet.
 
 ## What it does
 
@@ -29,13 +30,53 @@ day, `schedule_snapshot_triggers.yml` runs
      slate of its run's Pacific date (`predict_nba_games.py`), so a trigger
      before Pacific midnight (03:00 ET) would predict the previous day's games.
      Examples: an early tip's T-1080, a noon game's T-720.
-3. books cron-job.org jobs that dispatch `nba_predictor_daily.yml` at those
-   times.
+3. adds one **TabPFN** run (`nba_predictor_daily_tabpfn_client.yml`:
+   `line_error`, `line=intermediate`, `horizon_minutes=360`, `update_db=false`)
+   at the first tip-off of the day minus 6 h (`--tabpfn-lead-minutes`, 0 = none),
+   predicting every game. The first game's T-360 snapshot has just passed. The
+   later games are built from their ticks so far.
+4. after the last game, whose end is estimated as its tip-off + 150 min
+   (`GAME_LENGTH_MINUTES`), adds:
+   - the date's past-snapshot predictions (`nba_predict_past_snapshots.yml`,
+     `game_date` passed) 30 min after that end;
+   - the final scores, finished matches and lineups
+     (`update_finished_matches_daily.yml`) 1 h after it.
+5. books cron-job.org jobs that dispatch those workflows at those times.
 
-On 2026-10-21 (11 games), booked at 10:00 Madrid: 176 snapshots became 21 runs
-on 4 cron jobs. The early games' T-1080 and T-960 had already passed. Tips on
-:00 and :30 put snapshots 30 min apart, which pair up, so the runs come every
-hour from 11:00 Madrid, plus each tip time's T-30.
+## The day's schedule
+
+All on the one self-hosted runner. The fixed jobs come from `setup_cronjobs.py`
+(Madrid time); the rest are booked by the 10:00 scheduler from the day's games.
+
+| When | Workflow | What |
+|---|---|---|
+| 09:00 | `retrain_prediction_models.yml` (`update_database`, `promote`) | database update; on a game day, then refit, smoke test, promotion |
+| 10:00 | `schedule_snapshot_triggers.yml` | books everything below |
+| each snapshot | `nba_predictor_daily.yml` | every enabled slot |
+| first tip − 6 h | `nba_predictor_daily_tabpfn_client.yml` | TabPFN line_error, T-360 slot |
+| last end + 30 min | `nba_predict_past_snapshots.yml` | the date's intermediate slots on their own snapshots |
+| last end + 1 h | `update_finished_matches_daily.yml` | final scores (prediction store), finished matches, lineups |
+
+On 2026-10-22 (last tip 01:30 UTC), the post-game runs land at 06:30 and 07:00
+Madrid.
+
+**Retrain on a day without games.** `scripts/check_games_today.py` reads
+today's Eastern date on the scoreboard. Without games, the workflow runs only
+the database update; the refit, smoke test and promotion are skipped. An
+unreadable scoreboard counts as a game day. `refit_without_games` forces the
+refit on a manual run.
+
+The standalone 09:00 `update_database_daily.yml` job is retired: the retrain
+workflow runs the same update as its first job, and refits only after it
+succeeds. `--apply` disables the old job (`RETIRED_TITLES`). If the refit
+outlasts 10:00, the scheduler waits for the runner and skips the times that
+pass meanwhile.
+
+**Post-game runs depend on the scheduler.** On a day without games, or when
+the 10:00 scheduler fails, no past-snapshot or final-score run is booked. The
+final-score update retries every tipped game without a score on its next run,
+so a day lost is caught up on the next game day. An overtime game still in
+progress at +1 h is left for that next run too.
 
 ## Which snapshot each run predicts from
 

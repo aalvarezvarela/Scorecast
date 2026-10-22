@@ -67,8 +67,13 @@ def github_headers(token: str) -> dict[str, str]:
     }
 
 
-def dispatch_body() -> str:
-    return json.dumps({"ref": GITHUB_REF})
+def dispatch_body(inputs: dict[str, str] | None = None) -> str:
+    """The ``workflow_dispatch`` body. ``inputs`` are strings, booleans too
+    (``"true"``); a workflow input left out takes its default."""
+    body: dict = {"ref": GITHUB_REF}
+    if inputs:
+        body["inputs"] = inputs
+    return json.dumps(body)
 
 
 def redacted(payload: dict) -> dict:

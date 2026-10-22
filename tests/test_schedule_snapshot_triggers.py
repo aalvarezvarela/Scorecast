@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime, timedelta
 
 import pandas as pd
 from nba_ou.modeling.registry_paths import ModelSlot
 
+import scripts.check_games_today as check
 import scripts.cronjobs.schedule_snapshot_triggers as job
 import scripts.cronjobs.setup_cronjobs as setup
 
@@ -261,17 +263,128 @@ def test_apply_pool_spaces_creates_and_disables_surplus(monkeypatch):
     assert sleeps == [job.CREATE_SPACING_S]
 
 
-def test_setup_cronjobs_payload_unchanged_by_the_shared_client():
-    payload = setup.job_payload(setup.JOBS[0], "secret")
+def _setup_job(workflow_file):
+    (found,) = [j for j in setup.JOBS if j.workflow_file == workflow_file]
+    return found
+
+
+def test_setup_cronjobs_payload_dispatches_on_main_in_madrid_time():
+    payload = setup.job_payload(_setup_job("schedule_snapshot_triggers.yml"), "secret")
     assert payload["url"] == (
         "https://api.github.com/repos/aalvarezvarela/Scorecast"
-        "/actions/workflows/update_database_daily.yml/dispatches"
+        "/actions/workflows/schedule_snapshot_triggers.yml/dispatches"
     )
     assert payload["schedule"]["timezone"] == "Europe/Madrid"
+    assert (payload["schedule"]["hours"], payload["schedule"]["minutes"]) == ([10], [0])
     assert payload["extendedData"]["body"] == '{"ref": "main"}'
     assert setup.redacted(payload)["extendedData"]["headers"]["Authorization"] == (
         "Bearer <redacted>"
     )
+
+
+def test_setup_cronjobs_retrain_updates_the_database_and_promotes():
+    job = _setup_job("retrain_prediction_models.yml")
+    assert (job.hour, job.minute) == (9, 0)
+    body = json.loads(setup.job_payload(job, "secret")["extendedData"]["body"])
+    assert body == {
+        "ref": "main",
+        "inputs": {"update_database": "true", "promote": "true"},
+    }
+
+
+def test_setup_cronjobs_daily_jobs_and_retired_update_job():
+    times = {job.workflow_file: (job.hour, job.minute) for job in setup.JOBS}
+    assert times == {
+        "retrain_prediction_models.yml": (9, 0),
+        "schedule_snapshot_triggers.yml": (10, 0),
+    }
+    # The standalone update would run beside the retrain's own.
+    assert setup.RETIRED_TITLES == ["Scorecast - update databases daily"]
+    # The scheduler books the post-game workflows instead of fixed times.
+    assert {
+        "nba_predict_past_snapshots.yml",
+        "update_finished_matches_daily.yml",
+    } <= set(setup.BOOKED_WORKFLOWS)
+
+
+def test_post_game_runs_follow_the_last_games_estimated_end():
+    tips = [("A@B", _utc("2026-10-22 23:00")), ("C@D", _utc("2026-10-23 02:30"))]
+    runs = job.post_game_runs(tips, "2026-10-22", _utc("2026-10-22 08:00"))
+    # Last tip 02:30 UTC + 150 min = 05:00 estimated end.
+    assert [at for at, _ in runs] == [
+        _utc("2026-10-23 05:30"),
+        _utc("2026-10-23 06:00"),
+    ]
+    past, finished = (dispatch for _, dispatch in runs)
+    assert past.workflow_file == "nba_predict_past_snapshots.yml"
+    assert dict(past.inputs) == {"game_date": "2026-10-22"}
+    assert finished == job.FINISHED_MATCHES
+    assert job.post_game_runs([], "2026-10-22", _utc("2026-10-22 08:00")) == []
+    # Already past (a scheduler run late in the night): left out.
+    assert len(job.post_game_runs(tips, "2026-10-22", _utc("2026-10-23 05:45"))) == 1
+
+
+def test_post_game_payload_passes_the_game_date():
+    ((at, dispatch),) = job.post_game_runs(
+        [("A@B", _utc("2026-10-22 23:00"))], "2026-10-22", _utc("2026-10-23 02:05")
+    )
+    (group,) = job.group_schedules([at], dispatch)
+    payload = job.job_payload(job.pool_title(1), group, "secret")
+    assert payload["url"].endswith(
+        "/actions/workflows/update_finished_matches_daily.yml/dispatches"
+    )
+    assert json.loads(payload["extendedData"]["body"]) == {"ref": "main"}
+    assert group.fire_times() == [_utc("2026-10-23 02:30")]
+
+
+def test_refit_only_on_a_game_day(monkeypatch):
+    frames = {
+        "2026-10-22": pd.DataFrame({"game_id": ["0022600006"]}),
+        "2026-07-15": pd.DataFrame({"game_id": []}),
+        "2026-10-23": None,  # scoreboard unavailable
+    }
+    monkeypatch.setattr(check, "fetch_tipoffs_for_date", frames.get)
+    assert check.should_refit("2026-10-22") is True
+    assert check.should_refit("2026-07-15") is False
+    assert check.should_refit("2026-10-23") is True
+
+
+def test_tabpfn_runs_six_hours_before_the_first_tip():
+    tips = [("A@B", _utc("2026-10-22 23:30")), ("C@D", _utc("2026-10-22 23:00"))]
+    now = _utc("2026-10-22 08:00")
+    assert job.tabpfn_time(tips, now) == _utc("2026-10-22 17:00")
+    assert job.tabpfn_time(tips, now, lead_minutes=0) is None
+    assert job.tabpfn_time([], now) is None
+    # Past by the time the scheduler runs.
+    assert job.tabpfn_time(tips, _utc("2026-10-22 17:30")) is None
+    # A noon-ET Christmas game: 06:00 ET is inside the Pacific date (from 08:00 UTC).
+    window = job.predictor_window("2026-12-25")
+    christmas = [("A@B", _utc("2026-12-25 17:00"))]
+    assert job.tabpfn_time(christmas, now.replace(month=12, day=24), 360, window) == (
+        _utc("2026-12-25 11:00")
+    )
+
+
+def test_tabpfn_payload_dispatches_line_error_t360_without_db_update():
+    group = job.ScheduleGroup(
+        day=pd.Timestamp("2026-10-22").date(),
+        minute=0,
+        hours=(17,),
+        dispatch=job.TABPFN,
+    )
+    payload = job.job_payload(job.pool_title(1), group, "secret")
+    assert payload["url"].endswith(
+        "/actions/workflows/nba_predictor_daily_tabpfn_client.yml/dispatches"
+    )
+    assert json.loads(payload["extendedData"]["body"]) == {
+        "ref": "main",
+        "inputs": {
+            "target": "line_error",
+            "line": "intermediate",
+            "horizon_minutes": "360",
+            "update_db": "false",
+        },
+    }
 
 
 def test_booking_check_compares_next_execution_with_the_plan():
