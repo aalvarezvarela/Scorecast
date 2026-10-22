@@ -34,6 +34,7 @@ the folder of its topic, with a status line, and gets a row here.
 | [defect_fixes_2_5.md](pipeline/defect_fixes_2_5.md) | Implemented | The 2_5 defects found in October 2026 and how each was fixed | `data_processing/`, `postgre_db/` |
 | [speedup.md](pipeline/speedup.md) | Partial | Making the 2_5 builds faster without changing a value: caches, target mode, season partitions | `scripts/perf/`, `create_training_data/season_partitions.py` |
 | [prediction_input_cache_s3.md](pipeline/prediction_input_cache_s3.md) | Partial | Past seasons of every input table read from S3, the current season from the DB | `postgre_db/season_tables.py`, `scripts/refresh_input_cache.py` |
+| [prediction_runtime_plan.md](pipeline/prediction_runtime_plan.md) | Plan | Shorter daily prediction runs: trust frozen 2_5 seasons, latest-only rows, shared loads, model cache | `postgre_db/season_tables.py`, `create_training_data/history_memo.py`, `create_intermediate_line_df.py` |
 
 ## odds/ — odds and line-history data
 

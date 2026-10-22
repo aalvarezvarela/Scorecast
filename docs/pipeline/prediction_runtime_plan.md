@@ -1,0 +1,174 @@
+# Prediction runtime plan: shorter daily runs on the self-hosted runner
+
+Status: **Plan** (2026-10-23, branch `perf/prediction-runtime`)
+
+## Goal
+
+On the self-hosted runner a warm `nba_predictor_daily` run takes ~19–23 min,
+and the first run after any builder change takes ~70 min
+(`docs/serving/runner_timings.md`). The snapshot scheduler books up to ~20 runs
+a day, so the warm run sets how dense the schedule can be. The cold run sets how
+many booked runs a deploy day loses.
+
+Targets:
+- a warm run of ~8–10 min;
+- no cold runs from code changes that leave 2_5 values unchanged.
+
+## Acceptance rule
+
+**Every change must leave the outputs exactly as the current code produces
+them.** Nothing below is allowed to move a value:
+
+- Frames: tonight's closing and intermediate rows, and the scoring sidecar, are
+  bit-identical to the current code's (`scripts/perf/compare_builds.py --exact`).
+- Predictions: the 51 slots' predictions are identical.
+- Comparisons run on a fixed moment, a replayed date with an explicit `as_of`,
+  so the two builds read the same ticks and reports. Two dates:
+  - 2026-10-22 (2 games): today's slate;
+  - 2026-04-10 (15 games): the reference date of the earlier perf work.
+- The reference outputs come from the current code (step 0). Each change is
+  compared against them, not against the previous change.
+
+Schema 2_5 is frozen: its finished seasons do not change. Where today's code
+spends time re-checking that, the plan trusts what is stored instead. A
+correction to a past season's data then needs an explicit rebuild of the
+caches; a command for that is part of A.
+
+## Step 0: reference and profile (no code change)
+
+- Build and dump the reference outputs of both dates with the current code:
+  `predict_nba_games.py --dump-frames` through the no-write guard used for
+  the timings, plus the slot predictions. Replay mode with a fixed `as_of`.
+- Profile one warm run per stage and per slot. In particular, split the
+  2–4 s per slot into model loading, input limits and prediction, so D is aimed
+  at the real cost.
+- Record the stage timings of the current code. Every later step reports the
+  same table.
+
+## Changes, in order
+
+### A. Trust the finished seasons of 2_5 (expected −5 to −6 min per run; no cold runs)
+
+**A1. S3 input cache: serve finished seasons whatever their age.** Today a
+season is read from S3 only if `refresh_input_cache.py` validated it within
+36 h. Otherwise all its rows are queried again
+(`season_tables.MAX_VALIDATION_AGE`, also read by `season_queries` and
+`line_history_aiven.fetch`). For seasons before the current one, the plan
+serves the stored entry whenever it exists. The current season is always
+queried, as today. The refresher then only matters when a season finishes.
+- One-time check that nothing changes: for every table and finished season,
+  compare the S3 entry with a fresh database read (read-only). A mismatch is
+  reported, and that entry is refreshed before A1 is enabled. That refresh
+  writes to S3, so it needs a go-ahead.
+- Measured effect (P3 → P5 in the timings): closing rows 457 → 185 s; retrain
+  partition update 309 → 178 s.
+
+**A2. History memo: key finished seasons on the schema, not on code and
+input digests.** Today each memo entry is keyed on the source of its module
+closure (`history_memo.code_key`) and checked against a chained digest of the
+season's inputs. So:
+- any change in that closure makes every entry unusable. That is the ~70 min
+  cold run after a deploy;
+- some entries miss on every run: `intermediate_report_states 2019..2025:
+  inputs changed`, and `intermediate_injury_effect_priors 2025`. They are
+  recomputed each time, ~1–2 min.
+
+For seasons up to `max_season`, the plan keys entries on a frozen key: base
+schema version (`2_5`), memo name, season and main book. It skips the digest
+comparison, and with it the hashing of every input frame.
+- Kept as today: the current season is never memoised. A new base schema
+  (`3_0`) or a different main book gives new keys. An escape hatch
+  (`NBA_OU_HISTORY_MEMO_FROZEN=0`) returns to validated keys.
+- A rebuild command recomputes the frozen entries from scratch, for when a
+  past season's data is corrected on purpose.
+- Seeding: the frozen entries are written once from a validated build. These
+  are writes to the memo prefix in S3, so they need a go-ahead.
+- Check: a build reading only frozen entries is bit-identical to the reference
+  on both dates. Also find out why the report-state digests change between runs
+  (nondeterministic input order?). The frozen key makes it harmless, but it may
+  signal nondeterminism elsewhere.
+
+### B. Build only tonight's latest snapshot when every slot reads it (expected −3 to −5 min)
+
+With `INTERMEDIATE_INPUT_MODE = latest` and `LATEST_INPUT_SLOTS = all`, every
+intermediate slot predicts from each game's latest row (`LATEST_INPUT`).
+Today the run builds all 16 grid horizons + T-0 for every game, then discards
+them. The expensive part is per horizon: report states, availability effects
+and shrinkage fits over ~39k history rows (169 s + ~212 s warm).
+- New builder option: tonight's target rows only at each game's latest
+  snapshot. The injury stage then computes only the grid horizons those rows
+  alias to (`nearest_grid_horizon` / `_alias_horizons`). That means one horizon
+  per distinct tip-time group instead of 16. The history cutoffs, priors and
+  market dynamics are restricted to the horizons needed.
+- Used only when every enabled intermediate slot reads latest input. The
+  past-snapshots workflow (`own`) keeps the full build. TabPFN's intermediate
+  run can use the same option for its single horizon.
+- Side effect: the run archive (`recorder.add_frame`) stores the latest rows
+  only, and the per-horizon `SNAPSHOT_PASSED` counts in the log go. No stored
+  prediction changes.
+- Check: the latest rows and every intermediate prediction are bit-identical to
+  the reference on both dates. Run the existing intermediate parity scripts
+  (`point_in_time_parity.py`, `live_replay_parity.py`) too.
+
+### C. Load each input table once per run (expected −0.5 to −1 min)
+
+The closing and intermediate builds are independent pipelines by design.
+Reusing the closing base in the intermediate build was considered and
+**rejected**: it loads a different season span, so expanding features
+(`*_SEASON_BEFORE`) would change. What they can share without changing a
+value is the loading:
+- games, players, odds, referees and injuries are each loaded twice per run;
+- an in-process cache of the season-table and season-query loads, keyed on
+  (spec, seasons), returns copies, so a caller can never alter another's frame.
+- Check: both frames bit-identical.
+
+### D. Cache model builds locally (expected −1 to −2.5 min, if step 0 confirms)
+
+A build is immutable per `fit_id` (`registry_store.read_model_bytes`,
+`resolve_build`). Keep `model.json`, `fit.json` and the spec per `fit_id`
+under `~/.cache/nba_ou/models` (`NBA_OU_MODEL_CACHE_DIR`), checked by sha256.
+Only the channel pointer is read from S3 each run. Scope it to whatever step 0
+shows dominates the 2–4 s per slot. Check: predictions identical.
+
+### E. Workflow settings that change no value
+
+- Predictor, past-snapshots and TabPFN workflows: set `NBA_OU_INPUT_CACHE_DIR`
+  outside the checkout. `actions/checkout` removes `data/cache/inputs` every
+  run. This matters mostly while the S3 cache is expired (−3 min P3 → P4).
+- `FORKED_TIMEOUT_SECONDS`: 600 s on the whole pool is too short for 4 cores
+  when a horizon has to be computed from scratch, and the serial fallback
+  repeats all the work. Make it per horizon, or raise it. After A2 this mostly
+  protects a new season's first day.
+- Retrain partition update: drop the 3-day overlap rebuild (`OVERLAP_DAYS`).
+  It exists to compare stored rows with a rebuild, which a frozen 2_5 does not
+  need. Small gain, retrain only. Optional.
+
+## Not in this plan (they would change values)
+
+- Reusing the closing base frame in the intermediate build (see C).
+- Dropping the Yahoo scrape (~45 s per run). Yahoo columns feed the current
+  models.
+- Skipping the database update after the day's first run. It changes which
+  data a run sees.
+
+## Expected result
+
+| | Warm run today (P3) | After A–E (estimate) |
+|---|---:|---:|
+| Step 2 (schedule, reports) | 113 s | ~100 s |
+| Closing rows | 457 s | ~150–180 s |
+| Intermediate rows | 489 s | ~150–250 s |
+| 51 slots | 88–189 s | ~30–60 s |
+| **Build and predict** | **~19 min** | **~7–10 min** |
+| First run after a builder change | ~70 min | ~same as warm, while 2_5 values do not change |
+
+Re-measure with the timing harness after each change, and on a 10+ game night
+once the SBR feed is back.
+
+## Blockers outside this plan
+
+- SBR's live feed has been frozen since 2026-10-20. Every real run stops at the
+  feed check.
+- The 09:00 database update fails daily at "Repair SBR closing lines" on
+  `main`, so `refresh_input_cache.py` never runs. A1 removes the dependence for
+  finished seasons, but the failure still needs fixing.
