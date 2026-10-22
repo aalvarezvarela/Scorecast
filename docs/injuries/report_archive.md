@@ -1112,8 +1112,8 @@ rather than adding parallel ones.
 | CLI entry points | `scripts/<domain>/<verb>_<thing>.py`, module docstring with `Usage:` examples, `argparse`, `main() -> int`, `sys.exit(main())`, `--dry-run` / `--report-only` / `--start-date` / `--end-date` / `--limit-dates` | New `scripts/injury_reports/` with the same shape |
 | Logging | Mostly `print()` with `→`/`✓` markers; `logging.getLogger(__name__)` used rarely | Follow the dominant `print()` style for CLI progress; it is what the rest of the repo does |
 | Backfill idiom | `scripts/line_history/update_line_history.py` — diff against a reference, insert-only, safe to re-run | Closest analogue; mirror its structure (report-only mode, per-season stats, gap listing) |
-| Tests | Flat `tests/test_<domain>_<thing>.py`, pytest, no network in CI (`tests.yml` installs `requirements.txt` and runs `pytest tests/ -q`) | `tests/test_injury_report_archive.py` — pure-function tests for URL building, **DST edge cases**, manifest transitions, key building. Network paths mocked |
-| Dependencies | Poetry (`pyproject.toml`) + parallel `requirements.txt` for CI | No new dependencies needed: `requests`, `boto3`, `pymupdf`, `pandas`, `pyarrow` are all present |
+| Tests | Flat `tests/test_<domain>_<thing>.py`, pytest, no network in CI (`tests.yml` installs `requirements/tests-cpu.txt` and runs `pytest tests/ -q`) | `tests/test_injury_report_archive.py` — pure-function tests for URL building, **DST edge cases**, manifest transitions, key building. Network paths mocked |
+| Dependencies | Poetry (`pyproject.toml`); CI installs per-job files exported into `requirements/` | No new dependencies needed: `requests`, `boto3`, `pymupdf`, `pandas`, `pyarrow` are all present |
 | Scheduled jobs | `.github/workflows/*.yml` | Out of scope now; the updater (§12) would slot in later |
 
 Proposed new files (none written):
@@ -1419,7 +1419,7 @@ tests/test_injury_report_archive.py                                        (252)
 ```
 
 No new dependencies: `requests`, `boto3`, `pymupdf`, `pandas` and `pyarrow` are
-all already in `pyproject.toml` and `requirements.txt`.
+all already in `pyproject.toml`.
 
 ### 17.2 Running it
 

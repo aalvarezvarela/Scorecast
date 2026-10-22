@@ -195,7 +195,7 @@ def fit_tabpfn(
     except ImportError as exc:
         raise ImportError(
             "tabpfn-client is not installed: pip install -r "
-            "requirements_predict_tabpfn.txt"
+            "requirements/predict-tabpfn-cuda.txt (or poetry install)"
         ) from exc
 
     _authenticate(tabpfn_client)

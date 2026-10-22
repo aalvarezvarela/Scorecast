@@ -477,7 +477,7 @@ build's spec, when moved too, is under the same retired date.
 
 SHAP is removed from the prediction path: `compute_shap_values` runs for
 every batch today and its output only feeds the old Supabase columns and the
-dashboard's reasoning tab. `shap` can then leave `requirements_predict.txt`.
+dashboard's reasoning tab. `shap` can then leave the predictor's requirements.
 
 SHAP can be recomputed exactly for any stored prediction, because the
 archive keeps everything it depends on:
@@ -539,7 +539,7 @@ Implemented (branch `feat/prediction-storage-aiven`, 2026-10-21):
 | Results job | `scripts/prediction_store/update_game_results.py`, step in `update_finished_matches_daily.yml` |
 | Tests (the writer ones need `NBA_OU_TEST_PG_DSN`) | `tests/test_prediction_store.py` |
 
-- SHAP is removed from `prediction.py` and from `requirements_predict.txt`
+- SHAP is removed from `prediction.py` and from the predictor's requirements
   (the old Supabase columns are written null).
 - Each model's output carries `PREDICTED_AT_UTC` (taken right after its
   inference), `MODEL_DATASET_TYPE` and `MODEL_BUILD_PREFIX`.

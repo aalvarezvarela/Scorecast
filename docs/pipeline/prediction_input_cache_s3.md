@@ -71,8 +71,10 @@ s3://<bucket>/input_cache/v1/<loader>/<key>/
 - Format: Parquet when it round-trips exactly, otherwise pickle. On upload the
   frame is written, read back and compared (dtypes, index, digest); a frame
   that doesn't round-trip exactly (mixed object columns, tz-aware datetimes) is
-  stored as pickle. The runner uses `requirements.txt`, so library versions
-  match the refresher's or the key differs.
+  stored as pickle. The refresher (`requirements/db-update.txt`) and the
+  predictor (`requirements/predict-*.txt`) are exported from the same
+  `poetry.lock` with the same core pins, so their pandas/pyarrow versions match;
+  otherwise the key would differ.
 - **S3 is the store; local disk is optional.** Decided 2026-10-15: nothing
   may depend on a machine's disk, because runners may move to cloud services.
   The refresher writes to S3. The consumer reads S3, and a local copy is only

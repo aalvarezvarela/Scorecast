@@ -51,14 +51,22 @@ jobs:
           role-to-assume: ${{ secrets.AWS_ROLE_TO_ASSUME }}
           aws-region: eu-west-1
 
-      # requirements.txt does not include the repo itself; without this the
-      # scripts' `from nba_ou ...` imports only work if the runner's Python
-      # happens to have it installed from an earlier job.
+      # A fresh venv per run: the runner's tool-cache Python is shared by
+      # every job, so packages another job left there would hide a missing
+      # dependency here.
+      - name: Create job venv
+        run: |
+            python -m venv "$RUNNER_TEMP/venv"
+            echo "$RUNNER_TEMP/venv/bin" >> "$GITHUB_PATH"
+
+      # Core plus the scrapers (generated from poetry.lock, see
+      # requirements/README.md), then the repo itself WITHOUT its Poetry
+      # dependencies, which would pull in the training and lab stacks.
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt
-          pip install -e .
+          pip install -r requirements/db-update.txt
+          pip install --no-deps -e .
 
       - name: Install Playwright browsers
         run: |
