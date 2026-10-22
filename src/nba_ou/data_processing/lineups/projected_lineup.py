@@ -9,7 +9,7 @@ this pipeline has no reliable publication timestamp for their box scores.
 
 The projection is deliberately simple, because it is a prerequisite for the
 phase D/E/F work rather than a model in its own right (see
-``docs/lineup_projection_plan.md`` step D0):
+``docs/lineups/lineup_projection.md`` step D0):
 
 1. Start from the five who started the team's most recent prior game.
 2. Drop the ones no longer on the roster, and the ones on tonight's pre-game

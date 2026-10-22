@@ -1,10 +1,12 @@
 # Lineup stints, projected minutes and a bottom-up game projection
 
-Status (2026-10-05): **schema 2_6 now adds starter history and the 17 `LU_*`
-columns to both closing and intermediate, over the frozen 2_5 base. Intermediate
-uses each snapshot's report, coverage and history cutoff, with calibration per
-horizon and phase. Implementation is complete; behavioural tests, dataset
-builds and campaigns remain pending at the owner's request.**
+Status: **Implemented** (checked 2026-10-22) — the `schema_layers/v2_6.py` layer
+adds eight `STARTER_*` and 17 `LU_*` columns to closing and intermediate. The
+2_5-vs-2_6 trial (`experiments/lineup_signal_trial_2026_10/`) was null at
+closing and T-360; `experiments/lineup_projection_2026_09/` was never run.
+
+Checkpoint (2026-10-05): intermediate uses each snapshot's report, coverage and
+history cutoff, with calibration per horizon and phase.
 
 This checkpoint and §§8.1-8.4, 9 and 10 describe the current work. Dated
 implementation reports and exploratory results below remain historical evidence;
@@ -94,9 +96,9 @@ See `scripts/lineups/README.md` for commands and current data layout.
 Read these first:
 
 - `CLAUDE.md`, for repo conventions.
-- `docs/README_Training Data Processing.md`. Its "Adding Or Modifying Features"
+- `docs/pipeline/training_data_processing.md`. Its "Adding Or Modifying Features"
   section is the checklist for L6.
-- `docs/feature_engineering_overview.md`, for where feature families live.
+- `docs/pipeline/feature_engineering_overview.md`, for where feature families live.
 - `src/nba_ou/data_processing/players/starter_history.py`. It follows the same
   temporal contract this plan needs.
 
@@ -340,7 +342,7 @@ New code:
 - Manifest (parquet or small table): `game_id, endpoint, fetched_at, status
   (ok/empty/failed), bytes`. The backfill skips anything `ok`. **An empty or
   failed fetch is never recorded as "no data"** (same lesson as the 403
-  ambiguity in `docs/injury_report_archive_plan.md` §0 row 2).
+  ambiguity in `docs/injuries/report_archive.md` §0 row 2).
 - Game list: from `nba_games.nba_games`, finished games only, 2018-19 onward.
 - Backfill cost: ~10.5k games × 2 calls × ~3.1 s ≈ **18 h**. Run it overnight
   and resume as needed.

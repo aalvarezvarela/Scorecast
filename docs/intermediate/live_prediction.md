@@ -1,5 +1,9 @@
 # Live intermediate-line predictions
 
+Status: **Implemented** (checked 2026-10-22) — the intermediate slots are served
+daily by `scripts/predict_nba_games.py`; the deferred items are listed under "To
+take care of".
+
 Serve the 16 promoted `2_5/line_error/t0030..t1080` slots on game days, from
 tonight's data, without ever storing a partial game.
 
@@ -9,10 +13,10 @@ tonight's data, without ever storing a partial game.
 Published injury reports are now an explicit exception: they are archived in S3
 and ingested into Aiven before prediction. The database is their prediction
 source at every time cutoff. Referee assignments use a separate S3 cache.
-See [live injury reports](live_injury_reports.md).
+See [live injury reports](../injuries/live_reports.md).
 
 Live roster membership uses the latest same-day official roster observed by
-the run, as documented in [live rosters](live_rosters.md). Report publication
+the run, as documented in [live rosters](../injuries/live_rosters.md). Report publication
 cutoffs remain strict per horizon; an intraday roster transaction may therefore
 affect a horizon that passed before the roster was fetched. Historical replay
 matches training when given the same roster inputs; it cannot reconstruct
@@ -199,13 +203,13 @@ outside its training range at a much later moment.
    mode (`create_intermediate_line_df(target_game_ids=...)`) computes only
    tonight's rows; every earlier game comes from per-season stored history
    (`intermediate_history`, `PersistentRowCache`), see
-   `docs/pipeline_speedup_plan.md`.
+   `docs/pipeline/speedup.md`.
 7. ~~Parity test~~ -- `point_in_time_parity.py --kind intermediate --targets`
    (tonight-only build == full build rows, dataset and scoring) and
    `live_replay_parity.py` (live tonight-only == live full, replayed date).
    These harnesses are retained; their previous acceptance results do not
    certify this integration until rerun on the merged commit.
-8. **Daily intermediate refit** (`docs/model_registry_reorg_plan.md` section 5):
+8. **Daily intermediate refit** (`docs/serving/model_registry.md` section 5):
    rebuild from finished-game history. The injury store also holds published
    reports for upcoming games, read under each snapshot's strict time cutoff.
 

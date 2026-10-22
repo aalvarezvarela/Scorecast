@@ -1,5 +1,9 @@
 # Line history -> Aiven: Phase 0 findings
 
+Status: **Research** (checked 2026-10-22) — the 2026-08 calibration of the
+line-history store; the store it led to is described in
+[line_history_updating.md](line_history_updating.md).
+
 Reproduce with `python scripts/line_history/phase0_calibration.py` (read-only).
 
 ## Summary

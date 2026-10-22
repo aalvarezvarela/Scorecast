@@ -1,5 +1,8 @@
 # Keeping the line-history store up to date
 
+Status: **Reference** (checked 2026-10-22) — how the daily job keeps the Aiven
+`line_history` store current.
+
 Two entry points. `nba_games` (Supabase) is refreshed daily and is the
 reference for what *should* exist in the Aiven `line_history` store.
 
@@ -54,7 +57,7 @@ on the daily updater and `--start-date`/`--end-date` are **dates** here.
 
 ## The timezone problem is gone
 
-The Phase 0 findings (`line_history_phase0_findings.md`) calibrate the CSV-era
+The Phase 0 findings (`docs/odds/line_history_phase0_findings.md`) calibrate the CSV-era
 scrape to `Europe/Madrid`. That calibration was necessary because the old
 scraper read the *rendered* line-history table, which SBR draws client-side in
 the browser's local timezone with no offset attached — so the stored timestamps

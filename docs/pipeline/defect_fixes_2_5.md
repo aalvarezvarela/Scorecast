@@ -4,9 +4,9 @@ Defects found in the `2_5` training and prediction pipelines (consolidated
 2026-10-16 from `perf/pipeline-speedup` and `fix/todays_prediction_data`),
 fixed on `fix/training-data-defects`.
 
-**Status (2026-10-16):** the code fixes are done and tested, and the
-injury store has been reloaded (item 3). The datasets have not been rebuilt
-and no model has been retrained yet.
+Status: **Implemented** (checked 2026-10-22) — the fixes are merged, the `2_5`
+data was rebuilt on 2026-10-16, and all 51 production slots were retrained on it
+and promoted on 2026-10-20. Item A is accepted and not fixed.
 
 | # | Problem | Status |
 |---|---|---|

@@ -2,11 +2,13 @@
 
 Goal: make today's prediction fast. Past seasons are read from S3, and only the
 current season is queried from Supabase and Aiven. It extends the line-history
-cache of `docs/pipeline_speedup_plan.md` (Phase 1) to every input table, and
+cache of `docs/pipeline/speedup.md` (Phase 1) to every input table, and
 moves the store from local disk to S3, so the GitHub runner that predicts can
 use it.
 
-Status: plan only (2026-10-15), on branch `perf/pipeline-speedup`.
+Status: **Partial** (checked 2026-10-22) — steps 1–5 are merged, and
+`update_database_daily.yml` runs `scripts/refresh_input_cache.py`. Tests T4–T7
+and the open decisions at the end remain.
 
 ## What it saves
 

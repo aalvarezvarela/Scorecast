@@ -1,4 +1,4 @@
-"""Archive one prediction run to S3 (``docs/prediction_storage_plan.md``).
+"""Archive one prediction run to S3 (``docs/serving/prediction_storage.md``).
 
 Folder layout
 ─────────────

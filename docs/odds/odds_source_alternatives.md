@@ -1,6 +1,9 @@
 # Odds source alternatives to Sportsbook Review
 
-Research notes from 2026-10-21. Nothing here is implemented. The question was
+Status: **Research** (checked 2026-10-22) — notes from 2026-10-21; nothing here
+is implemented.
+
+The question was
 whether another source could back up Sportsbook Review (SBR) when the site is
 down, or add more books to the odds features. **Adding** books is the
 direction worth keeping. **Replacing** SBR is not possible today without

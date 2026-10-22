@@ -1,12 +1,15 @@
 # Injury availability: improvement plan
 
-**Status:** plan only — nothing implemented.
+Status: **Superseded** (checked 2026-10-22) — the report-based availability
+features were built as [status_tiers.md](status_tiers.md) instead of the modules
+proposed here; the evidence in §1 still stands.
+
 **Depends on:** the Aiven `injury_report` store from branch
-`lab/injury-report-intermediate-times` (see `injury_report_db_plan.md` there).
+`lab/injury-report-intermediate-times` (see `docs/injuries/report_db.md` there).
 **Touches:** `data_processing/past_injuries/`, `data_processing/players/`,
 `create_training_data/create_df_to_predict.py`, the intermediate-line dataset,
 and the "Player And Injury Features" / "Availability Effect Features" sections of
-`README_Training Data Processing.md`.
+`docs/pipeline/training_data_processing.md`.
 
 ---
 
@@ -307,7 +310,7 @@ referee campaign showed exclusion-only campaigns otherwise pool as replicates).
 ## 8. Phase 3 — production and documentation
 
 - Delete the losing families from the build; keep one schema bump per removal.
-- Update `README_Training Data Processing.md` (availability sections, leakage
+- Update `docs/pipeline/training_data_processing.md` (availability sections, leakage
   controls) and the feature-engineering skill reference for family 4.
 - Rebuild the meta-learner dataset (`scripts/build_meta_learner_training_data.py`)
   and retrain through staging.

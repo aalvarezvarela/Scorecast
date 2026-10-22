@@ -1,9 +1,10 @@
 # NBA official injury-report PDF archive: research findings and implementation plan
 
-Status: **research complete; the collector is implemented.** Nothing has been
-committed -- everything lives uncommitted on `research/injury-report-scraper-plan`.
-See §17 for how to run it. Every number below was measured against the live NBA
-CDN between 2026-09-10 14:40 and 17:40 UTC using throwaway probe scripts in a
+Status: **Implemented** (checked 2026-10-22) — the collector is merged
+(`fetch_data/injury_reports/archive/`) and the PDFs are archived in S3; see §17
+for how to run it.
+
+Every number below was measured against the live NBA CDN between 2026-09-10 14:40 and 17:40 UTC using throwaway probe scripts in a
 scratch directory (~15,000 HEAD/GET requests total).
 
 Reproduction scripts are *not* in the repo; the measurement method is described

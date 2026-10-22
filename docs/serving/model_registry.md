@@ -1,25 +1,26 @@
 # Model registry reorganisation: target × horizon, spec-driven refits
 
-Status: **implemented except the daily dataset build (item 10) and the first
-real promotion (item 13).** See section 7 for what each item landed as. The
-retirement sweep (item 12) ran on 2026-09-21: all 751 objects of the old
-tree now live under `models/retired/20260921/`.
+Status: **Implemented** (checked 2026-10-22) — the daily refit reads the season
+partitions (item 10) and slots have been promoted since 2026-10-05 (item 13).
+Section 7 says what each item landed as. The retirement sweep (item 12) ran on
+2026-09-21: all 751 objects of the old tree now live under
+`models/retired/20260921/`.
 
 | what | where |
 |---|---|
-| paths, slots, targets | [registry_paths.py](src/nba_ou/modeling/registry_paths.py) |
-| spec / fit / pointer documents | [registry_models.py](src/nba_ou/modeling/registry_models.py) |
-| S3 reads, writes, resolution | [registry_store.py](src/nba_ou/modeling/registry_store.py) |
-| refit from a spec | [refit.py](src/nba_ou/modeling/refit.py) |
-| build promotion and rollback | [build_promotion.py](src/nba_ou/modeling/build_promotion.py) |
-| run -> spec | [training_pipeline/registry.py](training_pipeline/registry.py) |
-| promote a configuration | [training_pipeline/promote.py](training_pipeline/promote.py) `--to-s3` |
-| daily refit | [scripts/retrain_prediction_models.py](scripts/retrain_prediction_models.py) |
-| daily promotion | [scripts/promote_build.py](scripts/promote_build.py) |
-| retirement sweep | [scripts/retire_legacy_models.py](scripts/retire_legacy_models.py) |
-| training-data layout in S3 | [train_data_store.py](src/nba_ou/create_training_data/train_data_store.py) |
-| training-data sweep | [scripts/organize_s3_train_data.py](scripts/organize_s3_train_data.py) |
-| tests | [test_model_registry_paths.py](tests/test_model_registry_paths.py), [test_model_registry_store.py](tests/test_model_registry_store.py), [test_prediction_targets_and_horizon.py](tests/test_prediction_targets_and_horizon.py), [test_train_data_store.py](tests/test_train_data_store.py) |
+| paths, slots, targets | [registry_paths.py](../../src/nba_ou/modeling/registry_paths.py) |
+| spec / fit / pointer documents | [registry_models.py](../../src/nba_ou/modeling/registry_models.py) |
+| S3 reads, writes, resolution | [registry_store.py](../../src/nba_ou/modeling/registry_store.py) |
+| refit from a spec | [refit.py](../../src/nba_ou/modeling/refit.py) |
+| build promotion and rollback | [build_promotion.py](../../src/nba_ou/modeling/build_promotion.py) |
+| run -> spec | [training_pipeline/registry.py](../../training_pipeline/registry.py) |
+| promote a configuration | [training_pipeline/promote.py](../../training_pipeline/promote.py) `--to-s3` |
+| daily refit | [scripts/retrain_prediction_models.py](../../scripts/retrain_prediction_models.py) |
+| daily promotion | [scripts/promote_build.py](../../scripts/promote_build.py) |
+| retirement sweep | [scripts/retire_legacy_models.py](../../scripts/retire_legacy_models.py) |
+| training-data layout in S3 | [train_data_store.py](../../src/nba_ou/create_training_data/train_data_store.py) |
+| training-data sweep | [scripts/organize_s3_train_data.py](../../scripts/organize_s3_train_data.py) |
+| tests | [test_model_registry_paths.py](../../tests/test_model_registry_paths.py), [test_model_registry_store.py](../../tests/test_model_registry_store.py), [test_prediction_targets_and_horizon.py](../../tests/test_prediction_targets_and_horizon.py), [test_train_data_store.py](../../tests/test_train_data_store.py) |
 
 Two things are being asked of the registry that it was not built for:
 
@@ -82,7 +83,7 @@ Four dead: `xgboost_model_full_dataset`, `xgboost_model_recent_games`,
 `.joblib` from March 2026. A grep over `*.py`, `*.ini`, `*.yml`, `*.yaml`
 returns **zero** references; they are also unloadable by the serving path, which
 calls `XGBRegressor.load_model` on JSON bytes
-([prediction.py:660-661](src/nba_ou/prediction/prediction.py#L660-L661)).
+([prediction.py:660-661](../../src/nba_ou/prediction/prediction.py#L660-L661)).
 
 Archive across the six live families: **348 bundles, 82.3 MB of models and
 42.7 MB of metadata**. Essentially all of that 42.7 MB is the same 1,366-entry
@@ -106,11 +107,11 @@ not checked against each other.
 
 `retrain_prediction_models.py` loads the **current production metadata** and
 derives the next model from it
-([retraining_utils.py:455-492](src/nba_ou/modeling/retraining_utils.py#L455-L492)):
+([retraining_utils.py:455-492](../../src/nba_ou/modeling/retraining_utils.py#L455-L492)):
 `train_games`, `nan_threshold`, `max_na_per_row` and `feature_names` all come
 from yesterday's bundle, and the new name is yesterday's name with the date
 regex-stripped and re-appended
-([retraining_utils.py:717-723](src/nba_ou/modeling/retraining_utils.py#L717-L723)).
+([retraining_utils.py:717-723](../../src/nba_ou/modeling/retraining_utils.py#L717-L723)).
 
 There is no fixed reference anywhere in the loop. Every refit inherits from the
 refit before it, so any value that was once wrong stays wrong indefinitely, and
@@ -119,11 +120,11 @@ one was". This is the single most important thing the plan changes.
 
 ### 1.4 The two promotion paths never meet
 
-- [`training_pipeline/promote.py`](training_pipeline/promote.py) already does
+- [`training_pipeline/promote.py`](../../training_pipeline/promote.py) already does
   the hard part: load a run's Optuna-selected hyperparameters, refit them on
   fresher data, save a bundle. It writes to **local disk**
   (`models/<family>/<window_dir_label>/`, via
-  [naming.py:25-30](training_pipeline/naming.py#L25-L30)) and has no idea S3
+  [naming.py:25-30](../../training_pipeline/naming.py#L25-L30)) and has no idea S3
   exists.
 - [`model_registry.promote_prediction_models`](src/nba_ou/modeling/model_registry.py#L129)
   moves S3 objects between `staging/`, `production/` and `archive/`, and has no
@@ -131,7 +132,7 @@ one was". This is the single most important thing the plan changes.
 
 Nothing bridges them. Getting an experiment into production is a manual copy
 today. Confirmed: the only code that uploads a model to S3 is
-[`save_retrained_bundle_to_staging`](src/nba_ou/modeling/retraining_utils.py#L756).
+[`save_retrained_bundle_to_staging`](../../src/nba_ou/modeling/retraining_utils.py#L756).
 
 ### 1.5 Defects to delete rather than carry forward
 
@@ -139,27 +140,27 @@ Because nothing in the bucket is being preserved, each of these is removed
 outright rather than deprecated:
 
 - **Silent target misidentification.**
-  [`_infer_prediction_target_from_metadata`](src/nba_ou/prediction/prediction.py#L272-L287)
+  [`_infer_prediction_target_from_metadata`](../../src/nba_ou/prediction/prediction.py#L272-L287)
   checks for `"total_points"`, then `"line_error" | "error_line" |
   "diff_from_line"`, and **returns `PRED_LINE_ERROR` for anything else**. A
   spread bundle falls through to that default and is served as a line-error
   model with no warning.
 - **Spread has no serving path at all.** `PredictionTarget` is only
   `PRED_LINE_ERROR` / `TOTAL_POINTS`
-  ([prediction.py:25-26](src/nba_ou/prediction/prediction.py#L25-L26)), and the
+  ([prediction.py:25-26](../../src/nba_ou/prediction/prediction.py#L25-L26)), and the
   predictions table carries `pred_line_error`, `pred_total_points`,
   `total_over_under_line`, `total_bet365_line_at_prediction` — all totals
-  ([create_ou_predictions_db.py:270-310](src/nba_ou/postgre_db/predictions/create/create_ou_predictions_db.py#L270-L310)).
+  ([create_ou_predictions_db.py:270-310](../../src/nba_ou/postgre_db/predictions/create/create_ou_predictions_db.py#L270-L310)).
 - **Two incompatible discovery contracts for one layout.**
   `get_latest_model_bundle_from_prefix` sorts candidates by S3 `LastModified`
-  ([s3_models.py:115](src/nba_ou/utils/s3_models.py#L115)); `extract_single_bundle`
+  ([s3_models.py:115](../../src/nba_ou/utils/s3_models.py#L115)); `extract_single_bundle`
   raises unless the prefix holds *exactly* two objects
   ([model_registry.py:45-78](src/nba_ou/modeling/model_registry.py#L45-L78)).
   `LastModified` is set by the copy, so restoring an archived bundle reshuffles
   which one is "latest".
 - **Model and metadata are two independent writes.** `save_retrained_bundle_to_staging`
   clears the prefix, then uploads the model, then uploads the metadata
-  ([retraining_utils.py:783-803](src/nba_ou/modeling/retraining_utils.py#L783-L803)).
+  ([retraining_utils.py:783-803](../../src/nba_ou/modeling/retraining_utils.py#L783-L803)).
   A reader between those calls sees an empty prefix, or a model with no
   metadata. §2.2 removes the possibility rather than narrowing the window.
 - **Archive layout is inconsistent in every family.** The first archived bundle
@@ -204,20 +205,20 @@ small JSON pointers, and each is a single `PutObject` — so every state change 
 atomic and every reader sees a coherent pair.
 
 **`{schema_version}`** — `TRAINING_DATA_SCHEMA_VERSION` from
-[dataset_versions.py](src/nba_ou/config/dataset_versions.py), currently `"2_5"`,
+[dataset_versions.py](../../src/nba_ou/config/dataset_versions.py), currently `"2_5"`,
 used verbatim so the registry and the CSV filenames say the same string. What it
 does and does not promise is in §2.5 — it is a contract family, not a guarantee
 of comparability, and the plan previously overstated it.
 
 **`{target}`** — `line_error | total_points | spread_error`, exactly
-`TargetFamily` ([config.py:37-46](training_pipeline/config.py#L37-L46)).
+`TargetFamily` ([config.py:37-46](../../training_pipeline/config.py#L37-L46)).
 
 **`{horizon}`** — `t` + minutes-before-tip, zero-padded to four digits. `t0000`
 is the close, `t0060` is T-60, `t1080` is T-18h. Padding makes `aws s3 ls` of a
 target read in chronological order. The number is `data.snapshot_minutes`
 verbatim. **`tpool` is reserved** for a model trained across every snapshot at
 once, which
-[slice_intermediate_snapshot.py](scripts/create_train_data/slice_intermediate_snapshot.py)
+[slice_intermediate_snapshot.py](../../scripts/create_train_data/slice_intermediate_snapshot.py)
 argues is the model you actually bet with; the current campaigns are all
 single-snapshot, but the layout should not have to change if that reverses.
 
@@ -357,7 +358,7 @@ of what served when is smaller and more useful than the booster.
 ### 2.5 Three identifiers, not one
 
 The plan previously said that sharing a path segment meant comparable columns.
-That is false, and [dataset_versions.py](src/nba_ou/config/dataset_versions.py)
+That is false, and [dataset_versions.py](../../src/nba_ou/config/dataset_versions.py)
 says so itself: under the unchanged `2_5` label, intermediate builds added the
 `ODDS_SNAP_TOT_<ANCHOR>_*` columns and redefined `DEVIATION_FROM_CONSENSUS` and
 friends to measure against a leave-one-book-out peer median, with the docstring
@@ -383,7 +384,7 @@ Deliberately **not** named `data_version`: `ExperimentConfig.data.data_version`
 already exists and means something else — its own docstring calls it a "human
 label for the dataset snapshot… purely descriptive; the checksum below is what
 actually identifies the bytes"
-([config.py:468-470](training_pipeline/config.py#L468-L470)). Reusing the name
+([config.py:468-470](../../training_pipeline/config.py#L468-L470)). Reusing the name
 for the schema version would collide with a field whose values look like
 `"20260918-intermediate-line-2.5-t180"`.
 
@@ -444,12 +445,12 @@ reversible by default.
 
 The bucket's other prefix holds six generated datasets, flat, named
 `historical_training_data_until_{YYYYMMDD}.parquet`. Its only writer is
-[create_and_upload_historical_train_data.py](scripts/create_train_data/create_and_upload_historical_train_data.py),
+[create_and_upload_historical_train_data.py](../../scripts/create_train_data/create_and_upload_historical_train_data.py),
 and **nothing in the repository reads it** — the training pipeline reads local
 `data/train_data/` CSVs instead.
 
 The inconsistency worth fixing: that script and
-[create_train_data.py](scripts/create_train_data/create_train_data.py) call the
+[create_train_data.py](../../scripts/create_train_data/create_train_data.py) call the
 same `create_df_to_predict`, but only the local one writes
 `TRAINING_DATA_SCHEMA_VERSION` into the filename. The same frame was recorded
 two different ways depending on where it landed.
@@ -470,7 +471,7 @@ parses the local CSVs.
 The sweep moves **only objects sitting loose at the root of the prefix**. That
 is narrower than "anything not named like a version", deliberately: the
 injury-report storage helper offers `train_data/injury_reports` as a destination
-([storage.py:80](src/nba_ou/fetch_data/injury_reports/archive/storage.py#L80)),
+([storage.py:80](../../src/nba_ou/fetch_data/injury_reports/archive/storage.py#L80)),
 and a version-name rule would have swept it on whichever machine had run that
 import. Re-running is therefore a no-op.
 
@@ -508,7 +509,7 @@ deleted along with the string surgery on `/production/`.
 ### 4.2 Config
 
 Replace the six hand-written prefixes at
-[config.ini:57-66](src/nba_ou/config.ini#L57-L66) with a table that carries the
+[config.ini:57-66](../../src/nba_ou/config.ini#L57-L66) with a table that carries the
 schema version **per row**. A single global version cannot express a gradual
 rollout — the whole point of putting the version in the path is that `2_6` slots
 can appear one at a time while `2_5` slots keep serving, and a global would
@@ -530,8 +531,8 @@ removed in the same change.
 An empty table is a valid state and the daily jobs must treat it as "nothing to
 do" rather than raising, so the system is runnable before the first promotion.
 Today all three entry points raise
-([retrain_prediction_models.py:75-80](scripts/retrain_prediction_models.py#L75-L80),
-[predict_nba_games.py:103-108](scripts/predict_nba_games.py#L103-L108),
+([retrain_prediction_models.py:75-80](../../scripts/retrain_prediction_models.py#L75-L80),
+[predict_nba_games.py:103-108](../../scripts/predict_nba_games.py#L103-L108),
 [model_registry.py:130-133](src/nba_ou/modeling/model_registry.py#L130-L133)).
 
 ### 4.3 Target handling
@@ -593,19 +594,19 @@ it gets a section and a work item of its own, ahead of `retrain_from_spec`.
 
 **Today** the retrain job calls `create_df_to_predict` once, in-process, and
 hands the same closing-line frame to every configured model
-([retrain_prediction_models.py:83](scripts/retrain_prediction_models.py#L83)).
+([retrain_prediction_models.py:83](../../scripts/retrain_prediction_models.py#L83)).
 That works because all six models are closing-line models over one frame.
 
 **Hourly horizons need the intermediate dataset**, which is a different thing in
 every respect:
 
 - It is built by a separate entry point with no shared state,
-  [create_intermediate_line_train_data.py](scripts/create_train_data/create_intermediate_line_train_data.py),
+  [create_intermediate_line_train_data.py](../../scripts/create_train_data/create_intermediate_line_train_data.py),
   writing its own CSV plus a `_scoring.csv` companion.
 - The current one, `intermediate_line_data_2_5_20260613.csv`, is **4.4 GB**.
 - **The snapshot grid is frozen at build time.** `--snapshot-grid` defaults to
   `(0, 30, 60, 120, 180, 240, 300, 360, 480, 720)`, and
-  [snapshots.py:63-67](src/nba_ou/data_processing/line_history/snapshots.py#L63-L67)
+  [snapshots.py:63-67](../../src/nba_ou/data_processing/line_history/snapshots.py#L63-L67)
   states that removing a horizon is a filter but *adding one back means
   regenerating the whole dataset*. The current campaigns train at 420, 540, 660,
   840, 960 and 1080 — none of which are in that default — so the file in use was
@@ -659,7 +660,7 @@ diagnostic and classifier runs, refits and saves a bundle. What it needs:
   identity from the run's own config — `prediction_strategy` → `target`,
   `data.snapshot_minutes` → `horizon_minutes`, `data.dataset_type`,
   `schema_version` parsed from `data.csv_path` — and the training block from
-  `RunHyperparameters` ([reuse.py:22-46](training_pipeline/reuse.py#L22-L46)).
+  `RunHyperparameters` ([reuse.py:22-46](../../training_pipeline/reuse.py#L22-L46)).
 - **Take `schema_version` from the data, not from HEAD.** A run trained on
   `training_data_2_3_20260909.csv` is a 2_3 model even when
   `TRAINING_DATA_SCHEMA_VERSION` says `2_5`. Parse it from the filename and warn
@@ -678,7 +679,7 @@ diagnostic and classifier runs, refits and saves a bundle. What it needs:
 - **Print the `ENABLED_MODELS` row** to add to config.ini.
 - **Refuse to replace a slot's config without `--replace-config`.**
 - **Keep the diagnostic and classifier guards**
-  ([promote.py:103-155](training_pipeline/promote.py#L103-L155)). They matter
+  ([promote.py:103-155](../../training_pipeline/promote.py#L103-L155)). They matter
   more, not less, when the destination is S3.
 
 ### 6.3 A campaign-level promotion helper
@@ -694,7 +695,7 @@ python -m scripts.promote_campaign_to_registry \
 Maps each campaign cell to the slot its config implies, picks the winning run
 per cell, prints the full table (slot → run → CV/holdout → params), writes
 nothing without `--execute`. `find_best_run_hyperparameters`
-([reuse.py](training_pipeline/reuse.py)) already does the per-run selection.
+([reuse.py](../../training_pipeline/reuse.py)) already does the per-run selection.
 This is where the horizon grid actually gets decided — by which cells you
 select, bounded by §5.
 
@@ -717,7 +718,7 @@ horizon refits; item 13 validates the whole chain.
    tests. *Small.*
 2. **`ModelSpec` / `FitRecord` / channel models** — *DONE*, plus `spec_id` and
    `fit_id` derivation. Landed in its own
-   [registry_models.py](src/nba_ou/modeling/registry_models.py) rather than
+   [registry_models.py](../../src/nba_ou/modeling/registry_models.py) rather than
    beside `ModelBundleMetadata` in `modeling.py`, which imports xgboost,
    sklearn and tqdm: reading a pointer should not require a training stack.
    *Small.*
@@ -749,7 +750,7 @@ horizon refits; item 13 validates the whole chain.
 11. **Refit from spec** — *DONE for closing_line; intermediate waits on 10*.
     `refit_from_spec` replacing
     `build_retraining_settings_from_artifacts`, with the game-ID-counted window
-    ([promote.py:191-198](training_pipeline/promote.py#L191-L198)). Depends on
+    ([promote.py:191-198](../../training_pipeline/promote.py#L191-L198)). Depends on
     10. *Medium.*
 12. **Retirement sweep** — *DONE, 2026-09-21*. All 751 objects of the ten
     families moved to `models/retired/20260921/`; copies verified before any

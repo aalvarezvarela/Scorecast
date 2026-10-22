@@ -56,7 +56,7 @@ lean harder on the "only fetch what is missing" planner below.
 machine-dependent bug: the same scraper produces different timestamps on a
 Madrid laptop and a UTC CI runner, and nothing errors. This actually happened
 here — `Europe/Madrid` had to be recovered *after the fact* from daylight-saving
-steps in the data (see `docs/line_history_phase0_findings.md`), and two COVID-era
+steps in the data (see `docs/odds/line_history_phase0_findings.md`), and two COVID-era
 seasons could never be pinned confidently and remain excluded from the store.
 
 The same page ships a Next.js `__NEXT_DATA__` payload where `oddsDate` carries

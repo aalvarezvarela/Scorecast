@@ -1,6 +1,6 @@
 """Pre-game injury-report statuses as closing-line features.
 
-See ``docs/injury_status_tiers_plan.md``. Two modules:
+See ``docs/injuries/status_tiers.md``. Two modules:
 
 * :mod:`.report_state` -- the last report before each tipoff: the three
   availability groups it splits a roster into (injured = Out ∪ Doubtful,

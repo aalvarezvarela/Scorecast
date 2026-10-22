@@ -3,7 +3,7 @@
 The first training runs on `intermediate_line_data_2_5_20260613.csv` (built
 2026-09-18, pinned to `sha256:5bda016d4c872e0d`). This build is also the first
 to contain the market-dynamics columns from `feat/intermediate-market-dynamics`
-(G1-G4 in `docs/intermediate_market_dynamics_plan.md`). This campaign measures
+(G1-G4 in `docs/intermediate/market_dynamics.md`). This campaign measures
 the full feature set by timepoint. The group ablations are a separate campaign
 (plan section 6).
 

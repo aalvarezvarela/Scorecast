@@ -1,5 +1,8 @@
 # Live prediction rosters
 
+Status: **Reference** (checked 2026-10-22) — how prediction runs build the
+player pool.
+
 Closing and intermediate predictions use NBA Stats `CommonTeamRoster` as the
 official total player pool for a scheduled team-game. This is membership, not
 confirmation that a player will dress or play. `POSITION` is archived for
@@ -77,6 +80,6 @@ Historical training builds without live inputs keep their existing membership
 logic, which recognises a transaction one game late. Live official rosters
 deliberately differ from it for new arrivals, debuts and departures; this
 train/serve mismatch is accepted until training adopts a game-day definition
-(see [TODO fixes](TODO_fixes.md));
+(see [TODO fixes](../pipeline/defect_fixes_2_5.md));
 timestamped observations support reproducible live replay from their first
 observation onward, not retroactive reconstruction of older roster changes.

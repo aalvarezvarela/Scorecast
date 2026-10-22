@@ -22,4 +22,4 @@ discipline in it (seed noise before ranking, CV vs holdout, the silent-no-op
 table) is sport-independent even though the file paths are not.
 
 For the repo-specific map of data sources, storage, datasets and feature
-modules, see `docs/feature_engineering_overview.md`.
+modules, see `docs/pipeline/feature_engineering_overview.md`.

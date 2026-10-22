@@ -1,5 +1,8 @@
 # Feature engineering overview
 
+Status: **Reference** (checked 2026-10-22) — map of data sources and feature
+families.
+
 This page maps the feature engineering in this repository: what data exists,
 where it is stored, how it reaches each dataset, and which module builds each
 feature family. It is a map, not the full reference, so it links to the
@@ -12,16 +15,20 @@ Snapshot of the code as of 2026-10-05, schema version `2_6`
 
 ## Where the detail lives
 
+The feature-related documents. Every document, with its status, is listed in
+[docs/README.md](../README.md).
+
 | Document | Scope |
 |---|---|
-| `docs/README_Training Data Processing.md` | Closing-line pipeline step by step: rolling windows, player and injury features, referees, travel, column selection, naming |
+| `docs/pipeline/training_data_processing.md` | Closing-line pipeline step by step: rolling windows, player and injury features, referees, travel, column selection, naming |
 | `src/nba_ou/config/dataset_versions.py` | What every schema version (`2_0` to `2_5`) added or changed |
-| `docs/intermediate_line_dataset_plan.md`, `docs/intermediate_line_pipeline_plan.md` | Intermediate (snapshot) dataset design |
-| `docs/intermediate_line_feature_engineering_plan.md` | Round-2 market features for snapshots, with the evidence behind them |
-| `docs/intermediate_market_dynamics_plan.md` | G1–G4: injury news, news reaction, cross-market coherence, move-to-close Ridges |
-| `docs/injury_report_db_plan.md`, `docs/injury_report_archive_plan.md`, `docs/injury_status_tiers_plan.md`, `docs/injury_availability_improvement_plan.md` | Official injury-report archive and the availability features built on it |
-| `docs/line_history_phase0_findings.md`, `docs/line_history_updating.md` | Line-history store: data findings and daily update |
-| `docs/odds_source_alternatives.md` | Odds APIs and the OddsTrader GraphQL as backup or extra books for SBR (research only) |
+| `docs/intermediate/line_dataset.md`, `docs/intermediate/training_pipeline_integration.md` | Intermediate (snapshot) dataset design |
+| `docs/intermediate/feature_engineering_round2.md` | Round-2 market features for snapshots, with the evidence behind them |
+| `docs/intermediate/market_dynamics.md` | G1–G4: injury news, news reaction, cross-market coherence, move-to-close Ridges |
+| `docs/injuries/report_db.md`, `docs/injuries/report_archive.md`, `docs/injuries/status_tiers.md`, `docs/injuries/availability_improvement.md` | Official injury-report archive and the availability features built on it |
+| `docs/lineups/lineup_projection.md`, `docs/lineups/data_inventory.md` | Stints, projected minutes and the 2_6 `STARTER_*` / `LU_*` layer; the stint and matchup data |
+| `docs/odds/line_history_phase0_findings.md`, `docs/odds/line_history_updating.md` | Line-history store: data findings and daily update |
+| `docs/odds/odds_source_alternatives.md` | Odds APIs and the OddsTrader GraphQL as backup or extra books for SBR (research only) |
 | `.claude/skills/feature-engineering/` | Portable, sport-agnostic rules and families; no repo paths |
 | `.claude/skills/odds-data-architecture/`, `.claude/skills/sports-data-architecture/` | Portable ingestion and storage design |
 
@@ -43,7 +50,7 @@ section of `config.secrets.ini` (`src/nba_ou/postgre_db/config/db_config.py`):
 | Closing odds | Yahoo Sports | `fetch_data/odds_yahoo` | Supabase `odds_yahoo` | same merge function |
 | Line history: every pre-game price change, per book, for totals, spread and moneyline | Sportsbook Review line history | `fetch_data/odds_sportsbook/scrape_sportsbook_line_history.py`, `scripts/update_databases/update_line_history_database.py` | Aiven `line_history` (`lh_game`, `lh_line`) | `postgre_db/line_history_aiven/fetch.py` (`fetch_pregame_ticks`, `fetch_games`) |
 | Historical injuries and referee crews | NBA stats API box-score summaries | `postgre_db/injuries_refs/update_ref_injuries_database` | Supabase `nba_injuries`, `nba_refs` | `get_injury_data_from_db`, `get_refs_data_from_db` |
-| Official injury reports, time-stamped | NBA injury-report PDFs (`ak-static.cms.nba.com`) | Game-day: `fetch_data/injury_reports/sync.py`; backfills: `scripts/injury_reports/` | Original PDFs in S3; Aiven `injury_report` (document receipts, reports, status spans, filing spans), refreshed before prediction | `postgre_db/injury_report_aiven/fetch.py`; see `docs/live_injury_reports.md` |
+| Official injury reports, time-stamped | NBA injury-report PDFs (`ak-static.cms.nba.com`) | Game-day: `fetch_data/injury_reports/sync.py`; backfills: `scripts/injury_reports/` | Original PDFs in S3; Aiven `injury_report` (document receipts, reports, status spans, filing spans), refreshed before prediction | `postgre_db/injury_report_aiven/fetch.py`; see `docs/injuries/live_reports.md` |
 | Same-day referee assignments | `official.nba.com/referee-assignments` | `fetch_data/referees/load_assignments.py` | S3 `train_data/live_inputs/v1/referees/game_date=YYYY-MM-DD/`, timestamped Parquet plus `latest.json`; save changed crews, fallback on live failure; no PostgreSQL write | same-day prediction path only |
 | All-Star voting | NBA voting results | `scripts/all_star_voting/manage_all_star_voting.py` | Supabase `nba_all_star_voting` | `load_all_star_voting_from_db` |
 | Schedule, tip-off times | NBA schedule (`ScoreboardV2`) | `fetch_data/nba_schedule`, `fetch_data/scheduled_game` | `lh_game.tipoff_utc`, Supabase `nba_game_time_index` | line-history games; injury-report game resolution |
@@ -200,7 +207,7 @@ builder.
   synergy requires separate work; target-game minutes are never inputs.
 - G1–G4 are implemented on `feat/intermediate-market-dynamics`, but the full
   intermediate dataset has not been rebuilt with them yet and they have not
-  been through an ablation. See `docs/intermediate_market_dynamics_plan.md` §6.
+  been through an ablation. See `docs/intermediate/market_dynamics.md` §6.
 - A fixed-clock prediction time (such as 09:05 ET) was analysed but not
   implemented. The snapshot panel and the training pipeline key rows on a
   shared minutes-before-tip value, while injuries, referees and G1–G3 already

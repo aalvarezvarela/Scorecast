@@ -8,7 +8,7 @@
 where ``p_out`` is the chance the player sits given their status at ``t`` and
 ``FORM_PTS`` is 2_5's pre-game scoring form (``status_history.player_form_slots``).
 News over a window W is E(T) - E(T - W). Measurements behind every choice below:
-``docs/intermediate_market_dynamics_plan.md`` sections 1.2-1.3.
+``docs/intermediate/market_dynamics.md`` sections 1.2-1.3.
 
 Chance of sitting, by status:
 

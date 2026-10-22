@@ -1,6 +1,8 @@
 # Running the intermediate-line dataset through `training_pipeline`
 
-Status: **plan, not implemented.**
+Status: **Implemented** (checked 2026-10-22) — `data.snapshot_minutes`,
+game-counted windows and pooled snapshot evaluation are in `training_pipeline/`;
+the dataset figures below are from the 2026-04 CSV.
 
 The dataset exists: `data/train_data/intermediate_line_data_20260412.csv`,
 36,570 rows x 2,430 columns, 6,122 games, six snapshots each

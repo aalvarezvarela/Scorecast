@@ -1,7 +1,11 @@
 # Intermediate-line feature engineering — round 2
 
-Status: **proposal, nothing implemented.** Follows
-`docs/intermediate_line_dataset_plan.md`, which is built and describes the
+Status: **Partial** (checked 2026-10-22) — the leave-one-book-out deviation
+(Tier 1) is in `line_history/cross_book.py`, and Tier 6 became G3 in
+[market_dynamics.md](market_dynamics.md); the other tiers were not built.
+
+Follows
+`docs/intermediate/line_dataset.md`, which is built and describes the
 existing feature set. Everything here is measured on the as-built dataset
 (seasons 2023–24, 14,670 rows) rather than proposed from intuition.
 
@@ -141,7 +145,7 @@ horizons, so the model must be able to condition on lead time.
 
 **This is not something the model can be relied on to learn.** The tuned search
 space allows `max_depth: 1`
-([`experiments/_base.yaml`](experiments/_base.yaml)) — stumps cannot represent
+([`experiments/_base.yaml`](../../experiments/_base.yaml)) — stumps cannot represent
 an interaction at all — and even at depth 4 with `colsample_bytree` as low as
 0.05, the chance of the right pair landing in one tree is small. So build them
 explicitly:

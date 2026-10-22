@@ -181,7 +181,7 @@ def load_game_dimension(
 
     A game with no tipoff from either source cannot clamp a span and is dropped
     here rather than loaded without one. The caller reports the count; see
-    ``docs/injury_report_db_plan.md`` section 5.
+    ``docs/injuries/report_db.md`` section 5.
     """
     from nba_ou.fetch_data.nba_schedule.fetch_nba_schedule import fetch_schedules
 

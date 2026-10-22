@@ -3,7 +3,7 @@
 A layer may add columns and nothing else. Its output must line up row for row
 with what it was given, carry exactly the columns it declared, collide with
 nothing already in the dataset, and follow the leakage naming the rest of the
-pipeline relies on (``docs/README_Training Data Processing.md``). Checked at
+pipeline relies on (``docs/pipeline/training_data_processing.md``). Checked at
 run time rather than only in tests because a layer's output depends on data --
 a join that duplicates a key shows up on the build where it happens.
 """

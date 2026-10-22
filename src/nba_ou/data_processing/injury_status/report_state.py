@@ -1,6 +1,6 @@
 """The last injury report before tipoff, shaped for the closing-line dataset.
 
-Rules (``docs/injury_status_tiers_plan.md`` section 1):
+Rules (``docs/injuries/status_tiers.md`` section 1):
 
 1. One snapshot per game: the last report published strictly before tipoff,
    whatever its age.

@@ -1,6 +1,6 @@
 """Collect one prediction run and store it: S3 run archive + Aiven tables.
 
-``docs/prediction_storage_plan.md`` is the design. A run (one invocation of
+``docs/serving/prediction_storage.md`` is the design. A run (one invocation of
 ``predict_nba_games.py`` or ``predict_past_snapshots.py``) gives a
 ``PredictionRunRecorder`` its schedule, its frames and every slot's output; at
 the end ``persist_prediction_run`` writes the S3 archive first (the complete

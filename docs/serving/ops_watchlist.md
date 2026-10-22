@@ -1,11 +1,14 @@
 # Ops watchlist
 
+Status: **Reference** (checked 2026-10-22) — a living list; items are removed
+once resolved.
+
 Things to check on the daily jobs and their external sources, mostly around
 the 2026-27 season start. Each item: what was seen, why it matters, and how to
 close it. Remove an item once it is resolved; move anything that turns into
 real work into its own doc.
 
-Defects in the training data live in `docs/TODO_fixes.md`, not here.
+Defects in the training data live in `docs/pipeline/defect_fixes_2_5.md`, not here.
 
 ## Open
 
@@ -104,7 +107,7 @@ It may be an IP- or bot-level block rather than a removed feed.
 `AccessDenied` on `s3:PutObject`. The OIDC role is `S3ModelsFullAccess`
 (`assumed-role/S3ModelsFullAccess/GitHubActions`), and the bucket uses a
 per-prefix allowlist. The policy JSON is in
-`docs/injury_report_archive_plan.md` §17.2.1. It was written for the
+`docs/injuries/report_archive.md` §17.2.1. It was written for the
 `adrian-personal-cli` user, but the role needs it too. Added to the role as an
 inline policy on 2026-10-20; the next run stored 132 PDFs and the 2026-27
 manifest under `injury_reports/`, so that prefix is fixed.

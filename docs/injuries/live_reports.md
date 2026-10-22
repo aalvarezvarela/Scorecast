@@ -1,5 +1,8 @@
 # Injury reports before today's prediction
 
+Status: **Reference** (checked 2026-10-22) — how prediction runs refresh and
+read the injury reports.
+
 Predictions read injury information from Aiven. Before building features,
 `get_all_info_for_scheduled_games` calls
 `fetch_data.injury_reports.sync.synchronize_injury_reports`, then reads Aiven
