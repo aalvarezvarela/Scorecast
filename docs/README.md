@@ -78,5 +78,6 @@ the folder of its topic, with a status line, and gets a row here.
 |---|---|---|---|
 | [model_registry.md](serving/model_registry.md) | Implemented | The S3 slot registry: specs, builds, channels, daily refit and promotion | `modeling/registry_*.py`, `modeling/refit.py` |
 | [prediction_storage.md](serving/prediction_storage.md) | Implemented | The Aiven prediction store and the S3 run archive | `prediction/prediction_store.py`, `postgre_db/predictions_aiven/` |
+| [runner_timings.md](serving/runner_timings.md) | Research | Prediction and retrain durations on the self-hosted runner, cold and warm; what slows them | `scripts/predict_nba_games.py`, `scripts/retrain_prediction_models.py` |
 | [snapshot_triggers.md](serving/snapshot_triggers.md) | Implemented | Daily cron-job.org booking of predictor runs at every snapshot time and before tip-off | `scripts/cronjobs/schedule_snapshot_triggers.py`, `scheduling/cronjob_org.py` |
 | [ops_watchlist.md](serving/ops_watchlist.md) | Reference | Open checks on the daily jobs and their external sources | `.github/workflows/` |
