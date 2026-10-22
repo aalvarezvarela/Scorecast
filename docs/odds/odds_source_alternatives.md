@@ -252,6 +252,39 @@ s3://adrian-nba-model-registry-eu-west-1/train_data/odds_sources/oddstrader/
 - **Reading:** `nba_ou.fetch_data.odds_oddstrader.store.load_ticks(seasons)`
   returns the frame `fetch_pregame_ticks` returns for the Aiven store.
 
+Archive contents (built 2026-10-23, all 2014-15 to 2026-10-21):
+
+- **Raw:** 4,403 dates and 16,976 events, all fetched with no gaps.
+- **Tables:**
+  - 15,474 games matched to `nba_games`, about 1,310–1,323 per full season;
+    the rest are preseason and cancelled listings;
+  - 21.4M ticks and 72 books, 166 MB of Parquet;
+  - 20 books are unnamed (`oddstrader_<paid>`). Some have long coverage:
+    `paid` 15 2014–25, 123 from 2021.
+- **Orientation, every season:** the std of (home margin − market home margin)
+  at the close is 11.8–14.0 as stored against 17.1–21.4 flipped. The
+  devigged home moneyline probability is 0.54–0.59.
+- **Parity with SBR**: share of (game, book) with the same line, or the same
+  price for moneyline, from T-5 to T-720:
+
+  | Season | Totals | Spread | Moneyline |
+  |---|---|---|---|
+  | 2021-22 to 2024-25 | 0.85–0.97 | 0.88–0.97 | 0.68–0.80 |
+  | 2025-26 (Oct–Dec only) | 0.82–0.89 | 0.88–0.95 | 0.60–0.73 |
+  | 2019-20 (bet365, FanDuel) | 0.46–0.83 | 0.72–0.90 | 0.89–0.95 |
+
+  - The moneyline gaps are mostly Caesars (0.20–0.36 in every season) and
+    BetMGM in 2022-23 (0.27–0.31). These are cent-level price differences.
+  - In 2019-20, totals agree only 46% at T-5 but 83% at T-720. That is the
+    pattern of a timestamp offset. 2019-20 is one of the two SBR seasons whose
+    timezone could not be pinned (`lh_load_meta` confidence "low"), while
+    OddsTrader's times are explicit UTC. This archive could therefore settle
+    SBR's 2019-20 and 2020-21 timezone. Not done yet.
+- **Coverage notes:**
+  - 5Dimes ends with 2022-23 and Pinnacle with 2024-25.
+  - MyBookie's last pre-game tick is a median 4–6 h before tip from 2022-23
+    on, so it is stale at the close.
+
 Commands, under `scripts/line_history/oddstrader/`:
 
 - `backfill_oddstrader_raw.py`:

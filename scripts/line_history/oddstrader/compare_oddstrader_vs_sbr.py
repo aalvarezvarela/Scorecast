@@ -96,9 +96,13 @@ def report_parity(ot: pd.DataFrame, sbr: pd.DataFrame) -> None:
             same = np.ones(len(part), dtype=bool)
             for side in ("left", "right"):
                 for col in cols:
+                    # Prices are nullable integers: a missing quote is not a match.
                     same &= (
-                        part[f"{side}_{col}_ot"] == part[f"{side}_{col}_sbr"]
-                    ).to_numpy()
+                        part[f"{side}_{col}_ot"]
+                        .eq(part[f"{side}_{col}_sbr"])
+                        .fillna(False)
+                        .to_numpy(dtype=bool)
+                    )
             by_book = (
                 pd.Series(same, index=part.index).groupby(level="book").mean().round(2)
             )
