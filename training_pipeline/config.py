@@ -17,7 +17,7 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Any
 
-from nba_ou.config.constants import SEASON_TYPE_MAP
+from nba_ou.config.constants import SEASON_TYPE_MAP, TRAINING_SEASON_TYPES
 from nba_ou.config.market_columns import Market
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -318,15 +318,9 @@ class HoldoutEvaluation(StrEnum):
     SINGLE_SHOT = "single_shot"
 
 
-#: Season types kept when ``DataConfig.exclude_playoffs`` is True. Values must
-#: match nba_ou.config.constants.SEASON_TYPE_MAP. Playoff basketball has
-#: shorter rotations and slower pace -- in the current training data playoff
-#: games average ~11.6 fewer total points than regular-season games -- so it is
-#: a materially different distribution from what the models are used to predict.
-DEFAULT_ALLOWED_SEASON_TYPES: tuple[str, ...] = (
-    "Regular Season",
-    "Play-In Tournament",
-)
+#: Season types kept when ``DataConfig.exclude_playoffs`` is True. Defined in
+#: nba_ou so the daily refit (nba_ou.modeling.refit) keeps the same games.
+DEFAULT_ALLOWED_SEASON_TYPES: tuple[str, ...] = TRAINING_SEASON_TYPES
 
 #: The season floor every experiment uses unless it says otherwise. Not a round
 #: number picked for tidiness -- it is where the public-betting columns start

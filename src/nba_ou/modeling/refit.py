@@ -16,38 +16,92 @@ closing-line half works today and the intermediate half says what it needs.
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
+import numpy as np
 import pandas as pd
-from nba_ou.modeling.registry_models import (
-    FitRecord,
-    ModelSpec,
-    build_model_name,
-)
+from nba_ou.config.constants import SEASON_TYPE_MAP, TRAINING_SEASON_TYPES
+from nba_ou.config.market_columns import HOME_MARGIN_COL, SPREAD_ERROR_COL, spread_error
+from nba_ou.config.odds_columns import spread_line_home_col, total_line_col
+from nba_ou.config.yahoo_features import compact_yahoo_columns
+from nba_ou.data_processing.missing_data.clean_df_for_training import basic_cleaning
+from nba_ou.modeling.meta_learner_training_data import _ensure_line_error_column
+from nba_ou.modeling.registry_models import FitRecord, ModelSpec, build_model_name
 from nba_ou.modeling.registry_paths import ModelSlot, ModelTarget, build_fit_id
 from nba_ou.modeling.retraining_utils import (
     RetrainingSettings,
-    prepare_retraining_dataframe_from_raw,
+    _coerce_feature_column_for_xgboost,
     retrain_model,
 )
 from xgboost import XGBRegressor
 
 #: Fixed across every model: these decide how XGBoost runs, not what it learns.
-#: The tuned half lives in ``spec.training.params``.
+#: The tuned half lives in ``spec.training.params``; the seed and the device
+#: come from the spec too (refit_random_state, refit_device).
 XGB_STATIC_PARAMS: dict[str, object] = {
     "booster": "gbtree",
     "tree_method": "hist",
     "objective": "reg:squarederror",
     "eval_metric": "mae",
-    "random_state": 16,
     "n_jobs": -1,
     "verbosity": 0,
 }
 
+#: The seed for a spec written before seeds were recorded: the training
+#: default (ExperimentConfig.random_state), which 50 of the first 51 promoted
+#: runs used. The exception, 2_5/line_error/t0000/main, ran with 17.
+DEFAULT_RANDOM_STATE = 16
+
+#: The device for a spec written before devices were recorded: all 51 of the
+#: first promoted runs were tuned and fitted on CUDA.
+DEFAULT_DEVICE = "cuda"
+
+
+def refit_random_state(spec: ModelSpec) -> int:
+    if spec.training.random_state is not None:
+        return spec.training.random_state
+    return DEFAULT_RANDOM_STATE
+
+
+def refit_device(spec: ModelSpec) -> str:
+    """The device to refit on: the one the run was evaluated on.
+
+    CUDA and CPU build different trees from the same seed and data (on the
+    closing line_error slot only ~79% of games get the same side), so a refit
+    on another device is not the model that was evaluated.
+    """
+    return spec.training.device or DEFAULT_DEVICE
+
+
+def fitted_device(model: XGBRegressor) -> str:
+    """The device a fitted model actually trained on, e.g. "cuda:0" or "cpu"."""
+    config = json.loads(model.get_booster().save_config())
+    return str(config["learner"]["generic_param"]["device"])
+
+
+def require_device(device: str) -> None:
+    """Fail now if ``device`` cannot be used.
+
+    Without a visible GPU, XGBoost does not raise: it logs a warning and fits
+    on CPU, which here would silently ship a different model. A tiny fit shows
+    which device it really used.
+    """
+    if not device.startswith("cuda"):
+        return
+    probe = XGBRegressor(n_estimators=1, device=device, verbosity=0)
+    probe.fit(np.zeros((4, 1)), np.zeros(4))
+    if not fitted_device(probe).startswith("cuda"):
+        raise RefitError(
+            f"The spec asks for device={device!r}, but XGBoost fell back to "
+            f"{fitted_device(probe)!r}: no usable GPU or no CUDA build. Refit on "
+            "the machine the configuration was evaluated on."
+        )
+
+
 DATE_COLUMN = "GAME_DATE"
 GAME_ID_COLUMN = "GAME_ID"
-MINIMUM_LINE_VALUE = 100.0
 
 #: Which column each target trains against.
 TARGET_COLUMNS: dict[ModelTarget, str] = {
@@ -104,18 +158,19 @@ def settings_from_spec(spec: ModelSpec) -> RetrainingSettings:
     which is the point.
     """
     target_column = TARGET_COLUMNS[ModelTarget(spec.identity.target)]
-    xgb_params = {**XGB_STATIC_PARAMS, **spec.training.params}
+    xgb_params = {
+        **XGB_STATIC_PARAMS,
+        "device": refit_device(spec),
+        "random_state": refit_random_state(spec),
+        **spec.training.params,
+    }
     xgb_params["n_estimators"] = spec.training.n_estimators
     return RetrainingSettings(
         feature_names=list(spec.features.feature_names),
         target_column=target_column,
         date_column=DATE_COLUMN,
         required_line_col=spec.training.required_line_col,
-        minimum_line_value=(
-            spec.training.minimum_line_value
-            if spec.training.minimum_line_value is not None
-            else MINIMUM_LINE_VALUE
-        ),
+        minimum_line_value=spec.training.minimum_line_value,
         nan_threshold=spec.cleaning.nan_threshold,
         max_na_per_row=spec.cleaning.max_na_per_row,
         train_games=spec.training.train_games,
@@ -232,6 +287,101 @@ def resolve_training_frame(
     )
 
 
+def _with_target(
+    df: pd.DataFrame, target: ModelTarget
+) -> tuple[pd.DataFrame, list[str]]:
+    """The frame with its target column, and the lines training requires present.
+
+    The same derivations training uses (training_pipeline.data.prepare_dataset):
+    LINE_ERROR is the main book's totals residual, SPREAD_ERROR the main book's
+    spread residual, each derived only when the frame does not carry one.
+    """
+    if target is ModelTarget.LINE_ERROR:
+        return _ensure_line_error_column(df), [total_line_col()]
+    if target is ModelTarget.SPREAD_ERROR:
+        line_col = spread_line_home_col()
+        if SPREAD_ERROR_COL in df.columns:
+            return df, [line_col]
+        missing = [c for c in (HOME_MARGIN_COL, line_col) if c not in df.columns]
+        if missing:
+            raise RefitError(f"Cannot derive {SPREAD_ERROR_COL}: {missing} missing.")
+        out = df.copy()
+        out[SPREAD_ERROR_COL] = spread_error(out[HOME_MARGIN_COL], out[line_col])
+        return out, [line_col]
+    return df, [total_line_col()]
+
+
+def prepare_refit_rows(df: pd.DataFrame, spec: ModelSpec) -> pd.DataFrame:
+    """The rows training would fit this spec on, oldest first.
+
+    Follows training_pipeline.data.prepare_dataset step by step, so a refit
+    trains on the games the promoted configuration was evaluated on:
+
+    1. regular season and play-in only (TRAINING_SEASON_TYPES, by GAME_ID
+       prefix -- the SEASON_TYPE text labels play-in games "Playoffs");
+    2. the target, derived as training derives it;
+    3. ``basic_cleaning``: implausible totals, and a missing or implausible
+       main-book total line, for every target;
+    4. ``max_na_per_row`` over the model's features, with the optional compact
+       Yahoo block exempt (the rest of training's cleaned frame is outcome and
+       date columns, which a finished game always has);
+    5. a missing target or required line;
+    6. sorted by date the way training sorts, so the window's boundary date
+       keeps the same games.
+
+    Column selection is not repeated: the spec's ``feature_names`` are what
+    training's cleaning kept.
+    """
+    target = ModelTarget(spec.identity.target)
+    target_col = TARGET_COLUMNS[target]
+    features = list(spec.features.feature_names)
+
+    if GAME_ID_COLUMN not in df.columns:
+        raise RefitError(f"The frame has no {GAME_ID_COLUMN!r} to filter season types.")
+    season_type = (
+        df[GAME_ID_COLUMN].astype(str).str.strip().str[:3].map(SEASON_TYPE_MAP)
+    )
+    df = df.loc[season_type.isin(TRAINING_SEASON_TYPES)]
+
+    df, line_cols = _with_target(df, target)
+    if spec.training.required_line_col:
+        line_cols.append(spec.training.required_line_col)
+    required = [DATE_COLUMN, GAME_ID_COLUMN, target_col, *line_cols, *features]
+    missing = [c for c in dict.fromkeys(required) if c not in df.columns]
+    if missing:
+        raise RefitError(
+            f"The training frame lacks {len(missing)} column(s) this spec needs, "
+            f"e.g. {missing[:5]}."
+        )
+
+    df = basic_cleaning(df, verbose=0)
+
+    if spec.cleaning.max_na_per_row >= 0:
+        yahoo = set(compact_yahoo_columns(df.columns))
+        counted = [c for c in features if c not in yahoo]
+        df = df.loc[df[counted].isna().sum(axis=1) <= spec.cleaning.max_na_per_row]
+
+    rows = df[
+        list(
+            dict.fromkeys(
+                [DATE_COLUMN, GAME_ID_COLUMN, target_col, *line_cols, *features]
+            )
+        )
+    ].copy()
+    rows[target_col] = pd.to_numeric(rows[target_col], errors="coerce")
+    rows = rows.dropna(subset=[target_col, *line_cols])
+    if spec.training.minimum_line_value is not None and spec.training.required_line_col:
+        line = pd.to_numeric(rows[spec.training.required_line_col], errors="coerce")
+        rows = rows.loc[line > spec.training.minimum_line_value]
+
+    rows[DATE_COLUMN] = pd.to_datetime(rows[DATE_COLUMN])
+    # Default sort kind on purpose: it is the one prepare_dataset uses.
+    rows = rows.sort_values(DATE_COLUMN).reset_index(drop=True)
+    for feature in features:
+        rows[feature] = _coerce_feature_column_for_xgboost(rows[feature])
+    return rows
+
+
 def refit_from_spec(
     spec: ModelSpec,
     *,
@@ -244,18 +394,9 @@ def refit_from_spec(
     spec.check_matches_slot(slot)
 
     settings = settings_from_spec(spec)
-    prepared = prepare_retraining_dataframe_from_raw(
-        frame.df,
-        settings=settings,
-        # Kept so the window can be counted in games. It is not a feature: the
-        # spec's feature_names decide what the model is handed.
-        passthrough_columns=[GAME_ID_COLUMN],
-    )
+    prepared = prepare_refit_rows(frame.df, spec)
     if prepared.empty:
-        raise RefitError(
-            f"{slot.describe()}: no rows survived preparation. The dataset may "
-            "not carry this spec's columns."
-        )
+        raise RefitError(f"{slot.describe()}: no rows survived preparation.")
 
     window = select_training_window(
         prepared, train_games=settings.train_games, date_col=settings.date_column
@@ -265,6 +406,12 @@ def refit_from_spec(
         raise RefitError(f"{slot.describe()}: training window is empty.")
 
     model = retrain_model(window, settings=settings)
+    wanted = str(settings.xgb_params["device"])
+    if wanted.startswith("cuda") and not fitted_device(model).startswith("cuda"):
+        raise RefitError(
+            f"{slot.describe()}: fitted on {fitted_device(model)!r} although the "
+            f"spec asks for {wanted!r}; refusing to stage a different model."
+        )
 
     train_date_min = pd.Timestamp(window[settings.date_column].min()).to_pydatetime()
     train_date_max = pd.Timestamp(window[settings.date_column].max()).to_pydatetime()
