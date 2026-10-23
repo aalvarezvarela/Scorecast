@@ -321,7 +321,7 @@ def run(args: argparse.Namespace) -> int:
     tape = (
         db_tape.record(args.out / "tape")
         if args.record
-        else db_tape.replay(source / "tape")
+        else db_tape.replay(source / "tape", subset_cutoffs=True)
     )
     slot_seconds: dict = {}
     failures: list[str] = []

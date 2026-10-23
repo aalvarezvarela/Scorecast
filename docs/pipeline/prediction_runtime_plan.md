@@ -179,6 +179,28 @@ season's inputs. So:
 For seasons up to `max_season`, the plan keys entries on a frozen key: base
 schema version (`2_5`), memo name, season and main book. It skips the digest
 comparison, and with it the hashing of every input frame.
+
+**As implemented (de2f5ef).** Step 0 showed that the misses came from the
+digests changing with row order, not from validation being slow. So the
+digests stay as a safety net, and their cause is fixed instead:
+- `history_memo.code_key` is the frozen key: `frozen-2_5-<main book>-<roots
+  hash>`. `NBA_OU_HISTORY_MEMO_FROZEN=0` returns to the source key.
+  `NBA_OU_HISTORY_MEMO_REBUILD=1` reads no entry and rewrites every one it
+  computes. That is the rebuild for a deliberate correction.
+- `merge_scheduled_odds` sorts by date with a stable sort. Past games keep the
+  loader's canonical order, whatever tonight's rows are. The odds digests of
+  finished seasons then repeat from day to day.
+- A1 is `season_tables.servable`, used by the three readers.
+  `NBA_OU_TRUST_FINISHED_SEASONS=0` restores the 36 h rule.
+  `refresh_input_cache.py --check` compares without writing. On 2026-10-23 all
+  146 stored seasons (15 tables) matched the server, so nothing needed
+  refreshing.
+- E's fork timeout is in the same commit (600 → 3600 s), because every cold
+  test run paid for it.
+- A1 cannot be replayed from a tape, because a candidate reading S3 sends
+  narrower queries than the tape holds. Its evidence is the `--check` above,
+  plus the existing equality tests of S3 assembly. It changes which stored
+  seasons are served, not how they are read.
 - Kept as today: the current season is never memoised. A new base schema
   (`3_0`) or a different main book gives new keys. An escape hatch
   (`NBA_OU_HISTORY_MEMO_FROZEN=0`) returns to validated keys.
@@ -232,6 +254,52 @@ games are in after the morning update, and the runs during the day add none.
   Step 0's profile at 2026-04-10 sizes it. Skip F if it is small.
 - Check: end-to-end parity on the first and second run of the day, and the
   unit tests above.
+
+**Results (2026-10-23).**
+
+Parity against the step 0 references (`artifacts/perf/runtime/`):
+
+| Candidate | Memo | vs reference | Intermediate rows (s), ref → candidate |
+|---|---|---|---|
+| A, 2026-04-10 18:00 ET | empty, filled here | `EQUAL` | 3009 → 1838 |
+| A, 2026-04-10 11:00 ET | filled | `EQUAL` | 765 → 410 |
+| A, 2025-10-22 18:00 ET | filled from another date | `EQUAL` | 2143 → 979 |
+| A, 2026-04-10 18:00 ET again | after the other date | `EQUAL` | 3009 → 1404 |
+| B, 2026-04-10 18:00 ET | filled | `EQUAL` (latest rows) | 3009 → 317 |
+| B, 2026-04-10 11:00 ET | filled | `EQUAL` (latest rows) | 765 → 316 |
+| B, 2025-10-22 18:00 ET | from another date | `EQUAL` (latest rows) | 2143 → 591 |
+| B, 2025-10-22 11:00 ET | filled | `EQUAL` (latest rows) | 796 → 420 |
+
+- **Across dates, the closing memo hits.** The odds order fix made that
+  possible. In the 2025-10-22 run, closing rows took 644 → 190 s.
+- **The intermediate injury memo misses across these two dates, as it should.**
+  Its digest includes the whole All-Star voting table
+  (`_injury_history_memo`), and the 2025-10-22 build lacks the January 2026
+  votes. Entries are one per season, so the two dates overwrite each other.
+  In production every build of a day sees the same votes. They change only
+  when new votes arrive.
+- **B's tape replay.** B reads tonight's injury reports at fewer cutoffs than
+  the reference recorded. `db_tape.replay(subset_cutoffs=True)` serves such a
+  read from the recorded rows of those cutoffs. It applies only to the
+  cutoff-array report reads, which resolve each cutoff on its own.
+
+Live timings on the self-hosted runner, with the harness of
+`docs/serving/runner_timings.md`: 2026-10-23, 12 closing games, 2 games with
+intermediate rows (SBR frozen).
+
+| Run | Step 2 | Closing | Intermediate | Slots | Total |
+|---|---:|---:|---:|---:|---:|
+| P1 before, cold (2026-10-22) | 314 | 717 | 2926 | 196 | 4156 |
+| P3 before, warm as CI (2026-10-22) | 113 | 457 | 489 | 88 | 1154 |
+| M1 A, frozen memo empty | 251 | 422 | 1468 | 144 | 2304 |
+| M2 A, warm | 147 | 189 | 582 | 89 | 1027 |
+
+M2 still missed `intermediate_report_states` 2019–2025 and
+`intermediate_injury_effect_priors` 2025, as every run did before. Their
+digests chain `report_season_fingerprints`, whose first link hashes the
+dimension tables (`ir_reason`, `ir_status`, ...). An injury report ingested
+between M1 and M2 (17:30 UTC) is the likely trigger. This is unconfirmed; it
+is being watched across the next ingestion.
 
 ### C. Load each input table once per run (expected −0.5 to −1 min)
 
