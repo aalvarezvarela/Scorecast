@@ -109,6 +109,45 @@ must still report `EQUAL`.
 - Record the stage timings of the current code. Every later step reports the
   same table.
 
+### Step 0 results (2026-10-23)
+
+References recorded with the code at `a6cd8ce` (worktree
+`../NBA_ou_runtime_ref_a6cd8ce`), in `artifacts/perf/runtime/ref_*` (tape,
+inputs, builds, frames, predictions, `timings.json`). The memo read the S3
+memo and wrote to a shared local directory. The input cache was off, as every
+taped run needs, so the database reads are the uncached ones.
+
+| Run | Games | Inter. rows | Closing rows (s) | Intermediate rows (s) | 51 slots (s) | Memo | Fork timeout |
+|---|---:|---:|---:|---:|---:|---|---|
+| 2026-04-10 18:00 ET | 15 | 261 | 669 | 3009 | 127 | missed | yes |
+| 2026-04-10 11:00 ET | 15 | 261 | 507 | 765 | 84 | hit | no |
+| 2025-10-22 18:00 ET | 12 | 207 | 644 | 2143 | 102 | missed | yes |
+| 2025-10-22 11:00 ET | 12 | 207 | 470 | 796 | 88 | hit | no |
+| Self-replay of the first | 15 | 261 | 522 | 2213 | 132 | missed | yes |
+
+- **The harness works.** The self-replay (same code, the reference's tape,
+  inputs and builds) is `EQUAL` on both frames and all 765 predictions. Only
+  `PREDICTED_AT_UTC`, a wall-clock stamp, is left out.
+- **Inside the intermediate rows, warm (11:00 ET runs):** base features
+  320–390 s; referees ~180 s; injury report states ~95 s; injury horizons and
+  market dynamics 125–165 s. Cold, the last stage takes 25–30 min: the forked
+  pool times out at 600 s and every horizon reruns in turn.
+- **Slots:** 1.9 s median per slot, of which ~0.8 s is resolving the build in
+  S3 and ~1 s predicting. D saves ~0.5–1.5 min at most.
+- **Why the memo missed with unchanged data.** Two runs a few minutes apart
+  loaded identical odds values for 2018–2024, in a different row order. The
+  odds query sorts by `game_date DESC` only
+  (`fetch_data_from_odds_sportsbook_db.py`), so games on the same date come
+  back in whatever order Postgres returns them. The memo's per-season digest
+  depends on row order, so it reports "inputs changed" and recomputes. The
+  self-replay missed for this reason: the 2025-10-22 runs between the two
+  overwrote the per-season entries with digests from another row order. While
+  the S3 input cache is expired, every production run reads odds from the
+  database, which explains the misses seen on every run. A2's frozen key
+  removes the problem for finished seasons. F needs an order-insensitive
+  digest of the current season (rows sorted by a stable key before hashing),
+  which changes no value.
+
 ## Changes, in order
 
 ### A. Trust the finished seasons of 2_5 (expected −5 to −6 min per run; no cold runs)
