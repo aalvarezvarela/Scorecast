@@ -2,7 +2,7 @@
 
 Each team's available players contribute their phase-C ratings in proportion to
 their projected minutes; the two teams' pace ratings set the possession count,
-and possessions times efficiency give the points (``docs/lineup_projection_plan.md``
+and possessions times efficiency give the points (``docs/lineups/lineup_projection.md``
 section 7.1)::
 
     off_T  = sum_i (min_i / 48) * o_rating_i
@@ -339,7 +339,7 @@ def project_with_counterfactual(
     cancels.
 
     The difference is also split two ways, because the parts are priced
-    differently (``docs/lineup_projection_plan.md`` section 8.6):
+    differently (``docs/lineups/lineup_projection.md`` section 8.6):
 
     - **by side**: each team's absences alone, the other at full health;
     - **by channel**: the points the absentees would have *scored* (offense),

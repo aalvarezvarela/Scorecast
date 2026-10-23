@@ -38,9 +38,12 @@ from nba_ou.fetch_data.nba_schedule.fetch_nba_schedule import fetch_schedules
 from nba_ou.fetch_data.odds_sportsbook.scrape_sportsbook_line_history import ALL_MARKETS
 from nba_ou.postgre_db.config.db_config import connect_line_history_db
 from nba_ou.postgre_db.line_history_aiven import update as update_mod
+from nba_ou.postgre_db.line_history_aiven.fetch import TRUNCATED_HISTORY_MINUTES
+from nba_ou.postgre_db.line_history_aiven.ingest import TRUNCATED_HOLD_DAYS
 from nba_ou.postgre_db.odds_sportsbook_line_history.process_sportsbook_line_history_data import (  # noqa: E501
     load_games_for_line_history_creation,
 )
+from nba_ou.utils.ci import annotate
 
 
 def main() -> int:
@@ -170,6 +173,22 @@ def main() -> int:
                     print(
                         f"  held back {result.deferred_unfinished_games} unfinished "
                         "game(s); they are stored once final"
+                    )
+                if result.deferred_truncated_games:
+                    annotate(
+                        "warning",
+                        f"Line history: held back {result.deferred_truncated_games} "
+                        "finished game(s) whose history stops over "
+                        f"{TRUNCATED_HISTORY_MINUTES} min before tip (SBR feed "
+                        "freeze?); they are retried daily and stored after "
+                        f"{TRUNCATED_HOLD_DAYS} days",
+                    )
+                if result.truncated_games:
+                    annotate(
+                        "warning",
+                        f"Line history: stored {len(result.truncated_games)} game(s) "
+                        "with a permanent gap before tip: "
+                        + "; ".join(result.truncated_games[:10]),
                     )
                 if result.retimed_games:
                     print(

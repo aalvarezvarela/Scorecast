@@ -20,7 +20,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
-from datetime import date
+from datetime import UTC, date, datetime, timedelta
 
 import pandas as pd
 import psycopg
@@ -34,6 +34,7 @@ from nba_ou.postgre_db.odds_sportsbook_line_history.process_sportsbook_line_hist
 
 from . import load as loader
 from . import schema as schema_mod
+from .fetch import TRUNCATED_HISTORY_MINUTES
 from .schema import SCHEMA
 from .tipoff_corrections import retime_games
 from .transform import (
@@ -50,6 +51,10 @@ from .transform import (
 #: are rounding between the two sources.
 TIPOFF_TOLERANCE_MINUTES = 15
 
+#: Days after tip-off a truncated game (``is_truncated``) is held back, waiting
+#: for SBR to fill the gap. Matches the update's refresh window.
+TRUNCATED_HOLD_DAYS = 3
+
 
 def is_finished(game: ScrapedGame) -> bool:
     """Whether SBR reports the game as over ("Final", "Final/OT", ...).
@@ -64,6 +69,34 @@ def is_finished(game: ScrapedGame) -> bool:
     return game.status_text.strip().lower().startswith("final")
 
 
+def pregame_gap_minutes(game: ScrapedGame) -> int | None:
+    """Minutes between the game's freshest pre-tip tick and tip-off (None: no ticks)."""
+    pregame = [tick.minutes_to_tip for tick in game.ticks if tick.is_pregame]
+    return -max(pregame) if pregame else None
+
+
+def is_truncated(game: ScrapedGame) -> bool:
+    """Whether the history stops well before tip-off (``TRUNCATED_HISTORY_MINUTES``).
+
+    The signature of an SBR feed freeze: every book goes quiet at the same
+    clock time, hours before tip, and the status flips to "Final" only once SBR
+    recovers -- so ``is_finished`` alone would store the cut-off history as the
+    game's whole one, and its last tick would pass for the close.
+    """
+    gap = pregame_gap_minutes(game)
+    return gap is not None and gap > TRUNCATED_HISTORY_MINUTES
+
+
+def is_held_back(game: ScrapedGame, now: datetime, hold_days: int) -> bool:
+    """A truncated game still inside its hold window after tip-off.
+
+    Held back, a game stays missing from the store, so every daily run re-fetches
+    it and stores it whole if SBR fills the gap. Past the window it is stored as
+    it is: the gap is then permanent, and the close repair flags it instead.
+    """
+    return is_truncated(game) and now - game.tipoff_utc < timedelta(days=hold_days)
+
+
 @dataclass
 class IngestStats:
     scraped_games: int = 0
@@ -75,6 +108,8 @@ class IngestStats:
     unmatched_games: list[str] = field(default_factory=list)
     tipoff_disagreements: list[str] = field(default_factory=list)
     retimed_games: list[str] = field(default_factory=list)
+    #: Stored although their history stops well before tip (past the hold).
+    truncated_games: list[str] = field(default_factory=list)
     dropped: dict[str, int] = field(default_factory=dict)
     repaired: dict[str, int] = field(default_factory=dict)
 
@@ -479,17 +514,31 @@ def ingest_scraped_games(
     games_df: pd.DataFrame,
     schedule: pd.DataFrame | None = None,
     dry_run: bool = False,
+    now: datetime | None = None,
+    hold_truncated_days: int = TRUNCATED_HOLD_DAYS,
 ) -> IngestStats:
     """Resolve, encode and insert a batch of scraped games. Safe to re-run.
 
     Games that are not finished are never written (see ``is_finished``): they
     are counted under ``dropped["unfinished_game"]`` and picked up by a later
-    run once they are final.
+    run once they are final. Finished games whose history stops well before
+    tip-off are held back for ``hold_truncated_days`` (``is_held_back``,
+    ``dropped["truncated_history"]``); after that they are stored and listed in
+    ``truncated_games``.
     """
     stats = IngestStats()
+    now = now or datetime.now(UTC)
     finished = [game for game in games if is_finished(game)]
     stats.drop("unfinished_game", len(games) - len(finished))
-    games = finished
+    complete = [g for g in finished if not is_held_back(g, now, hold_truncated_days)]
+    stats.drop("truncated_history", len(finished) - len(complete))
+    stats.truncated_games = [
+        f"{game.event_id} {game.team_away} @ {game.team_home} "
+        f"({pregame_gap_minutes(game)} min before tip)"
+        for game in complete
+        if is_truncated(game)
+    ]
+    games = complete
     if not games:
         return stats
 

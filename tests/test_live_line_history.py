@@ -118,6 +118,60 @@ def test_a_batch_of_only_unfinished_games_touches_nothing():
     assert stats.inserted_ticks == 0
 
 
+# --- a finished game whose history froze before tip is held back -------------
+
+
+def _index(monkeypatch):
+    monkeypatch.setattr(ing, "build_game_index", lambda games_df: pd.DataFrame(
+        {"game_id": ["0022401118"], "game_date": [date(2025, 4, 4)],
+         "game_season_year": [2024], "team_home": ["Charlotte Hornets"],
+         "team_away": ["Sacramento Kings"]}))
+    monkeypatch.setattr(ing, "_existing_books", lambda conn, slugs: BOOK_IDS)
+
+
+@pytest.mark.parametrize(
+    ("minutes", "truncated"), [(-3, False), (-60, False), (-61, True), (-300, True)]
+)
+def test_truncated_means_even_the_freshest_tick_is_over_an_hour_before_tip(
+    minutes, truncated
+):
+    game = _game("Final", ticks=[_tick(-2000), _tick(minutes, book_slug="fanduel")])
+    assert ing.is_truncated(game) is truncated
+
+
+def test_in_play_ticks_do_not_make_a_frozen_history_look_complete():
+    assert ing.is_truncated(_game("Final", ticks=[_tick(-300), _tick(15)]))
+
+
+def test_truncated_final_game_is_held_back_inside_the_window(monkeypatch):
+    _index(monkeypatch)
+    stats = ing.ingest_scraped_games(
+        None,
+        [_game("Final", ticks=[_tick(-300)]), _game("Final", ticks=[_tick(-4)])],
+        games_df=pd.DataFrame(),
+        dry_run=True,
+        now=TIPOFF + pd.Timedelta(hours=10),
+    )
+    assert stats.dropped["truncated_history"] == 1
+    assert stats.matched_games == 1
+    assert stats.truncated_games == []
+
+
+def test_truncated_game_is_stored_and_listed_once_the_hold_has_passed(monkeypatch):
+    _index(monkeypatch)
+    stats = ing.ingest_scraped_games(
+        None,
+        [_game("Final", ticks=[_tick(-300)])],
+        games_df=pd.DataFrame(),
+        dry_run=True,
+        now=TIPOFF + pd.Timedelta(days=ing.TRUNCATED_HOLD_DAYS, minutes=1),
+    )
+    assert "truncated_history" not in stats.dropped
+    assert stats.matched_games == 1
+    assert len(stats.truncated_games) == 1
+    assert "300 min before tip" in stats.truncated_games[0]
+
+
 # --- the live read looks exactly like a stored read -------------------------
 
 

@@ -1,11 +1,11 @@
-"""An intermediate slot must not break the daily jobs for every other slot.
+"""A slot that cannot be refitted or served must not break the daily jobs.
 
-Until the daily intermediate dataset and live snapshot features exist, an
-intermediate-line slot can neither be refitted nor served. Both daily jobs used
-to treat that as a failure: the retrain job exited 1, so the workflow's
-``if: success()`` smoke-test and promote steps skipped the closing models too,
-and the prediction job re-raised the missing-feature error, killing every slot
-after it. Both now skip such a slot and carry on.
+Some slots have no training frame (a pooled or layered intermediate spec) or no
+prediction frame. Both daily jobs used to treat that as a failure: the retrain
+job exited 1, so the workflow's ``if: success()`` smoke-test and promote steps
+skipped every other model too, and the prediction job re-raised the
+missing-feature error, killing every slot after it. Both now skip such a slot
+and carry on.
 """
 
 import sys
@@ -26,6 +26,7 @@ def _spec(dataset_type: str) -> SimpleNamespace:
     return SimpleNamespace(
         spec_id=f"spec-{dataset_type}",
         identity=SimpleNamespace(dataset_type=dataset_type, horizon_minutes=0),
+        training=SimpleNamespace(random_state=None, device=None, train_games=6200),
     )
 
 
@@ -36,6 +37,17 @@ def daily_retrain(monkeypatch):
     refit_fails: set[str] = set()
 
     monkeypatch.setattr(retrain, "make_s3_client", lambda **_: object())
+    # The season partitions: nothing to read or bring up to date here.
+    monkeypatch.setattr(retrain, "SeasonPartitions", lambda **kw: SimpleNamespace(**kw))
+    monkeypatch.setattr(
+        retrain,
+        "update_from_database",
+        lambda store, **_: SimpleNamespace(
+            describe=lambda: "updated", drifted=False, not_built=[]
+        ),
+    )
+    # The GPU check would fail on a machine without CUDA; fitting is stubbed.
+    monkeypatch.setattr(retrain, "require_device", lambda device: None)
     monkeypatch.setattr(
         retrain,
         "resolve_config_spec",
@@ -46,7 +58,7 @@ def daily_retrain(monkeypatch):
 
     def frame_for(spec, **_):
         if spec.identity.dataset_type != "closing_line":
-            raise TrainingFrameUnavailable("no daily intermediate build yet")
+            raise TrainingFrameUnavailable("pooled intermediate spec")
         return SimpleNamespace(df=pd.DataFrame(), build_id=None, checksum=None)
 
     def refit(spec, *, slot, **_):

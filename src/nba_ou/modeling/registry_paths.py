@@ -16,7 +16,7 @@ Nothing written is ever rewritten. The only mutable objects are the three
 channel pointers, and each is a single ``PutObject`` -- so a promotion is atomic
 and a reader can never catch a model beside the wrong metadata.
 
-See ``docs/model_registry_reorg_plan.md`` for why it is shaped this way.
+See ``docs/serving/model_registry.md`` for why it is shaped this way.
 """
 
 from __future__ import annotations

@@ -21,6 +21,29 @@ from nba_ou.prediction.baseline_predictions import (
 import scripts.predict_nba_games as job
 
 
+class _NullRecorder:
+    """The prediction store's recorder, accepting everything (it has its own
+    tests in test_prediction_store.py)."""
+
+    def __init__(self, **_):
+        self.outputs = []
+
+    def set_schedule(self, *_):
+        pass
+
+    def add_frame(self, *_, **__):
+        pass
+
+    def record_slot(self, *_, **__):
+        pass
+
+    def add_predictions(self, predictions, **_):
+        self.outputs.append(predictions)
+
+    def add_baseline(self, name, predictions, **_):
+        self.outputs.append(predictions)
+
+
 def _history() -> pd.DataFrame:
     dates = pd.to_datetime(
         [
@@ -65,6 +88,7 @@ def test_baselines_read_history_from_the_layer_inputs(monkeypatch):
         "SETTINGS",
         SimpleNamespace(
             prediction_model_slots=[],
+            intermediate_input_mode="own",
             headless=True,
             nba_injury_reports_url="",
             s3_aws_profile=None,
@@ -86,16 +110,18 @@ def test_baselines_read_history_from_the_layer_inputs(monkeypatch):
 
     monkeypatch.setattr(job, "create_df_to_predict", build)
     monkeypatch.setattr(job, "make_s3_client", lambda **_: object())
-    monkeypatch.setattr(job, "upload_input_features_snapshot", lambda **_: "k")
+    monkeypatch.setattr(job, "PredictionRunRecorder", _NullRecorder)
+    monkeypatch.setattr(job, "persist_prediction_run", lambda *_, **__: [])
     uploaded = {}
 
-    def upload(**kwargs):
-        uploaded[kwargs["model_prefix"]] = kwargs["predictions_df"]
-        return "a/b/c/d"
+    def upload(predictions):
+        uploaded[predictions["MODEL_NAME"].iloc[0]] = predictions
 
-    monkeypatch.setattr(job, "upload_model_predictions_snapshot", upload)
+    monkeypatch.setattr(job, "upload_predictions_to_postgre", upload)
     monkeypatch.setattr(
-        baseline_predictions, "upload_predictions_to_postgre", lambda df: None
+        baseline_predictions,
+        "upload_predictions_to_postgre",
+        lambda df: pytest.fail("baselines stored from inside the predictor"),
     )
 
     class _Now:
@@ -104,21 +130,13 @@ def test_baselines_read_history_from_the_layer_inputs(monkeypatch):
             return pd.Timestamp("2025-11-03 12:00", tz=tz).to_pydatetime()
 
     monkeypatch.setattr(job, "datetime", _Now)
-    job.predict_nba_games(run_tabpfn_client=False)
+    job.predict_nba_games()
 
     assert built["target_game_ids"] == ["g5"]
     average = uploaded[HISTORICAL_AVERAGE_LINE_ERROR_BASELINE_MODEL_NAME]
     assert average["PRED_TOTAL_POINTS"].tolist() == [
         np.mean([210.0, 220.0, 230.0, 240.0])
     ]
-
-
-def test_tabpfn_is_refused_before_any_work(monkeypatch):
-    monkeypatch.setattr(
-        job, "update_all_databases", lambda **_: pytest.fail("work was started")
-    )
-    with pytest.raises(SystemExit, match="--no-tabpfn"):
-        job.predict_nba_games(run_tabpfn_client=True)
 
 
 def test_a_failing_slot_does_not_stop_the_others(monkeypatch, capsys):
@@ -145,6 +163,7 @@ def test_a_failing_slot_does_not_stop_the_others(monkeypatch, capsys):
         "SETTINGS",
         SimpleNamespace(
             prediction_model_slots=slots,
+            intermediate_input_mode="own",
             headless=True,
             nba_injury_reports_url="",
             s3_aws_profile=None,
@@ -162,15 +181,16 @@ def test_a_failing_slot_does_not_stop_the_others(monkeypatch, capsys):
         job, "create_df_to_predict", lambda **_: (tonight.copy(), _history())
     )
     monkeypatch.setattr(job, "make_s3_client", lambda **_: object())
+    monkeypatch.setattr(job, "PredictionRunRecorder", _NullRecorder)
     monkeypatch.setattr(
         job,
-        "upload_input_features_snapshot",
-        lambda **_: pytest.fail("a dry run uploaded its inputs"),
+        "persist_prediction_run",
+        lambda *_, **__: pytest.fail("a dry run stored predictions"),
     )
     monkeypatch.setattr(
         job,
-        "upload_model_predictions_snapshot",
-        lambda **_: pytest.fail("a dry run uploaded predictions"),
+        "upload_predictions_to_postgre",
+        lambda df: pytest.fail("a dry run stored predictions in Supabase"),
     )
     monkeypatch.setattr(
         baseline_predictions,
@@ -195,7 +215,7 @@ def test_a_failing_slot_does_not_stop_the_others(monkeypatch, capsys):
 
     monkeypatch.setattr(job, "datetime", _Now)
     with pytest.raises(SystemExit) as exit_info:
-        job.predict_nba_games(run_tabpfn_client=False, persist=False)
+        job.predict_nba_games(persist=False)
 
     assert exit_info.value.code == 1
     assert served == ["line_error", "total_points"]
@@ -203,3 +223,90 @@ def test_a_failing_slot_does_not_stop_the_others(monkeypatch, capsys):
     assert "1 slot(s) predicted" in out
     assert "booster unreadable" in out
     assert "Baseline predictions generated" in out
+
+
+def test_a_failing_supabase_write_does_not_cost_the_prediction_store(
+    monkeypatch, capsys
+):
+    """The old table and the store are written independently: a Supabase
+    failure is reported, and the store still gets every slot's output."""
+    from nba_ou.modeling.registry_paths import ModelSlot
+
+    tonight = pd.DataFrame(
+        {
+            "GAME_ID": ["g5"],
+            "GAME_DATE": [pd.Timestamp("2025-11-03")],
+            "GAME_TIME": [pd.Timestamp("2025-11-03 19:00", tz="US/Eastern")],
+            "ODDS_TOTAL_LINE_bet365": [225.5],
+            "TOTAL_POINTS": [np.nan],
+        }
+    )
+    monkeypatch.setattr(
+        job,
+        "SETTINGS",
+        SimpleNamespace(
+            prediction_model_slots=[
+                ModelSlot(
+                    schema_version="2_5",
+                    target="line_error",
+                    horizon_minutes=0,
+                    variant="main",
+                )
+            ],
+            intermediate_input_mode="own",
+            headless=True,
+            nba_injury_reports_url="",
+            s3_aws_profile=None,
+            s3_aws_region="eu-west-1",
+            s3_bucket="bucket",
+        ),
+    )
+    monkeypatch.setattr(job, "update_all_databases", lambda **_: None)
+    monkeypatch.setattr(
+        job,
+        "get_all_info_for_scheduled_games",
+        lambda **_: {"scheduled_games": tonight[["GAME_ID"]]},
+    )
+    monkeypatch.setattr(
+        job, "create_df_to_predict", lambda **_: (tonight.copy(), _history())
+    )
+    monkeypatch.setattr(job, "make_s3_client", lambda **_: object())
+    monkeypatch.setattr(
+        job,
+        "load_registry_model_and_predict",
+        lambda *, persist, **_: pd.DataFrame(
+            {"GAME_ID": ["g5"], "MODEL_NAME": ["m"], "persisted_inside": [persist]}
+        ),
+    )
+    monkeypatch.setattr(job, "PredictionRunRecorder", _NullRecorder)
+
+    def supabase_down(predictions):
+        raise ConnectionError("supabase down")
+
+    monkeypatch.setattr(job, "upload_predictions_to_postgre", supabase_down)
+    stored = {}
+
+    def persist(recorder, *, partial, **_):
+        stored["outputs"] = recorder.outputs
+        stored["partial"] = partial
+        return []
+
+    monkeypatch.setattr(job, "persist_prediction_run", persist)
+
+    class _Now:
+        @staticmethod
+        def now(tz=None):
+            return pd.Timestamp("2025-11-03 12:00", tz=tz).to_pydatetime()
+
+    monkeypatch.setattr(job, "datetime", _Now)
+    with pytest.raises(SystemExit) as exit_info:
+        job.predict_nba_games()
+
+    assert exit_info.value.code == 1
+    # The slot and both baselines reached the store, the slot without having
+    # been written to Supabase from inside the predictor.
+    assert len(stored["outputs"]) == 3
+    assert stored["outputs"][0]["persisted_inside"].tolist() == [False]
+    # Supabase is not the store: its failure does not make the run partial.
+    assert stored["partial"] is False
+    assert "supabase down" in capsys.readouterr().out

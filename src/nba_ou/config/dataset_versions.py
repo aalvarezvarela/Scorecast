@@ -86,7 +86,7 @@ History
     Closing-line dataset only; the intermediate dataset's content is unchanged.
     Reads the last injury report before each tipoff from Aiven
     ``injury_report`` (``nba_ou.data_processing.injury_status``). See
-    ``docs/injury_status_tiers_plan.md``.
+    ``docs/injuries/status_tiers.md``.
 
     * Pre-game out set = Out ∪ Doubtful ∪ Questionable on that report, for every
       team-game whose team had filed. It replaces the inactive-list/comment set
@@ -188,7 +188,7 @@ History
       ``LAST_TWO_LEVEL_MOVES_GAP_MIN``, plus the walk-forward Ridge
       ``ODDS_LINE_HIST_RIDGE_EXPECTED_TOTAL_MOVE_TO_CLOSE``.
     * Market dynamics (``include_market_dynamics``, on by default;
-      ``docs/intermediate_market_dynamics_plan.md``):
+      ``docs/intermediate/market_dynamics.md``):
 
       - ``INJ_SNAP_*_BEFORE_TEAM_{HOME,AWAY}`` -- injury news: change in
         expected missing points (p_out x ``FORM_PTS``) over 60 and 240 minutes

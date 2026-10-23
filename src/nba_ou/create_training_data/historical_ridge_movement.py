@@ -14,7 +14,7 @@ The spread design adds cross-market inputs (the moneyline-implied margin gap
 and the recent total and moneyline moves). Measured on 2021-2025, a model with
 those inputs beat an own-market one for the spread in every season, while
 totals and moneyline gained nothing from them
-(``docs/intermediate_market_dynamics_plan.md`` section 1.6). The gap also enters
+(``docs/intermediate/market_dynamics.md`` section 1.6). The gap also enters
 non-linearly -- its absolute value, a clipped copy, and its product with the
 spread's size -- which is what brought the linear spread estimate level with a
 gradient-boosted one (section 7).

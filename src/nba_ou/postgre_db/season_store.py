@@ -28,7 +28,7 @@ import pandas as pd
 
 #: Under ``train_data/``: these are the inputs training data is built from, and
 #: the prefix is writable by the CLI user and readable by the CI role, which
-#: ``input_cache/`` at the root is not (see docs/injury_report_archive_plan.md
+#: ``input_cache/`` at the root is not (see docs/injuries/report_archive.md
 #: 17.2). ``organize_s3_train_data.py`` only moves objects at the root of
 #: ``train_data/``, so this subfolder is left alone.
 CACHE_PREFIX = "train_data/input_cache/v1"

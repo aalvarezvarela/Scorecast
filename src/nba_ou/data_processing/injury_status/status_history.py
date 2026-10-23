@@ -36,7 +36,7 @@ best Doubtful player is simply a fact about who is missing.
 
 Every quantity for a game on date D uses only events dated strictly before D.
 Same-day games are excluded because their outcomes are unknown at an earlier tip
-that day. Measurements behind the constants: ``docs/injury_status_tiers_plan.md``
+that day. Measurements behind the constants: ``docs/injuries/status_tiers.md``
 section 2.
 """
 

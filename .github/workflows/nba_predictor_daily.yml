@@ -67,13 +67,21 @@ jobs:
                   role-to-assume: ${{ secrets.AWS_ROLE_TO_ASSUME }}
                   aws-region: eu-west-1
 
-            # Only what the predictor imports (requirements_predict.txt),
-            # then the repo itself WITHOUT its Poetry dependencies, which would
-            # pull in the training and lab stacks (autogluon, optuna, ...).
+            # A fresh venv per run: the runner's tool-cache Python is shared by
+            # every job, so packages another job left there would hide a missing
+            # dependency here.
+            - name: Create job venv
+              run: |
+                  python -m venv "$RUNNER_TEMP/venv"
+                  echo "$RUNNER_TEMP/venv/bin" >> "$GITHUB_PATH"
+
+            # Only what the predictor needs (generated from poetry.lock, see
+            # requirements/README.md), then the repo itself WITHOUT its Poetry
+            # dependencies, which would pull in the training and lab stacks.
             - name: Install dependencies
               run: |
                   python -m pip install --upgrade pip
-                  pip install -r requirements_predict.txt
+                  pip install -r requirements/predict-cuda.txt
                   pip install --no-deps -e .
 
             # The scheduled-games odds scrape drives a browser. Installed here
@@ -85,5 +93,5 @@ jobs:
             # predicts on every run, whatever the time to tip.
             - name: Run NBA predictor
               run: |
-                  python scripts/predict_nba_games.py --no-tabpfn \
+                  python scripts/predict_nba_games.py \
                       ${{ github.event_name == 'workflow_dispatch' && !inputs.persist && '--no-persist' || '' }}

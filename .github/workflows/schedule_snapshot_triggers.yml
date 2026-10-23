@@ -1,0 +1,72 @@
+name: Schedule Snapshot Predictions (Local Runner)
+
+# Books today's runs of the daily predictor on cron-job.org at the snapshot
+# times of every game (tip-off minus each enabled horizon), snapshots at most
+# 30 min apart sharing one run and T-30 always at its own time, leaving out
+# times already past or outside the predictor's US/Pacific date. Each run
+# predicts every enabled slot. Meant to be dispatched once a day by
+# cron-job.org itself (a row in scripts/cronjobs/setup_cronjobs.py).
+# scripts/cronjobs/schedule_snapshot_triggers.py, docs/serving/snapshot_triggers.md.
+on:
+    workflow_dispatch:
+        inputs:
+            game_date:
+                description: "Game date YYYY-MM-DD (empty = today's Eastern date)"
+                type: string
+                default: ""
+            apply:
+                description: "Book the jobs (off = dry run: print the plan only)"
+                type: boolean
+                default: true
+
+concurrency:
+    group: snapshot-trigger-scheduler
+    cancel-in-progress: true
+
+permissions:
+    contents: read
+
+jobs:
+    run:
+        # stats.nba.com often refuses GitHub-hosted runners' IPs.
+        runs-on: self-hosted
+        timeout-minutes: 15
+        env:
+            PYTHONWARNINGS: "ignore::UserWarning,ignore::DeprecationWarning,ignore::FutureW\
+                arning"
+            TQDM_DISABLE: "1"
+            PYTHONPATH: ${{ github.workspace }}:${{ github.workspace }}/src
+            CRONJOB_API_KEY: ${{ secrets.CRONJOB_API_KEY }}
+            CRONJOB_GITHUB_DISPATCH_TOKEN: ${{ secrets.CRONJOB_GITHUB_DISPATCH_TOKEN }}
+            TZ: UTC
+
+        steps:
+            - name: Checkout
+              uses: actions/checkout@v4
+
+            - name: Set up Python
+              uses: actions/setup-python@v5
+              with:
+                  python-version: "3.12"
+
+            # A fresh venv per run: the runner's tool-cache Python is shared by
+            # every job, so packages another job left there would hide a missing
+            # dependency here.
+            - name: Create job venv
+              run: |
+                  python -m venv "$RUNNER_TEMP/venv"
+                  echo "$RUNNER_TEMP/venv/bin" >> "$GITHUB_PATH"
+
+            - name: Install dependencies
+              run: |
+                  python -m pip install --upgrade pip
+                  pip install -r requirements/core.txt
+                  pip install --no-deps -e .
+
+            - name: Book today's snapshot triggers
+              env:
+                  GAME_DATE: ${{ inputs.game_date }}
+              run: |
+                  python scripts/cronjobs/schedule_snapshot_triggers.py \
+                      ${GAME_DATE:+--game-date "$GAME_DATE"} \
+                      ${{ inputs.apply && '--apply' || '' }}

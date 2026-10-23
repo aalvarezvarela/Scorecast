@@ -15,6 +15,7 @@ from nba_ou.data_processing.line_history.normalization import devig_two_way
 from nba_ou.data_processing.odds.closing_line_repair import (
     ACTION_HISTORY_FILLED,
     ACTION_HISTORY_REPLACED,
+    ACTION_HISTORY_STALE,
     ACTION_HISTORY_SAME,
     ACTION_OUTLIER_MEDIAN,
     ACTION_OUTLIER_NULLED,
@@ -22,6 +23,7 @@ from nba_ou.data_processing.odds.closing_line_repair import (
     audit_repaired_closes,
     repair_closing_lines,
     select_history_closes,
+    stale_history_games,
 )
 from nba_ou.postgre_db.odds.merge_odds_data import merge_yahoo_sportsbook_odds
 
@@ -184,6 +186,60 @@ def test_book_missing_from_history_keeps_sbr_as_unverified():
 
     assert repaired.iloc[0]["total_caesars_line_over"] == 221.0
     assert cell(audit, "caesars")["action"] == ACTION_UNVERIFIED
+
+
+def test_no_line_history_keeps_sbr_and_passes_the_audit():
+    # Games stored before any tick is fetched (e.g. a season's first nights).
+    df = wide_row(
+        total_caesars_line_over=221.0,
+        total_caesars_line_under=221.0,
+        total_caesars_price_over=-110.0,
+        total_caesars_price_under=-110.0,
+    )
+
+    repaired, audit = repair_closing_lines(df, pd.DataFrame())
+    audit_repaired_closes(repaired, audit)
+
+    assert audit["final_level"].dtype == "float64"
+    assert repaired.iloc[0]["total_caesars_line_over"] == 221.0
+    assert cell(audit, "caesars")["action"] == ACTION_UNVERIFIED
+
+
+def test_history_that_froze_hours_before_tip_is_flagged_stale_not_dropped():
+    # Every book's last quote ~5h before tip: an SBR feed freeze. The values
+    # are still the last pre-tip quotes; the cells are flagged, not verified.
+    df = wide_row(
+        total_bet365_line_over=222.0,
+        total_bet365_line_under=222.0,
+        total_bet365_price_over=-110.0,
+        total_bet365_price_under=-110.0,
+    )
+    history = ticks(
+        [
+            tick("bet365", 300, line=222.0),
+            tick("betmgm", 299, line=223.5),
+            tick("draftkings", 310, line=222.5),
+        ]
+    )
+
+    repaired, audit = repair_closing_lines(df, history)
+    audit_repaired_closes(repaired, audit)
+
+    assert set(audit["action"]) == {ACTION_HISTORY_STALE}
+    assert stale_history_games(audit) == [GAME]
+    assert repaired.iloc[0]["total_bet365_line_over"] == 222.0
+    assert repaired.iloc[0]["total_betmgm_line_over"] == 223.5
+
+
+def test_one_fresh_book_keeps_the_game_verified():
+    # Books that stop quoting early are normal; the game is stale only when
+    # even its freshest book closed long before tip.
+    history = ticks([tick("bet365", 300, line=222.0), tick("betmgm", 4, line=223.5)])
+
+    _, audit = repair_closing_lines(wide_row(), history)
+
+    assert ACTION_HISTORY_STALE not in set(audit["action"])
+    assert stale_history_games(audit) == []
 
 
 def test_history_fills_a_cell_sbr_left_empty():

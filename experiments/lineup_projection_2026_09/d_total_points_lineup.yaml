@@ -3,7 +3,7 @@ prediction_strategy: total_points_regressor
 line_col: ODDS_TOTAL_LINE_bet365
 training_version: 2.6-lineup-projection-202609
 comparison_group: lineup_projection_2026_09_total_points
-hypothesis: 'Treatment: schema 2_6 plus the LU_* lineup-projection columns (docs/lineup_projection_plan.md
+hypothesis: 'Treatment: schema 2_6 plus the LU_* lineup-projection columns (docs/lineups/lineup_projection.md
   8.5). Pre-registered expectation: at most a small gain, concentrated in games with a projected
   absence; a difference inside the control seed range is a null.'
 tags:

@@ -20,7 +20,7 @@ ways the store could silently produce a look-ahead error:
   30.0% are ``G League`` roster mechanics (Two-Way, On Assignment). A status
   without its reason is not less informative, it is misleading.
 
-See ``docs/injury_report_db_plan.md`` for the measurements behind both.
+See ``docs/injuries/report_db.md`` for the measurements behind both.
 """
 
 from __future__ import annotations

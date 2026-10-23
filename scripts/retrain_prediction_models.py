@@ -11,6 +11,14 @@ hyperparameters. Nothing here can change a configuration; adopting a new one is
 The staged build does not serve until ``scripts/promote_build.py --execute``
 flips the production pointer, so a bad refit is visible before it reaches
 anything.
+
+The training rows come from the season partitions
+(``nba_ou.create_training_data.season_partitions``): each dataset kept in S3
+one season per file. The job first brings them up to today -- it builds only
+the games since the last cutoff (and rebuilds the last few days, reporting any
+stored row that came back different) -- and every slot then reads them: the
+closing slots every season, each intermediate slot its own horizon. TabPFN
+reads the same partitions.
 """
 
 import argparse
@@ -21,13 +29,20 @@ from collections import defaultdict
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
+from nba_ou.config.dataset_versions import BASE_SCHEMA_VERSION
 from nba_ou.config.settings import SETTINGS
 from nba_ou.create_training_data.schema_layers import LayerContext
+from nba_ou.create_training_data.season_partitions import (
+    SeasonPartitions,
+    update_from_database,
+)
 from nba_ou.modeling.refit import (
-    TrainingFrame,
     TrainingFrameUnavailable,
     model_bytes_of,
+    refit_device,
     refit_from_spec,
+    refit_random_state,
+    require_device,
     resolve_training_frame,
 )
 from nba_ou.modeling.registry_paths import Channel, ModelSlot, parse_horizon
@@ -37,6 +52,7 @@ from nba_ou.modeling.registry_store import (
     set_build_channel,
     write_build,
 )
+from nba_ou.utils.ci import annotate
 from nba_ou.utils.s3_models import make_s3_client
 
 TODAY_TIMEZONE = ZoneInfo("Europe/Madrid")
@@ -97,6 +113,17 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Report what would be refitted without fitting or writing.",
     )
+    parser.add_argument(
+        "--no-stage",
+        action="store_true",
+        help="Fit and report, but write no build and move no channel.",
+    )
+    parser.add_argument(
+        "--skip-partition-update",
+        action="store_true",
+        help="Fit on the season partitions as stored, without bringing them "
+        "up to today first.",
+    )
     return parser
 
 
@@ -127,14 +154,6 @@ def main() -> int:
 
     print(f"Refitting {len(slots)} slot(s) up to {limit_date} in {bucket}\n")
 
-    # One frame per dataset flavour, shared by every slot that wants it: the
-    # marginal cost of an extra slot should be one fit, not one dataset build.
-    frames: dict[tuple[str, str], TrainingFrame] = {}
-    # Every schema version starts from the same base frame; newer versions add
-    # their layers to it (nba_ou.create_training_data.schema_layers), so the
-    # base is built once per run however many versions are enabled.
-    base_frames: dict = {}
-    layer_context = LayerContext()
     specs = {}
     for slot in slots:
         try:
@@ -144,96 +163,177 @@ def main() -> int:
         except SlotNotPromotedError as exc:
             print(f"{slot.describe()}\n  skipped: {exc}\n")
 
-    by_dataset: dict[tuple[str, str], list[ModelSlot]] = defaultdict(list)
+    # Before the dataset updates, not after them: without a usable GPU
+    # XGBoost would fit on CPU with only a warning.
+    if not args.dry_run:
+        for device in sorted({refit_device(spec) for spec in specs.values()}):
+            require_device(device)
+
+    # Every schema version is the base plus layers, so the partitions are the
+    # base version's; one per dataset type, brought up to today once.
+    partitions: dict[str, SeasonPartitions] = {}
+    unusable: dict[str, str] = {}
+    for dataset_type in sorted({str(s.identity.dataset_type) for s in specs.values()}):
+        try:
+            store = SeasonPartitions(
+                s3_client=s3,
+                bucket=bucket,
+                dataset_type=dataset_type,
+                schema_version=BASE_SCHEMA_VERSION,
+            )
+        except ValueError as exc:
+            unusable[dataset_type] = str(exc)
+            continue
+        partitions[dataset_type] = store
+        if args.dry_run or args.skip_partition_update:
+            print(f"[{dataset_type}] season partitions as stored")
+            continue
+        print(f"[{dataset_type}] bringing the season partitions up to {limit_date}...")
+        try:
+            report = update_from_database(store, limit_date=limit_date)
+        except Exception as exc:  # noqa: BLE001 -- the other dataset still refits
+            unusable[dataset_type] = f"season partitions not updated: {exc}"
+            annotate("error", f"[{dataset_type}] {unusable[dataset_type]}")
+            continue
+        print(report.describe() + "\n")
+        if report.not_built:
+            annotate(
+                "warning",
+                f"[{dataset_type}] {len(report.not_built)} finished game(s) could "
+                "not be built yet (line history not ingested?); retried next run.",
+            )
+        if report.drifted:
+            annotate(
+                "warning",
+                f"[{dataset_type}] rebuilt rows differ from the stored ones; see "
+                "the log, and rebuild the affected seasons if the change is real.",
+            )
+
+    # One frame per (dataset, schema version, horizon), shared by every slot
+    # that wants it, and dropped once they are fitted: 16 intermediate
+    # horizons would not fit in memory together.
+    by_frame: dict[tuple[str, str, int | None], list[ModelSlot]] = defaultdict(list)
     for slot in slots:
         spec = specs.get(slot.describe())
         if spec is not None:
-            by_dataset[(spec.identity.dataset_type, slot.schema_version)].append(slot)
+            key = (
+                str(spec.identity.dataset_type),
+                slot.schema_version,
+                spec.identity.horizon_minutes,
+            )
+            by_frame[key].append(slot)
 
+    # Every schema version starts from the same base frame; newer versions add
+    # their layers to it (nba_ou.create_training_data.schema_layers), so the
+    # base is read once per run however many versions are enabled.
+    base_frames: dict = {}
+    layer_context = LayerContext()
     failures = 0
     staged = 0
     unavailable = 0
-    for (dataset_type, schema_version), group in by_dataset.items():
-        label = f"{dataset_type} / schema {schema_version}"
-        try:
-            if (dataset_type, schema_version) not in frames:
-                if args.dry_run:
-                    print(f"[{label}] would build the training frame")
-                else:
-                    print(f"[{label}] building training frame...")
-                    frames[(dataset_type, schema_version)] = resolve_training_frame(
-                        specs[group[0].describe()],
-                        limit_date=limit_date,
-                        base_frames=base_frames,
-                        layer_context=layer_context,
-                    )
-        except TrainingFrameUnavailable as exc:
-            # Not a failure: there is no daily build of this dataset yet
-            # (docs/model_registry_reorg_plan.md section 5), so these slots keep
-            # serving the build they already have -- nothing is staged, so
-            # promote_build leaves them alone. Counting them as failures made
-            # the job exit 1, and the workflow's smoke-test and promote steps
-            # (if: success()) then skipped EVERY slot, freezing the closing
-            # models over an intermediate slot that could never refit.
-            unavailable += len(group)
-            print(
-                f"[{label}] no daily training frame yet: {exc}\n"
-                f"  keeping the current build for {len(group)} slot(s): "
-                f"{', '.join(slot.describe() for slot in group)}\n",
-                file=sys.stderr,
-            )
+    for (dataset_type, schema_version, horizon), group in sorted(
+        by_frame.items(), key=lambda item: (item[0][0], item[0][1], item[0][2] or 0)
+    ):
+        label = f"{dataset_type} / schema {schema_version} / T-{horizon}"
+        if dataset_type in unusable:
+            failures += len(group)
+            print(f"[{label}] FAILED: {unusable[dataset_type]}\n", file=sys.stderr)
             continue
+        frame = None
+        if args.dry_run:
+            print(f"[{label}] would read the training frame")
+        else:
+            try:
+                frame = resolve_training_frame(
+                    specs[group[0].describe()],
+                    partitions=partitions,
+                    base_frames=base_frames,
+                    layer_context=layer_context,
+                )
+            except TrainingFrameUnavailable as exc:
+                # Not a failure: a slot the daily refit cannot build (a pooled
+                # or layered intermediate spec) keeps serving the build it has
+                # -- nothing is staged, so promote_build leaves it alone.
+                # Counting it as a failure made the job exit 1, and the
+                # workflow's smoke-test and promote steps (if: success()) then
+                # skipped EVERY slot.
+                unavailable += len(group)
+                print(
+                    f"[{label}] no training frame: {exc}\n"
+                    f"  keeping the current build for {len(group)} slot(s): "
+                    f"{', '.join(slot.describe() for slot in group)}\n",
+                    file=sys.stderr,
+                )
+                continue
+            print(
+                f"[{label}] {len(frame.df)} rows from {frame.build_id} "
+                f"({frame.checksum})"
+            )
 
         for slot in group:
             spec = specs[slot.describe()]
             print(slot.describe())
             print(f"  spec       : {spec.spec_id}")
+            for name, value, recorded in (
+                ("seed", refit_random_state(spec), spec.training.random_state),
+                ("device", refit_device(spec), spec.training.device),
+            ):
+                note = "" if recorded is not None else " (not in the spec; default)"
+                print(f"  {name:<11}: {value}{note}")
             if args.dry_run:
                 print("  dry run    : not fitted\n")
                 continue
             try:
-                result = refit_from_spec(
-                    spec,
-                    slot=slot,
-                    frame=frames[(dataset_type, schema_version)],
-                    fitted_by=actor,
-                )
-                write_build(
-                    s3_client=s3,
-                    bucket=bucket,
-                    slot=slot,
-                    fit=result.fit,
-                    model_bytes=model_bytes_of(result.model),
-                    spec=spec,
-                )
-                set_build_channel(
-                    s3_client=s3,
-                    bucket=bucket,
-                    slot=slot,
-                    channel=Channel.STAGING,
-                    fit_id=result.fit.fit_id,
-                    set_by=actor,
-                    reason="daily refit",
-                )
+                result = refit_from_spec(spec, slot=slot, frame=frame, fitted_by=actor)
+                window = spec.training.train_games
+                if window is not None and result.fit.n_train_games < window:
+                    annotate(
+                        "warning",
+                        f"{slot.describe()}: fitted on {result.fit.n_train_games} "
+                        f"games, short of the spec's {window}.",
+                    )
+                if not args.no_stage:
+                    write_build(
+                        s3_client=s3,
+                        bucket=bucket,
+                        slot=slot,
+                        fit=result.fit,
+                        model_bytes=model_bytes_of(result.model),
+                        spec=spec,
+                    )
+                    set_build_channel(
+                        s3_client=s3,
+                        bucket=bucket,
+                        slot=slot,
+                        channel=Channel.STAGING,
+                        fit_id=result.fit.fit_id,
+                        set_by=actor,
+                        reason="daily refit",
+                    )
             except Exception as exc:  # noqa: BLE001 - one slot must not stop the rest
                 failures += 1
                 print(f"  FAILED     : {exc}\n", file=sys.stderr)
                 continue
 
             staged += 1
-            print(f"  staged     : {result.fit.fit_id}")
+            print(
+                f"  {'fitted' if args.no_stage else 'staged':<11}: {result.fit.fit_id}"
+            )
             print(f"  model_name : {result.fit.model_name}")
             print(
                 f"  trained on : {result.fit.n_train_games} games "
-                f"({result.fit.train_date_min.date()} .. "
+                f"(spec window {spec.training.train_games}; "
+                f"{result.fit.train_date_min.date()} .. "
                 f"{result.fit.train_date_max.date()})\n"
             )
+        del frame
 
     print(
-        f"{staged} build(s) staged, {failures} failure(s), "
-        f"{unavailable} slot(s) kept on their current build (no daily dataset yet)."
+        f"{staged} build(s) {'fitted (not staged)' if args.no_stage else 'staged'}, "
+        f"{failures} failure(s), {unavailable} slot(s) kept on their current "
+        "build (no training frame)."
     )
-    if staged and not args.dry_run:
+    if staged and not args.dry_run and not args.no_stage:
         print("Promote them with: python scripts/promote_build.py --execute")
     return 1 if failures else 0
 

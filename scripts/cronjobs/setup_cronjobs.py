@@ -11,45 +11,51 @@ the daily workflows are instead started by cron-job.org, which calls the
 (daylight saving handled for us). Each workflow must keep ``workflow_dispatch``.
 
 Jobs are matched by title, so ``--apply`` is idempotent: an existing job is
-patched, a missing one is created. Add a workflow by appending to ``JOBS``.
+patched, a missing one is created. Add a workflow by appending to ``JOBS``; a
+job taken out of ``JOBS`` goes in ``RETIRED_TITLES``, which ``--apply``
+disables (a job left on cron-job.org would keep firing).
+
+The day, Madrid time, on the one self-hosted runner:
+
+    09:00  database update, then -- on a game day -- refit, smoke test and
+           promotion
+    10:00  booking of the day's runs (schedule_snapshot_triggers.py): the
+           predictor at every snapshot time, TabPFN line_error at the first
+           tip-off - 6 h, and after the last game's estimated end the
+           past-snapshot predictions (+30 min) and final scores (+1 h)
 
 The jobs expire at the end of ``SEASON_END`` (10 July) and simply stop running;
 nothing needs deleting. Re-run ``--apply`` before the next season starts: it
 sets the next season's expiry and re-enables the jobs.
 
-Secrets (never printed), each read from the environment first, then from any
-section of ``config.secrets.ini`` (repo root, then ``src/nba_ou/``):
-  - ``CRONJOB_API_KEY``: cron-job.org Console -> Settings -> API.
-  - ``CRONJOB_GITHUB_DISPATCH_TOKEN``: fine-grained PAT on this repo only, with
-    "Actions: Read and write". cron-job.org stores it in the job's headers.
+Secrets: ``CRONJOB_API_KEY`` and ``CRONJOB_GITHUB_DISPATCH_TOKEN``, read by
+``nba_ou.scheduling.cronjob_org.read_secret`` (environment, then
+``config.secrets.ini``).
 """
 
 from __future__ import annotations
 
 import argparse
-import configparser
 import json
-import os
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date
-from pathlib import Path
 
 import requests
+from nba_ou.scheduling.cronjob_org import (
+    GITHUB_REPO,
+    REQUEST_METHOD_POST,
+    cronjob_request,
+    dispatch_body,
+    github_headers,
+    read_secret,
+    redacted,
+)
+from nba_ou.scheduling.cronjob_org import dispatch_url as workflow_dispatch_url
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
-SECRETS_FILES = [
-    REPO_ROOT / "config.secrets.ini",
-    REPO_ROOT / "src/nba_ou/config.secrets.ini",
-]
-
-GITHUB_REPO = "aalvarezvarela/Scorecast"
-GITHUB_REF = "main"
 TIMEZONE = "Europe/Madrid"
 # (month, day) the jobs stop running: after the Finals, before Summer League.
 SEASON_END = (7, 10)
-CRONJOB_API = "https://api.cron-job.org"
-REQUEST_METHOD_POST = 1
 
 
 @dataclass(frozen=True)
@@ -58,33 +64,46 @@ class WorkflowJob:
     workflow_file: str
     hour: int
     minute: int
+    # workflow_dispatch inputs, as strings; the ones left out take their default.
+    inputs: dict[str, str] = field(default_factory=dict)
 
 
 JOBS = [
+    # The database update runs as the retrain workflow's first job, so the
+    # refit never reads a half-updated database; the refit then promotes what
+    # passes the smoke test.
     WorkflowJob(
-        title="Scorecast - update databases daily",
-        workflow_file="update_database_daily.yml",
+        title="Scorecast - update databases and retrain",
+        workflow_file="retrain_prediction_models.yml",
         hour=9,
+        minute=0,
+        inputs={"update_database": "true", "promote": "true"},
+    ),
+    # Books the day's snapshot-time runs (one-off jobs in UTC, see
+    # schedule_snapshot_triggers.py). 10:00 Madrid is after Pacific midnight
+    # all year, so the game date is already the predictor's.
+    WorkflowJob(
+        title="Scorecast - schedule snapshot predictions",
+        workflow_file="schedule_snapshot_triggers.yml",
+        hour=10,
         minute=0,
     ),
 ]
 
+# Jobs taken out of JOBS: --apply disables them if they still exist.
+RETIRED_TITLES = [
+    # Replaced by the retrain job, whose first job is the same update.
+    "Scorecast - update databases daily",
+]
 
-def read_secret(name: str) -> str:
-    value = os.getenv(name, "").strip()
-    if value:
-        return value
-    for path in SECRETS_FILES:
-        if not path.exists():
-            continue
-        parser = configparser.ConfigParser(interpolation=None)
-        parser.optionxform = str  # keep key case
-        parser.read(path)
-        for section in parser.sections():
-            for key, raw in parser.items(section):
-                if key.upper() == name and raw.strip():
-                    return raw.strip().strip('"').strip("'")
-    sys.exit(f"Missing secret {name}: set it in the environment or config.secrets.ini")
+# Workflows dispatched by the jobs schedule_snapshot_triggers.py books, which
+# the token must also reach.
+BOOKED_WORKFLOWS = [
+    "nba_predictor_daily.yml",
+    "nba_predictor_daily_tabpfn_client.yml",
+    "nba_predict_past_snapshots.yml",
+    "update_finished_matches_daily.yml",
+]
 
 
 def season_expiry(today: date | None = None) -> int:
@@ -97,19 +116,7 @@ def season_expiry(today: date | None = None) -> int:
 
 
 def dispatch_url(job: WorkflowJob) -> str:
-    return (
-        f"https://api.github.com/repos/{GITHUB_REPO}"
-        f"/actions/workflows/{job.workflow_file}/dispatches"
-    )
-
-
-def github_headers(token: str) -> dict[str, str]:
-    return {
-        "Accept": "application/vnd.github+json",
-        "Authorization": f"Bearer {token}",
-        "X-GitHub-Api-Version": "2022-11-28",
-        "Content-Type": "application/json",
-    }
+    return workflow_dispatch_url(job.workflow_file)
 
 
 def job_payload(job: WorkflowJob, github_token: str) -> dict:
@@ -137,48 +144,26 @@ def job_payload(job: WorkflowJob, github_token: str) -> dict:
         },
         "extendedData": {
             "headers": github_headers(github_token),
-            "body": json.dumps({"ref": GITHUB_REF}),
+            "body": dispatch_body(job.inputs),
         },
     }
-
-
-def redacted(payload: dict) -> dict:
-    shown = json.loads(json.dumps(payload))
-    shown["extendedData"]["headers"]["Authorization"] = "Bearer <redacted>"
-    return shown
 
 
 def check_token(github_token: str) -> bool:
     """Read-only check that the token sees each workflow; it dispatches nothing."""
     ok = True
-    for job in JOBS:
+    for workflow_file in [job.workflow_file for job in JOBS] + BOOKED_WORKFLOWS:
         url = (
             f"https://api.github.com/repos/{GITHUB_REPO}"
-            f"/actions/workflows/{job.workflow_file}"
+            f"/actions/workflows/{workflow_file}"
         )
         resp = requests.get(url, headers=github_headers(github_token), timeout=30)
         if resp.status_code == 200:
-            print(f"OK   {job.workflow_file}: state={resp.json().get('state')}")
+            print(f"OK   {workflow_file}: state={resp.json().get('state')}")
         else:
             ok = False
-            print(f"FAIL {job.workflow_file}: HTTP {resp.status_code} {resp.text[:200]}")
+            print(f"FAIL {workflow_file}: HTTP {resp.status_code} {resp.text[:200]}")
     return ok
-
-
-def cronjob_request(method: str, path: str, api_key: str, body: dict | None = None):
-    resp = requests.request(
-        method,
-        f"{CRONJOB_API}{path}",
-        headers={
-            "Authorization": f"Bearer {api_key}",
-            "Content-Type": "application/json",
-        },
-        json=body,
-        timeout=30,
-    )
-    if resp.status_code != 200:
-        sys.exit(f"cron-job.org {method} {path}: HTTP {resp.status_code} {resp.text[:300]}")
-    return resp.json()
 
 
 def apply_jobs(api_key: str, github_token: str) -> None:
@@ -195,6 +180,13 @@ def apply_jobs(api_key: str, github_token: str) -> None:
             job_id = cronjob_request("PUT", "/jobs", api_key, payload)["jobId"]
             print(f"Created job {job_id}: {job.title}")
         print(f"  {job.hour:02d}:{job.minute:02d} {TIMEZONE} -> {dispatch_url(job)}")
+    for title in RETIRED_TITLES:
+        if title in existing:
+            job_id = existing[title]
+            cronjob_request(
+                "PATCH", f"/jobs/{job_id}", api_key, {"job": {"enabled": False}}
+            )
+            print(f"Disabled retired job {job_id}: {title}")
 
 
 def main() -> None:
@@ -214,6 +206,8 @@ def main() -> None:
         return
     for job in JOBS:
         print(json.dumps(redacted(job_payload(job, github_token)), indent=2))
+    for title in RETIRED_TITLES:
+        print(f"Would disable, if it exists: {title}")
     print("\nDry run. Re-run with --apply to create/update these jobs.")
 
 

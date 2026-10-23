@@ -1,11 +1,10 @@
 from collections.abc import Mapping, Sequence
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Literal
 from zoneinfo import ZoneInfo
 
 import numpy as np
 import pandas as pd
-import shap
 from nba_ou.config.odds_columns import (
     resolve_main_spread_line_col,
     total_line_over_col_raw,
@@ -16,6 +15,11 @@ from nba_ou.data_processing.missing_data.clean_df_for_training import (
 )
 from nba_ou.postgre_db.predictions.create.create_ou_predictions_db import (
     upload_predictions_to_postgre,
+)
+from nba_ou.prediction.input_limits import (
+    LATEST_INPUT_COLUMN,
+    LIMITED_COUNT_COLUMN,
+    limit_to_training_support,
 )
 from xgboost import XGBRegressor
 
@@ -139,150 +143,6 @@ def _prepare_required_features_for_prediction(
     return normalized_required, required_df, na_count, na_names
 
 
-def compute_shap_values(model, X: pd.DataFrame) -> tuple[pd.DataFrame, float | None]:
-    """
-    Compute per-feature SHAP values for tree-based regressors.
-
-    Returns:
-        - DataFrame with one SHAP contribution per feature and row
-        - Scalar expected/base value when available
-    """
-    explainer = shap.TreeExplainer(model)
-    shap_values = explainer.shap_values(X)
-
-    if isinstance(shap_values, list):
-        if len(shap_values) != 1:
-            raise ValueError(
-                "Expected a single SHAP output array for regression predictions."
-            )
-        shap_values = shap_values[0]
-
-    if hasattr(shap_values, "values"):
-        shap_values = shap_values.values
-
-    shap_array = np.asarray(shap_values)
-    if shap_array.ndim != 2:
-        raise ValueError(
-            f"Expected 2D SHAP values, received shape {shap_array.shape!r}."
-        )
-
-    shap_df = pd.DataFrame(
-        shap_array,
-        columns=X.columns,
-        index=X.index,
-    )
-
-    expected_value = getattr(explainer, "expected_value", None)
-    if expected_value is None:
-        base_value: float | None = None
-    else:
-        expected_array = np.asarray(expected_value).reshape(-1)
-        base_value = (
-            float(expected_array[0])
-            if expected_array.size and pd.notna(expected_array[0])
-            else None
-        )
-
-    return shap_df, base_value
-
-
-def compute_shap_confidence_metrics(
-    shap_row: pd.Series,
-    pred_margin: float,
-    top_k: int = 10,
-) -> dict:
-    """
-    Compute SHAP-based confidence metrics for one prediction.
-
-    Measures how decisively the feature contributions support the predicted edge.
-    A prediction can have the same margin but very different internal coherence:
-    - High confidence: most SHAP mass points in one direction
-    - Low confidence: large positive and negative forces cancel out
-
-    Args:
-        shap_row: SHAP values for a single row, indexed by feature name
-        pred_margin: predicted margin vs line (pred_total - line)
-        top_k: number of top absolute SHAP features to inspect
-
-    Returns:
-        dict with confidence metrics:
-            - shap_directional_confidence: abs(net_margin) / total_abs (0-1)
-            - shap_support_ratio: support_sum / opposing_sum
-            - shap_top_k_agreement: fraction of top-k features agreeing with pick
-            - shap_confidence_score: composite score (0-1)
-    """
-    shap_values = shap_row.astype(float)
-
-    positive_sum = float(shap_values[shap_values > 0].sum())
-    negative_sum = float(np.abs(shap_values[shap_values < 0].sum()))
-    total_abs = float(np.abs(shap_values).sum())
-    net_margin_from_shap = positive_sum - negative_sum
-
-    if total_abs == 0:
-        directional_confidence = 0.0
-    else:
-        directional_confidence = abs(net_margin_from_shap) / total_abs
-
-    predicted_sign = np.sign(pred_margin)
-
-    if predicted_sign > 0:
-        support_sum = positive_sum
-        opposing_sum = negative_sum
-    elif predicted_sign < 0:
-        support_sum = negative_sum
-        opposing_sum = positive_sum
-    else:
-        support_sum = 0.0
-        opposing_sum = 0.0
-
-    support_ratio = float(support_sum / (opposing_sum + 1e-9))
-
-    top_features = shap_values.reindex(
-        shap_values.abs().sort_values(ascending=False).head(top_k).index
-    )
-    top_signs = np.sign(top_features.values)
-
-    if predicted_sign == 0 or len(top_signs) == 0:
-        top_k_agreement = 0.0
-    else:
-        top_k_agreement = float(np.mean(top_signs == predicted_sign))
-
-    edge_strength = min(abs(pred_margin) / 3.0, 1.0)
-
-    confidence_score = (
-        0.5 * edge_strength + 0.3 * directional_confidence + 0.2 * top_k_agreement
-    )
-
-    return {
-        "SHAP_DIRECTIONAL_CONFIDENCE": round(directional_confidence, 4),
-        "SHAP_SUPPORT_RATIO": round(support_ratio, 4),
-        "SHAP_TOP_K_AGREEMENT": round(top_k_agreement, 4),
-        "SHAP_CONFIDENCE_SCORE": round(confidence_score, 4),
-    }
-
-
-def top_shap_reasons(
-    shap_row: pd.Series,
-    *,
-    top_n: int = 20,
-    direction: Literal["positive", "negative"] = "positive",
-) -> str | None:
-    """Serialize the strongest positive or negative SHAP contributors."""
-    shap_series = pd.to_numeric(shap_row, errors="coerce").dropna()
-
-    if direction == "positive":
-        selected = shap_series[shap_series > 0].sort_values(ascending=False).head(top_n)
-    elif direction == "negative":
-        selected = shap_series[shap_series < 0].sort_values(ascending=True).head(top_n)
-    else:
-        raise ValueError("direction must be either 'positive' or 'negative'")
-
-    if selected.empty:
-        return None
-
-    return ",".join(f"{feature}:{value:+.3f}" for feature, value in selected.items())
-
-
 def _nested_metadata_value(metadata: dict, *path: str) -> object | None:
     current: object = metadata
     for key in path:
@@ -336,7 +196,6 @@ def load_and_predict_model_for_nba_games(
     spread_pick_line_col: str | None = None,
     extra_summary_columns: dict | None = None,
     passthrough_columns: Sequence[str] = (),
-    shap_top_n: int = 20,
     persist: bool = True,
     max_na_per_row: int | None = None,
 ) -> pd.DataFrame:
@@ -365,7 +224,6 @@ def load_and_predict_model_for_nba_games(
             prediction_target is TOTAL_POINTS. Defaults to main sportsbook from config.
         passthrough_columns: Per-row input columns copied unchanged into the
             output when present (e.g. an intermediate row's snapshot time).
-        shap_top_n: Number of top positive/negative SHAP contributors to store.
         persist: Upload the output to the predictions table. False only
             returns it (a dry run).
         max_na_per_row: The model's own training limit (its spec's
@@ -448,6 +306,9 @@ def load_and_predict_model_for_nba_games(
     df_predictable["NA_COLUMNS_COUNT"] = na_count
     df_predictable["NA_COLUMNS_NAMES"] = na_names
 
+    # The games the NaN budget leaves out, reported on the output (its attrs)
+    # so the run's record can tell "too many NaN" from "nothing to predict".
+    dropped_na_games: list[str] = []
     if max_na_per_row is not None and max_na_per_row >= 0:
         # As training counts it: every NaN in the row but the Yahoo block.
         yahoo = list(compact_yahoo_columns(X.columns))
@@ -465,13 +326,18 @@ def load_and_predict_model_for_nba_games(
                     )
                 )
             )
+            dropped_na_games = over["GAME_ID"].astype(str).tolist()
             df_predictable = df_predictable.loc[within]
             X = X.loc[within]
         if df_predictable.empty:
-            return pd.DataFrame()
+            empty = pd.DataFrame()
+            empty.attrs["dropped_na_games"] = dropped_na_games
+            return empty
 
     # Make predictions
     raw_predictions = model.predict(X)
+    # When this model's output exists: the prediction store's time to tip.
+    predicted_at_utc = datetime.now(UTC)
     prediction_values = pd.to_numeric(
         pd.Series(raw_predictions, index=df_predictable.index), errors="coerce"
     )
@@ -632,7 +498,6 @@ def load_and_predict_model_for_nba_games(
         column for column in passthrough_columns if column in df_predictable.columns
     ]
 
-    # SHAP confidence columns are added after summary creation
     df_summary = df_predictable[summary_columns].copy()
 
     # Add prediction timestamp and time to match
@@ -691,47 +556,7 @@ def load_and_predict_model_for_nba_games(
     df_summary["TRAINING_CODE_TAG"] = training_code_tag
     df_summary["TRAIN_DATE_MIN"] = train_date_min
     df_summary["TRAIN_DATE_MAX"] = train_date_max
-
-    shap_df, shap_base_value = compute_shap_values(model, X)
-    df_summary["SHAP_BASE_VALUE"] = shap_base_value
-    df_summary["SHAP_TOP_POSITIVE_FEATURES"] = shap_df.apply(
-        top_shap_reasons,
-        axis=1,
-        direction="positive",
-        top_n=shap_top_n,
-    )
-    df_summary["SHAP_TOP_NEGATIVE_FEATURES"] = shap_df.apply(
-        top_shap_reasons,
-        axis=1,
-        direction="negative",
-        top_n=shap_top_n,
-    )
-
-    # Compute SHAP confidence metrics per row
-    # The signed edge this model is expressing, whichever market it is in.
-    pred_margins = df_summary[
-        (
-            "PRED_SPREAD_ERROR"
-            if prediction_target == PREDICTION_TARGET_SPREAD_ERROR
-            else "PRED_LINE_ERROR"
-        )
-    ]
-    confidence_metrics = shap_df.apply(
-        lambda row: pd.Series(
-            compute_shap_confidence_metrics(
-                shap_row=row,
-                pred_margin=(
-                    float(pred_margins.loc[row.name])
-                    if pd.notna(pred_margins.loc[row.name])
-                    else 0.0
-                ),
-                top_k=10,
-            )
-        ),
-        axis=1,
-    )
-    for col in confidence_metrics.columns:
-        df_summary[col] = confidence_metrics[col].values
+    df_summary["PREDICTED_AT_UTC"] = predicted_at_utc
 
     # Drop rows with NaN in the model's predicted target before saving to database
     target_column = {
@@ -749,6 +574,7 @@ def load_and_predict_model_for_nba_games(
     if persist:
         upload_predictions_to_postgre(df_summary_clean)
 
+    df_summary_clean.attrs["dropped_na_games"] = dropped_na_games
     return df_summary_clean
 
 
@@ -791,7 +617,6 @@ def load_registry_model_and_predict(
     prediction_datetime: datetime | None = None,
     total_points_pick_line_col: str | None = None,
     spread_pick_line_col: str | None = None,
-    shap_top_n: int = 20,
     horizon_tolerance_minutes: int | None = None,
     servable_dataset_types: frozenset[str] = SERVABLE_DATASET_TYPES,
     channel=None,
@@ -799,13 +624,17 @@ def load_registry_model_and_predict(
     frame_versions: Mapping[str, str] | None = None,
     passthrough_columns: Sequence[str] = (),
     persist: bool = True,
+    latest_input: bool = False,
 ) -> pd.DataFrame:
     """Predict with whatever a slot's channel currently points at.
 
     ``frames`` maps a dataset type to its feature frame (tonight's closing
     rows, tonight's intermediate snapshots); the slot's model reads the frame
     of its own type, and ``df`` and ``servable_dataset_types`` are then
-    ignored. An intermediate model predicts the rows of its horizon.
+    ignored. An intermediate model predicts the rows of its horizon -- or,
+    with ``latest_input``, each game's latest snapshot (the frame's
+    ``LATEST_INPUT`` rows), limited to what its training rows could carry
+    (``input_limits.limit_to_training_support``). ``INPUT_MODE`` records which.
 
     ``horizon_tolerance_minutes`` restricts a non-snapshot model to rows within
     that many minutes of its horizon (``select_rows_for_horizon``). None, the
@@ -865,7 +694,16 @@ def load_registry_model_and_predict(
 
     prediction_target = resolve_prediction_target(spec.identity.target)
 
-    if dataset_type in SNAPSHOT_DATASET_TYPES:
+    snapshot_input = dataset_type in SNAPSHOT_DATASET_TYPES
+    latest_input = latest_input and snapshot_input
+    if latest_input:
+        if LATEST_INPUT_COLUMN not in df.columns:
+            raise ValueError(
+                f"{slot.describe()}: latest input asked, and the intermediate "
+                f"frame has no {LATEST_INPUT_COLUMN} column (built without it)."
+            )
+        eligible = df[LATEST_INPUT_COLUMN].fillna(False).astype(bool)
+    elif snapshot_input:
         # The row built for this model's snapshot -- a choice of row, not a
         # time guard: the frame holds every horizon of every game.
         eligible = pd.to_numeric(df["TIME_TO_MATCH_MIN"], errors="coerce").eq(
@@ -880,23 +718,40 @@ def load_registry_model_and_predict(
             tolerance_minutes=horizon_tolerance_minutes,
         )
     if not bool(eligible.any()):
-        print(
-            f"  {slot.describe()}: no rows for the model's horizon "
-            f"(T-{spec.identity.horizon_minutes}); skipping."
+        wanted = (
+            "latest snapshot"
+            if latest_input
+            else f"model's horizon (T-{spec.identity.horizon_minutes})"
         )
+        print(f"  {slot.describe()}: no rows for the {wanted}; skipping.")
         return pd.DataFrame()
     skipped = int((~eligible).sum())
-    if skipped:
+    if skipped and not latest_input:
         print(
             f"  {slot.describe()}: skipping {skipped} row(s) outside the "
             f"model's horizon (T-{spec.identity.horizon_minutes})."
         )
+    rows = df.loc[eligible]
+    extra_columns = {}
+    if latest_input:
+        rows = limit_to_training_support(
+            rows, horizon_minutes=spec.identity.horizon_minutes
+        )
+        horizons = sorted(rows["TIME_TO_MATCH_MIN"].astype(int).unique())
+        print(
+            f"  {slot.describe()}: latest snapshots "
+            f"{', '.join(f'T-{m}' for m in horizons)}; "
+            f"{int(rows[LIMITED_COUNT_COLUMN].sum())} cell(s) limited to the "
+            f"T-{spec.identity.horizon_minutes} training support."
+        )
+    if snapshot_input:
+        extra_columns["INPUT_MODE"] = "latest" if latest_input else "own"
 
     regressor = XGBRegressor()
     regressor.load_model(bytearray(resolved.model_bytes))
 
     predictions = load_and_predict_model_for_nba_games(
-        df=df.loc[eligible],
+        df=rows,
         regressor=regressor,
         model_name=fit.model_name,
         model_type=f"{spec.identity.target}_{slot.horizon_label}",
@@ -923,7 +778,9 @@ def load_registry_model_and_predict(
             "MODEL_VARIANT": spec.identity.variant,
             "SPEC_ID": spec.spec_id,
             "FIT_ID": fit.fit_id,
+            "MODEL_DATASET_TYPE": dataset_type,
+            "MODEL_BUILD_PREFIX": f"{slot.prefix}builds/{fit.fit_id}/",
+            **extra_columns,
         },
-        shap_top_n=shap_top_n,
     )
     return predictions

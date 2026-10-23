@@ -273,6 +273,17 @@ SEASON_TYPE_MAP = {
     "006": "In-Season Final Game",
 }
 
+# Season types models train on: training_pipeline's default
+# (data.exclude_playoffs=True) and what the daily refit keeps. Playoff
+# basketball has shorter rotations and slower pace -- in the current training
+# data playoff games average ~11.6 fewer total points than regular-season
+# games -- so it is a materially different distribution from what the models
+# are used to predict.
+TRAINING_SEASON_TYPES: tuple[str, ...] = (
+    "Regular Season",
+    "Play-In Tournament",
+)
+
 # ==============================================================================
 # GAME CONFIGURATION
 # ==============================================================================

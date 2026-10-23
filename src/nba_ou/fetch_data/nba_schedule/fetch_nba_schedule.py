@@ -278,6 +278,20 @@ def _rows_to_schedule(rows: list[dict]) -> pd.DataFrame:
     return apply_tipoff_corrections(pd.DataFrame(rows)[SCHEDULE_COLUMNS])
 
 
+def fetch_tipoffs_for_date(
+    game_date: str, *, timeout: int = 15, season_year: int | None = None
+) -> pd.DataFrame | None:
+    """One date's tipoffs from ``ScoreboardV3``, or None if it is unavailable.
+
+    Unlike :func:`fetch_tipoffs_for_dates`, a failed request is not an empty
+    frame, so a caller can tell an off day from a scoreboard outage.
+    """
+    payload = _request_scoreboard(str(game_date), timeout)
+    if payload is None:
+        return None
+    return _rows_to_schedule(_scoreboard_rows(payload, str(game_date), season_year))
+
+
 def fetch_tipoffs_for_dates(
     game_dates: list, *, timeout: int = 15, season_year: int | None = None
 ) -> pd.DataFrame:

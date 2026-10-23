@@ -195,7 +195,7 @@ def main() -> None:
         help=(
             "Omit the injury-news, news-reaction and cross-market snapshot "
             "features and the spread/moneyline move-to-close Ridge fits "
-            "(docs/intermediate_market_dynamics_plan.md)."
+            "(docs/intermediate/market_dynamics.md)."
         ),
     )
     parser.add_argument(

@@ -3,7 +3,7 @@
 These tests exist because every one of them corresponds to a way the archive can
 silently acquire a look-ahead error or lose data. They are all pure -- no network
 -- and each pins a fact that was measured against the live CDN and recorded in
-``docs/injury_report_archive_plan.md``.
+``docs/injuries/report_archive.md``.
 """
 
 from __future__ import annotations

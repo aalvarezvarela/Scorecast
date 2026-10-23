@@ -34,13 +34,38 @@ jobs:
         with:
           python-version: "3.12"
           cache: pip
-          cache-dependency-path: requirements.txt
+          cache-dependency-path: requirements/tests-cpu.txt
 
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          python -m pip install -r requirements.txt
-          python -m pip install pytest==9.0.2 optuna==4.7.0
+          python -m pip install -r requirements/tests-cpu.txt
 
       - name: Run tests
         run: python -m pytest tests/ -q
+
+  requirements:
+    name: requirements match poetry.lock
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Poetry
+        run: |
+          python -m pip install --upgrade pip
+          pip install poetry==2.3.1 poetry-plugin-export==1.10.1
+
+      # poetry.lock must match pyproject.toml, and every requirements/*.txt
+      # must match poetry.lock.
+      - name: Check lock and exports
+        run: |
+          poetry check --lock
+          python scripts/export_requirements.py --check

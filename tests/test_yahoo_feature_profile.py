@@ -381,7 +381,6 @@ def test_prediction_hands_observed_and_missing_raw_inputs_to_the_model(monkeypat
         required_features=list(YAHOO_FEATURE_COLUMNS),
         total_points_pick_line_col=total_line_col(),
         prediction_datetime=datetime(2026, 9, 21, 18, tzinfo=ZoneInfo("Europe/Madrid")),
-        shap_top_n=2,
     )
     assert len(result) == 2
     assert list(seen[0].columns) == list(YAHOO_FEATURE_COLUMNS)

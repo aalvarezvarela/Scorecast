@@ -2,6 +2,23 @@ name: Retrain Prediction Models
 
 on:
   workflow_dispatch:
+    inputs:
+      update_database:
+        description: "Run the full DB update (update_database_daily.yml, self-hosted) first"
+        type: boolean
+        default: true
+      promote:
+        description: "Promote the staged builds to production (off = stage and smoke-test only)"
+        type: boolean
+        default: false
+      slots:
+        description: "Only these slots, space-separated (e.g. 2_5/line_error/t0000/main); empty = every enabled slot"
+        type: string
+        default: ""
+      refit_without_games:
+        description: "Refit even when there are no games today (off = a day without games only updates the DB)"
+        type: boolean
+        default: false
   # schedule:
   #   - cron: "56 13 * * *"
 
@@ -9,53 +26,31 @@ permissions:
   contents: read
   id-token: write
 
+# Queue, never cancel: a refit killed between staging and promotion leaves
+# staging ahead of production for no reason.
+concurrency:
+  group: retrain-prediction-models
+  cancel-in-progress: false
+
 jobs:
+  # The same DB update the daily workflow runs, on the self-hosted runner: the
+  # NBA/odds sources block GitHub-hosted IPs. Training on a partial update would
+  # use last night's SBR closes before they are repaired from line history.
   update-database:
-    runs-on: self-hosted
-    outputs:
-      has_scheduled_games: ${{ steps.check-scheduled-games.outputs.has_scheduled_games }}
-    env:
-      PYTHONWARNINGS: "ignore::UserWarning,ignore::DeprecationWarning,ignore::FutureWarning"
-      TQDM_DISABLE: "1"
-      PYTHONPATH: ${{ github.workspace }}:${{ github.workspace }}/src
-      DB_ENV: supabase
-      SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
-      SUPABASE_DB_PASSWORD: ${{ secrets.SUPABASE_DB_PASSWORD }}
-      ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
+    if: ${{ inputs.update_database }}
+    uses: ./.github/workflows/update_database_daily.yml
+    secrets: inherit
 
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
-
-      - name: Check for scheduled games
-        id: check-scheduled-games
-        run: |
-          python scripts/update_databases/check_scheduled_games.py
-
-      - name: Install Playwright browsers
-        if: ${{ steps.check-scheduled-games.outputs.has_scheduled_games == 'true' }}
-        run: |
-          playwright install chromium
-
-      - name: Update all databases
-        if: ${{ steps.check-scheduled-games.outputs.has_scheduled_games == 'true' }}
-        run: |
-          python scripts/update_databases/update_all_databases.py --only-new-games
-
+  # Self-hosted, on the GPU the configurations were tuned on: CUDA and CPU
+  # XGBoost build different trees from the same seed and data, so only the
+  # same device reproduces the evaluated model. The refit checks the GPU before
+  # building the frame and refuses to stage a model XGBoost fitted on CPU.
   retrain:
     needs: update-database
-    if: ${{ needs.update-database.outputs.has_scheduled_games == 'true' }}
-    runs-on: ubuntu-latest
+    # Runs after a successful update, or straight away when it was switched off.
+    if: ${{ !cancelled() && (needs.update-database.result == 'success' || needs.update-database.result == 'skipped') }}
+    runs-on: self-hosted
+    timeout-minutes: 120
     env:
       PYTHONWARNINGS: "ignore::UserWarning,ignore::DeprecationWarning,ignore::FutureWarning"
       TQDM_DISABLE: "1"
@@ -63,7 +58,21 @@ jobs:
       DB_ENV: supabase
       SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
       SUPABASE_DB_PASSWORD: ${{ secrets.SUPABASE_DB_PASSWORD }}
+      # Aiven: the closing build reads the injury-report state and the SBR
+      # closing ticks from it.
+      AIVEN_DB_URL: ${{ secrets.AIVEN_DB_URL }}
+      AIVEN_DB_PASSWORD: ${{ secrets.AIVEN_DB_PASSWORD }}
+      # Empty means "use the ambient OIDC credentials" rather than a named
+      # local profile.
       S3_AWS_PROFILE: ""
+      # ROSTER_*_PCT depends on set iteration order; pinned so a build is
+      # reproducible.
+      PYTHONHASHSEED: "0"
+      # Local copies of the season partitions, outside the checkout
+      # (actions/checkout cleans it): finished seasons download once.
+      NBA_OU_PARTITION_CACHE_DIR: ~/.cache/nba_ou/season_partitions
+      TZ: UTC
+      SLOTS: ${{ inputs.slots }}
 
     steps:
       - name: Checkout
@@ -80,21 +89,56 @@ jobs:
           role-to-assume: ${{ secrets.AWS_ROLE_TO_ASSUME }}
           aws-region: eu-west-1
 
+      # A fresh venv per run: the runner's tool-cache Python is shared by
+      # every job, so packages another job left there would hide a missing
+      # dependency here.
+      - name: Create job venv
+        run: |
+            python -m venv "$RUNNER_TEMP/venv"
+            echo "$RUNNER_TEMP/venv/bin" >> "$GITHUB_PATH"
+
+      # Only what the three scripts below need (generated from poetry.lock, see
+      # requirements/README.md; the CUDA build, the refit fits on the GPU),
+      # then the repo itself WITHOUT its Poetry dependencies, which would pull
+      # in the training and lab stacks.
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt
+          pip install -r requirements/retrain-cuda.txt
+          pip install --no-deps -e .
+
+      # The `slots` input becomes repeated --slot flags, shared by every step
+      # below so smoke test and promotion act on exactly what was refitted.
+      - name: Resolve slot arguments
+        id: slots
+        run: |
+          args=""
+          for slot in $SLOTS; do args="$args --slot $slot"; done
+          echo "args=$args" >> "$GITHUB_OUTPUT"
+
+      # The database update above always runs; the refit, smoke test and
+      # promotion only on a day with games (today's Eastern date on the
+      # scoreboard), unless refit_without_games. An unreadable scoreboard
+      # counts as a game day.
+      - name: Check for games today
+        id: games
+        run: python scripts/check_games_today.py ${{ inputs.refit_without_games && '--always' || '' }}
 
       - name: Refit enabled slots from their specs
-        run: python scripts/retrain_prediction_models.py
+        if: ${{ steps.games.outputs.refit == 'true' }}
+        run: python scripts/retrain_prediction_models.py ${{ steps.slots.outputs.args }}
 
       # Loads each staged booster and checks it agrees with its spec before
       # anything is pointed at it. Promotion is a single pointer write, so
       # there is no partially-moved state to wait out.
       - name: Smoke test the staged builds
-        if: ${{ success() }}
-        run: python scripts/smoke_test_s3_model_load.py --channel staging
+        if: ${{ steps.games.outputs.refit == 'true' }}
+        run: python scripts/smoke_test_s3_model_load.py --channel staging ${{ steps.slots.outputs.args }}
 
       - name: Promote staged builds to production
-        if: ${{ success() }}
-        run: python scripts/promote_build.py --execute
+        if: ${{ steps.games.outputs.refit == 'true' && inputs.promote }}
+        run: python scripts/promote_build.py --execute ${{ steps.slots.outputs.args }}
+
+      - name: Show what promotion would do
+        if: ${{ steps.games.outputs.refit == 'true' && !inputs.promote }}
+        run: python scripts/promote_build.py ${{ steps.slots.outputs.args }}

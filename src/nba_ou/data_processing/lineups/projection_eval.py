@@ -1,6 +1,6 @@
 """How a lineup projection column relates to the closing line's error.
 
-The phase-G question (``docs/lineup_projection_plan.md`` section 8.4) is not
+The phase-G question (``docs/lineups/lineup_projection.md`` section 8.4) is not
 "does the projection beat the bookmaker" but "does it carry information the
 closing line has not priced". Two cheap reads of that, used by
 ``scripts/lineups/evaluate_game_projection.py``:

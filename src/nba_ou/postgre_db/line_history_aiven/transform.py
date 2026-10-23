@@ -1,6 +1,6 @@
 """Turn scraped line-history CSVs into rows for the Aiven store.
 
-Encodes the Phase 0 findings (``docs/line_history_phase0_findings.md``):
+Encodes the Phase 0 findings (``docs/odds/line_history_phase0_findings.md``):
 
 * Timestamps are naive ``Europe/Madrid``. 2019-20 and 2020-21 showed no clean
   DST step and are marked low confidence.

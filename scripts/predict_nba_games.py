@@ -20,28 +20,32 @@ from nba_ou.create_training_data.schema_layers import (
     is_layered,
     newest_version,
 )
+from nba_ou.postgre_db.line_history_aiven.feed_freshness import check_live_feed
+from nba_ou.postgre_db.predictions.create.create_ou_predictions_db import (
+    upload_predictions_to_postgre,
+)
+from nba_ou.postgre_db.predictions_aiven.schema import WORKFLOW_DAILY
 from nba_ou.postgre_db.update_all.update_all_databases import update_all_databases
 from nba_ou.prediction.baseline_predictions import (
     baseline_history_window,
     load_baseline_predictions_for_nba_games,
 )
+from nba_ou.prediction.input_limits import LATEST_INPUT_COLUMN
 from nba_ou.prediction.intermediate_frame import (
-    SNAPSHOT_COLUMNS,
+    PASSTHROUGH_COLUMNS,
     tonight_intermediate_frame,
 )
 from nba_ou.prediction.prediction import (
     load_registry_model_and_predict,
 )
-from nba_ou.prediction.prediction_tabpfn_client import (
-    load_and_predict_tabpfn_client_for_nba_games,
+from nba_ou.prediction.prediction_store import (
+    PredictionRunRecorder,
+    persist_prediction_run,
 )
+from nba_ou.utils.ci import annotate
 from nba_ou.utils.general_utils import get_season_year_from_date
 from nba_ou.utils.s3_models import (
     make_s3_client,
-)
-from nba_ou.utils.s3_prediction_snapshots import (
-    upload_input_features_snapshot,
-    upload_model_predictions_snapshot,
 )
 
 
@@ -94,12 +98,13 @@ def configure_tqdm_for_environment() -> None:
 
 
 def predict_nba_games(
-    run_tabpfn_client: bool = False,
     normalize_total_lines: bool = True,
     normalize_spread_lines: bool = True,
     null_extreme_spread_prices: bool = True,
     persist: bool = True,
     dump_frames: str | Path | None = None,
+    allow_stale_lines: bool = False,
+    intermediate_input: str | None = None,
 ) -> None:
     """
     Main execution function for the NBA prediction pipeline.
@@ -110,24 +115,24 @@ def predict_nba_games(
        tonight's intermediate rows for every horizon.
     4. Predicts with every enabled slot, whatever the time to tip: a closing
        slot predicts every game, an intermediate slot the row of its own
-       horizon (passed or not; ``SNAPSHOT_PASSED`` tells them apart).
+       horizon (passed or not; ``SNAPSHOT_PASSED`` tells them apart) -- or,
+       in ``latest`` mode, each game's latest snapshot (``LATEST_INPUT_SLOTS``).
     5. Runs the baselines.
+
+    ``intermediate_input`` (``latest`` or ``own``) overrides
+    ``[PredictionModels] INTERMEDIATE_INPUT_MODE`` for this run.
 
     A slot that fails does not stop the others; the run exits non-zero at the
     end if anything failed. ``persist=False`` stores no predictions: no
     predictions-table rows and no S3 snapshots. The database update and the
     injury-report sync in steps 1-3 still write. ``dump_frames`` writes the
     feature frames to that local directory, for inspection.
+
+    When SBR's feed has frozen (``feed_freshness``), every line the models would
+    read is hours old, so the run stops after the database update with exit 1
+    and predicts nothing; ``allow_stale_lines`` predicts anyway.
     """
     configure_tqdm_for_environment()
-    if run_tabpfn_client:
-        # The feature frame now holds tonight's games only; the TabPFN client
-        # trains on history features, which it would have to read from a
-        # stored training dataset instead. Fail before any work is done.
-        raise SystemExit(
-            "TabPFN needs history features, and the prediction frame carries "
-            "tonight's games only; run with --no-tabpfn."
-        )
 
     date_to_predict = (datetime.now(ZoneInfo("US/Pacific"))).strftime("%Y-%m-%d")
 
@@ -143,6 +148,11 @@ def predict_nba_games(
         print("  Enabled model slots:")
         for slot in configured_slots:
             print(f"    - {slot.describe()}")
+    latest_slots = latest_input_slots(configured_slots, intermediate_input)
+    print(
+        f"  Intermediate input: {len(latest_slots)} slot(s) read the latest "
+        "snapshot, the others their own"
+    )
 
     # Step 1: Update the database
     print_step_header(1, "Updating All Databases")
@@ -160,6 +170,30 @@ def predict_nba_games(
     except Exception as e:
         print_status(f"Failed to update databases: {e}", ok=False)
         raise
+
+    # Step 1b: SBR's lines must still be moving, or every prediction below is
+    # made on lines frozen hours ago. The database update above stands either way.
+    print_step_header(1, "Checking SBR Line Feed")
+    try:
+        freshness = check_live_feed(
+            datetime.strptime(date_to_predict, "%Y-%m-%d").date()
+        )
+    except Exception as e:  # noqa: BLE001 -- the check must not cost the run
+        annotate("warning", f"SBR feed check failed, continuing unchecked: {e}")
+    else:
+        print_status(freshness.describe(), ok=not freshness.stale)
+        if freshness.stale:
+            message = (
+                f"SBR line feed looks frozen: {freshness.describe()}. "
+                "Predictions would use stale lines"
+            )
+            if not allow_stale_lines:
+                annotate(
+                    "error",
+                    f"{message}; nothing predicted (--allow-stale-lines overrides).",
+                )
+                raise SystemExit(1)
+            annotate("warning", f"{message}; predicting anyway (--allow-stale-lines).")
 
     # Step 2: Fetch scheduled games, referees, injuries and odds
     print_step_header(2, "Fetching Scheduled Games & Reports")
@@ -229,6 +263,12 @@ def predict_nba_games(
 
     print_status(f"Found {len(df_to_predict)} game(s) to predict")
 
+    # Everything this run predicts, stored at the end in one piece: the S3 run
+    # archive and the Aiven prediction store (docs/serving/prediction_storage.md).
+    recorder = PredictionRunRecorder(workflow=WORKFLOW_DAILY, game_date=date_to_predict)
+    recorder.set_schedule(scheduled_data["scheduled_games"])
+    recorder.add_frame("closing_line", df_to_predict, version=frame_version)
+
     # Everything that failed without stopping the run; non-empty means the run
     # exits non-zero once every slot and the baselines have had their turn.
     failures: list[str] = []
@@ -248,14 +288,30 @@ def predict_nba_games(
         print_step_header(3, "Preparing Intermediate Snapshot Rows")
         try:
             intermediate_df = tonight_intermediate_frame(
-                scheduled_data, game_date=date_to_predict
+                scheduled_data,
+                game_date=date_to_predict,
+                latest_input=bool(latest_slots),
             )
             frames["intermediate_line"] = intermediate_df
+            recorder.add_frame(
+                "intermediate_line", intermediate_df, version=BASE_SCHEMA_VERSION
+            )
             print_status(
                 f"{len(intermediate_df)} snapshot row(s) over "
                 f"{intermediate_df['GAME_ID'].nunique()} game(s), "
                 f"{int(intermediate_df['SNAPSHOT_PASSED'].sum())} already passed"
             )
+            if latest_slots:
+                latest_rows = intermediate_df[intermediate_df[LATEST_INPUT_COLUMN]]
+                print_status(
+                    "Latest snapshots: "
+                    + ", ".join(
+                        f"{game} T-{minutes}"
+                        for game, minutes in latest_rows[
+                            ["GAME_ID", "TIME_TO_MATCH_MIN"]
+                        ].itertuples(index=False)
+                    )
+                )
         except Exception as e:  # noqa: BLE001 -- the closing slots still run
             traceback.print_exc()
             print_status(f"Intermediate rows unavailable: {e}", ok=False)
@@ -271,32 +327,17 @@ def predict_nba_games(
 
     # Initialize S3 client once for all model operations
     s3 = make_s3_client(profile=SETTINGS.s3_aws_profile, region=SETTINGS.s3_aws_region)
-    pipeline_start_time = datetime.now(ZoneInfo("Europe/Madrid"))
-    prediction_time = pipeline_start_time
+    prediction_time = datetime.now(ZoneInfo("Europe/Madrid"))
 
-    # Upload input features snapshot before running models
-    print_step_header(4, "Uploading Input Features Snapshot")
     if not persist:
         print_status("Dry run (--no-persist): no predictions are stored")
-    else:
-        try:
-            snapshot_key = upload_input_features_snapshot(
-                s3_client=s3,
-                bucket=SETTINGS.s3_bucket,
-                pipeline_start_time=pipeline_start_time,
-                date_to_predict=date_to_predict,
-                df_to_predict=df_to_predict,
-            )
-            print_status(
-                f"Input features uploaded to s3://{SETTINGS.s3_bucket}/{snapshot_key}"
-            )
-        except Exception as e:
-            print_status(f"Failed to upload input features snapshot: {e}", ok=False)
-            # Non-fatal: continue with predictions even if snapshot upload fails
 
     predicted: list[str] = []
     skipped: list[str] = []
-    step_number = 5
+    # The old Supabase table's failures: reported, but they do not make the
+    # prediction store's run partial.
+    legacy_failures: list[str] = []
+    step_number = 4
     for slot in configured_slots:
         label = slot.describe()
         print_step_header(step_number, f"Generating Predictions ({label})")
@@ -310,14 +351,19 @@ def predict_nba_games(
                 prediction_datetime=prediction_time,
                 frames=frames,
                 frame_versions=frame_versions,
-                passthrough_columns=SNAPSHOT_COLUMNS,
-                persist=persist,
+                passthrough_columns=PASSTHROUGH_COLUMNS,
+                # Stored below, each destination on its own: a failing
+                # Supabase write must not cost the prediction store its rows.
+                persist=False,
+                latest_input=slot in latest_slots,
             )
         except Exception as e:  # noqa: BLE001 -- the other slots still run
             traceback.print_exc()
             print_status(f"Failed to generate predictions for {label}: {e}", ok=False)
             failures.append(f"{label}: {e}")
+            recorder.record_slot(label, "failed", reason=str(e))
             continue
+        rejected = recorder.add_predictions(predictions_df, label=label)
         if predictions_df is None or predictions_df.empty:
             # No frame of this model's dataset type, or no row of its
             # horizon. The reason is printed above; a missing intermediate
@@ -330,27 +376,11 @@ def predict_nba_games(
             f"Predictions generated for {label} ({len(predictions_df)} row(s))"
         )
         predicted.append(label)
-        if not persist:
-            continue
-
-        # Upload model predictions snapshot
-        try:
-            pred_key = upload_model_predictions_snapshot(
-                s3_client=s3,
-                bucket=SETTINGS.s3_bucket,
-                pipeline_start_time=pipeline_start_time,
-                date_to_predict=date_to_predict,
-                model_prefix=slot.prefix,
-                predictions_df=predictions_df,
-            )
-            print_status(
-                f"Predictions snapshot uploaded to s3://.../{pred_key.split('/', 3)[-1]}"
-            )
-        except Exception as snap_exc:
-            print_status(
-                f"Failed to upload predictions snapshot for {label}: {snap_exc}",
-                ok=False,
-            )
+        if rejected:
+            print_status(f"Prediction store rejected {label}: {rejected}", ok=False)
+            failures.append(f"{label} (prediction store): {rejected}")
+        if persist:
+            legacy_failures += legacy_supabase_upload(predictions_df, label)
 
     print_step_header(step_number, "Generating Predictions (Baselines)")
     step_number += 1
@@ -361,36 +391,38 @@ def predict_nba_games(
             df=df_to_predict,
             df_history=baseline_history_window(layer_inputs, date_to_predict),
             prediction_datetime=prediction_time,
-            upload_to_postgres=persist,
+            upload_to_postgres=False,
         )
         print_status("Baseline predictions generated")
-
         for baseline_name, baseline_predictions_df in baseline_predictions.items():
-            if not persist:
-                break
-            try:
-                baseline_key = upload_model_predictions_snapshot(
-                    s3_client=s3,
-                    bucket=SETTINGS.s3_bucket,
-                    pipeline_start_time=pipeline_start_time,
-                    date_to_predict=date_to_predict,
-                    model_prefix=baseline_name,
-                    predictions_df=baseline_predictions_df,
-                )
+            rejected = recorder.add_baseline(
+                baseline_name, baseline_predictions_df, schema_version=frame_version
+            )
+            if rejected:
                 print_status(
-                    "Baseline snapshot uploaded to "
-                    f"s3://.../{baseline_key.split('/', 3)[-1]}"
+                    f"Prediction store rejected {baseline_name}: {rejected}", ok=False
                 )
-            except Exception as snap_exc:
-                print_status(
-                    f"Failed to upload baseline snapshot for {baseline_name}: {snap_exc}",
-                    ok=False,
+                failures.append(f"{baseline_name} (prediction store): {rejected}")
+            if persist:
+                legacy_failures += legacy_supabase_upload(
+                    baseline_predictions_df, baseline_name
                 )
 
     except Exception as e:  # noqa: BLE001 -- reported with the slot failures
         traceback.print_exc()
         print_status(f"Failed to generate baseline predictions: {e}", ok=False)
         failures.append(f"baselines: {e}")
+
+    if persist:
+        print_step_header(step_number, "Storing Predictions")
+        step_number += 1
+        failures += persist_prediction_run(
+            recorder,
+            s3_client=s3,
+            bucket=SETTINGS.s3_bucket,
+            partial=bool(failures),
+        )
+    failures += legacy_failures
 
     print_step_header(step_number, "Summary")
     print_status(f"{len(predicted)} slot(s) predicted")
@@ -403,50 +435,43 @@ def predict_nba_games(
     if failures:
         raise SystemExit(1)
 
-    if not run_tabpfn_client:
-        print("\nPrediction pipeline completed successfully.")
-        return
+    print("\nPrediction pipeline completed successfully.")
 
-    # Generate predictions with TabPFN client
-    print_step_header(step_number, "Generating Predictions (TabPFN Client)")
+
+def legacy_supabase_upload(predictions: pd.DataFrame, label: str) -> list[str]:
+    """Write ``predictions`` to the old Supabase table; the failure, if any.
+
+    Runs in parallel with the prediction store during the transition
+    (docs/serving/prediction_storage.md, rollout 3), and independently of it.
+    """
     try:
-        tabpfn_predictions = load_and_predict_tabpfn_client_for_nba_games(
-            df=df_to_predict_total,
-            prediction_date=date_to_predict,
-            prediction_datetime=prediction_time,
-        )
-        print_status("TabPFN predictions generated")
+        upload_predictions_to_postgre(predictions)
+    except Exception as e:  # noqa: BLE001 -- reported with the run's failures
+        print_status(f"Supabase write failed for {label}: {e}", ok=False)
+        return [f"{label} (Supabase): {e}"]
+    return []
 
-        # Upload TabPFN predictions snapshot
-        try:
-            tabpfn_key = upload_model_predictions_snapshot(
-                s3_client=s3,
-                bucket=SETTINGS.s3_bucket,
-                pipeline_start_time=pipeline_start_time,
-                date_to_predict=date_to_predict,
-                model_prefix="tabpfn_client",
-                predictions_df=tabpfn_predictions,
-            )
-            print_status(
-                f"TabPFN snapshot uploaded to s3://.../{tabpfn_key.split('/', 3)[-1]}"
-            )
-        except Exception as snap_exc:
-            print_status(
-                f"Failed to upload TabPFN predictions snapshot: {snap_exc}", ok=False
-            )
 
-    except Exception as e:
-        print_status(f"Failed to generate TabPFN predictions: {e}", ok=False)
-        raise
+def latest_input_slots(configured_slots: list, mode: str | None = None) -> list:
+    """The enabled slots that read the latest snapshot on this run.
+
+    ``mode`` overrides ``[PredictionModels] INTERMEDIATE_INPUT_MODE``. Only an
+    intermediate slot reads one; a closing slot in the list keeps its frame.
+    """
+    mode = mode or SETTINGS.intermediate_input_mode
+    if mode == "own":
+        return []
+    listed = SETTINGS.latest_input_slots
+    if listed is None:
+        return list(configured_slots)
+    unknown = [slot.describe() for slot in listed if slot not in configured_slots]
+    if unknown:
+        print(f"  ⚠️ LATEST_INPUT_SLOTS rows not in ENABLED_MODELS: {unknown}")
+    return [slot for slot in configured_slots if slot in listed]
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Generate NBA over/under predictions")
-    parser.add_argument(
-        "--no-tabpfn",
-        action="store_true",
-        help="Disable TabPFN predictions",
-    )
     parser.add_argument(
         "--no-normalize-total-lines",
         action="store_true",
@@ -472,13 +497,28 @@ if __name__ == "__main__":
         action="store_true",
         help="Keep extreme spread price cells instead of setting them to NaN.",
     )
+    parser.add_argument(
+        "--allow-stale-lines",
+        action="store_true",
+        help="Predict even when SBR's line feed looks frozen (lines hours old).",
+    )
+    parser.add_argument(
+        "--intermediate-input",
+        choices=("latest", "own"),
+        help=(
+            "Which intermediate rows the slots read: latest (each game's latest "
+            "snapshot, for LATEST_INPUT_SLOTS) or own (every slot its own "
+            "snapshot). Default: [PredictionModels] INTERMEDIATE_INPUT_MODE."
+        ),
+    )
     args = parser.parse_args()
 
     predict_nba_games(
-        run_tabpfn_client=not args.no_tabpfn,
         normalize_total_lines=not args.no_normalize_total_lines,
         normalize_spread_lines=not args.no_normalize_spread_lines,
         null_extreme_spread_prices=not args.keep_extreme_spread_prices,
         persist=not args.no_persist,
         dump_frames=args.dump_frames,
+        allow_stale_lines=args.allow_stale_lines,
+        intermediate_input=args.intermediate_input,
     )

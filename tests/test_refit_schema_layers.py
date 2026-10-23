@@ -1,10 +1,10 @@
 """Refit and serving build each slot's frame at the slot's own schema version."""
 
+from datetime import date
 from types import SimpleNamespace
 
 import pandas as pd
 import pytest
-from nba_ou.create_training_data import create_df_to_predict as builder
 from nba_ou.create_training_data.schema_layers import (
     LayerContext,
     is_layered,
@@ -12,20 +12,31 @@ from nba_ou.create_training_data.schema_layers import (
     registry,
 )
 from nba_ou.create_training_data.schema_layers.base import CLOSING_LINE, SchemaLayer
+from nba_ou.create_training_data.season_partitions import PartitionedFrame
 from nba_ou.modeling.refit import TrainingFrameUnavailable, resolve_training_frame
+
+
+class _Partitions:
+    """The base version's closing partitions; counts the reads."""
+
+    def __init__(self):
+        self.reads = 0
+
+    def load(self, horizon=None):
+        self.reads += 1
+        return PartitionedFrame(
+            df=pd.DataFrame(
+                {"GAME_ID": ["0022500001", "0022500002"], "BASE_BEFORE": [1.0, 2.0]}
+            ),
+            build_id="closing_line_data_2_5_20260630",
+            checksum="sha256:0",
+            limit_date=date(2026, 6, 30),
+            prefix="p/",
+        )
 
 
 @pytest.fixture
 def builds(monkeypatch):
-    calls = []
-
-    def fake_builder(**kwargs):
-        calls.append(kwargs)
-        return pd.DataFrame(
-            {"GAME_ID": ["0022500001", "0022500002"], "BASE_BEFORE": [1.0, 2.0]}
-        )
-
-    monkeypatch.setattr(builder, "create_df_to_predict", fake_builder)
     layer = SchemaLayer(
         version="2_6",
         parent="2_5",
@@ -35,7 +46,7 @@ def builds(monkeypatch):
         build=lambda i, c, d: pd.DataFrame({"NEW_BEFORE": [5.0, 6.0]}, index=i.index),
     )
     monkeypatch.setitem(registry.LAYERS, "2_6", layer)
-    return calls
+    return {CLOSING_LINE: _Partitions()}
 
 
 def _spec(version, dataset_type="closing_line"):
@@ -49,35 +60,27 @@ def test_each_version_gets_its_own_columns_from_one_base_build(builds):
     base_frames: dict = {}
     ctx = LayerContext()
     older = resolve_training_frame(
-        _spec("2_5"),
-        limit_date="2026-06-30",
-        base_frames=base_frames,
-        layer_context=ctx,
+        _spec("2_5"), partitions=builds, base_frames=base_frames, layer_context=ctx
     )
     newer = resolve_training_frame(
-        _spec("2_6"),
-        limit_date="2026-06-30",
-        base_frames=base_frames,
-        layer_context=ctx,
+        _spec("2_6"), partitions=builds, base_frames=base_frames, layer_context=ctx
     )
-    assert len(builds) == 1
+    assert builds[CLOSING_LINE].reads == 1
     assert list(older.df.columns) == ["GAME_ID", "BASE_BEFORE"]
     assert list(newer.df.columns) == ["GAME_ID", "BASE_BEFORE", "NEW_BEFORE"]
+    assert older.build_id == newer.build_id == "closing_line_data_2_5_20260630"
     # Layering never mutates the cached base other slots share.
-    assert list(base_frames[("closing_line", "2026-06-30")].columns) == [
-        "GAME_ID",
-        "BASE_BEFORE",
-    ]
+    assert list(base_frames[CLOSING_LINE].df.columns) == ["GAME_ID", "BASE_BEFORE"]
 
 
 def test_a_version_this_checkout_cannot_build_is_unavailable_not_a_crash(builds):
     with pytest.raises(TrainingFrameUnavailable, match="9_9"):
-        resolve_training_frame(_spec("9_9"))
-    assert builds == []
+        resolve_training_frame(_spec("9_9"), partitions=builds)
+    assert builds[CLOSING_LINE].reads == 0
 
 
 def test_versions_older_than_the_base_are_served_by_the_base(builds):
-    frame = resolve_training_frame(_spec("2_4"))
+    frame = resolve_training_frame(_spec("2_4"), partitions=builds)
     assert list(frame.df.columns) == ["GAME_ID", "BASE_BEFORE"]
 
 

@@ -140,7 +140,7 @@ refit do not.**
   intermediate models depend on the `ODDS_SNAP_*` family, which is 1,063 of
   2,444 features at T-60 and is built only by `create_intermediate_line_df`.
 - **Daily refit.** `resolve_training_frame` raises `TrainingFrameUnavailable`
-  for `intermediate_line` specs (`docs/model_registry_reorg_plan.md` §5, work
+  for `intermediate_line` specs (`docs/serving/model_registry.md` §5, work
   item 10). `retrain_prediction_models.py` counts that as a failure and exits
   1, and the workflow's smoke-test and promote steps run only on success. **So
   adding an intermediate row to `ENABLED_MODELS` today would stop the closing

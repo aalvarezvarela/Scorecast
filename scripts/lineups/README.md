@@ -1,6 +1,6 @@
 # Lineup data ingestion
 
-The lineup projection in `docs/lineup_projection_plan.md` starts with a raw
+The lineup projection in `docs/lineups/lineup_projection.md` starts with a raw
 archive and validated five-on-five stints. Run these commands from the repo root
 with the Poetry environment (or `.venv/bin/python`).
 
@@ -248,7 +248,7 @@ classified, so this is an estimated possession count, not an official count.
 ## Evaluate the game projection against the line
 
 `evaluate_game_projection.py` regenerates the phase-F / phase-G numbers in
-`docs/lineup_projection_plan.md` from committed code. It computes the
+`docs/lineups/lineup_projection.md` from committed code. It computes the
 projection exactly as the `LU_*` features do (`data_processing/lineups/features.py`),
 then reports its MAE, the slope of `LINE_ERROR` on the absence counterfactual
 and on `proj - line` per season with date-clustered bootstrap intervals, and

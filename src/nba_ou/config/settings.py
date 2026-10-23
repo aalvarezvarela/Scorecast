@@ -283,9 +283,55 @@ class Settings:
         if "prediction_model_slots" in self._cache:
             return self._cache["prediction_model_slots"]
 
+        slots = self._slot_rows("ENABLED_MODELS")
+        self._cache["prediction_model_slots"] = slots
+        return slots
+
+    @property
+    def intermediate_input_mode(self) -> str:
+        """``[PredictionModels] INTERMEDIATE_INPUT_MODE``: ``latest`` or ``own``.
+
+        ``own`` (the default): every intermediate slot predicts the row of its
+        own snapshot. ``latest``: the slots of ``latest_input_slots`` predict
+        from each game's latest snapshot instead.
+        """
+        mode = (
+            self.config.get(
+                "PredictionModels", "INTERMEDIATE_INPUT_MODE", fallback="own"
+            )
+            .strip()
+            .lower()
+            or "own"
+        )
+        if mode not in ("latest", "own"):
+            raise ValueError(
+                "[PredictionModels] INTERMEDIATE_INPUT_MODE must be 'latest' or "
+                f"'own'. Got: {mode!r}"
+            )
+        return mode
+
+    @property
+    def latest_input_slots(self) -> list | None:
+        """``[PredictionModels] LATEST_INPUT_SLOTS``: the slots that, in
+        ``latest`` mode, predict from the latest snapshot.
+
+        ``all`` returns None, meaning every enabled slot; otherwise rows as in
+        ``ENABLED_MODELS``. Empty means none.
+        """
+        rows = self._get_multiline_list("PredictionModels", "LATEST_INPUT_SLOTS")
+        if [row.lower() for row in rows] == ["all"]:
+            return None
+        return self._slot_rows("LATEST_INPUT_SLOTS")
+
+    def _slot_rows(self, key: str) -> list:
+        """``[PredictionModels] <key>`` rows, each a ``ModelSlot``.
+
+        Each row is ``schema_version | target | horizon_minutes | variant``;
+        ``variant`` may be omitted and defaults to ``main``.
+        """
         from nba_ou.modeling.registry_paths import ModelSlot, parse_horizon
 
-        rows = self._get_multiline_list("PredictionModels", "ENABLED_MODELS")
+        rows = self._get_multiline_list("PredictionModels", key)
         slots = []
         for row in rows:
             if row.startswith((";", "#")):
@@ -295,7 +341,7 @@ class Settings:
                 fields.append("main")
             if len(fields) != 4:
                 raise ValueError(
-                    "Each [PredictionModels] ENABLED_MODELS row must be "
+                    f"Each [PredictionModels] {key} row must be "
                     "'schema_version | target | horizon_minutes | variant' "
                     f"(variant optional). Got: {row!r}"
                 )
@@ -322,11 +368,9 @@ class Settings:
         ]
         if duplicates:
             raise ValueError(
-                "Duplicate slots in [PredictionModels] ENABLED_MODELS: "
+                f"Duplicate slots in [PredictionModels] {key}: "
                 f"{sorted(set(duplicates))}"
             )
-
-        self._cache["prediction_model_slots"] = slots
         return slots
 
     # =========================================================================

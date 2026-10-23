@@ -53,6 +53,62 @@ def historical_filename(*, schema_version: str, limit_date: str) -> str:
     return f"historical_training_data_{schema_version}_{limit_date}.parquet"
 
 
+#: Under a version's folder: the training datasets kept one season per file
+#: (``nba_ou.create_training_data.season_partitions``).
+SEASONS_SUBDIR = "seasons"
+
+#: ``season=2025.json`` (the manifest) and ``season=2025.<16 hex>.parquet``
+#: (an immutable data file named by its checksum; the name without one is the
+#: first layout's).
+_PARTITION_FILENAME_RE = re.compile(
+    r"^season=(?P<season>\d{4})(?:\.(?P<digest>[0-9a-f]{16}))?"
+    r"\.(?P<ext>parquet|json)$"
+)
+
+
+def season_partitions_prefix(
+    *, dataset_type: str, schema_version: str, root: str = TRAIN_DATA_PREFIX
+) -> str:
+    """``train_data/2_5/seasons/intermediate_line/``."""
+    if not re.fullmatch(r"[a-z_]+", dataset_type):
+        raise ValueError(f"Not a dataset type: {dataset_type!r}")
+    return train_data_key(
+        schema_version=schema_version,
+        filename=f"{SEASONS_SUBDIR}/{dataset_type}/",
+        root=root,
+    )
+
+
+def season_partition_key(
+    *,
+    dataset_type: str,
+    schema_version: str,
+    season: int,
+    ext: str = "parquet",
+    digest: str | None = None,
+    root: str = TRAIN_DATA_PREFIX,
+) -> str:
+    """``train_data/2_5/seasons/closing_line/season=2025.json`` (the manifest),
+    or with ``digest`` the data file ``season=2025.<digest>.parquet``."""
+    filename = (
+        f"season={int(season):04d}" + (f".{digest}" if digest else "") + f".{ext}"
+    )
+    if not _PARTITION_FILENAME_RE.match(filename):
+        raise ValueError(f"Not a season partition name: {filename!r}")
+    prefix = season_partitions_prefix(
+        dataset_type=dataset_type, schema_version=schema_version, root=root
+    )
+    return prefix + filename
+
+
+def parse_season_partition_key(key: str) -> tuple[int, str] | None:
+    """``(season, ext)`` of a season partition key, or None."""
+    match = _PARTITION_FILENAME_RE.match(key.rsplit("/", 1)[-1])
+    if match is None:
+        return None
+    return int(match["season"]), match["ext"]
+
+
 def is_unversioned_key(key: str, *, root: str = TRAIN_DATA_PREFIX) -> bool:
     """True for a dataset sitting loose at the root of the prefix.
 
