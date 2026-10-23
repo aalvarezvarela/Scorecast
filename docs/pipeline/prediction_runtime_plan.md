@@ -34,11 +34,75 @@ spends time re-checking that, the plan trusts what is stored instead. A
 correction to a past season's data then needs an explicit rebuild of the
 caches; a command for that is part of A.
 
+## How "nothing changes" is tested
+
+Two levels, both required before a change is merged.
+
+**1. End-to-end parity: old code against new code, same inputs.** A new script,
+`scripts/perf/prediction_runtime_parity.py`, runs what `predict_nba_games.py`
+runs for one replayed moment and dumps the result:
+- the closing frame, the intermediate frame and its scoring sidecar;
+- the predictions of all 51 slots.
+
+The run is made the same on both sides:
+- **Inputs:** the replayed date and `as_of` come from
+  `live_replay.replay_live_game_day` / `replay_scheduled_data`. Every database
+  read is recorded once with `db_tape.record`, and the candidate replays the
+  tape (`db_tape.replay`). So the databases' daily changes cannot move a value.
+- **Models:** the reference records the `fit_id` each slot resolved to, and the
+  candidate predicts with those exact builds. A promotion in between cannot
+  move a prediction.
+- **Code:** the reference is a worktree pinned to the commit before the plan
+  (`--code-root`, as the existing perf scripts do).
+- **Hash seed:** `PYTHONHASHSEED=0`, because the `ROSTER_*_PCT` columns vary
+  without it.
+- **No shared writes:** persistence is off, and the memo and input cache are
+  local directories.
+
+The two dumps are compared with `compare_builds.compare(exact=True)` for frames
+and exact equality for predictions. The result must be `RESULT: EQUAL`.
+
+Dates:
+- 2026-04-10 (15 games, regular season, a full 2025-26 season of history behind
+  it);
+- 2026-10-22 (2 games, start of season: the current season is almost empty).
+
+Each date is run at two moments: a morning `as_of` (long horizons, referees
+masked) and one ~1 h before the first tip. For the caches (A2, F), each
+candidate is run twice in a row, so both the run that fills a cache and the
+run that reads it are compared with the reference.
+
+For B, the latest rows are also compared with the latest rows of a full build
+from the *new* code (`--full-intermediate`), so B is tested on its own as well
+as through the end-to-end comparison.
+
+**2. Unit tests in `tests/` (run in CI).** Each change adds tests that fail if
+the shortcut ever returns something different from the slow path, on small
+synthetic frames:
+- A1: an expired but stored finished season is served from S3, and its frame
+  equals the database read. The current season is always queried.
+- A2: a frozen-key hit returns the same table as a validated recompute. The
+  current season is never frozen. A new base schema or main book misses. The
+  escape hatch restores validated keys.
+- B: `latest-only` gives the same latest rows as the full build, on a fixture
+  with games at two tip times. It falls back to the full build when any slot
+  reads `own`.
+- C: the in-process load cache returns frames equal to a fresh load, and
+  changing a returned frame does not change the next one.
+- D: a cached model with a matching sha256 is used, and a mismatched one is
+  downloaded again.
+- F: a day-cache hit equals a recompute. Changed current-season inputs (a
+  corrected game) miss. A new day misses.
+
+The existing parity scripts (`live_replay_parity.py`,
+`closing_prediction_parity.py`, `point_in_time_parity.py`, `target_parity.py`)
+must still report `EQUAL`.
+
 ## Step 0: reference and profile (no code change)
 
-- Build and dump the reference outputs of both dates with the current code:
-  `predict_nba_games.py --dump-frames` through the no-write guard used for
-  the timings, plus the slot predictions. Replay mode with a fixed `as_of`.
+- Write `scripts/perf/prediction_runtime_parity.py` (see above). Build and dump
+  the reference outputs of both dates and both moments with the current code,
+  recording the database tape and the `fit_id` of every slot.
 - Profile one warm run per stage and per slot. In particular, split the
   2–4 s per slot into model loading, input limits and prediction, so D is aimed
   at the real cost.
@@ -109,6 +173,26 @@ and shrinkage fits over ~39k history rows (169 s + ~212 s warm).
 - Check: the latest rows and every intermediate prediction are bit-identical to
   the reference on both dates. Run the existing intermediate parity scripts
   (`point_in_time_parity.py`, `live_replay_parity.py`) too.
+
+### F. Day cache: the current season up to yesterday, and tonight's crews (expected: measured in step 0)
+
+A2 covers finished seasons. The current season is never memoised, because it
+gains games every day. **Within one day** it does not change: last night's
+games are in after the morning update, and the runs during the day add none.
+- Keep the same per-season memo entries for the current season, keyed on the
+  game date and a digest of the current season's inputs as loaded (games, box
+  scores, odds after repair, injuries, reports). The first run of the day
+  computes and stores them, and later runs read them. If a run's database
+  update corrects a past game of the season, the digest changes and the entry is
+  recomputed. The current season is small, so the digest is cheap.
+- Referee features of tonight's games: reuse the first run's result when the
+  crew of a game and the referee history are the same.
+- Stored locally on the runner (`~/.cache/nba_ou/day`), removed after the day.
+  No S3 writes.
+- The gain grows through the season: almost none in October, more by March.
+  Step 0's profile at 2026-04-10 sizes it. Skip F if it is small.
+- Check: end-to-end parity on the first and second run of the day, and the
+  unit tests above.
 
 ### C. Load each input table once per run (expected −0.5 to −1 min)
 
