@@ -1,7 +1,8 @@
 # Odds source alternatives to Sportsbook Review
 
-Status: **Research** (checked 2026-10-22) — notes from 2026-10-21; nothing here
-is implemented.
+Status: **Partial** (checked 2026-10-22) — research notes from 2026-10-21. Only
+the OddsTrader archive is implemented (2026-10-22, "S3 archive" below): a copy
+in S3, not a model input. Using any source as a backup or as features remains.
 
 The question was
 whether another source could back up Sportsbook Review (SBR) when the site is
@@ -93,8 +94,15 @@ Notes:
   - field aliases break its proxy ("Undefined response from proxy");
   - URLs over about 8 KB return 414;
   - `sportsbooks(...)` fails because the proxy injects bad defaults, so book
-    names come from `sportsbook(sbid: X)` one at a time;
+    names come from `sportsbook(sbid: X) { paid nam }` one at a time. `sbid`
+    is not `paid`: several sbids point at one `paid`, and the names are
+    messy, so the `paid` → book map is curated in
+    `src/nba_ou/fetch_data/odds_oddstrader/books.py`;
   - lines are returned only when `paid` is passed explicitly.
+- **Batching works.** A POST whose JSON body is a list of `{"query": ...}`
+  objects returns a list of results. `lineHistory` takes one `paid` and one
+  `mtid`, so a game is ~80 queries (about 27 books × 3 markets); batched, that
+  is one request of ~1 s and ~70 KB gzipped. POST also avoids the 414 limit.
 
 ### Ids and queries (NBA)
 
@@ -102,16 +110,29 @@ Notes:
 - **Markets (`mtid`):** 402 total, 401 spread, 83 moneyline, all including
   overtime. Totals use the Over/Under participants `partid` 15143 / 15144.
 - **Day's games:** `eventsByDateNew(lid: [5], startDate: <epoch ms>, hoursRange: 24, mtid: [402], showEmptyEvents: true) { events { eid dt des es } }`.
-  `dt` is the tip-off in epoch ms and `des` is `"Away@Home"`.
+  `dt` is the tip-off in epoch ms and `des` is `"Away@Home"`, with
+  inconsistent names ("San Antonio", "L.A. Lakers"). The reliable teams are
+  `participants { partid ih source { ... on Team { nam abbr } } }`: `ih`
+  marks the home team, `abbr` is the NBA tricode and the team `partid` is
+  stable across seasons. `scores { partid val pn }` gives points per period.
 - **Books present on a game:**
-  `currentLines(eid: [<eid>], mtid: [402], paid: [1, ..., 400])`. Add
-  `needSbid: true` to get `sbid`.
+  `currentLines(eid: [<eid>, ...], mtid: [402, 401, 83], paid: [1, ..., 400])`.
+  `eid` takes a list, so one request covers a whole slate. Add
+  `needSbid: true` to get `sbid`. A book with no current line on a game has
+  no history on it either: none of the 600 absent (market, `paid`) pairs of a
+  2024 game had any.
 - **Ticks:** `lineHistory(eid: <eid>, mtid: 402, paid: <paid>, partid: [15143, 15144]) { tim lines }`.
   - `partid` is required; without it the result is empty.
   - Each line carries `tim` (epoch ms of the change), `adj` (the line), `ap`
     (American price), `pri` (decimal price), `partid` and `lineid`.
-  - Spread and moneyline use the same query with `mtid` 401 / 83 and team
-    `partid`s. This was not tested.
+  - Spread and moneyline use the same query with `mtid` 401 / 83 and the two
+    team `partid`s (tested 2026-10-22). A spread `adj` is the team's handicap,
+    so a home favourite is negative, the same sign as SBR's `homeSpread`. On
+    the moneyline `adj` is 0.
+  - The minute buckets (`tim`) are not one quote each: a bucket can hold
+    several sub-minute updates of a side, and a line's own `tim` (ms) can fall
+    in another minute than its bucket's. The parser replays lines by their own
+    `tim`.
 - **`paid` book ids:**
 
   | Id | Book | Id | Book |
@@ -131,6 +152,11 @@ Notes:
 ### Coverage over time
 
 Measured on one or two games per sampled date:
+
+- **History starts with the 2006-07 season.** 2006-01-16 has no events;
+  2007-01-15 has lines from nine books with ticks. Through 2018-19 they are
+  offshore and international books (5Dimes, BetOnline, Bovada, Bookmaker,
+  Pinnacle, bet365 international, William Hill, ...), 20 to 35 per game.
 
 | Period | US regulated books present |
 |---|---|
@@ -159,6 +185,12 @@ with SBR ticks from our own scraper.
   last-minutes move one source caught and the other did not.
 - On the 2025-11-15 games the gaps grow to 1–3 points, with last ticks 5–19 h
   before tip.
+- **All three markets** were compared on 2026-10-22 from the archive's own
+  tables, over the 14 games of 2024-01-15/16 and the six shared books
+  (Caesars included). Same line in force: totals 88–95% and spread 87–99%
+  across T-5/60/240/720. Same moneyline price: 71–86%. Line gaps are ±0.5–1
+  and moneyline gaps a few cents (−180 vs −179), so the cause is timing
+  again. Caesars' moneyline agrees least (25–43%), with one-cent differences.
 
 ### Assessment
 
@@ -172,6 +204,97 @@ with SBR ticks from our own scraper.
   family.
 - **Risk:** an undocumented internal API with no terms of use. It can close at
   any time, as SBR's previous public GraphQL did.
+
+### S3 archive
+
+Everything the API holds for the NBA is copied to S3, shaped like the SBR tick
+store so that loading it into Postgres later is a plain copy. Nothing is
+written to Postgres, there is no daily job, and no feature reads it.
+
+```
+s3://adrian-nba-model-registry-eu-west-1/train_data/odds_sources/oddstrader/
+  raw/v1/<YYYY-MM-DD>/events.json.gz   the slate (eventsByDateNew) + currentLines of its games
+  raw/v1/<YYYY-MM-DD>/<eid>.json.gz    one game: every lineHistory answer, as received
+  line_history/                        same layout as backups/db/<date>/line_history/
+    lh_book, lh_market, lh_game, lh_line_<season_year>, lh_load_meta (.parquet), manifest.json
+```
+
+- **Under `train_data/`:** the local IAM user cannot write a new top-level
+  prefix. The NBA injury-report PDFs, the other raw source archive, also live
+  under `train_data/`.
+- **`raw/` is the source of truth and insert-only.**
+  - An object that exists is never overwritten.
+  - A game is stored only when all its queries answered cleanly, and only 8 h
+    after tip-off.
+  - So an interrupted run is resumed by rerunning it, and the tables can be
+    rebuilt without the API.
+- **`line_history/` is derived and rebuilt whole.** It goes through the SBR
+  ingest path (`ingest.build_frames`), so it has the Aiven columns, types and
+  encodings:
+  - doubled half-point SMALLINT lines, with the price sentinel nulled;
+  - NOT NULL `mins_to_tip` and `is_pregame`;
+  - `is_opener` on the first tick per book and market;
+  - `left`/`right` = OVER/UNDER on totals, AWAY/HOME on spread and moneyline.
+
+  Beyond the Aiven columns, it differs in four ways:
+  - `book_id` is the OddsTrader `paid`, also kept as `lh_book.source_book_id`;
+  - `lh_game.event_id` is the OddsTrader `eid`, and its teams are tricodes;
+  - `lh_load_meta` records `UTC` / `high`, because the timestamps are epoch ms;
+  - a relisted game keeps the event with more ticks.
+- **Book slugs match SBR's** for bet365 (US feed, `paid` 106), DraftKings,
+  FanDuel, BetMGM, BetRivers and Caesars. A future merge therefore lands them
+  on the same `lh_book` rows. Books without a confident name are stored as
+  `oddstrader_<paid>`.
+- **Seasons: 2014-15 onward**, in `raw/` and in the tables. The source goes
+  back to 2006-07, with 23 to 32 books per game through 2014-17 as well, but
+  `nba_games` starts with 2014-15, so older games could not get a `game_id`
+  and were not fetched (`FIRST_SEASON` in `backfill.py`).
+- **Reading:** `nba_ou.fetch_data.odds_oddstrader.store.load_ticks(seasons)`
+  returns the frame `fetch_pregame_ticks` returns for the Aiven store.
+
+Archive contents (built 2026-10-23, all 2014-15 to 2026-10-21):
+
+- **Raw:** 4,403 dates and 16,976 events, all fetched with no gaps.
+- **Tables:**
+  - 15,474 games matched to `nba_games`, about 1,310–1,323 per full season;
+    the rest are preseason and cancelled listings;
+  - 21.4M ticks and 72 books, 166 MB of Parquet;
+  - 20 books are unnamed (`oddstrader_<paid>`). Some have long coverage:
+    `paid` 15 2014–25, 123 from 2021.
+- **Orientation, every season:** the std of (home margin − market home margin)
+  at the close is 11.8–14.0 as stored against 17.1–21.4 flipped. The
+  devigged home moneyline probability is 0.54–0.59.
+- **Parity with SBR**: share of (game, book) with the same line, or the same
+  price for moneyline, from T-5 to T-720:
+
+  | Season | Totals | Spread | Moneyline |
+  |---|---|---|---|
+  | 2021-22 to 2024-25 | 0.85–0.97 | 0.88–0.97 | 0.68–0.80 |
+  | 2025-26 (Oct–Dec only) | 0.82–0.89 | 0.88–0.95 | 0.60–0.73 |
+  | 2019-20 (bet365, FanDuel) | 0.46–0.83 | 0.72–0.90 | 0.89–0.95 |
+
+  - The moneyline gaps are mostly Caesars (0.20–0.36 in every season) and
+    BetMGM in 2022-23 (0.27–0.31). These are cent-level price differences.
+  - In 2019-20, totals agree only 46% at T-5 but 83% at T-720. That is the
+    pattern of a timestamp offset. 2019-20 is one of the two SBR seasons whose
+    timezone could not be pinned (`lh_load_meta` confidence "low"), while
+    OddsTrader's times are explicit UTC. This archive could therefore settle
+    SBR's 2019-20 and 2020-21 timezone. Not done yet.
+- **Coverage notes:**
+  - 5Dimes ends with 2022-23 and Pinnacle with 2024-25.
+  - MyBookie's last pre-game tick is a median 4–6 h before tip from 2022-23
+    on, so it is stale at the close.
+
+Commands, under `scripts/line_history/oddstrader/`:
+
+- `backfill_oddstrader_raw.py`:
+  - fetches the raw archive, season by season in priority order (2021-24
+    first);
+  - is resumable, and `--dry-run` reports what is left;
+  - takes about 2.5 s per game, roughly 12 h for 2014-15 to today.
+- `build_oddstrader_line_history.py` turns `raw/` into `line_history/`.
+- `compare_oddstrader_vs_sbr.py` reports coverage, freshness, the spread and
+  moneyline orientation against realised margins, and parity with SBR.
 
 ## What sits behind sportsbookreview.com today
 
