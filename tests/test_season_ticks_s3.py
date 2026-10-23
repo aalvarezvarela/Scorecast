@@ -99,7 +99,19 @@ def test_unchanged_seasons_are_only_touched_and_changed_ones_reuploaded(
     assert fetch.refresh_season_ticks(store, [2023])[2023].startswith("uploaded")
 
 
-def test_stale_seasons_are_fetched(monkeypatch, tmp_path):
+def test_stale_finished_seasons_are_served_from_s3(monkeypatch, tmp_path):
+    server, store = _setup(monkeypatch, tmp_path)
+    fetch.refresh_season_ticks(
+        store, [2022], now=pd.Timestamp.now(tz="UTC") - pd.Timedelta(days=30)
+    )
+    server["fetches"].clear()
+    ticks = fetch.fetch_closing_ticks(season_years=[2022], use_cache=True)
+    assert server["fetches"] == []
+    assert_identical(ticks, _direct([2022]))
+
+
+def test_without_trust_stale_seasons_are_fetched(monkeypatch, tmp_path):
+    monkeypatch.setenv("NBA_OU_TRUST_FINISHED_SEASONS", "0")
     server, store = _setup(monkeypatch, tmp_path)
     fetch.refresh_season_ticks(
         store, [2022], now=pd.Timestamp.now(tz="UTC") - pd.Timedelta(days=3)
@@ -143,3 +155,13 @@ def test_pregame_ticks_are_served_from_s3_as_the_builder_fetches_them(
     assert server["fetches"] == [2024]
     assert_identical(ticks, _direct([2022, 2023, 2024]))
     assert set(ticks.attrs["season_fingerprints"]) == {2022, 2023, 2024}
+
+
+def test_check_only_compares_without_writing(monkeypatch, tmp_path):
+    server, store = _setup(monkeypatch, tmp_path)
+    fetch.refresh_season_ticks(store, [2022])
+    puts = len(store.s3.put_order)
+    server["version"][2022] = 2
+    checked = fetch.refresh_season_ticks(store, [2022, 2023], check_only=True)
+    assert checked[2022].startswith("CHANGED") and checked[2023] == "not stored"
+    assert len(store.s3.put_order) == puts

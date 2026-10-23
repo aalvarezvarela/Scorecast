@@ -39,10 +39,11 @@ from nba_ou.postgre_db.row_order import (
 )
 from nba_ou.postgre_db.season_store import SeasonStore
 from nba_ou.postgre_db.season_tables import (
-    MAX_VALIDATION_AGE,
     SeasonTable,
     assemble,
+    check_outcome,
     current_season_year,
+    servable,
 )
 
 #: Seasons a "every season" read probes in the store.
@@ -124,7 +125,7 @@ def read_season_query(
 
     def stored(season):
         entry = store.entry(spec.dataset, key, season)
-        if entry is None or now - entry.validated_at > MAX_VALIDATION_AGE:
+        if not servable(entry, now):
             return None
         return store.read(spec.dataset, key, season, entry)
 
@@ -158,6 +159,7 @@ def refresh_season_query(
     conn,
     now: pd.Timestamp | None = None,
     force: bool = False,
+    check_only: bool = False,
 ) -> dict[int, str]:
     now = pd.Timestamp.now(tz="UTC") if now is None else pd.Timestamp(now)
     current = current_season_year(now)
@@ -169,6 +171,9 @@ def refresh_season_query(
             continue
         fingerprint = season_query_fingerprint(spec, conn, season)
         entry = store.entry(spec.dataset, key, season)
+        if check_only:
+            outcome[season] = check_outcome(entry, fingerprint)
+            continue
         if entry is not None and entry.fingerprint == fingerprint and not force:
             store.touch(spec.dataset, key, season, entry, now)
             outcome[season] = "unchanged"

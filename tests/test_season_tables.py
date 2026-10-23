@@ -144,7 +144,21 @@ def test_refresh_then_read_equals_the_single_query(setup, spec):
     )
 
 
-def test_stale_or_missing_seasons_come_from_the_database(setup, spec):
+def test_stale_finished_seasons_are_served_and_missing_ones_queried(setup, spec):
+    db, store, _ = setup
+    refresh_season_table(
+        spec, [2022], store=store, conn=None, now=NOW - pd.Timedelta(days=30)
+    )
+    refresh_season_table(spec, [2023], store=store, conn=None, now=NOW)
+    frame, summary = read_season_table(
+        spec, [2022, 2023, 2024], [], store=store, conn=None, now=NOW
+    )
+    assert summary["s3"] == [2022, 2023] and summary["db"] == [2024]
+    assert frame_differences(frame, db.single_query({2022, 2023, 2024}, set())) == []
+
+
+def test_without_trust_stale_seasons_come_from_the_database(setup, spec, monkeypatch):
+    monkeypatch.setenv("NBA_OU_TRUST_FINISHED_SEASONS", "0")
     db, store, _ = setup
     refresh_season_table(
         spec, [2022], store=store, conn=None, now=NOW - pd.Timedelta(days=3)
@@ -244,3 +258,30 @@ def test_read_through_steps_aside_whenever_it_cannot_serve(monkeypatch):
     monkeypatch.setattr(season_tables, "read_season_table", broken)
     assert season_tables.read_through(dataset, [2024], [], conn) is None
     assert conn.rolled_back  # the loader's own query can still run
+
+
+def test_check_only_compares_without_writing(setup, spec):
+    _, store, version = setup
+    refresh_season_table(spec, [2022], store=store, conn=None, now=NOW)
+    puts = len(store.s3.put_order)
+    assert refresh_season_table(
+        spec, [2022, 2023], store=store, conn=None, now=NOW, check_only=True
+    ) == {2022: "unchanged", 2023: "not stored"}
+    version["value"] = "v2"
+    checked = refresh_season_table(
+        spec, [2022], store=store, conn=None, now=NOW, check_only=True
+    )
+    assert checked[2022].startswith("CHANGED")
+    assert len(store.s3.put_order) == puts
+
+
+def test_servable(monkeypatch):
+    from nba_ou.postgre_db.season_store import SeasonEntry
+
+    old = SeasonEntry([1], NOW - pd.Timedelta(days=200), 10, "x")
+    recent = SeasonEntry([1], NOW - pd.Timedelta(hours=1), 10, "x")
+    assert not season_tables.servable(None, NOW)
+    assert season_tables.servable(old, NOW) and season_tables.servable(recent, NOW)
+    monkeypatch.setenv("NBA_OU_TRUST_FINISHED_SEASONS", "0")
+    assert not season_tables.servable(old, NOW)
+    assert season_tables.servable(recent, NOW)

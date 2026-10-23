@@ -136,9 +136,13 @@ def merge_and_validate_scheduled_odds(
         scheduled_ids = set(df_odds_predict["game_id"].astype(str))
         df_odds = df_odds[~df_odds["game_id"].astype(str).isin(scheduled_ids)]
 
-    # Concatenate and sort
+    # Concatenate and sort. Stable, so a date's games keep the loader's order:
+    # an unstable sort put them in an order that depended on every other date,
+    # tonight's included, and so changed from one day to the next.
     df_odds_combined = pd.concat([df_odds, df_odds_predict], ignore_index=True)
-    df_odds_combined.sort_values(by="game_date", inplace=True, ascending=False)
+    df_odds_combined.sort_values(
+        by="game_date", inplace=True, ascending=False, kind="stable"
+    )
     df_odds_combined.reset_index(drop=True, inplace=True)
 
     return df_odds_combined

@@ -19,9 +19,11 @@ The result must be the frame the single query gives through
   sort the same everywhere, or by concatenating seasons in query order), and
   ``canonical_row_order`` fixes the order inside each run.
 
-A season is read from S3 only if its manifest was validated within
-``MAX_VALIDATION_AGE``; otherwise it is queried, so a refresher that stops
-running makes loads slower, never stale.
+A finished season is read from S3 whenever it is stored (``servable``): the
+2_5 inputs of a finished season are frozen, and the refresher still replaces
+an entry whose server fingerprint changed. ``NBA_OU_TRUST_FINISHED_SEASONS=0``
+restores the older rule, a season validated within ``MAX_VALIDATION_AGE`` or
+queried, under which a refresher that stops running makes loads slower.
 """
 
 from __future__ import annotations
@@ -44,13 +46,32 @@ from nba_ou.postgre_db.row_order import (
 from nba_ou.postgre_db.season_store import SeasonStore
 from nba_ou.utils.general_utils import get_season_year_from_date
 
-#: A season validated longer ago than this is read from the database.
+#: With ``NBA_OU_TRUST_FINISHED_SEASONS=0``, a season validated longer ago
+#: than this is read from the database.
 MAX_VALIDATION_AGE = pd.Timedelta(hours=36)
 
 
 def s3_seasons_enabled() -> bool:
     """``NBA_OU_S3_SEASONS=0`` makes every loader query the database only."""
     return os.environ.get("NBA_OU_S3_SEASONS", "1") != "0"
+
+
+def trust_finished_seasons() -> bool:
+    """``NBA_OU_TRUST_FINISHED_SEASONS=0`` serves only recently validated seasons."""
+    return os.environ.get("NBA_OU_TRUST_FINISHED_SEASONS", "1") != "0"
+
+
+def servable(entry, now: pd.Timestamp) -> bool:
+    """Whether a stored finished season is served instead of queried.
+
+    Only finished seasons are ever stored. Their 2_5 inputs are frozen, so a
+    stored season is served whatever its age; the refresher still replaces it
+    when the server's fingerprint changes. With ``trust_finished_seasons()``
+    off, it must have been validated within ``MAX_VALIDATION_AGE``.
+    """
+    if entry is None:
+        return False
+    return trust_finished_seasons() or now - entry.validated_at <= MAX_VALIDATION_AGE
 
 
 @dataclass(frozen=True)
@@ -260,7 +281,7 @@ def read_season_table(
 
     def _stored(season: int) -> pd.DataFrame | None:
         entry = store.entry(spec.dataset, key, season)
-        if entry is None or now - entry.validated_at > MAX_VALIDATION_AGE:
+        if not servable(entry, now):
             return None
         return store.read(spec.dataset, key, season, entry)
 
@@ -317,6 +338,15 @@ def _by_season_in_query_order(spec: SeasonTable, pieces) -> list[pd.DataFrame]:
     return [seasons[s] for s in sorted(seasons, reverse=descending)]
 
 
+def check_outcome(entry, fingerprint) -> str:
+    """A refresher's ``check_only`` verdict on one stored season."""
+    if entry is None:
+        return "not stored"
+    if entry.fingerprint == fingerprint:
+        return "unchanged"
+    return "CHANGED: the server no longer matches the stored season"
+
+
 def refresh_season_table(
     spec: SeasonTable,
     seasons: list[int],
@@ -325,11 +355,13 @@ def refresh_season_table(
     conn,
     now: pd.Timestamp | None = None,
     force: bool = False,
+    check_only: bool = False,
 ) -> dict[int, str]:
     """Validate (and if changed, refetch and upload) each past season.
 
     The fingerprint is taken before the fetch, so data changing in between
-    leaves an entry the next refresh replaces.
+    leaves an entry the next refresh replaces. ``check_only`` compares the
+    fingerprints and writes nothing (``check_outcome``).
     """
     now = pd.Timestamp.now(tz="UTC") if now is None else pd.Timestamp(now)
     current = current_season_year(now)
@@ -341,6 +373,9 @@ def refresh_season_table(
             continue
         fingerprint = season_fingerprint(spec, conn, season)
         entry = store.entry(spec.dataset, key, season)
+        if check_only:
+            outcome[season] = check_outcome(entry, fingerprint)
+            continue
         if entry is not None and entry.fingerprint == fingerprint and not force:
             store.touch(spec.dataset, key, season, entry, now)
             outcome[season] = "unchanged"

@@ -597,8 +597,10 @@ def _horizon_workers(n_horizons: int) -> int:
     return max(1, min(8, cores - 1, n_horizons))
 
 
-#: Past this, the forked horizons are abandoned and run in turn.
-FORKED_TIMEOUT_SECONDS = 600
+#: Past this, the forked horizons are abandoned and run in turn. A cold
+#: history memo needs ~15 min on 4 cores; at 600 s the pool was abandoned and
+#: the serial rerun repeated all its work.
+FORKED_TIMEOUT_SECONDS = 3600
 
 #: The forked workers' inputs: set in the parent just before the fork, so
 #: every worker reads them from the copied memory instead of a pickle.
