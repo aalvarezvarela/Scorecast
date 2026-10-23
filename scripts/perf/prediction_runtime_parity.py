@@ -229,6 +229,12 @@ def _pinned_builds(builds: dict[str, str], record: bool, slot_seconds: dict):
 # -- run -------------------------------------------------------------------------
 
 
+def _parameters(function) -> set[str]:
+    import inspect
+
+    return set(inspect.signature(function).parameters)
+
+
 def _closing_frame(scheduled_data, date: str, configured_slots):
     """``predict_nba_games``' step 3: tonight's closing rows, layers included."""
     import pandas as pd
@@ -327,11 +333,21 @@ def run(args: argparse.Namespace) -> int:
         timings["closing_rows"] = round(time.perf_counter() - started, 1)
 
         started = time.perf_counter()
+        # As predict_nba_games, whose code may predate latest_only.
+        latest_only = bool(latest_slots) and all(
+            slot in latest_slots for slot in configured_slots if slot.horizon_minutes
+        )
         intermediate = tonight_intermediate_frame(
             scheduled_data,
             game_date=args.date,
             as_of=as_of,
             latest_input=bool(latest_slots),
+            **(
+                {"latest_only": True}
+                if latest_only
+                and "latest_only" in _parameters(tonight_intermediate_frame)
+                else {}
+            ),
         )
         timings["intermediate_rows"] = round(time.perf_counter() - started, 1)
 
@@ -436,9 +452,7 @@ def compare_runs(args: argparse.Namespace) -> int:
         reference, candidate = (
             pd.read_parquet(path)
             .drop(columns=list(WALL_CLOCK_COLUMNS))
-            .assign(
-                GAME_ID=lambda p: p[SLOT_COLUMN] + "|" + p["GAME_ID"].astype(str)
-            )
+            .assign(GAME_ID=lambda p: p[SLOT_COLUMN] + "|" + p["GAME_ID"].astype(str))
             for path in paths
         )
         ok &= compare(reference, candidate, exact=True)

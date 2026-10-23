@@ -17,6 +17,10 @@ With ``latest_input`` each game also gets the row of the run's own moment, its
 latest snapshot (``latest_snapshot_minutes``), flagged ``LATEST_INPUT``: the
 slots in ``LATEST_INPUT_SLOTS`` predict from it whatever their horizon. A game
 already tipped has its T-0 row as latest.
+
+With ``latest_only`` as well, only those latest rows are built: when every
+intermediate slot reads them, the other horizons' rows would be built for no
+prediction. Each row kept is the row the full frame holds.
 """
 
 from __future__ import annotations
@@ -95,11 +99,15 @@ def tonight_intermediate_frame(
     game_date: str | pd.Timestamp,
     as_of: pd.Timestamp | None = None,
     latest_input: bool = False,
+    latest_only: bool = False,
     verbose: bool = True,
 ) -> pd.DataFrame:
     """Tonight's (game, snapshot) rows for every horizon, with the schedule's
     display columns and the snapshot marks (``SNAPSHOT_COLUMNS``); with
-    ``latest_input``, also each game's latest snapshot (``LATEST_INPUT``)."""
+    ``latest_input``, also each game's latest snapshot (``LATEST_INPUT``), and
+    with ``latest_only`` that snapshot alone."""
+    if latest_only and not latest_input:
+        raise ValueError("latest_only needs latest_input")
     scheduled = scheduled_data["scheduled_games"]
     live = fetch_live_game_day(
         game_date,
@@ -114,16 +122,23 @@ def tonight_intermediate_frame(
         tipoffs = games.set_index(games["game_id"].astype(str))["tipoff_utc"]
         tipoffs = tipoffs[tipoffs.index.isin(live.game_ids)]
         latest = latest_snapshot_minutes(tipoffs, live.as_of)
+    snapshots = (
+        {"target_snapshots": latest}
+        if latest_only and latest
+        else {
+            "extra_target_snapshots": {
+                game: minutes
+                for game, minutes in latest.items()
+                if minutes not in DEFAULT_SNAPSHOT_GRID
+            }
+        }
+    )
     frame, scoring = create_intermediate_line_df(
         live=live,
         target_game_ids=live.game_ids,
         return_scoring=True,
-        extra_target_snapshots={
-            game: minutes
-            for game, minutes in latest.items()
-            if minutes not in DEFAULT_SNAPSHOT_GRID
-        },
         verbose=verbose,
+        **snapshots,
     )
     frame = mark_snapshots(frame, scoring, live.as_of)
     if latest_input:
