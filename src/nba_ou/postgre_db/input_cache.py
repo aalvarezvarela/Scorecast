@@ -19,7 +19,9 @@ entry), and on the pandas and numpy versions. Frames are pickled, so a cached
 frame is the fetched frame exactly: dtypes, index and values.
 
 Set ``NBA_OU_INPUT_CACHE=0`` to bypass the cache; ``NBA_OU_INPUT_CACHE_DIR``
-moves it (default ``data/cache/inputs`` in the checkout).
+moves it (default ``data/cache/inputs`` in the checkout; ``~`` is expanded). The
+workflows keep it in ``~/.cache/nba_ou/inputs``: ``actions/checkout`` cleans
+the checkout, so a cache inside it never outlives a run.
 """
 
 from __future__ import annotations
@@ -44,7 +46,9 @@ def input_cache_enabled() -> bool:
 
 
 def cache_dir() -> Path:
-    return Path(os.environ.get("NBA_OU_INPUT_CACHE_DIR", DEFAULT_CACHE_DIR))
+    return Path(
+        os.environ.get("NBA_OU_INPUT_CACHE_DIR", DEFAULT_CACHE_DIR)
+    ).expanduser()
 
 
 def code_key(*functions: Callable, **arguments) -> str:
