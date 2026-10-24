@@ -95,6 +95,16 @@ jobs:
         run: |
           python scripts/update_databases/update_line_history_database.py
 
+      # Second line-history source (OddsLogic, the odds shown on WagerTalk) in
+      # its own schema, line_history_oddslogic. Also keyed on nba_games. It
+      # writes nothing the rest of the job reads, so a failure (the widget is
+      # an undocumented endpoint) must not stop the retrain behind this job.
+      - name: Update OddsLogic line history
+        continue-on-error: true
+        timeout-minutes: 45
+        run: |
+          python scripts/update_databases/update_oddslogic_line_history.py
+
       # Must run after the line-history update: SBR day pages store each
       # book's last (often live) number, and last night's pre-tip ticks are
       # what replace it.

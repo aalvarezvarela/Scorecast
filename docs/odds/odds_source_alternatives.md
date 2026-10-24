@@ -296,6 +296,19 @@ Commands, under `scripts/line_history/oddstrader/`:
 - `compare_oddstrader_vs_sbr.py` reports coverage, freshness, the spread and
   moneyline orientation against realised margins, and parity with SBR.
 
+## OddsLogic (WagerTalk)
+
+The odds on wagertalk.com come from OddsLogic's free widget. It answers with
+each book's full line history: spread, total and moneyline, timed in UTC,
+archived from 2020-12-01. It has DraftKings, FanDuel, BetMGM, Caesars,
+Fanatics, Hard Rock and BetRivers (unlisted id 60), plus ESPN BET, Circa,
+South Point and Kalshi. **It has no bet365.**
+
+Since 2026-10-23 it is stored daily in the Aiven schema
+`line_history_oddslogic`, from the 2026-27 season on. Endpoints, book
+identification, parsing rules and parity with SBR:
+[oddslogic_line_history.md](oddslogic_line_history.md).
+
 ## What sits behind sportsbookreview.com today
 
 - **Front end:** Next.js under `/sbr-odds/`, served through CloudFront

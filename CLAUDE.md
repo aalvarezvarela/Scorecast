@@ -58,7 +58,10 @@ survived the evaluation discipline in the `experiments` skill.
     `total_line_col()`, `spread_line_home_col()`), `market_columns.py`,
     `leakage.py`, `identity_columns.py`, `dataset_versions.py`.
   - `postgre_db/`, `fetch_data/` — DB layer (Supabase + Aiven) and raw-data
-    ingestion.
+    ingestion. Line history has two Aiven stores with the same tables: SBR
+    in `line_history` (`line_history_aiven/`, read by the pipeline) and
+    OddsLogic/WagerTalk in `line_history_oddslogic` (`line_history_oddslogic/`,
+    2026-27 on, no bet365, not read yet — `docs/odds/oddslogic_line_history.md`).
 - `training_pipeline/` — second installable package: the experiment framework
   (config, data prep, walk-forward CV, Optuna tuning, holdout, betting
   evaluation, leaderboards, promotion). **Read the `experiments` skill before
