@@ -285,3 +285,33 @@ def test_servable(monkeypatch):
     monkeypatch.setenv("NBA_OU_TRUST_FINISHED_SEASONS", "0")
     assert not season_tables.servable(old, NOW)
     assert season_tables.servable(recent, NOW)
+
+
+def test_a_season_is_downloaded_once_per_process_and_copied(setup, spec, monkeypatch):
+    db, store, _ = setup
+    refresh_season_table(spec, [2023], store=store, conn=None, now=NOW)
+    gets = []
+    original = store._get
+
+    def counting(key):
+        gets.append(key)
+        return original(key)
+
+    monkeypatch.setattr(store, "_get", counting)
+    first, _ = read_season_table(spec, [2023], [], store=store, conn=None, now=NOW)
+    first.loc[:, "pts"] = -1  # a caller changing its frame changes no other's
+    second, _ = read_season_table(spec, [2023], [], store=store, conn=None, now=NOW)
+    assert sum(k.endswith(".parquet") for k in gets) == 1
+    assert frame_differences(second, db.single_query({2023}, set())) == []
+
+
+def test_without_the_memo_every_read_downloads(setup, spec, monkeypatch):
+    monkeypatch.setenv("NBA_OU_SEASON_PIECE_MEMO", "0")
+    _, store, _ = setup
+    refresh_season_table(spec, [2023], store=store, conn=None, now=NOW)
+    gets = []
+    original = store._get
+    monkeypatch.setattr(store, "_get", lambda key: gets.append(key) or original(key))
+    for _ in range(2):
+        read_season_table(spec, [2023], [], store=store, conn=None, now=NOW)
+    assert sum(k.endswith(".parquet") for k in gets) == 2

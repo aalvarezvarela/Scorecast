@@ -14,6 +14,11 @@ A frame is stored only if Parquet gives it back exactly: same columns,
 dtypes and index, floats bit for bit, and the same Python type for every
 object value (a ``date`` must not come back as a ``Timestamp``). A frame that
 would not is refused rather than stored approximately.
+
+A season read once is kept in memory for the rest of the process, keyed on its
+bytes' SHA-256: the closing and intermediate builds of one prediction run read
+the same seasons several times. Each read returns its own copy, so no caller
+can change what another reads. ``NBA_OU_SEASON_PIECE_MEMO=0`` turns it off.
 """
 
 from __future__ import annotations
@@ -21,6 +26,8 @@ from __future__ import annotations
 import hashlib
 import io
 import json
+import os
+import threading
 from dataclasses import dataclass
 
 import numpy as np
@@ -32,6 +39,15 @@ import pandas as pd
 #: 17.2). ``organize_s3_train_data.py`` only moves objects at the root of
 #: ``train_data/``, so this subfolder is left alone.
 CACHE_PREFIX = "train_data/input_cache/v1"
+
+
+#: Seasons read in this process, by (bucket, key, sha256): see the module notes.
+_PIECES: dict[tuple[str, str, str], pd.DataFrame] = {}
+_PIECES_LOCK = threading.Lock()
+
+
+def season_piece_memo_enabled() -> bool:
+    return os.environ.get("NBA_OU_SEASON_PIECE_MEMO", "1") != "0"
 
 
 class NotExactInParquet(ValueError):
@@ -142,10 +158,22 @@ class SeasonStore:
 
     def read(self, dataset: str, code_key: str, season: int, entry: SeasonEntry):
         """The season's frame, or None if missing or not the bytes ``entry`` vouches for."""
-        payload = self._get(self._key(dataset, code_key, season, "parquet"))
+        key = self._key(dataset, code_key, season, "parquet")
+        memo_key = (self.bucket, key, entry.sha256)
+        if season_piece_memo_enabled():
+            with _PIECES_LOCK:
+                held = _PIECES.get(memo_key)
+            if held is not None:
+                return held.copy(deep=True)
+        payload = self._get(key)
         if payload is None or hashlib.sha256(payload).hexdigest() != entry.sha256:
             return None
-        return from_parquet(payload)
+        frame = from_parquet(payload)
+        if season_piece_memo_enabled():
+            with _PIECES_LOCK:
+                _PIECES[memo_key] = frame
+            return frame.copy(deep=True)
+        return frame
 
     def write(
         self,
