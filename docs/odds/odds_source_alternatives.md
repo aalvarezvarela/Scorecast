@@ -69,6 +69,18 @@ Notes:
   and compare per game, book and horizon. The models learned SBR's values,
   and a systematic half-point difference is larger than the edge being chased.
 
+### TheRundown: existing RapidAPI account tested (2026-10-24)
+
+The existing credentials work for NBA 2026-27: live per-book quotes, openers,
+closes and all three core market histories were retrieved. DraftKings,
+FanDuel, BetMGM and Caesars overlap with SBR; bet365, BetRivers and Fanatics
+are absent from the authenticated catalog and official book reference.
+This is a possible **partial** technical backup. V1 closing timestamps need
+comparison against reconciled tip-offs, and the applicable RapidAPI storage
+and model-use rights remain unverified. See the
+[bounded probe and documentation review](therundown_backup_probe.md) for
+coverage counts, API-version distinctions, limitations and the repeatable CLI.
+
 ## OddsTrader
 
 `www.oddstrader.com` advertises closing and line-history data from 2020.
