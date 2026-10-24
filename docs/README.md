@@ -42,7 +42,9 @@ the folder of its topic, with a status line, and gets a row here.
 |---|---|---|---|
 | [line_history_updating.md](odds/line_history_updating.md) | Reference | Daily and backfill updates of the Aiven `line_history` store | `scripts/update_databases/update_line_history_database.py` |
 | [line_history_phase0_findings.md](odds/line_history_phase0_findings.md) | Research | Tipoff source, timezones, match rates and in-play rows behind the store | `postgre_db/line_history_aiven/` |
-| [odds_source_alternatives.md](odds/odds_source_alternatives.md) | Research | Odds APIs and OddsTrader as a backup or extra books for SBR | — |
+| [odds_source_alternatives.md](odds/odds_source_alternatives.md) | Partial | Odds APIs, OddsTrader, OddsLogic and MoviOdds as a backup or extra books for SBR; the OddsTrader S3 archive | `fetch_data/odds_oddstrader/` |
+| [oddslogic_line_history.md](odds/oddslogic_line_history.md) | Implemented | OddsLogic (WagerTalk) line history: endpoints, book ids (BetRivers = 60, no bet365), parsing rules, the `line_history_oddslogic` store and its daily update | `fetch_data/odds_oddslogic/`, `postgre_db/line_history_oddslogic/` |
+| [moviodds_line_history.md](odds/moviodds_line_history.md) | Implemented | MoviOdds bet365 line history: fixture matching, relabelled-selection rule, the `line_history_moviodds` store, its daily update and parity with SBR's bet365 | `fetch_data/odds_moviodds/`, `postgre_db/line_history_moviodds/` |
 
 ## intermediate/ — snapshot (pre-close) datasets and serving
 

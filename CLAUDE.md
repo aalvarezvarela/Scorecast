@@ -58,7 +58,12 @@ survived the evaluation discipline in the `experiments` skill.
     `total_line_col()`, `spread_line_home_col()`), `market_columns.py`,
     `leakage.py`, `identity_columns.py`, `dataset_versions.py`.
   - `postgre_db/`, `fetch_data/` — DB layer (Supabase + Aiven) and raw-data
-    ingestion.
+    ingestion. Line history has three Aiven stores with the same tables: SBR
+    in `line_history` (`line_history_aiven/`, read by the pipeline),
+    OddsLogic/WagerTalk in `line_history_oddslogic` (`line_history_oddslogic/`,
+    2026-27 on, no bet365, not read yet — `docs/odds/oddslogic_line_history.md`)
+    and MoviOdds in `line_history_moviodds` (`line_history_moviodds/`, bet365
+    only, 2026-27 on, not read yet — `docs/odds/moviodds_line_history.md`).
 - `training_pipeline/` — second installable package: the experiment framework
   (config, data prep, walk-forward CV, Optuna tuning, holdout, betting
   evaluation, leaderboards, promotion). **Read the `experiments` skill before
@@ -91,8 +96,14 @@ survived the evaluation discipline in the `experiments` skill.
 - `.claude/skills/` — `experiments` (repo-specific training and evaluation)
   and four portable skills (`feature-engineering`, `sports-model-pipeline`,
   `odds-data-architecture`, `sports-data-architecture`).
-- `tests/` — pytest, one `test_*.py` per module; run in CI by
-  `.github/workflows/tests.yml`.
+- `tests/` — pytest, grouped by the module under test: `core/`, `datasets/`,
+  `features/`, `ingestion/`, `training/`, `prediction/`, `storage/`, and
+  `reporting/`. Shared builders and fakes live in `support/`, reference
+  implementations in `support/legacy/`. See `tests/README.md` for ownership
+  rules and `tests/MIGRATION.md` for the file mapping. Run the full suite with
+  `python -m pytest`; CI uses `.github/workflows/tests.yml`. Do not import
+  another test module for helpers; use `tests.support`. Resolve repository
+  paths through `tests.support.paths.REPO_ROOT`.
 - `streamlit/`, `.github/workflows/` — dashboard and the operational
   lifecycle (daily predict, DB updates, retrain → smoke test → promote,
   backups).
@@ -191,6 +202,20 @@ results. In short:
   marked `SNAPSHOT_PASSED` (False = built from the ticks so far, not the
   trained snapshot). A failing slot does not stop the others; the run exits 1
   at the end. `--no-persist` predicts without storing.
+- Intermediate input mode (`INTERMEDIATE_INPUT_MODE` under
+  `[PredictionModels]`, `--intermediate-input` per run): in `latest` (the
+  configured default) the slots in `LATEST_INPUT_SLOTS` (default `all`)
+  predict each game's latest snapshot, the run's own moment, limited to what
+  their training rows carried (`nba_ou.prediction.input_limits`); in `own`
+  every slot reads the row of its own horizon. `scripts/predict_past_snapshots.py`
+  is the end-of-day `own` run. Details: `docs/intermediate/live_prediction.md`.
+- TabPFN runs on its own (`scripts/predict_tabpfn.py`, dispatch-only workflow
+  `nba_predictor_daily_tabpfn_client.yml`): one target and one line per run
+  (default `line_error` at the closing line; `--line intermediate` follows a
+  fixed horizon, T-360 by default). TabPFN keeps no model, so each run fits it
+  with `tabpfn-client` on the rows, features, NaN budget and window of that
+  slot's production spec, read from the season partitions, and predicts
+  tonight's rows. Stored as `model_builds.kind` 3 / `runs.workflow` 3.
 
 ## Adding or changing features
 
