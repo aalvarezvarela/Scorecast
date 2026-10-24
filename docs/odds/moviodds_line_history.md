@@ -1,8 +1,10 @@
 # MoviOdds bet365 line history
 
-Implemented on 2026-10-24 in `line_history_moviodds`, independently of SBR and
-WagerTalk/OddsLogic. This phase provides ingestion, raw archives, readers and
-comparison tools. Training and prediction do not consume it yet.
+Status: **Implemented** (2026-10-24). This is the bet365 line-history source
+beside SBR, stored in the Aiven schema `line_history_moviodds` from the 2026-27
+season on, independently of SBR and WagerTalk/OddsLogic. This phase provides
+ingestion, raw archives, readers and comparison tools. Training and prediction
+do not consume it yet.
 
 ## Storage contract
 

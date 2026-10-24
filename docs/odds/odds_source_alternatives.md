@@ -1,8 +1,10 @@
 # Odds source alternatives to Sportsbook Review
 
-Status: **Partial** (checked 2026-10-22) — research notes from 2026-10-21. Only
-the OddsTrader archive is implemented (2026-10-22, "S3 archive" below): a copy
-in S3, not a model input. Using any source as a backup or as features remains.
+Status: **Partial** (checked 2026-10-24) — research notes from 2026-10-21.
+Implemented: the OddsTrader archive (2026-10-22, "S3 archive" below), a copy in
+S3, and two line-history stores beside SBR, OddsLogic (2026-10-23) and MoviOdds
+for bet365 (2026-10-24). None is a model input yet. Using any source as a
+backup or as features remains.
 
 The question was
 whether another source could back up Sportsbook Review (SBR) when the site is
@@ -320,6 +322,19 @@ Since 2026-10-23 it is stored daily in the Aiven schema
 `line_history_oddslogic`, from the 2026-27 season on. Endpoints, book
 identification, parsing rules and parity with SBR:
 [oddslogic_line_history.md](oddslogic_line_history.md).
+
+## MoviOdds (bet365)
+
+MoviOdds publishes bet365's pregame history per fixture: total, spread and
+moneyline, every price change timed in UTC, in decimal odds. It is the same
+bet365 feed SBR had: on the first 16 games of 2026-27, before SBR froze,
+moneyline prices matched 16/16 and spread quotes 15/16. It has no games from
+earlier seasons, so it cannot backfill or be checked against SBR's history.
+
+From 2026-10-24 the code stores it in the Aiven schema `line_history_moviodds`,
+with a daily step after OddsLogic. Fixture matching, the rule for selections
+the provider relabels with the other team's name, and parity with SBR:
+[moviodds_line_history.md](moviodds_line_history.md).
 
 ## What sits behind sportsbookreview.com today
 
