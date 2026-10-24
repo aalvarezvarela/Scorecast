@@ -1,0 +1,224 @@
+"""Reads and writes of the Covers line-history store.
+
+Writes are insert-only, as in the SBR store: ``lh_game`` and ``lh_line`` both
+go in with ``ON CONFLICT DO NOTHING``, ticks through ``COPY`` into an UNLOGGED
+staging table and one ``INSERT ... SELECT`` per season. With ``commit=False``
+the writes join the caller's transaction, so a game and its lines land
+together or not at all (``update.ingest_games``). Reads return the frames
+``line_history_aiven.fetch`` returns, decoded the same way.
+"""
+
+from __future__ import annotations
+
+import json
+from collections.abc import Iterable
+
+import pandas as pd
+import psycopg
+from psycopg import sql
+
+from nba_ou.postgre_db.line_history_aiven.fetch import (
+    ALL_MARKETS,
+    DEFAULT_MIN_MINUTES_BEFORE_TIP,
+    GAME_COLUMNS,
+    TICK_COLUMNS,
+    _decode_ticks,
+    _rows_to_frame,
+)
+from nba_ou.postgre_db.line_history_aiven.load import (
+    GAME_DIM_INSERT_COLUMNS,
+    STAGING_TABLE,
+    _to_native,
+)
+from nba_ou.postgre_db.line_history_aiven.transform import OUTPUT_COLUMNS
+
+from .schema import SCHEMA
+
+
+def insert_games(
+    conn: psycopg.Connection, game_dim: pd.DataFrame, *, commit: bool = True
+) -> int:
+    """Add unseen games; a stored game is never changed."""
+    if game_dim.empty:
+        return 0
+    query = sql.SQL(
+        "INSERT INTO {}.lh_game ({cols}) VALUES ({vals}) "
+        "ON CONFLICT (game_id) DO NOTHING"
+    ).format(
+        sql.Identifier(SCHEMA),
+        cols=sql.SQL(", ").join(map(sql.Identifier, GAME_DIM_INSERT_COLUMNS)),
+        vals=sql.SQL(", ").join(sql.Placeholder() * len(GAME_DIM_INSERT_COLUMNS)),
+    )
+    inserted = 0
+    with conn.cursor() as cur:
+        for row in game_dim[GAME_DIM_INSERT_COLUMNS].itertuples(index=False, name=None):
+            cur.execute(query, tuple(_to_native(value) for value in row))
+            inserted += cur.rowcount
+    if commit:
+        conn.commit()
+    return inserted
+
+
+def insert_lines(
+    conn: psycopg.Connection,
+    rows: pd.DataFrame,
+    season_year: int,
+    *,
+    commit: bool = True,
+) -> int:
+    """COPY one season's rows to staging and merge them; returns rows inserted."""
+    staging = sql.Identifier(STAGING_TABLE)
+    schema = sql.Identifier(SCHEMA)
+    cols = sql.SQL(", ").join(map(sql.Identifier, OUTPUT_COLUMNS))
+    with conn.cursor() as cur:
+        cur.execute(sql.SQL("DROP TABLE IF EXISTS {}.{}").format(schema, staging))
+        cur.execute(
+            sql.SQL(
+                "CREATE UNLOGGED TABLE {}.{} (LIKE {}.lh_line INCLUDING DEFAULTS)"
+            ).format(schema, staging, schema)
+        )
+        copy_sql = sql.SQL("COPY {}.{} ({cols}) FROM STDIN").format(
+            schema, staging, cols=cols
+        )
+        with cur.copy(copy_sql) as copy:
+            for row in rows[OUTPUT_COLUMNS].itertuples(index=False, name=None):
+                copy.write_row(tuple(_to_native(value) for value in row))
+        cur.execute(
+            sql.SQL(
+                """
+                INSERT INTO {schema}.lh_line ({cols})
+                SELECT {cols} FROM {schema}.{staging}
+                WHERE season_year = %s
+                ON CONFLICT (game_id, market_id, book_id, line_ts, season_year)
+                DO NOTHING
+                """
+            ).format(schema=schema, staging=staging, cols=cols),
+            (int(season_year),),
+        )
+        inserted = cur.rowcount
+        cur.execute(sql.SQL("DROP TABLE IF EXISTS {}.{}").format(schema, staging))
+    if commit:
+        conn.commit()
+    return inserted
+
+
+def record_load(
+    conn: psycopg.Connection,
+    *,
+    season_year: int,
+    source_rows: int,
+    loaded_rows: int,
+    dropped: dict[str, int],
+) -> None:
+    """``lh_load_meta`` for the season: the last run's counts, UTC, high confidence."""
+    with conn.cursor() as cur:
+        cur.execute(
+            sql.SQL(
+                """
+                INSERT INTO {}.lh_load_meta
+                    (season_year, timezone, confidence, source_rows,
+                     loaded_rows, dropped_rows, loaded_at)
+                VALUES (%s, 'UTC', 'high', %s, %s, %s, now())
+                ON CONFLICT (season_year) DO UPDATE SET
+                    source_rows = EXCLUDED.source_rows,
+                    loaded_rows = EXCLUDED.loaded_rows,
+                    dropped_rows = EXCLUDED.dropped_rows,
+                    loaded_at = EXCLUDED.loaded_at
+                """
+            ).format(sql.Identifier(SCHEMA)),
+            (int(season_year), int(source_rows), int(loaded_rows), json.dumps(dropped)),
+        )
+    conn.commit()
+
+
+def stored_game_books(
+    conn: psycopg.Connection, season_year: int
+) -> dict[str, set[int]]:
+    """game_id -> book ids holding ticks in all three markets, for every stored
+    game of the season. A book missing a market counts as missing, so an answer
+    that came back empty for one request type is asked for again.
+
+    A stored game with no complete book maps to an empty set.
+    """
+    with conn.cursor() as cur:
+        cur.execute(
+            sql.SQL(
+                """
+                SELECT g.game_id, l.book_id
+                FROM {schema}.lh_game g
+                LEFT JOIN (
+                    SELECT game_id, book_id FROM {schema}.lh_line
+                    WHERE season_year = %s
+                    GROUP BY game_id, book_id
+                    HAVING COUNT(DISTINCT market_id) = %s
+                ) l USING (game_id)
+                WHERE g.season_year = %s
+                """
+            ).format(schema=sql.Identifier(SCHEMA)),
+            (int(season_year), len(ALL_MARKETS), int(season_year)),
+        )
+        stored: dict[str, set[int]] = {}
+        for game_id, book_id in cur.fetchall():
+            books = stored.setdefault(str(game_id), set())
+            if book_id is not None:
+                books.add(int(book_id))
+    return stored
+
+
+def fetch_games(season_years: Iterable[int], conn: psycopg.Connection) -> pd.DataFrame:
+    """The ``lh_game`` rows of ``season_years``, typed like the SBR reader's."""
+    with conn.cursor() as cur:
+        cur.execute(
+            sql.SQL(
+                """
+                SELECT game_id, game_date, season_year, tipoff_utc, team_home, team_away
+                FROM {}.lh_game WHERE season_year = ANY(%s)
+                ORDER BY game_date, game_id
+                """
+            ).format(sql.Identifier(SCHEMA)),
+            ([int(s) for s in season_years],),
+        )
+        games = _rows_to_frame(cur, GAME_COLUMNS)
+    if games.empty:
+        return games
+    games["game_id"] = games["game_id"].astype(str)
+    games["game_date"] = pd.to_datetime(games["game_date"])
+    games["tipoff_utc"] = pd.to_datetime(games["tipoff_utc"], utc=True)
+    games["season_year"] = pd.to_numeric(games["season_year"]).astype("int64")
+    return games.reset_index(drop=True)
+
+
+def fetch_pregame_ticks(
+    season_years: Iterable[int],
+    conn: psycopg.Connection,
+    *,
+    markets: tuple[str, ...] = ALL_MARKETS,
+    min_minutes_before_tip: int = DEFAULT_MIN_MINUTES_BEFORE_TIP,
+) -> pd.DataFrame:
+    """Every pre-game tick of ``season_years``, in ``TICK_COLUMNS`` and decoded
+    like ``line_history_aiven.fetch.fetch_pregame_ticks``."""
+    with conn.cursor() as cur:
+        cur.execute(
+            sql.SQL(
+                """
+                SELECT l.game_id, l.season_year, m.code, b.slug,
+                       l.line_ts, l.mins_to_tip, l.is_opener,
+                       l.left_line, l.left_price, l.right_line, l.right_price
+                FROM {schema}.lh_line l
+                JOIN {schema}.lh_market m USING (market_id)
+                JOIN {schema}.lh_book   b USING (book_id)
+                WHERE l.season_year = ANY(%s)
+                  AND l.is_pregame
+                  AND l.mins_to_tip <= %s
+                  AND m.code = ANY(%s)
+                ORDER BY l.game_id, m.code, b.slug, l.line_ts
+                """
+            ).format(schema=sql.Identifier(SCHEMA)),
+            (
+                [int(s) for s in season_years],
+                -int(min_minutes_before_tip),
+                list(markets),
+            ),
+        )
+        ticks = _rows_to_frame(cur, TICK_COLUMNS)
+    return _decode_ticks(ticks)

@@ -95,22 +95,35 @@ jobs:
         run: |
           python scripts/update_databases/update_line_history_database.py
 
-      # Second line-history source (OddsLogic, the odds shown on WagerTalk) in
-      # its own schema, line_history_oddslogic. Also keyed on nba_games. It
-      # writes nothing the rest of the job reads, so a failure (the widget is
-      # an undocumented endpoint) must not stop the retrain behind this job.
-      - name: Update OddsLogic line history
-        continue-on-error: true
-        timeout-minutes: 45
-        run: |
-          python scripts/update_databases/update_oddslogic_line_history.py
+      # Disabled 2026-10-24: OddsLogic and MoviOdds are too slow and unstable
+      # for the value they add. Their implementations are retained for possible
+      # future reuse, but are unused and will not be maintained. No automatic
+      # ingestion or raw-archive updates; training/prediction do not read them.
+      # OddsLogic (WagerTalk): separate schema line_history_oddslogic.
+      # - name: Update OddsLogic line history
+      #   continue-on-error: true
+      #   timeout-minutes: 45
+      #   run: |
+      #     python scripts/update_databases/update_oddslogic_line_history.py
 
-      # Independent bet365 archive; production features still use SBR.
-      - name: Update MoviOdds line history
+      # MoviOdds (bet365): separate schema line_history_moviodds; disabled above.
+      # - name: Update MoviOdds line history
+      #   continue-on-error: true
+      #   timeout-minutes: 45
+      #   run: |
+      #     python scripts/update_databases/update_moviodds_line_history.py
+
+      # SBR's feed for the nine US books (covers.com) plus the consensus
+      # opener, in its own schema, line_history_covers. Also keyed on
+      # nba_games. It writes nothing the rest of the job reads, so a failure
+      # (undocumented site endpoints) must not stop the retrain behind this job.
+      - name: Update Covers line history
         continue-on-error: true
-        timeout-minutes: 45
+        timeout-minutes: 30
+        env:
+          PYTHONUNBUFFERED: "1"
         run: |
-          python scripts/update_databases/update_moviodds_line_history.py
+          python scripts/update_databases/update_covers_line_history.py
 
       # Must run after the line-history update: SBR day pages store each
       # book's last (often live) number, and last night's pre-tip ticks are

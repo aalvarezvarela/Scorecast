@@ -1,11 +1,14 @@
 # OddsLogic line history (the odds on WagerTalk)
 
-Status: **Implemented** (2026-10-23). This is the second line-history source
-beside SBR, stored in the Aiven schema `line_history_oddslogic` from the
-2026-27 season on. Nothing reads it yet: the fallback to it when SBR is missing
-is a later phase.
+Status: **Unmaintained** (2026-10-24; implemented 2026-10-23). Implemented but
+unused: ingestion is too slow and unstable for the limited value it adds.
+Automatic updates are disabled and this integration will not be maintained.
+The code, tests, existing Aiven data (`line_history_oddslogic`, 2026-27 on)
+and raw archives are retained for possible future reuse. Training and
+prediction do not consume it; no fallback integration is planned. The details
+below describe the retained implementation and historical validation.
 
-## Why
+## Original rationale
 
 SBR's lines froze on 2026-10-20. The odds on wagertalk.com/odds are an iframe
 of OddsLogic's free widget, which publishes each book's full line history:
@@ -129,8 +132,8 @@ Code: `postgre_db/line_history_oddslogic/`.
 - **Public betting split.** Each history row also carries one (`"NY 57%,
   40%"`), and the widget has "Tickets" (25) and "Money" (26) series. The
   format is not decoded: the series' cells mix markets and sides, and it is
-  unclear which number is tickets and which money. A planned `lh_public` table
-  waits for that.
+  unclear which number is tickets and which money. The proposed `lh_public`
+  table was not implemented and is no longer planned.
   - The two series are **not fetched** (decided 2026-10-23). They are the
     largest answers, 200–450 KB per game, and nothing uses them.
   - The split embedded in each history row stays in the archived answers.
@@ -146,11 +149,13 @@ Code: `fetch_data/odds_oddslogic/archive.py`. The layout is
 Each fetch writes a new key, so nothing is overwritten. A failed archive write
 is reported and does not stop the store.
 
-## Daily update
+## Retained updater (automatic updates disabled)
 
-`scripts/update_databases/update_oddslogic_line_history.py` runs as the step
-"Update OddsLogic line history" of `update_database_daily.yml`, after the SBR
-update. It has `continue-on-error`, because nothing later in the job reads it.
+The "Update OddsLogic line history" step in `update_database_daily.yml` is
+commented out. No other workflow or `update_all_databases` call runs
+`scripts/update_databases/update_oddslogic_line_history.py`. This also stops
+new raw-archive writes from automatic ingestion. Existing data is kept.
+The CLI remains available for deliberate manual use, without maintenance.
 
 The plan is per game and book (`update.plan_requests`):
 - A game in `nba_games` but not in the store gets every book.
@@ -167,7 +172,7 @@ of the date. A book that genuinely skips a game is retried for 3 days, then
 left.
 
 ```bash
-# first run
+# optional manual schema creation and ingestion (writes Aiven/S3)
 python scripts/update_databases/update_oddslogic_line_history.py --create-schema
 # fetch and parse only, no Aiven or S3 writes; any season with --dates
 python scripts/update_databases/update_oddslogic_line_history.py --dry-run \
@@ -230,25 +235,27 @@ as-of line, or price for moneyline:
   the last polls.
 
 **First load (2026-10-24).** 2026-10-20 to 2026-10-22: 16 games and 32,663
-ticks, every game with all three markets. 21 answers stayed empty and are
-retried by the next runs. 957 requests in 1 h 38 min, at night in Europe. The
-schema takes 7.3 MB (the database 454 MB of 1 GB). The raw archive holds 19
-objects, 0.5 MB.
+ticks, every game with all three markets. 21 answers stayed empty and would
+be retried on a subsequent manual run. 957 requests in 1 h 38 min, at night
+in Europe. The schema takes 7.3 MB (the database 454 MB of 1 GB). The raw
+archive holds 19 objects, 0.5 MB.
 
-## Books for prediction (note for the fallback phase)
+## Books for prediction (reference only if reconsidered)
 
-The daily update keeps fetching **every** book in `OL_BOOKS`, including the
-ones that add little: Kalshi, South Point, Circa and the OddsLogic consensus.
-History is cheap to keep and cannot be fetched later if the widget closes.
+The retained updater defaults to the active books in `books.ACTIVE_BOOKS`,
+including ones that add little: Kalshi, South Point, Circa and the OddsLogic
+consensus. It no longer runs automatically. There is no planned fallback phase.
 
-**When this source feeds prediction (live or same-day reads), request only the
-books the models use.** A request is one book of one game, so each unused book
-costs 2 requests per game at prediction time, for data no model reads. Take
-the list from the serving slots' feature books, not from `OL_BOOKS`.
+**If this source is reconsidered for prediction (live or same-day reads),
+request only the books the models use.** A request is one book of one game,
+so each unused book costs 2 requests per game at prediction time, for data
+no model reads. Take the list from the serving slots' feature books, not
+from `OL_BOOKS`.
 
 ## Limits
 
 - **No bet365**, the main book (`MAIN_SPORTSBOOK`).
 - **The endpoint is undocumented.** It is the free widget's backend and can
   change or close without notice. The raw archive keeps what was fetched.
-- **No live intraday reads.** The store is filled the morning after.
+- **No live intraday reads.** The retained updater ingests finished games;
+  automatic ingestion is disabled.
