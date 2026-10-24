@@ -105,6 +105,13 @@ jobs:
         run: |
           python scripts/update_databases/update_oddslogic_line_history.py
 
+      # Independent bet365 archive; production features still use SBR.
+      - name: Update MoviOdds line history
+        continue-on-error: true
+        timeout-minutes: 45
+        run: |
+          python scripts/update_databases/update_moviodds_line_history.py
+
       # Must run after the line-history update: SBR day pages store each
       # book's last (often live) number, and last night's pre-tip ticks are
       # what replace it.
