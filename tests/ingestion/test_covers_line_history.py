@@ -481,6 +481,51 @@ class TestPlan:
         assert update_mod.FIRST_SEASON == 2026
 
 
+class TestBackfill:
+    GAMES = pd.DataFrame(
+        {
+            "game_id": ["0041800111", "0022301062", "0022301063"],
+            "game_date": [date(2019, 4, 13), date(2024, 3, 29), date(2024, 3, 29)],
+        }
+    )
+
+    def test_past_games_planned_before_first_date(self):
+        plan = update_mod.plan_backfill(self.GAMES, {}, today=date(2026, 10, 24))
+        assert plan == {
+            date(2019, 4, 13): {"0041800111": set(ACTIVE_BOOKS)},
+            date(2024, 3, 29): {
+                "0022301062": set(ACTIVE_BOOKS),
+                "0022301063": set(ACTIVE_BOOKS),
+            },
+        }
+
+    def test_stored_games_are_not_fetched_again(self):
+        # Even with a book missing: a backfilled game is as Covers had it.
+        stored = {"0022301062": {1}, "0041800111": set(ACTIVE_BOOKS)}
+        plan = update_mod.plan_backfill(self.GAMES, stored, today=date(2026, 10, 24))
+        assert plan == {date(2024, 3, 29): {"0022301063": set(ACTIVE_BOOKS)}}
+
+    def test_today_is_not_planned(self):
+        plan = update_mod.plan_backfill(self.GAMES, {}, today=date(2024, 3, 29))
+        assert list(plan) == [date(2019, 4, 13)]
+
+    def test_game_ids_filtered_by_reason(self):
+        flagged = pd.DataFrame(
+            {
+                # Read from CSV without dtype: leading zeros lost.
+                "game_id": [41800111, "0022301062", "0022100316", "0022000100"],
+                "reasons": ["no_game", "no_ticks", "no_main_book;late_start", None],
+            }
+        )
+        assert update_mod.backfill_game_ids(flagged) == {
+            "0041800111",
+            "0022301062",
+            "0022100316",
+        }
+        assert update_mod.backfill_game_ids(flagged, ["late_start"]) == {"0022100316"}
+        assert update_mod.backfill_game_ids(flagged, ["truncated"]) == set()
+
+
 def _nba_games(game_id: str = "0022500578") -> pd.DataFrame:
     """Team-game rows as ``load_games_for_line_history_creation`` returns them."""
     return pd.DataFrame(

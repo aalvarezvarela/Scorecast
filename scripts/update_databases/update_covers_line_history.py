@@ -25,6 +25,11 @@ Examples::
     # specific dates; with --dry-run any season, written to Parquet for checks
     python scripts/update_databases/update_covers_line_history.py \
         --dry-run --dates 2026-01-15 --save-dir /tmp/covers
+
+    # backfill past games whose SBR history is missing or incomplete
+    python scripts/line_history/covers/audit_sbr_gaps.py --out /tmp/sbr_gaps.csv
+    python scripts/update_databases/update_covers_line_history.py \
+        --games-file /tmp/sbr_gaps.csv --reasons no_game no_ticks truncated
 """
 
 from __future__ import annotations
@@ -63,6 +68,12 @@ def _requested_dates(args) -> list[date] | None:
     return None
 
 
+def _read_table(path: Path) -> pd.DataFrame:
+    if path.suffix == ".parquet":
+        return pd.read_parquet(path)
+    return pd.read_csv(path, dtype={"game_id": str})
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -79,6 +90,17 @@ def main() -> int:
     parser.add_argument("--start-date", type=_parse_date)
     parser.add_argument("--end-date", type=_parse_date)
     parser.add_argument(
+        "--games-file",
+        type=Path,
+        help="backfill the games of an audit_sbr_gaps.py --out file (.csv or "
+        ".parquet), any season; stored games are skipped",
+    )
+    parser.add_argument(
+        "--reasons",
+        nargs="+",
+        help="with --games-file: only the games flagged with one of these reasons",
+    )
+    parser.add_argument(
         "--retry-days",
         type=int,
         default=update_mod.DEFAULT_RETRY_DAYS,
@@ -94,9 +116,32 @@ def main() -> int:
         help="also write the prepared lh_line/lh_game rows here as Parquet",
     )
     args = parser.parse_args()
+    if args.reasons and not args.games_file:
+        parser.error("--reasons needs --games-file")
+    if args.games_file and (args.dates or args.start_date or args.end_date):
+        parser.error("--games-file takes no dates: they come from the file")
 
-    dates = _requested_dates(args)
-    if dates and not args.dry_run and dates[0] < update_mod.FIRST_DATE:
+    games_df = None
+    backfill: set[str] | None = None
+    if args.games_file:
+        backfill = update_mod.backfill_game_ids(
+            _read_table(args.games_file), args.reasons
+        )
+        games_df = load_games_for_line_history_creation()
+        listed = games_df[games_df["game_id"].astype(str).isin(backfill)]
+        dates = sorted(set(pd.to_datetime(listed["game_date"]).dt.date))
+        print(f"Backfill: {len(backfill)} game(s) from {args.games_file}")
+        if not dates:
+            print("No game of the file is in nba_games; nothing to do.")
+            return 0
+    else:
+        dates = _requested_dates(args)
+    if (
+        dates
+        and backfill is None
+        and not args.dry_run
+        and dates[0] < update_mod.FIRST_DATE
+    ):
         print(
             f"error: the store starts on {update_mod.FIRST_DATE}; earlier dates "
             "are only allowed with --dry-run"
@@ -114,7 +159,8 @@ def main() -> int:
         return 0
 
     print(f"Covers line history, season(s) {seasons}")
-    games_df = load_games_for_line_history_creation()
+    if games_df is None:
+        games_df = load_games_for_line_history_creation()
     if games_df.empty:
         print("No games returned from nba_games; nothing to do.")
         return 1
@@ -140,7 +186,11 @@ def main() -> int:
         for season_year in seasons:
             stored = store.stored_game_books(conn, season_year) if exists else {}
             games = update_mod.season_games(games_df, season_year)
-            if dates:
+            if backfill is not None:
+                season_plan = update_mod.plan_backfill(
+                    games[games["game_id"].isin(backfill)], stored, today=today
+                )
+            elif dates:
                 season_plan = update_mod.plan_requests(
                     games[games["game_date"].isin(dates)],
                     stored,

@@ -19,7 +19,10 @@ does (``ingest.is_held_back``): missing, and so fetched again, for
 ``TRUNCATED_HOLD_DAYS`` after tip-off, then stored as it is.
 
 Only games ``SETTLED_AFTER`` past tip-off are fetched, and the season starts at
-``FIRST_DATE``: this store holds the 2026-27 season onward.
+``FIRST_DATE``: the store holds the 2026-27 season onward. The one exception is
+the backfill (``plan_backfill``): past games whose SBR history is missing or
+incomplete, listed by ``scripts/line_history/covers/audit_sbr_gaps.py``. Those
+seasons hold only the backfilled games.
 """
 
 from __future__ import annotations
@@ -123,6 +126,40 @@ def plan_requests(
             continue
         if wanted:
             plan.setdefault(row.game_date, {})[row.game_id] = wanted
+    return dict(sorted(plan.items()))
+
+
+def backfill_game_ids(
+    flagged: pd.DataFrame, reasons: Iterable[str] | None = None
+) -> set[str]:
+    """The games of an ``audit_sbr_gaps.py --out`` file flagged with one of
+    ``reasons`` (every flagged game when ``reasons`` is None)."""
+    wanted = None if reasons is None else set(reasons)
+    flags = flagged["reasons"].fillna("").astype(str).str.split(";")
+    keep = flags.apply(
+        lambda names: any(n and (wanted is None or n in wanted) for n in names)
+    )
+    return set(flagged.loc[keep, "game_id"].astype(str).str.zfill(10))
+
+
+def plan_backfill(
+    games: pd.DataFrame,
+    stored: dict[str, set[int]],
+    *,
+    today: date,
+    books: Iterable[int] = ACTIVE_BOOKS,
+) -> dict[date, dict[str, set[int]]]:
+    """date -> game_id -> books for the past ``games`` the store does not hold.
+
+    ``FIRST_DATE`` does not apply. A stored game is never fetched again, so a
+    backfill run again picks up only the games still missing (an empty answer,
+    a failed request).
+    """
+    books = set(int(b) for b in books)
+    plan: dict[date, dict[str, set[int]]] = {}
+    for row in games.itertuples(index=False):
+        if row.game_date < today and row.game_id not in stored:
+            plan.setdefault(row.game_date, {})[row.game_id] = set(books)
     return dict(sorted(plan.items()))
 
 

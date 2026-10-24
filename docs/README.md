@@ -46,7 +46,7 @@ the folder of its topic, with a status line, and gets a row here.
 | [odds_source_alternatives.md](odds/odds_source_alternatives.md) | Partial | Odds APIs, OddsTrader and Covers as alternatives to SBR; OddsLogic and MoviOdds implemented but unused and unmaintained | `fetch_data/odds_oddstrader/` |
 | [oddslogic_line_history.md](odds/oddslogic_line_history.md) | Unmaintained | OddsLogic (WagerTalk) ingestion implemented but unused; automatic updates disabled due to slowness, instability and limited value; retained for possible reuse | `fetch_data/odds_oddslogic/`, `postgre_db/line_history_oddslogic/` |
 | [moviodds_line_history.md](odds/moviodds_line_history.md) | Unmaintained | MoviOdds bet365 ingestion implemented but unused; automatic updates disabled due to slowness, instability and limited value; retained for possible reuse | `fetch_data/odds_moviodds/`, `postgre_db/line_history_moviodds/` |
-| [covers_line_history.md](odds/covers_line_history.md) | Implemented | Covers line history (SBR's feed, nine US books incl. bet365): endpoints, parsing rules, `consensus_opener` = BetMGM's opener, the `line_history_covers` store, its daily update and parity with SBR | `fetch_data/odds_covers/`, `postgre_db/line_history_covers/` |
+| [covers_line_history.md](odds/covers_line_history.md) | Implemented | Covers line history (SBR's feed, nine US books incl. bet365): endpoints, parsing rules, `consensus_opener` = BetMGM's opener, the `line_history_covers` store, its daily update, parity with SBR, the past-gap audit and backfill, and its use as SBR's per-game fallback (stored reads and tonight's prediction) | `fetch_data/odds_covers/`, `postgre_db/line_history_covers/` |
 
 ## intermediate/ — snapshot (pre-close) datasets and serving
 

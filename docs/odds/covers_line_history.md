@@ -1,9 +1,10 @@
 # Covers line history
 
 Status: **Implemented** (2026-10-24). A line-history source beside SBR, stored
-in the Aiven schema `line_history_covers` from the 2026-27 season on, with the
-SBR store's tables. Nothing reads it yet: wiring it into the training and
-prediction readers is a later phase.
+in the Aiven schema `line_history_covers` from the 2026-27 season on (plus the
+backfilled past games), with the SBR store's tables. It is SBR's fallback, per
+game, in the stored reads and in tonight's prediction
+([Fallback](#fallback)).
 
 ## Why
 
@@ -175,7 +176,8 @@ and unmaintained.
     for three days and then left alone. That costs one request a day each.
 - **Window.** The store starts on 2026-10-20 (`update.FIRST_DATE`). Earlier
   dates are refused unless `--dry-run`, which parses any season and can write
-  the rows to Parquet (`--save-dir`) for checks.
+  the rows to Parquet (`--save-dir`) for checks, or the backfill
+  (`--games-file`, see [SBR gaps in past seasons](#sbr-gaps-in-past-seasons)).
 - **Failures.** A failed request or an answer that does not parse is reported
   per game and does not stop the run. The script then exits 1, so a source
   outage shows on the workflow step while the job carries on. Games left for
@@ -225,6 +227,101 @@ books shared with SBR, `compare_covers_vs_sbr.py --from-dir`; 2026-10-24):
 An earlier probe of 62 games on 8 dates of 2024-26 gave the same picture. It
 found the same median ticks per game as SBR, 1.3% in-play rows and 6.8% exact
 duplicate rows.
+
+## SBR gaps in past seasons
+
+Script: `scripts/line_history/covers/audit_sbr_gaps.py` (read-only). It lists
+the games of `nba_games` from Covers' first history date (2019-04) to the last
+finished season whose SBR line history is missing or incomplete, with the
+reasons in its docstring. Its `--out` file is the input of the backfill:
+
+```
+python scripts/line_history/covers/audit_sbr_gaps.py --out /tmp/sbr_gaps.csv
+python scripts/update_databases/update_covers_line_history.py \
+    --games-file /tmp/sbr_gaps.csv \
+    --reasons no_game no_ticks no_main_book truncated missing_books
+```
+
+- **Same store.** Backfilled games go into `line_history_covers` like the
+  daily ones (archive, insert-only write, one transaction per date). A season
+  before 2026-27 therefore holds **only the backfilled games**: it is a
+  per-game supplement to SBR, not a season to compare with SBR as a whole.
+- **No retries.** A stored game is never fetched again (`update.plan_backfill`),
+  so running the backfill again picks up only the games still missing (empty
+  answer, failed request). The daily job never plans a date before
+  `FIRST_DATE`, so it does not touch them.
+- **Truncated games are stored as Covers has them.** The 3-day hold has long
+  passed.
+
+**Dry run of the 437 games of those reasons (2026-10-24): Covers keeps SBR's
+gaps.** It is the same feed, so a gap in the stored history is in both:
+
+- **What Covers adds: 175 games.**
+  - The 161 games of 2019-04-01..06-13: 4 books, bet365 in all.
+  - The 2024-03-29 slate (12, six books each; `odds_sportsbook` has no book
+    line for them).
+  - The two 2024-03-28 games: last tick 6 min before tip, where SBR stops 11 h
+    before.
+- **What it does not:**
+  - 168 of the 170 truncated games end at the same minute in Covers.
+  - 0 of the 92 missing books are there.
+  - 0022100316 has no bet365 there either.
+  - 0021900945, 0022300576 and 0022300589 come back empty, and 0022000539 is
+    not on its date's matchups page.
+- **Against `odds_sportsbook`** (bet365 total, last tick ≥5 min before tip):
+  280/291 equal and 289 within a point. The differences are 2019 playoff
+  closes, which SBR scraped once and could not be repaired from history.
+
+So historically Covers fills only what SBR never collected. Its use as a
+fallback is live: on 2026-10-20 SBR's stored history ended up complete (as in
+Covers), and on 2026-10-23 SBR has no ticks while Covers has the whole slate.
+
+Run 2026-10-24 (9,080 games, 2019-04-01 to 2026-06-13; 539 flagged):
+
+| Reason | Games | Where |
+|---|---|---|
+| no SBR history at all | 161 | 2018-19 from April on (SBR starts 2019-10-22); `odds_sportsbook` has a close for 32 (from 2019-05-03) |
+| `no_game` / `no_ticks` | 3 / 13 | the whole 2024-03-29 slate (12), 0021900945, 0022000539, 0022300576, 0022300589 |
+| `no_main_book` | 1 | 0022100316 (no bet365) |
+| `truncated` | 170 | 120 of them in 2019-20 and 2020-21, mostly 60-120 min: fewer books, so quieter markets, not freezes. Clock-shared freezes: 24 games. The long ones are 2024-03-28 and 2025-26 (11 games, 3-25 h) |
+| `late_start` | 106 | the history starts after T-1080 |
+| `missing_books` (book on ≥90% of the season) | 92 | BetMGM + BetRivers on 2021-10-19..25 (46), Caesars 2023-12-16..29 (18), BetRivers 2025-02-11..12 (19) |
+
+Books absent from whole seasons (not flagged per game): BetMGM in 2019-20
+(38%) and 2020-21 (none), Caesars in 2019-20 (72%), BetRivers before 2021-22.
+Covers has BetMGM from 2019-10 and no BetRivers before 2021-22.
+
+## Fallback
+
+Both sources serve one feed, so where SBR has a game the two agree; Covers
+only fills what SBR lacks. A game is always read whole from one source, and
+the books only Covers carries (`thescore`, `consensus_opener`) are dropped, so
+it has the same books whichever it comes from.
+
+**Stored reads**, the training side
+(`postgre_db/line_history_covers/fallback.py`, called by
+`line_history_aiven.fetch`'s `fetch_pregame_ticks`, `fetch_closing_ticks` and
+`fetch_games`; `covers_fallback=False` turns it off):
+
+- **Which games come from Covers.** A game SBR has no tick for, or whose last
+  Covers tick is more than 30 min (`MARGIN_MINUTES`) later than SBR's.
+  - Checked 2026-10-24: the 161 games of 2019-04..06, the 14 of
+    2024-03-28/29 and the 12 of 2026-10-23.
+  - No 2025-26 game: its freezes are the same in Covers.
+- **After the caches.** The fallback runs after the S3 and local tick caches,
+  which keep holding SBR's reads only.
+- **Fingerprints.** The season fingerprints that key the odds-repair and
+  intermediate memos (`season_fingerprints`, `pregame_tick_fingerprints`) get
+  the Covers season's appended, only for a season Covers holds games of. Other
+  seasons keep their keys.
+- **The daily close repair** (`repair_sportsbook_closes.py`) reads closing
+  ticks through the same function. It runs after the Covers step, so it fills
+  `odds_sportsbook` rows SBR left without lines. The 2026-10-23 dry run filled
+  219 cells and replaced 31 of the 12 games.
+- **No `consensus_opener` from Covers.** Openers are not in the SBR line
+  history, so the repair does not touch them.
+- **A failed Covers read** leaves SBR's frame as it is, with a `!` line in the
+  log.
 
 ## Limits
 

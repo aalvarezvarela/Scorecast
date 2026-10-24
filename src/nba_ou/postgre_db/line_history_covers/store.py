@@ -222,3 +222,86 @@ def fetch_pregame_ticks(
         )
         ticks = _rows_to_frame(cur, TICK_COLUMNS)
     return _decode_ticks(ticks)
+
+
+def fetch_closing_ticks(
+    conn: psycopg.Connection,
+    *,
+    season_years: Iterable[int] | None = None,
+    game_ids: Iterable[str] | None = None,
+    last_n: int | None = 5,
+    markets: tuple[str, ...] = ALL_MARKETS,
+    min_minutes_before_tip: int = DEFAULT_MIN_MINUTES_BEFORE_TIP,
+) -> pd.DataFrame:
+    """``line_history_aiven.fetch._fetch_closing_ticks_once`` on this schema:
+    the last ``last_n`` priced pre-game ticks per (game, market, book) of
+    finished games. The clock check is kept, though Covers' ``mins_to_tip`` is
+    derived from the tip-off and always agrees."""
+    filters, params = [], []
+    if season_years is not None:
+        filters.append(sql.SQL("l.season_year = ANY(%s)"))
+        params.append([int(s) for s in season_years])
+    if game_ids is not None:
+        filters.append(sql.SQL("l.game_id = ANY(%s)"))
+        params.append([str(g) for g in game_ids])
+    if not filters:
+        raise ValueError("Pass season_years or game_ids.")
+    query = sql.SQL(
+        """
+        WITH eligible AS (
+            SELECT l.game_id, l.season_year, m.code AS market,
+                   b.slug AS book, l.line_ts,
+                   l.mins_to_tip AS minutes_before_tip, l.is_opener,
+                   l.left_line, l.left_price, l.right_line, l.right_price,
+                   ROW_NUMBER() OVER (
+                       PARTITION BY l.game_id, m.code, b.slug
+                       ORDER BY l.line_ts DESC
+                   ) AS recency
+            FROM {schema}.lh_line l
+            JOIN {schema}.lh_game   g USING (game_id)
+            JOIN {schema}.lh_market m USING (market_id)
+            JOIN {schema}.lh_book   b USING (book_id)
+            WHERE ({filters})
+              AND l.is_pregame
+              AND l.mins_to_tip <= %s
+              AND m.code = ANY(%s)
+              AND l.left_price IS NOT NULL
+              AND l.right_price IS NOT NULL
+              AND g.tipoff_utc < now()
+              AND g.tipoff_utc - l.line_ts >= make_interval(mins => %s)
+              AND ABS(
+                  EXTRACT(EPOCH FROM (g.tipoff_utc - l.line_ts)) / 60.0
+                  + l.mins_to_tip
+              ) <= 1
+        )
+        SELECT game_id, season_year, market, book, line_ts,
+               minutes_before_tip, is_opener,
+               left_line, left_price, right_line, right_price
+        FROM eligible
+        WHERE %s::int IS NULL OR recency <= %s::int
+        ORDER BY game_id, market, book, line_ts
+        """
+    ).format(schema=sql.Identifier(SCHEMA), filters=sql.SQL(" OR ").join(filters))
+    params += [
+        -int(min_minutes_before_tip),
+        list(markets),
+        int(min_minutes_before_tip),
+        last_n,
+        last_n,
+    ]
+    with conn.cursor() as cur:
+        cur.execute(query, params)
+        ticks = _rows_to_frame(cur, TICK_COLUMNS)
+    return _decode_ticks(ticks)
+
+
+def season_fingerprint(conn: psycopg.Connection, season: int) -> list | None:
+    """The SBR store's season fingerprint (``line_history_season_fingerprint``)
+    on this schema, or None when the store holds no game of the season."""
+    from nba_ou.postgre_db.line_history_aiven.fetch import _CLOSING_TICKS_FINGERPRINT
+
+    query = sql.SQL(_CLOSING_TICKS_FINGERPRINT).format(schema=sql.Identifier(SCHEMA))
+    with conn.cursor() as cur:
+        cur.execute(query, {"season": int(season)})
+        values = [None if v is None else str(v) for v in cur.fetchone()]
+    return None if values[2] in (None, "0") else values
