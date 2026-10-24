@@ -25,8 +25,12 @@ without disturbing production.
 
 from __future__ import annotations
 
+import hashlib
+import os
+import tempfile
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from pathlib import Path
 
 from botocore.exceptions import ClientError
 from nba_ou.modeling.registry_models import (
@@ -51,6 +55,9 @@ from nba_ou.utils.s3_models import (
 #: Object keys that S3 reports as absent rather than raising.
 _MISSING_CODES = {"NoSuchKey", "404", "NotFound"}
 
+#: Where immutable registry objects (specs, fits, models) are kept locally.
+DEFAULT_MODEL_CACHE_DIR = "~/.cache/nba_ou/models"
+
 
 class RegistryError(RuntimeError):
     """Something is wrong with a slot's contents."""
@@ -62,6 +69,49 @@ class SlotNotPromotedError(RegistryError):
 
 class ImmutableObjectError(RegistryError):
     """An immutable object was written twice with different contents."""
+
+
+def model_cache_dir() -> Path | None:
+    """``NBA_OU_MODEL_CACHE_DIR`` (``~`` expanded); ``""`` turns the cache off."""
+    value = os.environ.get("NBA_OU_MODEL_CACHE_DIR", DEFAULT_MODEL_CACHE_DIR)
+    return Path(value).expanduser() if value else None
+
+
+def _read_immutable(*, s3_client, bucket: str, key: str) -> bytes | None:
+    """An immutable object (a spec, fit or model), from the local cache if held.
+
+    Specs and builds never change once written (rule 1 above), so a copy is
+    the object. It is kept next to the sha256 of the bytes downloaded, and
+    served only while the two still agree; otherwise it is downloaded again.
+    Channel pointers move and are never read through here. A copy outlives a
+    build deleted from S3, which only an unreferenced build can be.
+    """
+    root = model_cache_dir()
+    if root is None:
+        return _read_bytes_or_none(s3_client=s3_client, bucket=bucket, key=key)
+    path = root / bucket / key
+    digest_path = path.with_name(path.name + ".sha256")
+    try:
+        data = path.read_bytes()
+        if hashlib.sha256(data).hexdigest() == digest_path.read_text().strip():
+            return data
+    except OSError:
+        pass
+    data = _read_bytes_or_none(s3_client=s3_client, bucket=bucket, key=key)
+    if data is not None:
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            for target, payload in (
+                (path, data),
+                (digest_path, hashlib.sha256(data).hexdigest().encode()),
+            ):
+                fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=".tmp-")
+                with os.fdopen(fd, "wb") as handle:
+                    handle.write(payload)
+                os.replace(tmp, target)
+        except OSError:
+            pass  # a cache that cannot be written costs time, never a value
+    return data
 
 
 def _read_bytes_or_none(*, s3_client, bucket: str, key: str) -> bytes | None:
@@ -122,7 +172,7 @@ def write_spec(*, s3_client, bucket: str, slot: ModelSlot, spec: ModelSpec) -> s
 
 def read_spec(*, s3_client, bucket: str, slot: ModelSlot, spec_id: str) -> ModelSpec:
     key = slot.spec_key(validate_spec_id(spec_id))
-    raw = _read_bytes_or_none(s3_client=s3_client, bucket=bucket, key=key)
+    raw = _read_immutable(s3_client=s3_client, bucket=bucket, key=key)
     if raw is None:
         raise RegistryError(
             f"Spec {spec_id} is missing from {slot.describe()} ({key}). A fit "
@@ -187,7 +237,7 @@ def write_build(
 
 def read_fit(*, s3_client, bucket: str, slot: ModelSlot, fit_id: str) -> FitRecord:
     key = slot.fit_key(validate_fit_id(fit_id))
-    raw = _read_bytes_or_none(s3_client=s3_client, bucket=bucket, key=key)
+    raw = _read_immutable(s3_client=s3_client, bucket=bucket, key=key)
     if raw is None:
         raise RegistryError(
             f"Build {fit_id} has no fit.json in {slot.describe()} ({key})."
@@ -199,7 +249,7 @@ def read_model_bytes(
     *, s3_client, bucket: str, slot: ModelSlot, fit_id: str
 ) -> bytes:
     key = slot.model_key(validate_fit_id(fit_id))
-    raw = _read_bytes_or_none(s3_client=s3_client, bucket=bucket, key=key)
+    raw = _read_immutable(s3_client=s3_client, bucket=bucket, key=key)
     if raw is None:
         raise RegistryError(
             f"Build {fit_id} has no model.json in {slot.describe()} ({key})."

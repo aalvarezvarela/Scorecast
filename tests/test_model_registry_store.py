@@ -352,3 +352,68 @@ def test_retention_never_proposes_a_referenced_build(s3, slot):
     assert fits[0].fit_id not in deletable
     assert fits[-1].fit_id not in deletable
     assert fits[1].fit_id in deletable
+
+
+# --- local copies of immutable objects ----------------------------------------
+
+
+class _CountingS3(FakeS3Client):
+    def __init__(self):
+        super().__init__()
+        self.gets: list[str] = []
+
+    def get_object(self, Bucket, Key):  # noqa: N803
+        self.gets.append(Key)
+        return super().get_object(Bucket=Bucket, Key=Key)
+
+
+def test_builds_are_read_from_local_copies_and_channels_from_s3(
+    slot, monkeypatch, tmp_path
+):
+    monkeypatch.setenv("NBA_OU_MODEL_CACHE_DIR", str(tmp_path))
+    s3 = _CountingS3()
+    spec = make_spec()
+    publish(
+        s3, slot, spec, fitted_at=datetime(2026, 10, 1, tzinfo=UTC),
+        model_bytes=b"booster-1", channel=Channel.PRODUCTION,
+    )
+    first = resolve_channel(s3_client=s3, bucket=BUCKET, slot=slot)
+    s3.gets.clear()
+    again = resolve_channel(s3_client=s3, bucket=BUCKET, slot=slot)
+    assert again == first and again.model_bytes == b"booster-1"
+    assert all("/channels/" in key for key in s3.gets)  # the pointer only
+
+    # A promotion moves the pointer; the new build is downloaded.
+    newer = publish(
+        s3, slot, spec, fitted_at=datetime(2026, 10, 2, tzinfo=UTC),
+        model_bytes=b"booster-2", channel=Channel.PRODUCTION,
+    )
+    promoted = resolve_channel(s3_client=s3, bucket=BUCKET, slot=slot)
+    assert promoted.fit_id == newer.fit_id and promoted.model_bytes == b"booster-2"
+
+
+def test_a_damaged_local_copy_is_downloaded_again(slot, monkeypatch, tmp_path):
+    monkeypatch.setenv("NBA_OU_MODEL_CACHE_DIR", str(tmp_path))
+    s3 = _CountingS3()
+    publish(
+        s3, slot, make_spec(), fitted_at=datetime(2026, 10, 1, tzinfo=UTC),
+        model_bytes=b"booster", channel=Channel.PRODUCTION,
+    )
+    resolve_channel(s3_client=s3, bucket=BUCKET, slot=slot)
+    model = next(p for p in tmp_path.rglob("model.json"))
+    model.write_bytes(b"truncat")
+    s3.gets.clear()
+    resolved = resolve_channel(s3_client=s3, bucket=BUCKET, slot=slot)
+    assert resolved.model_bytes == b"booster"
+    assert any(key.endswith("model.json") for key in s3.gets)
+    assert model.read_bytes() == b"booster"
+
+
+def test_an_empty_cache_dir_reads_everything_from_s3(slot, monkeypatch):
+    from nba_ou.modeling import registry_store
+
+    monkeypatch.setenv("NBA_OU_MODEL_CACHE_DIR", "")
+    assert registry_store.model_cache_dir() is None
+    monkeypatch.setenv("NBA_OU_MODEL_CACHE_DIR", "~/models")
+    assert registry_store.model_cache_dir().name == "models"
+    assert "~" not in str(registry_store.model_cache_dir())
