@@ -20,6 +20,12 @@ does (``ingest.is_held_back``): missing, and so fetched again, for
 
 Only games ``SETTLED_AFTER`` past tip-off are fetched, and the season starts at
 ``FIRST_DATE``: this store holds the 2026-27 season onward.
+
+Each stored game also gets its Covers Consensus pick counts (``lh_consensus``),
+once, one request per game (``plan_consensus``): the stored games without
+counts, and the games the run has just stored, each in its date's group after
+the date's lines are written. A page without counts is asked for again on the
+next run.
 """
 
 from __future__ import annotations
@@ -38,6 +44,7 @@ from nba_ou.fetch_data.odds_covers.client import CoversClient, CoversError
 from nba_ou.fetch_data.odds_covers.parse import (
     CoversGame,
     is_settled,
+    parse_consensus,
     parse_matchups,
     scraped_game,
 )
@@ -78,6 +85,11 @@ class UpdateResult:
     dropped: dict[str, int] = field(default_factory=dict)
     repaired: dict[str, int] = field(default_factory=dict)
     frames: list[tuple[pd.DataFrame, pd.DataFrame]] = field(default_factory=list)
+    consensus_planned: int = 0
+    consensus_fetched: int = 0
+    consensus_empty: list[str] = field(default_factory=list)
+    consensus_inserted: int = 0
+    consensus_frames: list[pd.DataFrame] = field(default_factory=list)
 
     def absorb(self, stats: sbr_ingest.IngestStats) -> None:
         self.prepared_ticks += stats.prepared_ticks
@@ -124,6 +136,54 @@ def plan_requests(
         if wanted:
             plan.setdefault(row.game_date, {})[row.game_id] = wanted
     return dict(sorted(plan.items()))
+
+
+@dataclass(frozen=True)
+class ConsensusTarget:
+    """One game whose pick counts are to be fetched."""
+
+    game_id: str
+    covers_id: int
+    season_year: int
+    label: str
+
+
+@dataclass
+class ConsensusPlan:
+    """date -> the stored games without pick counts; ``stored`` are the game ids
+    that have them, so a game the run stores is added only if it has none."""
+
+    targets: dict[date, list[ConsensusTarget]] = field(default_factory=dict)
+    stored: set[str] = field(default_factory=set)
+
+
+def plan_consensus(
+    games: pd.DataFrame, stored: set[str], *, now: datetime
+) -> dict[date, list[ConsensusTarget]]:
+    """date -> the games of ``games`` (``lh_game`` rows, or those a run has just
+    prepared for it) without stored counts, once settled, so the counts are
+    the final ones."""
+    plan: dict[date, list[ConsensusTarget]] = {}
+    for row in games.itertuples(index=False):
+        game_id = str(row.game_id)
+        if game_id in stored or pd.isna(row.event_id) or pd.isna(row.tipoff_utc):
+            continue
+        tipoff = pd.Timestamp(row.tipoff_utc)
+        tipoff = tipoff.tz_localize(UTC) if tipoff.tzinfo is None else tipoff
+        if not is_settled(tipoff.to_pydatetime(), now):
+            continue
+        plan.setdefault(pd.Timestamp(row.game_date).date(), []).append(
+            ConsensusTarget(
+                game_id=game_id,
+                covers_id=int(row.event_id),
+                season_year=int(row.season_year),
+                label=f"{row.team_away} @ {row.team_home} ({game_id})",
+            )
+        )
+    return {
+        day: sorted(targets, key=lambda t: t.game_id)
+        for day, targets in sorted(plan.items())
+    }
 
 
 def feed_tipoffs(schedule: pd.DataFrame | None) -> dict[str, datetime]:
@@ -211,33 +271,143 @@ def update_covers_line_history(
     dry_run: bool = False,
     now: datetime | None = None,
     progress: Callable[[str], None] = print,
+    consensus: ConsensusPlan | None = None,
 ) -> UpdateResult:
     """Fetch, archive and store every planned game. One date at a time, each
-    written before the next is fetched, so a failure keeps what is done."""
+    written before the next is fetched, so a failure keeps what is done.
+
+    With ``consensus``, each date then fetches the pick counts of its planned
+    stored games and of the games just stored (``consensus=None``: no counts).
+    """
     now = now or datetime.now(UTC)
-    result = UpdateResult(planned_games=sum(len(day) for day in plan.values()))
+    targets = consensus.targets if consensus is not None else {}
+    result = UpdateResult(
+        planned_games=sum(len(day) for day in plan.values()),
+        consensus_planned=sum(len(day) for day in targets.values()),
+    )
     lookup = sbr_ingest.build_game_lookup(sbr_ingest.build_game_index(games_df))
     tipoffs = feed_tipoffs(schedule)
     archiving = archive is not None and not dry_run
 
-    for day, wanted in plan.items():
-        with log_group(f"{day}: {len(wanted)} game(s) planned", progress):
-            _update_day(
-                day,
-                wanted,
-                lookup=lookup,
-                tipoffs=tipoffs,
-                games_df=games_df,
-                schedule=schedule,
-                conn=conn,
-                client=client,
-                archive=archive if archiving else None,
-                dry_run=dry_run,
-                now=now,
-                result=result,
-                progress=progress,
-            )
+    for day in sorted(set(plan) | set(targets)):
+        wanted = plan.get(day, {})
+        day_targets = targets.get(day, [])
+        title = [f"{len(wanted)} game(s) planned"] if wanted else []
+        if day_targets:
+            title.append(f"consensus of {len(day_targets)} stored game(s)")
+        with log_group(f"{day}: {', '.join(title)}", progress):
+            frames_before = len(result.frames)
+            if wanted:
+                _update_day(
+                    day,
+                    wanted,
+                    lookup=lookup,
+                    tipoffs=tipoffs,
+                    games_df=games_df,
+                    schedule=schedule,
+                    conn=conn,
+                    client=client,
+                    archive=archive if archiving else None,
+                    dry_run=dry_run,
+                    now=now,
+                    result=result,
+                    progress=progress,
+                )
+            if consensus is None:
+                continue
+            # The games this date just stored (or prepared, in a dry run).
+            planned = consensus.stored | {t.game_id for t in day_targets}
+            for _, game_dim in result.frames[frames_before:]:
+                for new in plan_consensus(game_dim, planned, now=now).values():
+                    day_targets = day_targets + new
+                    result.consensus_planned += len(new)
+            if day_targets:
+                _update_consensus(
+                    day,
+                    day_targets,
+                    conn=conn,
+                    client=client,
+                    archive=archive if archiving else None,
+                    dry_run=dry_run,
+                    result=result,
+                    progress=progress,
+                )
     return result
+
+
+def _update_consensus(
+    day: date,
+    targets: list[ConsensusTarget],
+    *,
+    conn: psycopg.Connection | None,
+    client: CoversClient,
+    archive: archive_mod.CoversArchive | None,
+    dry_run: bool,
+    result: UpdateResult,
+    progress: Callable[[str], None],
+) -> None:
+    """One date's pick counts: one request per game, then one write. A failed
+    game is reported and the others go on."""
+    rows = []
+    for target in targets:
+        label = f"{day} {target.label}"
+        try:
+            text = client.consensus(target.covers_id)
+        except CoversError as exc:
+            result.failed.append(f"{label}: consensus: {exc}")
+            progress(f"  ! {target.label}: consensus request failed: {exc}")
+            continue
+        fetched_at = datetime.now(UTC)
+        result.consensus_fetched += 1
+        if archive is not None:
+            key = archive_mod.consensus_key(day, target.covers_id, fetched_at)
+            _archive_put(archive, key, text, result, progress)
+        try:
+            counts = parse_consensus(text)
+        except Exception as exc:  # one odd page must not stop the run
+            result.failed.append(
+                f"{label}: consensus parse error ({type(exc).__name__}: {exc})"
+            )
+            progress(
+                f"  ! {target.label}: consensus parse error: {type(exc).__name__}: {exc}"
+            )
+            continue
+        if counts is None:
+            result.consensus_empty.append(label)
+            progress(f"  - {target.label}: consensus page has no pick counts, next run")
+            continue
+        progress(
+            f"  + {target.label}: consensus ATS {counts.spread_away} away / "
+            f"{counts.spread_home} home, O/U {counts.total_over} over / "
+            f"{counts.total_under} under"
+        )
+        rows.append(
+            (
+                target.game_id,
+                target.season_year,
+                counts.spread_away,
+                counts.spread_home,
+                counts.total_over,
+                counts.total_under,
+                fetched_at,
+            )
+        )
+    if not rows:
+        return
+    frame = pd.DataFrame(rows, columns=store.CONSENSUS_COLUMNS)
+    result.consensus_frames.append(frame)
+    if dry_run or conn is None:
+        progress(f"  prepared the consensus of {len(rows)} game(s), not written")
+        return
+    try:
+        inserted = store.insert_consensus(conn, frame)
+    except Exception:
+        conn.rollback()
+        raise
+    result.consensus_inserted += inserted
+    progress(
+        f"  stored the consensus of {inserted} new game(s) (of {len(rows)} prepared)"
+    )
 
 
 def _update_day(

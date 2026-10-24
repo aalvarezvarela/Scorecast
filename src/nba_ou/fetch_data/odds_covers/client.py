@@ -11,7 +11,8 @@ Two plain GETs, no auth, server-rendered HTML:
   lower-case path answers with a 302 to this one, so this one is used directly.
 
 A third, on ``contests.covers.com``, is read by the prediction's live fallback
-only: ``/consensus/matchupconsensusdetails?gameId=<covers id>``, the "Covers
+and stored by the daily update (``lh_consensus``):
+``/consensus/matchupconsensusdetails?gameId=<covers id>``, the "Covers
 Consensus" pick counts of one game, which is what SBR's consensus pick
 percentages are (``parse.parse_consensus``).
 """

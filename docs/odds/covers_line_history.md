@@ -2,7 +2,8 @@
 
 Status: **Implemented** (2026-10-24). A line-history source beside SBR, stored
 in the Aiven schema `line_history_covers` from the 2026-27 season on, with the
-SBR store's tables. The prediction reads it live as SBR's fallback
+SBR store's tables, plus each game's Covers Consensus pick counts
+(`lh_consensus`, from 2026-10-25). The prediction reads it live as SBR's fallback
 ([Live fallback](#live-fallback-for-predictions)). Training and the readers
 of past games still read SBR only.
 
@@ -22,9 +23,10 @@ Plain GETs, no auth, server-rendered HTML. Only a browser user agent is sent.
 |---|---|
 | `/sports/nba/matchups?selectedDate=YYYY-MM-DD` | The date's games. Each is an `<article id="nba-<covers id>">` whose attributes name both teams in full (`data-away-team-fullname=memphis grizzlies`, unquoted). |
 | `/sport/MatchupOdds/LineHistoryBrick?gameId=<id>&location=odds&countryCode=us&stateProvince=nj&oddsFormat=american&betType=total` | One game's history of moneyline, spread and total, for every book: about 1.8 MB. The lower-case path answers with a 302 to this one. |
+| `contests.covers.com/consensus/matchupconsensusdetails?gameId=<id>` | One game's Covers Consensus pick counts ([below](#consensus-pick-percentages)). |
 
-So one game costs one request, and a date one more. The client pauses 1.2–2 s
-between requests.
+So one game costs two requests (lines and pick counts), and a date one more.
+The client pauses 1.2–2 s between requests.
 
 **Region.** The books depend on `countryCode`/`stateProvince`, not on where
 the request comes from. Every US state gives the same nine books. Ontario
@@ -125,6 +127,21 @@ Code: `postgre_db/line_history_covers/`. The layout is the OddsLogic store's.
 - **Tables.** `lh_book`, `lh_market`, `lh_game`, `lh_line` (list-partitioned
   by season) and `lh_load_meta`, from `line_history_aiven.schema.DDL_STATEMENTS`
   verbatim. `lh_game.event_id` is the Covers game id.
+- **`lh_consensus`** is this store's own table (`schema.COVERS_DDL_STATEMENTS`):
+  one row per stored game with its Covers Consensus pick counts, the counts
+  SBR's `*_consensus_pct_*` shares are taken from.
+
+  | Column | Type | |
+  |---|---|---|
+  | `game_id` | TEXT | primary key, references `lh_game` |
+  | `season_year` | SMALLINT | |
+  | `spread_away_picks`, `spread_home_picks` | INTEGER | ATS "Total Picks" |
+  | `total_over_picks`, `total_under_picks` | INTEGER | O/U "Total Picks" |
+  | `fetched_at` | TIMESTAMPTZ | when the page was read |
+
+  A count of 0 is a count. The counts are read once, at least 4 hours after
+  tip-off, so they are the final ones. `PickConsensus.sbr_consensus` turns a
+  row into SBR's shares.
 - **Writes are insert-only.** COPY goes to an UNLOGGED staging table, followed
   by one `INSERT ... ON CONFLICT DO NOTHING` per season. Fetching a stored game
   again only adds what was missing.
@@ -133,7 +150,8 @@ Code: `postgre_db/line_history_covers/`. The layout is the OddsLogic store's.
   ticks. A write that fails rolls the game back, so it is never taken for a
   stored one.
 - **Reads.** `store.fetch_pregame_ticks` and `store.fetch_games` return the
-  frames the SBR readers return.
+  frames the SBR readers return. `store.fetch_consensus(conn, season_years,
+  game_ids)` returns the stored pick counts. No reader uses them yet.
 - **The SBR modules are not changed for another schema.** They are in the code
   closure that keys the training-data caches, so this package repeats their
   few SQL statements instead.
@@ -147,6 +165,7 @@ source does, so the parser can be redone without the site.
     train_data/odds_sources/covers/raw/v1/<YYYY-MM-DD>/
       matchups/<fetched_at>.html.gz
       <covers_id>/<fetched_at>.html.gz
+      <covers_id>/consensus/<fetched_at>.html.gz
 
 The HTML is stored as served, gzipped. Each fetch writes a new key, so the
 archive is insert-only. A failed archive write is reported and does not stop
@@ -241,6 +260,19 @@ and unmaintained.
     a feed freeze. Such a game is not stored for 3 days after tip-off
     (`TRUNCATED_HOLD_DAYS`) and is fetched again on every run. After that it
     is stored as it is.
+- **Pick counts.** Every game stored in `lh_game` without an `lh_consensus`
+  row, once it is at least 4 hours past tip-off, gets its Covers Consensus
+  page: one request per game, archived raw. This covers the stored games
+  without counts and the games the run has just stored. The counts are
+  fetched in the date's group, after the date's lines are written.
+  - A page without counts (the section is there, the "Total Picks" rows are
+    not) is not stored. It is fetched again, with a warning, on the next run.
+  - A failed request or parse is a failure like a line-history one (exit 1).
+    It stops neither the date's lines nor the other games.
+  - `--consensus-only` fetches no lines and only fills the counts of stored
+    games, for a backfill. `--dates` limits it to those dates. With
+    `--dry-run` the pages are parsed and nothing is written.
+    `--save-dir` writes the rows to `lh_consensus.parquet`.
 - **Retries.** A stored game from the last 3 days (`--retry-days`) that misses
   one of the ten books is fetched again.
   - Hard Rock and theScore skip some games, so those games are re-requested
@@ -262,6 +294,8 @@ and unmaintained.
     + Cleveland Cavaliers @ Philadelphia 76ers (0022600006): 10 book(s), 2395 tick(s), last pre-tip tick 1 min before tip [7.2 MB, 6.3 s]
     - Denver Nuggets @ Oklahoma City Thunder (0022600007): not finished (tip +1.2 h ago), next run
     stored 1 new game(s) and 2395 new tick(s) (of 2395 prepared)
+    + CLE @ PHI (0022600006): consensus ATS 296 away / 517 home, O/U 213 over / 317 under
+    stored the consensus of 1 new game(s) (of 1 prepared)
   ::endgroup::
   ```
 
@@ -276,6 +310,8 @@ python scripts/update_databases/update_covers_line_history.py
 # a past season, nothing written
 python scripts/update_databases/update_covers_line_history.py \
     --dry-run --dates 2026-01-15 --save-dir /tmp/covers
+# only the pick counts of stored games that have none
+python scripts/update_databases/update_covers_line_history.py --consensus-only
 ```
 
 ## Validation

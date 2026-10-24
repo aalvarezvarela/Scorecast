@@ -66,7 +66,9 @@ survived the evaluation discipline in the `experiments` skill.
     only, 2026-27 on, unused and unmaintained — `docs/odds/moviodds_line_history.md`),
     and Covers in `line_history_covers` (`line_history_covers/`, SBR's feed
     for the nine US books incl. bet365 plus `consensus_opener` = BetMGM's
-    opener, 2026-27 on, read only by the prediction's live fallback —
+    opener, and `lh_consensus` = each game's Covers Consensus pick counts,
+    the source of SBR's `*_consensus_pct_*`; 2026-27 on, read only by the
+    prediction's live fallback —
     `docs/odds/covers_line_history.md`).
     OddsLogic and MoviOdds automatic updates are disabled as of 2026-10-24:
     too slow and unstable for the value they add. Keep their implementations

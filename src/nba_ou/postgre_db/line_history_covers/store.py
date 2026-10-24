@@ -6,6 +6,9 @@ staging table and one ``INSERT ... SELECT`` per season. With ``commit=False``
 the writes join the caller's transaction, so a game and its lines land
 together or not at all (``update.ingest_games``). Reads return the frames
 ``line_history_aiven.fetch`` returns, decoded the same way.
+
+``lh_consensus`` (the Covers Consensus pick counts, one row per stored game)
+is insert-only too: a game's counts are read once, after it is over.
 """
 
 from __future__ import annotations
@@ -33,6 +36,29 @@ from nba_ou.postgre_db.line_history_aiven.load import (
 from nba_ou.postgre_db.line_history_aiven.transform import OUTPUT_COLUMNS
 
 from .schema import SCHEMA
+
+#: ``lh_consensus`` columns, in insert order.
+CONSENSUS_COLUMNS = [
+    "game_id",
+    "season_year",
+    "spread_away_picks",
+    "spread_home_picks",
+    "total_over_picks",
+    "total_under_picks",
+    "fetched_at",
+]
+_PICK_COLUMNS = CONSENSUS_COLUMNS[2:6]
+
+#: ``lh_game`` with its Covers id: what a consensus request needs.
+GAME_EVENT_COLUMNS = [
+    "game_id",
+    "game_date",
+    "season_year",
+    "tipoff_utc",
+    "event_id",
+    "team_home",
+    "team_away",
+]
 
 
 def insert_games(
@@ -222,3 +248,98 @@ def fetch_pregame_ticks(
         )
         ticks = _rows_to_frame(cur, TICK_COLUMNS)
     return _decode_ticks(ticks)
+
+
+def insert_consensus(
+    conn: psycopg.Connection, rows: pd.DataFrame, *, commit: bool = True
+) -> int:
+    """Add the pick counts of games that have none; stored counts are kept."""
+    if rows.empty:
+        return 0
+    query = sql.SQL(
+        "INSERT INTO {}.lh_consensus ({cols}) VALUES ({vals}) "
+        "ON CONFLICT (game_id) DO NOTHING"
+    ).format(
+        sql.Identifier(SCHEMA),
+        cols=sql.SQL(", ").join(map(sql.Identifier, CONSENSUS_COLUMNS)),
+        vals=sql.SQL(", ").join(sql.Placeholder() * len(CONSENSUS_COLUMNS)),
+    )
+    inserted = 0
+    with conn.cursor() as cur:
+        for row in rows[CONSENSUS_COLUMNS].itertuples(index=False, name=None):
+            cur.execute(query, tuple(_to_native(value) for value in row))
+            inserted += cur.rowcount
+    if commit:
+        conn.commit()
+    return inserted
+
+
+def stored_consensus_game_ids(conn: psycopg.Connection, season_year: int) -> set[str]:
+    """The games of the season whose pick counts are stored."""
+    with conn.cursor() as cur:
+        cur.execute(
+            sql.SQL(
+                "SELECT game_id FROM {}.lh_consensus WHERE season_year = %s"
+            ).format(sql.Identifier(SCHEMA)),
+            (int(season_year),),
+        )
+        return {str(game_id) for (game_id,) in cur.fetchall()}
+
+
+def fetch_game_events(conn: psycopg.Connection, season_year: int) -> pd.DataFrame:
+    """The season's ``lh_game`` rows with their Covers id (``event_id``)."""
+    with conn.cursor() as cur:
+        cur.execute(
+            sql.SQL(
+                "SELECT {cols} FROM {schema}.lh_game WHERE season_year = %s "
+                "ORDER BY game_date, game_id"
+            ).format(
+                cols=sql.SQL(", ").join(map(sql.Identifier, GAME_EVENT_COLUMNS)),
+                schema=sql.Identifier(SCHEMA),
+            ),
+            (int(season_year),),
+        )
+        games = _rows_to_frame(cur, GAME_EVENT_COLUMNS)
+    if games.empty:
+        return games
+    games["game_id"] = games["game_id"].astype(str)
+    games["game_date"] = pd.to_datetime(games["game_date"]).dt.date
+    games["tipoff_utc"] = pd.to_datetime(games["tipoff_utc"], utc=True)
+    return games.reset_index(drop=True)
+
+
+def fetch_consensus(
+    conn: psycopg.Connection,
+    season_years: Iterable[int] | None = None,
+    game_ids: Iterable[str] | None = None,
+) -> pd.DataFrame:
+    """Stored pick counts in ``CONSENSUS_COLUMNS``; every game when both filters
+    are None. ``parse.PickConsensus.sbr_consensus`` turns a row into SBR's
+    shares."""
+    filters, params = [], []
+    if season_years is not None:
+        filters.append(sql.SQL("season_year = ANY(%s)"))
+        params.append([int(s) for s in season_years])
+    if game_ids is not None:
+        filters.append(sql.SQL("game_id = ANY(%s)"))
+        params.append([str(g) for g in game_ids])
+    where = (
+        sql.SQL(" WHERE ") + sql.SQL(" AND ").join(filters) if filters else sql.SQL("")
+    )
+    with conn.cursor() as cur:
+        cur.execute(
+            sql.SQL(
+                "SELECT {cols} FROM {schema}.lh_consensus{where} ORDER BY game_id"
+            ).format(
+                cols=sql.SQL(", ").join(map(sql.Identifier, CONSENSUS_COLUMNS)),
+                schema=sql.Identifier(SCHEMA),
+                where=where,
+            ),
+            params,
+        )
+        consensus = _rows_to_frame(cur, CONSENSUS_COLUMNS)
+    consensus["game_id"] = consensus["game_id"].astype(str)
+    for column in ("season_year", *_PICK_COLUMNS):
+        consensus[column] = pd.to_numeric(consensus[column]).astype("int64")
+    consensus["fetched_at"] = pd.to_datetime(consensus["fetched_at"], utc=True)
+    return consensus.reset_index(drop=True)
