@@ -1,6 +1,6 @@
 # Prediction runtime plan: shorter daily runs on the self-hosted runner
 
-Status: **Plan** (2026-10-23, branch `perf/prediction-runtime`)
+Status: **Partial** (A–E implemented, F deferred; 2026-10-24, branch `perf/prediction-runtime`)
 
 ## Goal
 
@@ -363,6 +363,18 @@ value is the loading:
   (spec, seasons), returns copies, so a caller can never alter another's frame.
 - Check: both frames bit-identical.
 
+**As implemented (bcdd80f).** The repeated cost turned out to be the S3
+downloads: the same seasons of games, players, odds, injuries, referees and
+ticks were read up to four times per run. So C sits one level lower than
+planned.
+- `SeasonStore.read` keeps each decoded season piece in memory, keyed by its
+  bytes' sha256, and hands each caller its own copy.
+- The current season's database queries run as before, so no read sees
+  different data. `NBA_OU_SEASON_PIECE_MEMO=0` turns the cache off.
+- Check: taped runs switch the S3 seasons off, so C was checked with them on.
+  The code before C (`9ef9924`) recorded a run of 2026-04-10 18:00 ET with
+  `--s3-cache`, and C replayed it: `EQUAL`. 39 season reads went through S3.
+
 ### D. Cache model builds locally (expected −1 to −2.5 min, if step 0 confirms)
 
 A build is immutable per `fit_id` (`registry_store.read_model_bytes`,
@@ -370,6 +382,15 @@ A build is immutable per `fit_id` (`registry_store.read_model_bytes`,
 under `~/.cache/nba_ou/models` (`NBA_OU_MODEL_CACHE_DIR`), checked by sha256.
 Only the channel pointer is read from S3 each run. Scope it to whatever step 0
 shows dominates the 2–4 s per slot. Check: predictions identical.
+
+**As implemented (9ef9924).**
+- `registry_store._read_immutable` serves specs, fits and models from
+  `NBA_OU_MODEL_CACHE_DIR`, by default `~/.cache/nba_ou/models` (`""` turns it
+  off). Each copy is served only while its bytes match the sha256 stored next
+  to it; otherwise it is downloaded again.
+- Channel pointers and history are still read from S3, so a promotion is seen
+  on the next run. `tests/conftest.py` turns the cache off for every test.
+- Check: all four step 0 references `EQUAL`. 51 slots: 84–133 s → 52–54 s.
 
 ### E. Workflow settings that change no value
 
@@ -413,6 +434,24 @@ shows dominates the 2–4 s per slot. Check: predictions identical.
 
 Re-measure with the timing harness after each change, and on a 10+ game night
 once the SBR feed is back.
+
+### Where it ended up (2026-10-24, A–E done)
+
+| | Before (P3, 2026-10-22) | Now | Source |
+|---|---:|---:|---|
+| Step 2 | 113 s | 100–157 s | live M4 |
+| Closing rows | 457 s | 166–190 s | live M2/M4, frozen memo from S3 |
+| Intermediate rows | 489 s | ~250 s | live M3 (2 games); replays: 316–420 s for 12–15 games |
+| 51 slots | 88 s | ~52 s | replays with D |
+| **Build and predict** | **~19 min** | **~10 min** | sum of the above |
+| First run after a builder change | ~70 min | as warm | frozen memo seeded |
+
+- Add ~50 s of job setup and the database update, which is 90–100 s and not
+  part of these measurements. That gives about 12–13 min end to end, against
+  19–23 min before.
+- On 2026-10-24 the intermediate rows could not be measured live: SBR's feed
+  is still frozen, so that day's game had no ticks.
+- Not done: F (the day cache), deferred until the season carries weight.
 
 ## Blockers outside this plan
 
