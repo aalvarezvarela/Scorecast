@@ -2,9 +2,12 @@
 
 Status: **Partial** (checked 2026-10-24) — research notes from 2026-10-21.
 Implemented: the OddsTrader archive (2026-10-22, "S3 archive" below), a copy in
-S3, and two line-history stores beside SBR, OddsLogic (2026-10-23) and MoviOdds
-for bet365 (2026-10-24). None is a model input yet. Using any source as a
-backup or as features remains.
+S3, and three line-history stores beside SBR: OddsLogic (2026-10-23), MoviOdds
+for bet365 and Covers (2026-10-24). None is a model input. OddsLogic and
+MoviOdds are unused and will not be maintained: they are too slow and unstable
+for the limited value they add. Their automatic updates are disabled; code
+and existing data are retained for possible future reuse. Integrating the
+other alternatives as a backup or as features remains open.
 
 The question was
 whether another source could back up Sportsbook Review (SBR) when the site is
@@ -318,8 +321,11 @@ archived from 2020-12-01. It has DraftKings, FanDuel, BetMGM, Caesars,
 Fanatics, Hard Rock and BetRivers (unlisted id 60), plus ESPN BET, Circa,
 South Point and Kalshi. **It has no bet365.**
 
-Since 2026-10-23 it is stored daily in the Aiven schema
-`line_history_oddslogic`, from the 2026-27 season on. Endpoints, book
+Implemented on 2026-10-23 for the Aiven schema `line_history_oddslogic`, from
+the 2026-27 season on. **Unused and unmaintained as of 2026-10-24:** automatic
+updates are disabled because ingestion is too slow and unstable for the
+limited value it adds. Code and existing data are retained for possible reuse;
+no fallback integration is planned. Endpoints, book
 identification, parsing rules and parity with SBR:
 [oddslogic_line_history.md](oddslogic_line_history.md).
 
@@ -331,10 +337,26 @@ bet365 feed SBR had: on the first 16 games of 2026-27, before SBR froze,
 moneyline prices matched 16/16 and spread quotes 15/16. It has no games from
 earlier seasons, so it cannot backfill or be checked against SBR's history.
 
-From 2026-10-24 the code stores it in the Aiven schema `line_history_moviodds`,
-with a daily step after OddsLogic. Fixture matching, the rule for selections
+Implemented on 2026-10-24 for the Aiven schema `line_history_moviodds`.
+**Unused and unmaintained as of the same day:** automatic updates are disabled
+because ingestion is too slow and unstable for the limited value it adds.
+Code and existing data are retained for possible reuse; no integration is
+planned. Fixture matching, the rule for selections
 the provider relabels with the other team's name, and parity with SBR:
 [moviodds_line_history.md](moviodds_line_history.md).
+
+## Covers
+
+covers.com's "Line Movement" modal serves SBR's own feed for the nine US books:
+bet365, BetMGM, DraftKings, FanDuel, Fanatics, BetRivers, Caesars, Hard Rock
+and theScore. On 39 games of 2024-26 it matched SBR's as-of totals and spread
+lines in 0.99–1.00 of cases, with the same openers. SBR's `consensus_opener`
+is BetMGM's opener. Its history goes back to 2019-04. Ontario's view adds
+Pinnacle.
+
+From 2026-10-24 the code stores it in the Aiven schema `line_history_covers`,
+with an active daily step after SBR (OddsLogic and MoviOdds are disabled):
+[covers_line_history.md](covers_line_history.md).
 
 ## What sits behind sportsbookreview.com today
 

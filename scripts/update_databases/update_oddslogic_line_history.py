@@ -1,4 +1,8 @@
-"""Daily update of the OddsLogic (WagerTalk) line-history store in Aiven.
+"""Manual update of the retained OddsLogic (WagerTalk) store in Aiven.
+
+Unused and unmaintained since 2026-10-24: too slow and unstable for the value
+it adds. Automatic updates are disabled; kept for possible future reuse.
+See docs/odds/oddslogic_line_history.md.
 
 The second line-history source beside SBR (``update_line_history_database.py``):
 the same tables in the schema ``line_history_oddslogic``, from the 2026-27
@@ -11,7 +15,7 @@ are archived to S3 (insert-only) before they are parsed. Writes are insert-only.
 
 Examples::
 
-    # first run: create the schema, then what the daily job does
+    # optional manual run: create the schema and ingest
     python scripts/update_databases/update_oddslogic_line_history.py --create-schema
 
     # plan and parse without writing anything (no Aiven or S3 writes)

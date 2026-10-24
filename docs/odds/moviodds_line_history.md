@@ -1,10 +1,12 @@
 # MoviOdds bet365 line history
 
-Status: **Implemented** (2026-10-24). This is the bet365 line-history source
-beside SBR, stored in the Aiven schema `line_history_moviodds` from the 2026-27
-season on, independently of SBR and WagerTalk/OddsLogic. This phase provides
-ingestion, raw archives, readers and comparison tools. Training and prediction
-do not consume it yet.
+Status: **Unmaintained** (2026-10-24; implemented the same day). Implemented
+but unused: ingestion is too slow and unstable for the limited value it adds.
+Automatic updates are disabled and this integration will not be maintained.
+The code, tests, existing Aiven data (`line_history_moviodds`, 2026-27 on)
+and raw archives are retained for possible future reuse. Training and
+prediction do not consume it; no integration is planned. The details below
+describe the retained implementation and historical validation.
 
 ## Storage contract
 
@@ -89,7 +91,8 @@ for `Retry-After`. One game's failure does not stop the remaining games.
 
 ## Commands
 
-Initial schema creation and the daily update (these **write remote data**):
+Retained commands for deliberate manual use, without maintenance. Initial
+schema creation and ingestion (**write remote data**):
 
 ```bash
 python scripts/update_databases/update_moviodds_line_history.py --create-schema
@@ -116,9 +119,11 @@ metadata in immutable gzip JSON bundles below
 including retries and failed/incomplete downloads. Archive failures warn and do
 not prevent ingestion. `--no-archive` disables this explicitly.
 
-The daily workflow runs this after WagerTalk, with `continue-on-error` and a
-45-minute step timeout. The schema must be initialized once before deployment;
-no remote initialization was performed during development.
+The "Update MoviOdds line history" step in `update_database_daily.yml` is
+commented out. No other workflow or `update_all_databases` call runs this CLI.
+This also stops new raw-archive writes from automatic ingestion; existing
+data is kept. Schema initialization is needed only for a manual run against
+a new database.
 
 Readers `store.fetch_games` and `store.fetch_pregame_ticks` return the shared
 `GAME_COLUMNS` and `TICK_COLUMNS`. The tick reader decodes doubled lines,

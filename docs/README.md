@@ -14,6 +14,7 @@ Every document has one `Status:` line under its title:
 |---|---|
 | **Reference** | Describes how the code works today; keep it in sync when the code changes |
 | **Implemented** | A design document whose implementation exists; the body may still read as a plan |
+| **Unmaintained** | Implemented but unused; automatic updates are disabled and the code is retained for possible future reuse without maintenance |
 | **Partial** | Part of the design is implemented; the status line says what remains |
 | **Plan** | Not implemented |
 | **Research** | Measurements or findings, not a design |
@@ -42,9 +43,10 @@ the folder of its topic, with a status line, and gets a row here.
 |---|---|---|---|
 | [line_history_updating.md](odds/line_history_updating.md) | Reference | Daily and backfill updates of the Aiven `line_history` store | `scripts/update_databases/update_line_history_database.py` |
 | [line_history_phase0_findings.md](odds/line_history_phase0_findings.md) | Research | Tipoff source, timezones, match rates and in-play rows behind the store | `postgre_db/line_history_aiven/` |
-| [odds_source_alternatives.md](odds/odds_source_alternatives.md) | Partial | Odds APIs, OddsTrader, OddsLogic and MoviOdds as a backup or extra books for SBR; the OddsTrader S3 archive | `fetch_data/odds_oddstrader/` |
-| [oddslogic_line_history.md](odds/oddslogic_line_history.md) | Implemented | OddsLogic (WagerTalk) line history: endpoints, book ids (BetRivers = 60, no bet365), parsing rules, the `line_history_oddslogic` store and its daily update | `fetch_data/odds_oddslogic/`, `postgre_db/line_history_oddslogic/` |
-| [moviodds_line_history.md](odds/moviodds_line_history.md) | Implemented | MoviOdds bet365 line history: fixture matching, relabelled-selection rule, the `line_history_moviodds` store, its daily update and parity with SBR's bet365 | `fetch_data/odds_moviodds/`, `postgre_db/line_history_moviodds/` |
+| [odds_source_alternatives.md](odds/odds_source_alternatives.md) | Partial | Odds APIs, OddsTrader and Covers as alternatives to SBR; OddsLogic and MoviOdds implemented but unused and unmaintained | `fetch_data/odds_oddstrader/` |
+| [oddslogic_line_history.md](odds/oddslogic_line_history.md) | Unmaintained | OddsLogic (WagerTalk) ingestion implemented but unused; automatic updates disabled due to slowness, instability and limited value; retained for possible reuse | `fetch_data/odds_oddslogic/`, `postgre_db/line_history_oddslogic/` |
+| [moviodds_line_history.md](odds/moviodds_line_history.md) | Unmaintained | MoviOdds bet365 ingestion implemented but unused; automatic updates disabled due to slowness, instability and limited value; retained for possible reuse | `fetch_data/odds_moviodds/`, `postgre_db/line_history_moviodds/` |
+| [covers_line_history.md](odds/covers_line_history.md) | Implemented | Covers line history (SBR's feed, nine US books incl. bet365): endpoints, parsing rules, `consensus_opener` = BetMGM's opener, the `line_history_covers` store, its daily update and parity with SBR | `fetch_data/odds_covers/`, `postgre_db/line_history_covers/` |
 
 ## intermediate/ — snapshot (pre-close) datasets and serving
 
