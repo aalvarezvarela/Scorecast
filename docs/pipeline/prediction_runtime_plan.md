@@ -297,9 +297,31 @@ intermediate rows (SBR frozen).
 M2 still missed `intermediate_report_states` 2019–2025 and
 `intermediate_injury_effect_priors` 2025, as every run did before. Their
 digests chain `report_season_fingerprints`, whose first link hashes the
-dimension tables (`ir_reason`, `ir_status`, ...). An injury report ingested
-between M1 and M2 (17:30 UTC) is the likely trigger. This is unconfirmed; it
-is being watched across the next ingestion.
+dimension tables (`ir_reason`, `ir_status`, ...). A report ingested between M1 and M2 (17:30 UTC) looked like the trigger. A
+watch across the next two ingestions (19:15 and 19:30 UTC) ruled this out:
+each changed only season-2026 parts, and in M3 these memos hit.
+
+M3 (A + B, warm): step 2 140 s, closing 399 s, intermediate 250 s, slots
+107 s, total 915 s. The closing memo missed seasons 2017+ in M3. From 20:14
+to 00:10 UTC, a live probe every 30 min captured the closing memo's
+per-season input digests. It found the cause at 23:36 UTC:
+- Eight odds columns (`total_/spread_fanduel_line_*`,
+  `total_/spread_betrivers_line_*`) switched between `object` and `float64`.
+- The past values were identical. What moved the dtype was tonight's
+  scheduled odds rows: a missing line comes as `pd.NA`, which makes the whole
+  column `object`. The column went back to `float64` when that game's row
+  changed.
+- The memo digest includes dtypes, so every season of every closing memo
+  missed whenever a book posted or pulled one of tonight's lines.
+
+Two fixes are possible:
+1. Cast tonight's odds rows to the history's dtypes before the concat. It is
+   the right fix and matches training, but it changes values whenever `pd.NA`
+   is present.
+2. Make the digest per season independent of other seasons' rows. This
+   changes no value.
+
+The user decides.
 
 ### C. Load each input table once per run (expected −0.5 to −1 min)
 
