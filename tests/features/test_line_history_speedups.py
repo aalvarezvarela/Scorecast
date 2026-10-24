@@ -169,7 +169,9 @@ def test_anchor_path_matches_the_previous_implementation(seed, windows):
         add_anchor_total_path_features,
     )
 
-    from tests.support.legacy.legacy_anchor_total_path import add_anchor_total_path_features_before
+    from tests.support.legacy.legacy_anchor_total_path import (
+        add_anchor_total_path_features_before,
+    )
 
     ticks = random_ticks(n_games=25, seed=seed)
     panel = build_snapshot_panel(ticks, grid=GRID)

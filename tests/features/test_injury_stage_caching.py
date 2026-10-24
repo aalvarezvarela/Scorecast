@@ -20,13 +20,12 @@ from nba_ou.data_processing.past_injuries.injury_effects import (
 from nba_ou.utils.row_cache import RowCache
 
 # ---- _TeamHistoryIndex ------------------------------------------------------
-
-
 from tests.support.injury_states import (
     _games,
     _report_states,
     _run,
 )
+
 
 def _frame_effect(df_hist, team_id, season_years, before_date, injured, available):
     """The frame-filter implementation ``_TeamHistoryIndex`` replaced."""

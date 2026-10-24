@@ -185,6 +185,13 @@ def test_unfiled_side_has_nan_injury_features_even_with_legacy_values(
     assert pd.isna(result["INJ_FRESH_OUT_PTS_SUM_BEFORE"])
 
 
+def _worker_dies(horizon):
+    # Module level so the pool can pickle it and the failure happens inside the
+    # worker. A local function fails to pickle in the queue feeder thread, which
+    # can deadlock ProcessPoolExecutor's shutdown lock once _stop kills the pool.
+    raise RuntimeError("worker died")
+
+
 def test_horizons_in_processes_equal_the_horizons_in_turn(monkeypatch, tmp_path):
     """Forked horizons give the same rows, memo entries and sums as a loop."""
     from nba_ou.create_training_data import history_memo
@@ -250,10 +257,7 @@ def test_horizons_in_processes_equal_the_horizons_in_turn(monkeypatch, tmp_path)
     assert forked_priors == priors and len(priors) == 4
 
     # A failing worker costs time, never a value: the horizons run in turn.
-    def broken(horizon):
-        raise RuntimeError("worker died")
-
-    monkeypatch.setattr(ii, "_forked_horizon", broken)
+    monkeypatch.setattr(ii, "_forked_horizon", _worker_dies)
     fallback_rows, fallback_tables, fallback_priors = run(2)
     pd.testing.assert_frame_equal(fallback_rows, rows)
     assert fallback_tables == tables and fallback_priors == priors

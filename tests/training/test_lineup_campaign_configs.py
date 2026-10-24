@@ -7,11 +7,9 @@ season-gated, cleaning drops the family, and the treatment silently becomes a
 copy of the control.
 """
 
-from tests.support.paths import REPO_ROOT
-
-
 import pytest
 
+from tests.support.paths import REPO_ROOT
 from training_pipeline.cli import load_config
 
 CAMPAIGN = (

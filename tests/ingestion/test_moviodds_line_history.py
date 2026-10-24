@@ -1,7 +1,5 @@
 """MoviOdds timelines, clocks, complete downloads and independent persistence."""
 
-from tests.support.paths import REPO_ROOT
-
 from contextlib import contextmanager
 from datetime import UTC, date, datetime
 from types import SimpleNamespace
@@ -16,6 +14,8 @@ from nba_ou.postgre_db.line_history_aiven import schema as shared_schema
 from nba_ou.postgre_db.line_history_aiven.fetch import GAME_COLUMNS, TICK_COLUMNS
 from nba_ou.postgre_db.line_history_aiven.transform import OUTPUT_COLUMNS
 from nba_ou.postgre_db.line_history_moviodds import compare, schema, store, update
+
+from tests.support.paths import REPO_ROOT
 
 DAY = date(2026, 10, 20)
 TIP = pd.Timestamp("2026-10-21T01:30:00Z")

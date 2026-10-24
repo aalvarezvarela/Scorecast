@@ -32,14 +32,13 @@ from nba_ou.modeling.registry_store import (
 )
 
 from tests.support.fake_s3 import FakeS3Client
-
-
 from tests.support.model_registry import (
     BUCKET,
-    make_spec,
     make_fit,
+    make_spec,
     publish,
 )
+
 
 @pytest.fixture
 def s3():
