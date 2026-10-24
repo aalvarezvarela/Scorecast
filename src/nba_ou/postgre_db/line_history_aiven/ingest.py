@@ -55,6 +55,11 @@ TIPOFF_TOLERANCE_MINUTES = 15
 #: for SBR to fill the gap. Matches the update's refresh window.
 TRUNCATED_HOLD_DAYS = 3
 
+#: Hours after tip-off past which a game SBR still does not list as final is
+#: reported (``stale_status_games``): a game is over in about 2.5 h, so its status
+#: has frozen with the feed and it will not be stored until SBR recovers.
+STALE_STATUS_HOURS = 6
+
 
 def is_finished(game: ScrapedGame) -> bool:
     """Whether SBR reports the game as over ("Final", "Final/OT", ...).
@@ -110,6 +115,8 @@ class IngestStats:
     retimed_games: list[str] = field(default_factory=list)
     #: Stored although their history stops well before tip (past the hold).
     truncated_games: list[str] = field(default_factory=list)
+    #: Not final although tip-off was over ``STALE_STATUS_HOURS`` ago.
+    stale_status_games: list[str] = field(default_factory=list)
     dropped: dict[str, int] = field(default_factory=dict)
     repaired: dict[str, int] = field(default_factory=dict)
 
@@ -530,6 +537,13 @@ def ingest_scraped_games(
     now = now or datetime.now(UTC)
     finished = [game for game in games if is_finished(game)]
     stats.drop("unfinished_game", len(games) - len(finished))
+    stats.stale_status_games = [
+        f"{game.event_id} {game.team_away} @ {game.team_home} "
+        f"(status {game.status_text.strip()!r})"
+        for game in games
+        if not is_finished(game)
+        and now - game.tipoff_utc > timedelta(hours=STALE_STATUS_HOURS)
+    ]
     complete = [g for g in finished if not is_held_back(g, now, hold_truncated_days)]
     stats.drop("truncated_history", len(finished) - len(complete))
     stats.truncated_games = [

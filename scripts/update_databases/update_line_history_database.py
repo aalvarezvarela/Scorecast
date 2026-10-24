@@ -39,7 +39,10 @@ from nba_ou.fetch_data.odds_sportsbook.scrape_sportsbook_line_history import ALL
 from nba_ou.postgre_db.config.db_config import connect_line_history_db
 from nba_ou.postgre_db.line_history_aiven import update as update_mod
 from nba_ou.postgre_db.line_history_aiven.fetch import TRUNCATED_HISTORY_MINUTES
-from nba_ou.postgre_db.line_history_aiven.ingest import TRUNCATED_HOLD_DAYS
+from nba_ou.postgre_db.line_history_aiven.ingest import (
+    STALE_STATUS_HOURS,
+    TRUNCATED_HOLD_DAYS,
+)
 from nba_ou.postgre_db.odds_sportsbook_line_history.process_sportsbook_line_history_data import (  # noqa: E501
     load_games_for_line_history_creation,
 )
@@ -173,6 +176,15 @@ def main() -> int:
                     print(
                         f"  held back {result.deferred_unfinished_games} unfinished "
                         "game(s); they are stored once final"
+                    )
+                if result.stale_status_games:
+                    annotate(
+                        "warning",
+                        f"Line history: {len(result.stale_status_games)} game(s) "
+                        f"tipped off over {STALE_STATUS_HOURS} h ago and SBR still "
+                        "does not list them as final (SBR feed freeze?); they are "
+                        "not stored, and not trained on, until it does: "
+                        + "; ".join(result.stale_status_games[:10]),
                     )
                 if result.deferred_truncated_games:
                     annotate(
