@@ -43,7 +43,11 @@ def daily_retrain(monkeypatch):
         retrain,
         "update_from_database",
         lambda store, **_: SimpleNamespace(
-            describe=lambda: "updated", drifted=False, not_built=[]
+            describe=lambda: "updated",
+            drifted=False,
+            not_built=[],
+            waiting=[],
+            overdue=[],
         ),
     )
     # The GPU check would fail on a machine without CUDA; fitting is stubbed.

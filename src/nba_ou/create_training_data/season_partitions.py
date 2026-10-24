@@ -19,8 +19,12 @@ Every update rebuilds the last ``OVERLAP_DAYS`` before the previous cutoff,
 or starts the day after the newest stored game when that is earlier: a game
 that could not be built yet (its line history not ingested) is retried every
 day until it is, and a finished season is never rebuilt day after day (which
-would recompute its whole history each time). Those
-rows must come back identical, so a difference is reported: a code change
+would recompute its whole history each time). A game without line history is
+not built at all, closing rows included (``ready_game_ids``): its close would
+be SBR's day-page number, which during a feed freeze is a line from hours
+before tip. It waits, and pulls the window back to it, for up to
+``MAX_WAIT_DAYS``; after that it is built with what there is, and reported.
+Rebuilt rows must come back identical, so a difference is reported: a code change
 that moved values, or a database correction (late box scores, a line-history
 repair), that a rebuild of the affected seasons
 (``scripts/create_train_data/build_season_partitions.py rebuild``) should
@@ -86,6 +90,12 @@ ROW_ORDER: dict[str, tuple[str, ...]] = {
 
 #: Days before the last cutoff that every update rebuilds and checks.
 OVERLAP_DAYS = 3
+
+#: Days a finished game waits for its line history before it is built without
+#: it. The line-history update holds a game whose history stops long before
+#: tip for 3 days (``TRUNCATED_HOLD_DAYS``) and stores it after; this outlasts
+#: that hold, so a frozen SBR day-page close only gets in as a last resort.
+MAX_WAIT_DAYS = 7
 
 #: Relative tolerance of the overlap check. Not exact: twelve roster-continuity
 #: columns vary in their last bit with the hash seed (PYTHONHASHSEED).
@@ -475,6 +485,11 @@ class UpdateReport:
     #: Finished games the build did not return and nothing stores: retried
     #: by the next update while they are newer than every stored game.
     not_built: list[str] = field(default_factory=list)
+    #: Finished games held back without line history; retried until they are
+    #: ``MAX_WAIT_DAYS`` old.
+    waiting: list[str] = field(default_factory=list)
+    #: Games built without line history after waiting ``MAX_WAIT_DAYS``.
+    overdue: list[str] = field(default_factory=list)
 
     @property
     def drifted(self) -> bool:
@@ -490,6 +505,16 @@ class UpdateReport:
             lines.append(
                 f"  {len(self.not_built)} finished game(s) not built (no line "
                 f"history yet?): {self.not_built[:10]}"
+            )
+        if self.waiting:
+            lines.append(
+                f"  {len(self.waiting)} finished game(s) wait for their line "
+                f"history: {self.waiting[:10]}"
+            )
+        if self.overdue:
+            lines.append(
+                f"  {len(self.overdue)} game(s) built without line history, "
+                f"done waiting: {self.overdue[:10]}"
             )
         for check in self.overlap:
             if not (check.differing or check.missing_games):
@@ -575,13 +600,31 @@ def _match_stored_schema(rows: pd.DataFrame, like: pd.DataFrame) -> pd.DataFrame
     return rows
 
 
+def _stored_game_ids(
+    partitions: SeasonPartitions,
+    manifests: dict[int, PartitionManifest],
+    *,
+    since: date,
+) -> set[str]:
+    """The stored games of every season with a game dated on or after ``since``."""
+    stored_ids: set[str] = set()
+    for season, manifest in manifests.items():
+        if manifest.last_game_date is not None and manifest.last_game_date >= since:
+            stored_ids |= set(
+                partitions.read(season, manifest=manifest)[GAME_ID_COLUMN].astype(str)
+            )
+    return stored_ids
+
+
 def update_partitions(
     partitions: SeasonPartitions,
     *,
     limit_date: date | str,
     game_ids_between: Callable[[date, date], Sequence[str]],
     build_rows: Callable[[Sequence[str], date], pd.DataFrame],
+    ready_game_ids: Callable[[Sequence[str]], Sequence[str]] | None = None,
     overlap_days: int = OVERLAP_DAYS,
+    max_wait_days: int = MAX_WAIT_DAYS,
 ) -> UpdateReport:
     """Bring the partitions to ``limit_date``: rebuild the games from
     ``overlap_days`` before the last cutoff (or the day after the newest stored
@@ -593,6 +636,12 @@ def update_partitions(
     are kept as they are; those inside it are replaced by the rebuild, after
     being compared with it (``UpdateReport.overlap``). A stored game the
     rebuild does not return keeps its row, and is reported.
+
+    ``ready_game_ids(game_ids)`` returns those whose inputs are complete (their
+    line history is stored). The others are not built while they are under
+    ``max_wait_days`` old (``UpdateReport.waiting``), and the window reaches
+    back to the oldest of them; older ones are built anyway
+    (``UpdateReport.overdue``).
     """
     limit = pd.Timestamp(limit_date).date()
     manifests = partitions.manifests()
@@ -614,7 +663,26 @@ def update_partitions(
     start = min(
         last_limit - timedelta(days=overlap_days), newest_game + timedelta(days=1)
     )
+    # A game still waiting may sit behind games stored after it, which moved
+    # the window past it: reach back while it can still wait.
+    wait_floor = limit - timedelta(days=max_wait_days)
+    if ready_game_ids is not None and wait_floor < start:
+        older = set(map(str, game_ids_between(wait_floor, start - timedelta(days=1))))
+        if older - _stored_game_ids(partitions, manifests, since=wait_floor):
+            start = wait_floor
     game_ids = sorted(set(map(str, game_ids_between(start, limit))))
+    waiting: list[str] = []
+    overdue: list[str] = []
+    if ready_game_ids is not None and game_ids:
+        ready = set(map(str, ready_game_ids(game_ids)))
+        due = (
+            set(map(str, game_ids_between(start, wait_floor)))
+            if start <= wait_floor
+            else set()
+        )
+        waiting = sorted(set(game_ids) - ready - due)
+        overdue = sorted(due - ready)
+        game_ids = sorted(set(game_ids) - set(waiting))
     rebuilt = build_rows(game_ids, limit) if game_ids else pd.DataFrame()
     report = UpdateReport(
         dataset_type=partitions.dataset_type,
@@ -622,6 +690,8 @@ def update_partitions(
         limit_date=limit,
         n_target_games=len(game_ids),
         rows_built=len(rebuilt),
+        waiting=waiting,
+        overdue=overdue,
     )
     keys = list(ROW_ORDER[partitions.dataset_type])
     newest = max(manifests)
@@ -630,14 +700,7 @@ def update_partitions(
     built = set(rebuilt[GAME_ID_COLUMN].astype(str)) if not rebuilt.empty else set()
     unbuilt = set(game_ids) - built
     if unbuilt:
-        stored_ids: set[str] = set()
-        for season, manifest in manifests.items():
-            if manifest.last_game_date is not None and manifest.last_game_date >= start:
-                stored_ids |= set(
-                    partitions.read(season, manifest=manifest)[GAME_ID_COLUMN].astype(
-                        str
-                    )
-                )
+        stored_ids = _stored_game_ids(partitions, manifests, since=start)
         report.not_built = sorted(unbuilt - stored_ids)
     seasons = (
         sorted(set(pd.to_numeric(rebuilt[SEASON_COLUMN]).astype(int)))
@@ -776,6 +839,7 @@ def update_from_database(
         limit_date=limit_date,
         game_ids_between=finished_game_ids,
         build_rows=lambda ids, limit: build_rows(partitions.dataset_type, ids, limit),
+        ready_game_ids=_line_history_game_ids,
     )
 
 

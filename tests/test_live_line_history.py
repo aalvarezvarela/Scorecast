@@ -118,6 +118,22 @@ def test_a_batch_of_only_unfinished_games_touches_nothing():
     assert stats.inserted_ticks == 0
 
 
+@pytest.mark.parametrize(("hours", "stale"), [(2, False), (6, False), (7, True)])
+def test_a_game_still_not_final_hours_after_tip_is_reported(hours, stale):
+    """A frozen feed freezes statuses too: the game is never stored until SBR
+    recovers, so it is listed rather than only counted."""
+    stats = ing.ingest_scraped_games(
+        None,
+        [_game("7:00 PM ET")],
+        games_df=pd.DataFrame(),
+        now=TIPOFF + pd.Timedelta(hours=hours),
+    )
+    assert stats.dropped == {"unfinished_game": 1}
+    assert bool(stats.stale_status_games) is stale
+    if stale:
+        assert "'7:00 PM ET'" in stats.stale_status_games[0]
+
+
 # --- a finished game whose history froze before tip is held back -------------
 
 

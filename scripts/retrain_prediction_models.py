@@ -202,6 +202,20 @@ def main() -> int:
                 f"[{dataset_type}] {len(report.not_built)} finished game(s) could "
                 "not be built yet (line history not ingested?); retried next run.",
             )
+        if report.waiting:
+            annotate(
+                "warning",
+                f"[{dataset_type}] {len(report.waiting)} finished game(s) wait for "
+                "their line history (SBR feed freeze?); not trained on until it "
+                "is stored.",
+            )
+        if report.overdue:
+            annotate(
+                "warning",
+                f"[{dataset_type}] {len(report.overdue)} game(s) built without line "
+                "history after waiting; their closes are SBR's unverified "
+                f"day-page numbers: {report.overdue[:10]}",
+            )
         if report.drifted:
             annotate(
                 "warning",

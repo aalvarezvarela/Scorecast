@@ -290,6 +290,8 @@ class _Database:
     def __init__(self, full: pd.DataFrame):
         self.full = full
         self.built: list[list[str]] = []
+        #: Games whose line history is not stored.
+        self.no_history: set[str] = set()
 
     def game_ids_between(self, start, end):
         dates = pd.to_datetime(self.full["GAME_DATE"]).dt.date
@@ -308,6 +310,7 @@ class _Database:
             limit_date=limit_date,
             game_ids_between=self.game_ids_between,
             build_rows=self.build_rows,
+            ready_game_ids=lambda ids: [g for g in ids if g not in self.no_history],
         )
 
 
@@ -432,6 +435,62 @@ def test_a_game_that_cannot_be_built_yet_is_retried():
     report = database.update(partitions, "2025-11-10")
     assert report.not_built == []
     pd.testing.assert_frame_equal(partitions.load().df, full, check_exact=True)
+
+
+def _frozen_game(full: pd.DataFrame, day: str) -> str:
+    return full.loc[pd.to_datetime(full["GAME_DATE"]) == day, "GAME_ID"].iloc[0]
+
+
+def test_a_game_without_line_history_waits_behind_later_games():
+    """An SBR feed freeze: one game's line history is not stored, so its close
+    would be the frozen day-page number. It is not built, and stays in the
+    window after later games are stored, until its history arrives."""
+    s3 = FakeS3Client()
+    full = _games(seasons=(2025,))
+    partitions = _partitions(s3)
+    stored = full[pd.to_datetime(full["GAME_DATE"]) <= "2025-10-30"]
+    split_into_partitions(stored, partitions, limit_date="2025-10-30", source="t")
+    database = _Database(full)
+    frozen = _frozen_game(full, "2025-10-31")
+    database.no_history = {frozen}
+
+    for day in range(1, 6):
+        report = database.update(partitions, f"2025-11-{day:02d}")
+        assert report.waiting == [frozen]
+        assert frozen not in set(partitions.load().df["GAME_ID"])
+    # The plain window (from 2025-11-01) has moved past it; it reaches back.
+    assert report.window_start == date(2025, 10, 29)
+    assert "wait for their line history" in report.describe()
+
+    database.no_history = set()  # SBR recovered
+    report = database.update(partitions, "2025-11-06")
+    assert report.waiting == [] and report.overdue == []
+    pd.testing.assert_frame_equal(partitions.load().df, full, check_exact=True)
+
+
+def test_a_game_that_never_gets_line_history_is_built_after_waiting():
+    s3 = FakeS3Client()
+    full = _games(seasons=(2025,))
+    partitions = _partitions(s3)
+    stored = full[pd.to_datetime(full["GAME_DATE"]) <= "2025-10-24"]
+    split_into_partitions(stored, partitions, limit_date="2025-10-24", source="t")
+    database = _Database(full)
+    frozen = _frozen_game(full, "2025-10-25")
+    database.no_history = {frozen}
+
+    for day in range(25, 32):
+        report = database.update(partitions, f"2025-10-{day:02d}")
+        assert report.waiting == [frozen] and report.overdue == []
+    # MAX_WAIT_DAYS after its date: built with what there is, and reported.
+    report = database.update(partitions, "2025-11-01")
+    assert report.waiting == []
+    assert report.overdue == [frozen]
+    assert "built without line history" in report.describe()
+    due = full[pd.to_datetime(full["GAME_DATE"]) <= "2025-11-01"]
+    pd.testing.assert_frame_equal(partitions.load().df, due, check_exact=True)
+    # Once built it is not waited for again.
+    report = database.update(partitions, "2025-11-02")
+    assert report.waiting == [] and report.overdue == []
 
 
 def test_without_any_game_to_build_only_the_cutoff_moves():
