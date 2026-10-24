@@ -208,8 +208,32 @@ python scripts/line_history/oddslogic/compare_oddslogic_vs_sbr.py \
 6 shared books gave the same as-of line in 107 of 120 cells. The other 13
 differ by 0.5–1 point, during a line move. In the 40-game identification run
 the listed books matched their own SBR book at line 0.76–0.97 on a 10-minute
-grid. A larger season sample (`compare_oddslogic_vs_sbr.py --from-dir`) is
-still to run.
+grid.
+
+**Season sample, 2025-26** (dry run on 2025-12-10, 2026-01-15 and 2026-03-05;
+20 games; 6 books, of which SBR carries 5;
+`compare_oddslogic_vs_sbr.py --from-dir`). Share of (game, book) with the same
+as-of line, or price for moneyline:
+
+| Market | T-720 | T-240 | T-60 | T-5 |
+|---|---|---|---|---|
+| totals | 0.86 | 0.86 | 0.86 | 0.81 |
+| spread | 0.95 | 0.95 | 0.86 | 0.96 |
+| moneyline (price) | 0.75 | 0.64 | 0.60 | 0.59 |
+
+- Lines agree as well as OddsTrader's did. Moneyline prices differ by a few
+  cents around moves, as with OddsTrader.
+- **FanDuel moneyline agrees only 0.30–0.45 at every horizon.** That looks
+  systematic rather than a matter of timing, and is not explained yet.
+- OddsLogic's last pre-game totals tick is a median 15–45 minutes before tip,
+  against 8–23 for SBR. Part of the gap is the stale-row filter, which drops
+  the last polls.
+
+**First load (2026-10-24).** 2026-10-20 to 2026-10-22: 16 games and 32,663
+ticks, every game with all three markets. 21 answers stayed empty and are
+retried by the next runs. 957 requests in 1 h 38 min, at night in Europe. The
+schema takes 7.3 MB (the database 454 MB of 1 GB). The raw archive holds 19
+objects, 0.5 MB.
 
 ## Books for prediction (note for the fallback phase)
 
