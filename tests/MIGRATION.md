@@ -223,3 +223,15 @@ multiplicities) match all 3,012 cases collected before the move. Every original
 reproduced from the original file in Git. Its fake ingest result lacked the
 recently added `stale_status_games` field. That fixture correction belongs to
 the subsequent reinforcement change, not the organizational move.
+
+## Subsequent reinforcement
+
+The separate reinforcement change keeps all 3,012 original node IDs and adds
+7 service-isolation regression cases. The complete suite passes all 3,019 cases
+with zero skips against a disposable local PostgreSQL 16. The three outdated
+flushing fakes now use the real `IngestStats` result type and its default fields.
+
+The strengthened chart, lookback, and minutes-streak tests were each checked
+against a temporary runtime mutation: an empty chart, a discarded lookback, and
+a missing minutes streak respectively. Each mutation makes its test fail. No
+production source was changed for those checks.

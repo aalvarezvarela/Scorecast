@@ -95,6 +95,7 @@ build-backend = "poetry.core.masonry.api"
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = [".", "src"]
+markers = ["postgres: uses the disposable local NBA_OU_TEST_PG_DSN database"]
 
 # -----------------------------
 # Black configuration

@@ -607,6 +607,7 @@ def _rows(conn, query: str) -> pd.DataFrame:
         )
 
 
+@pytest.mark.postgres
 @needs_db
 def test_writer_stores_a_run_once(conn):
     from nba_ou.postgre_db.predictions_aiven.store import write_run
@@ -629,6 +630,7 @@ def test_writer_stores_a_run_once(conn):
     assert _scalar(conn, "SELECT count(*) FROM prediction.runs") == 2
 
 
+@pytest.mark.postgres
 @needs_db
 def test_writer_stores_single_market_and_empty_runs(conn):
     from nba_ou.postgre_db.predictions_aiven.store import write_run
@@ -649,6 +651,7 @@ def test_writer_stores_single_market_and_empty_runs(conn):
     assert _scalar(conn, "SELECT count(*) FROM prediction.predictions") == 2
 
 
+@pytest.mark.postgres
 @needs_db
 def test_view_grades_against_the_bet_line(conn):
     from nba_ou.postgre_db.predictions_aiven.store import (
@@ -716,6 +719,7 @@ def test_view_grades_against_the_bet_line(conn):
     )
 
 
+@pytest.mark.postgres
 @needs_db
 def test_archived_builds_are_retargeted(conn):
     from nba_ou.postgre_db.predictions_aiven.store import (
@@ -737,6 +741,7 @@ def test_archived_builds_are_retargeted(conn):
     )
 
 
+@pytest.mark.postgres
 @needs_db
 def test_persist_writes_s3_then_the_store(conn):
     recorder = daily_recorder()

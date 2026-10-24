@@ -113,6 +113,7 @@ class _FakeConn:
 
 def test_cached_closing_ticks_equal_the_fetched_ones(tmp_path, monkeypatch):
     """The cached path of fetch_closing_ticks against the plain season fetch."""
+    monkeypatch.setenv("NBA_OU_S3_SEASONS", "0")
     monkeypatch.setenv("NBA_OU_INPUT_CACHE_DIR", str(tmp_path))
     calls: list[list[int]] = []
 

@@ -367,17 +367,10 @@ class TestFlushing:
 
         def _ingest(conn, batch, **kwargs):
             calls.append(len(batch))
-            stats = type(
-                "St",
-                (),
-                {
-                    "inserted_ticks": 2 * len(batch),
-                    "inserted_games": 0,
-                    "retimed_games": [],
-                    "dropped": {"unfinished_game": 1},
-                },
+            return up.ingest_mod.IngestStats(
+                inserted_ticks=2 * len(batch),
+                dropped={"unfinished_game": 1},
             )
-            return stats()
 
         monkeypatch.setattr(up.ingest_mod, "ingest_scraped_games", _ingest)
         result = up.update_line_history_database(

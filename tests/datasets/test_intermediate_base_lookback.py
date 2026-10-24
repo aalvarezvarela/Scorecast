@@ -14,12 +14,61 @@ cannot reach ``create_base_game_features``. Hence a separate knob.
 from __future__ import annotations
 
 import inspect
+from types import SimpleNamespace
 
+import pandas as pd
 import pytest
+from nba_ou.create_training_data import create_intermediate_line_df as builder
 from nba_ou.create_training_data.create_intermediate_line_df import (
     DEFAULT_BASE_LOOKBACK_SEASONS,
     create_intermediate_line_df,
 )
+
+
+class _BaseReached(Exception):
+    """Stop after observing the actual call into the base feature builder."""
+
+
+@pytest.fixture
+def base_start(monkeypatch):
+    observed = {}
+    monkeypatch.setattr(builder, "available_seasons", lambda: [2021, 2022])
+    monkeypatch.setattr(
+        builder,
+        "fetch_pregame_ticks",
+        lambda *a, **kw: pd.DataFrame({"game_id": ["g"]}),
+    )
+    monkeypatch.setattr(
+        builder, "fetch_games", lambda *a, **kw: pd.DataFrame({"game_id": ["g"]})
+    )
+    monkeypatch.setattr(
+        builder,
+        "_build_snapshot_side",
+        lambda *a, **kw: SimpleNamespace(wide=pd.DataFrame(), ridge_closing_lines={}),
+    )
+    monkeypatch.setattr(
+        builder,
+        "add_prior_game_line_dynamics",
+        lambda *a, **kw: pd.DataFrame({"game_id": ["g"]}),
+    )
+
+    def capture(**kwargs):
+        observed.update(kwargs)
+        raise _BaseReached
+
+    monkeypatch.setattr(builder, "create_base_game_features", capture)
+
+    def run(**kwargs):
+        with pytest.raises(_BaseReached):
+            create_intermediate_line_df(
+                season_years=[2022, 2021],
+                combine_fanatics_and_caesars=False,
+                verbose=False,
+                **kwargs,
+            )
+        return observed["season_start_date"]
+
+    return run
 
 
 def _signature():
@@ -41,12 +90,13 @@ def test_it_defaults_to_covering_the_previous_season_fallbacks():
     )
 
 
-def test_the_start_year_is_the_first_store_season_minus_the_lookback():
-    """The arithmetic the parameter exists to perform, stated once so a change
-    to it has to be deliberate."""
-    first_line_history_season = 2021
-
-    assert first_line_history_season - DEFAULT_BASE_LOOKBACK_SEASONS == 2019
+def test_the_start_year_is_the_first_store_season_minus_the_lookback(base_start):
+    """The real builder forwards the requested lookback to base feature loading."""
+    assert base_start() == pd.Timestamp("2019-10-01")
+    for lookback, year in [(0, 2021), (1, 2020), (3, 2018)]:
+        assert base_start(base_lookback_seasons=lookback) == pd.Timestamp(
+            year=year, month=10, day=1
+        )
 
 
 @pytest.mark.parametrize("value", [-1, -2])
@@ -60,31 +110,19 @@ def test_a_negative_lookback_is_refused(value):
 # --- the closing-odds floor -------------------------------------------------
 
 
-def test_the_lookback_lands_exactly_on_the_first_season_with_odds():
-    """Measured, not assumed: ``odds_sportsbook`` holds 32 rows for season 2018
-    (all from one 2019 postseason) and nothing earlier, so 2019-20 is the first
-    season that carries closing odds at all. The line-history store starts at
-    2021-22, which makes a 2-season lookback the largest one that buys anything.
-    """
+def test_the_lookback_lands_exactly_on_the_first_season_with_odds(base_start, capsys):
     from nba_ou.create_training_data.create_intermediate_line_df import (
         FIRST_SEASON_WITH_CLOSING_ODDS,
     )
 
-    first_line_history_season = 2021
-
-    assert (
-        first_line_history_season - DEFAULT_BASE_LOOKBACK_SEASONS
-        == FIRST_SEASON_WITH_CLOSING_ODDS
-    )
+    start = base_start()
+    assert start == pd.Timestamp(year=FIRST_SEASON_WITH_CLOSING_ODDS, month=10, day=1)
+    assert "WARNING:" not in capsys.readouterr().out
 
 
-def test_a_deeper_lookback_would_reach_seasons_with_no_odds():
-    """Not an error -- team and player history is still real down there -- but it
-    lengthens the build without warming a single odds rollup, so it warns."""
-    from nba_ou.create_training_data.create_intermediate_line_df import (
-        FIRST_SEASON_WITH_CLOSING_ODDS,
-    )
-
-    first_line_history_season = 2021
-
-    assert first_line_history_season - 3 < FIRST_SEASON_WITH_CLOSING_ODDS
+def test_a_deeper_lookback_would_reach_seasons_with_no_odds(base_start, capsys):
+    assert base_start(base_lookback_seasons=3) == pd.Timestamp("2018-10-01")
+    output = capsys.readouterr().out
+    assert "WARNING: base features start at 2018" in output
+    assert "closing-odds tables begin at 2019" in output
+    assert "without warming any odds rollup" in output

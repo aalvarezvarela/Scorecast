@@ -176,12 +176,13 @@ def test_sums_are_idempotent():
 
 
 @pytest.mark.parametrize("stat", STREAK_STAT_COLS)
-def test_streaks_are_computed_for_every_key_statistic(stat):
-    """STREAK_STAT_COLS drives the streak columns attach_player_features emits."""
-    from nba_ou.data_processing.players import attach_player_features
 
-    assert attach_player_features.STREAK_STAT_COLS is STREAK_STAT_COLS
-    assert stat in STREAK_STAT_COLS
+def test_streaks_are_computed_for_every_key_statistic(stat):
+    """Every configured statistic emits and updates its own injury streak."""
+    out = _run_pipeline([3, 4])
+    column = f"TOP1_INJURED_STREAK_{stat}_BEFORE"
+    assert column in out.columns
+    assert out[column].tolist()[3:5] == [1, 2]
 
 
 # --------------------------------------------------------------------------

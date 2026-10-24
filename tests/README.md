@@ -82,3 +82,29 @@ assert before == after, (before - after, after - before)
 
 Matching counts alone does not prove the same tests were preserved. Also run the
 full suite after the move, since collection does not exercise runtime paths.
+
+## External services and CI
+
+The root `conftest.py` fails immediately if a test creates an unsimulated boto3
+client or reaches a real HTTP, socket, or PostgreSQL connection. This failure
+also escapes application `except Exception` fallbacks. Supply a fake through
+`monkeypatch`; do not disable the guard for an entire domain. Tests specifically
+about the local input cache disable its optional S3 tier; S3 behavior has its
+own tests using `FakeS3Client`.
+
+Five prediction-writer tests carry `@pytest.mark.postgres`. They can connect only
+to the exact `NBA_OU_TEST_PG_DSN` value, using a local host or Unix socket. They
+create and drop the `prediction` schema in that disposable database. Without a
+DSN they are skipped locally; CI supplies PostgreSQL 16 and runs them with the
+rest of the suite. The schema needs PostgreSQL 15+ (`NULLS NOT DISTINCT`), with
+no Aiven-specific extensions.
+
+```sh
+NBA_OU_TEST_PG_DSN='postgresql://nba_tests:nba_tests@localhost:5432/nba_tests' \
+  python -m pytest -m postgres -q
+```
+
+CI runs every test on pull requests and pushes to `main`, prints the 15 slowest
+cases, and uploads `test-results/pytest.xml` as `pytest-results` even if tests
+fail. The pip dependency cache remains enabled. There is no reduced "fast"
+suite replacing the full merge checks.

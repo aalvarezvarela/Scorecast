@@ -352,13 +352,39 @@ def test_seed_narrative_still_speaks_when_the_data_is_there():
     assert narrative.seed_noise(_runs_frame(with_seeds=True))
 
 
-def test_the_roi_chart_renders_without_seed_ranges():
-    """It degrades to plain bars, and must not promise an error bar it is not
-    drawing."""
+
+def test_the_roi_chart_renders_without_seed_ranges(monkeypatch):
+    """Bars, seed intervals and their labels must agree in both input modes."""
     import matplotlib
 
     matplotlib.use("Agg")
     from training_pipeline.reporting import charts
 
-    charts.plot_roi_with_seed_noise(_runs_frame(with_seeds=False))
-    charts.plot_roi_with_seed_noise(_runs_frame(with_seeds=True))
+    monkeypatch.setattr(charts.plt, "show", lambda: None)
+    for with_seeds in (False, True):
+        charts.plot_roi_with_seed_noise(_runs_frame(with_seeds=with_seeds))
+        fig = charts.plt.gcf()
+        try:
+            assert len(fig.axes) == 1
+            ax = fig.axes[0]
+            assert [bar.get_height() for bar in ax.patches] == [0.02, -0.03]
+            assert [tick.get_text() for tick in ax.get_xticklabels()] == ["a", "b"]
+            legend_artist = ax.get_legend()
+            legend = (
+                [item.get_text() for item in legend_artist.get_texts()]
+                if legend_artist is not None
+                else []
+            )
+            assert ("seed range" in legend) is with_seeds
+            assert ("single seed" in ax.get_title()) is (not with_seeds)
+            assert len(ax.lines) == (5 if with_seeds else 1)
+            if with_seeds:
+                for line, expected in zip(
+                    ax.lines[::2][:2],
+                    [(-0.005, 0.045), (-0.06, 0.0)],
+                    strict=True,
+                ):
+                    assert list(line.get_ydata()) == pytest.approx(expected)
+            fig.canvas.draw()
+        finally:
+            charts.plt.close(fig)
