@@ -384,6 +384,14 @@ shows dominates the 2–4 s per slot. Check: predictions identical.
   It exists to compare stored rows with a rebuild, which a frozen 2_5 does not
   need. Small gain, retrain only. Optional.
 
+**As implemented:**
+- 44d1a4f: `NBA_OU_INPUT_CACHE_DIR: ~/.cache/nba_ou/inputs` in the predictor,
+  past-snapshots, TabPFN and retrain workflows. `input_cache.cache_dir()` now
+  expands `~`; without that, the value would have made a `~` directory inside
+  the checkout.
+- de2f5ef: the fork timeout (see A).
+- `OVERLAP_DAYS` is left as it is: an optional change, not taken.
+
 ## Not in this plan (they would change values)
 
 - Reusing the closing base frame in the intermediate build (see C).
