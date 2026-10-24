@@ -62,6 +62,7 @@ INPUT_COLUMNS = (
     "spread_price_home",
     "spread_price_away",
     "spread_line_age_minutes",
+    "line_source",
 )
 INPUT_KEY = INPUT_COLUMNS[:3]
 PREDICTION_COLUMNS = (

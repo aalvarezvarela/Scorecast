@@ -34,6 +34,7 @@ from nba_ou.create_training_data.create_intermediate_line_df import (
 from nba_ou.create_training_data.live_game_day import fetch_live_game_day
 from nba_ou.data_processing.line_history.snapshots import DEFAULT_SNAPSHOT_GRID
 from nba_ou.prediction.input_limits import LATEST_INPUT_COLUMN, LIMITED_COUNT_COLUMN
+from nba_ou.prediction.line_source import LINE_SOURCE_COLUMN
 
 #: The display columns the prediction summary reads, from tonight's schedule.
 SCHEDULE_COLUMNS = ("GAME_TIME",)
@@ -42,9 +43,14 @@ SCHEDULE_COLUMNS = ("GAME_TIME",)
 #: Per-row snapshot columns the predictions carry through to their output.
 SNAPSHOT_COLUMNS = ("SNAPSHOT_TS_UTC", "SNAPSHOT_PASSED")
 #: What an intermediate prediction carries through: when its snapshot falls,
-#: its horizon (the model's own or the latest) and the cells the training
-#: support limits changed (latest input only).
-PASSTHROUGH_COLUMNS = (*SNAPSHOT_COLUMNS, "TIME_TO_MATCH_MIN", LIMITED_COUNT_COLUMN)
+#: its horizon (the model's own or the latest), the cells the training
+#: support limits changed (latest input only) and where its lines came from.
+PASSTHROUGH_COLUMNS = (
+    *SNAPSHOT_COLUMNS,
+    "TIME_TO_MATCH_MIN",
+    LIMITED_COUNT_COLUMN,
+    LINE_SOURCE_COLUMN,
+)
 
 
 def latest_snapshot_minutes(tipoffs: pd.Series, as_of: pd.Timestamp) -> dict[str, int]:
@@ -105,16 +111,21 @@ def tonight_intermediate_frame(
     """Tonight's (game, snapshot) rows for every horizon, with the schedule's
     display columns and the snapshot marks (``SNAPSHOT_COLUMNS``); with
     ``latest_input``, also each game's latest snapshot (``LATEST_INPUT``), and
-    with ``latest_only`` that snapshot alone."""
+    with ``latest_only`` that snapshot alone.
+
+    The run's ``line_source`` (``scheduled_data["line_source"]``) decides
+    where the line history comes from; each row's is in ``LINE_SOURCE``."""
     if latest_only and not latest_input:
         raise ValueError("latest_only needs latest_input")
     scheduled = scheduled_data["scheduled_games"]
+    line_source = scheduled_data.get("line_source")
     live = fetch_live_game_day(
         game_date,
         scheduled_games=scheduled,
         df_referees_scheduled=scheduled_data.get("df_referees_scheduled"),
         roster_snapshots=scheduled_data.get("roster_snapshots"),
         as_of=as_of,
+        line_source=line_source,
     )
     latest: dict[str, int] = {}
     if latest_input:
@@ -153,4 +164,8 @@ def tonight_intermediate_frame(
     frame = frame.drop(columns=list(SCHEDULE_COLUMNS), errors="ignore").merge(
         display, on="GAME_ID", how="left", validate="many_to_one"
     )
+    if line_source is not None:
+        frame[LINE_SOURCE_COLUMN] = (
+            frame["GAME_ID"].astype(str).map(line_source.history_sources)
+        )
     return frame

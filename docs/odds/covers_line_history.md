@@ -2,8 +2,9 @@
 
 Status: **Implemented** (2026-10-24). A line-history source beside SBR, stored
 in the Aiven schema `line_history_covers` from the 2026-27 season on, with the
-SBR store's tables. Nothing reads it yet: wiring it into the training and
-prediction readers is a later phase.
+SBR store's tables. The prediction reads it live as SBR's fallback
+([Live fallback](#live-fallback-for-predictions)). Training and the readers
+of past games still read SBR only.
 
 ## Why
 
@@ -151,6 +152,77 @@ The HTML is stored as served, gzipped. Each fetch writes a new key, so the
 archive is insert-only. A failed archive write is reported and does not stop
 the store.
 
+## Live fallback for predictions
+
+When SBR's feed is frozen or empty, tonight's lines come from Covers, read
+live and never stored. The code is `prediction/line_source.py` (the
+decision), `postgre_db/line_history_covers/live.py` (the fetch and the line
+history) and `fetch_data/odds_covers/day_odds.py` (the closing frame's odds).
+Each stored prediction records the source of its input row
+(`prediction.inputs.line_source`: 1 SBR, 2 Covers,
+`docs/serving/prediction_storage.md`).
+
+- **When.** The decision is made once per run, before anything reads a line.
+  - SBR's feed check (`feed_freshness`) finds it fresh → SBR.
+  - SBR frozen, or its check failing → Covers is fetched (one request for the
+    date, one per game, ~25 s for 8 games) and judged by the same rule.
+    Fresh → Covers for every game. Frozen too → the run stops as before
+    (`--allow-stale-lines` predicts on SBR anyway). With the check failing
+    and no usable Covers, the run carries on with SBR, unchecked.
+  - SBR chosen, but its day page has no odds at all (2026-10-24: eight games
+    listed, every cell empty) or its live line history no tick → the run
+    switches to Covers.
+  - SBR chosen and serving most games → a game it does not price, or gives no
+    tick, is filled from Covers.
+  - The end-of-day past-snapshot run has no game left to tip, so the check
+    cannot tell. A game whose SBR history stops more than
+    `TRUNCATED_HISTORY_MINUTES` before tip moves to Covers, if Covers goes
+    on later.
+- **Closing frame, same columns.** `covers_day_odds` builds the
+  `oddsTableModel` SBR's JSON engine parses, from Covers ticks, and runs it
+  through the engine's own parsers and day merge. The columns therefore come
+  out with SBR's names, order and rounding:
+  - The book list is SBR's (`SBR_DAY_PAGE_BOOKS`). theScore gets no column,
+    and Hard Rock Bet, the eighth book, is dropped by the parsers as on SBR.
+  - Per book, the current line is the latest pre-tip tick at the fetch; the
+    opener is `consensus_opener`.
+  - The consensus pick percentages (`*_consensus_pct_*`, tonight's values are
+    features of every production slot) come from the Covers Consensus page,
+    one more request per game (below). A game whose page fails keeps them
+    empty.
+- **Intermediate frame.** Covers' games go through SBR's
+  `live_frames_from_scraped`, without `thescore` and `consensus_opener`
+  (absent from the SBR store), so the books are the eight the models trained
+  on. Covers is read again at that step, as SBR's live history is.
+- **Force it.** `predict_nba_games.py --line-source covers` reads Covers
+  without checking either feed (`--no-persist` for a dry run).
+
+### Consensus pick percentages
+
+SBR's `consensus` (`overPickPercent`, `homeSpreadPickPercent`, ...) is the
+**Covers Consensus**: the share of Covers users' picks per side. SBR's game
+ids are Covers'. One game's counts:
+
+    https://contests.covers.com/consensus/matchupconsensusdetails?gameId=<covers id>
+
+- **Parsing.** `parse.parse_consensus` reads the public section
+  (`consensus_analysis_content`), not the experts' section after it. It takes
+  its two "Total Picks" rows (`finalWagersleft`/`finalWagersRight`): ATS
+  away/home, then O/U over/under.
+- **Converting.** `PickConsensus.sbr_consensus` turns them into SBR's shares.
+  The moneyline is 0, as SBR serves it. SBR's day-page parser then rounds them
+  as it rounds its own.
+- **Agreement with SBR** (30 games of 2025-11-12, 2026-01-15 and 2026-03-05,
+  read 2026-10-24):
+
+  | Share | Same rounded value | Median gap | Max gap | Correlation |
+  |---|---|---|---|---|
+  | Home spread | 0.73 | 0.16 pt | 0.65 pt | 0.9998 |
+  | Over | 0.63 | 0.34 pt | 1.39 pt | 0.998 |
+
+  These are the same counts read at another moment: SBR's 56.98% on game
+  388572 is exactly 396/695 picks, while Covers now shows 410/722.
+
 ## Daily update
 
 Script: `scripts/update_databases/update_covers_line_history.py`. Workflow
@@ -233,4 +305,6 @@ duplicate rows.
   unmapped books in the step's warnings.
 - **Only the US view.** Ontario's Pinnacle would need a second request per
   game and a new book map.
-- **No public-betting split.** It is not on these pages.
+- **No money split.** The consensus page counts picks, as SBR's consensus
+  does; there is no share of bets or money (that is Yahoo's,
+  `odds_yahoo/`).

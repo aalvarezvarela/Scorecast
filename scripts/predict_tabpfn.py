@@ -50,6 +50,7 @@ from nba_ou.create_training_data.schema_layers import (
     parse_version,
 )
 from nba_ou.create_training_data.season_partitions import SeasonPartitions
+from nba_ou.fetch_data.scheduled_game.get_schedule_games import get_schedule_games
 from nba_ou.modeling.refit import resolve_training_frame
 from nba_ou.modeling.registry_paths import (
     Channel,
@@ -58,13 +59,13 @@ from nba_ou.modeling.registry_paths import (
     format_horizon,
 )
 from nba_ou.modeling.registry_store import resolve_channel
-from nba_ou.postgre_db.line_history_aiven.feed_freshness import check_live_feed
 from nba_ou.postgre_db.predictions_aiven.schema import WORKFLOW_TABPFN
 from nba_ou.postgre_db.update_all.update_all_databases import update_all_databases
 from nba_ou.prediction.intermediate_frame import (
     PASSTHROUGH_COLUMNS,
     tonight_intermediate_frame,
 )
+from nba_ou.prediction.line_source import LINE_SOURCE_COLUMN, check_line_feed
 from nba_ou.prediction.prediction_store import (
     PredictionRunRecorder,
     persist_prediction_run,
@@ -80,7 +81,6 @@ from nba_ou.prediction.prediction_tabpfn_client import (
     rows_of_horizon,
     tabpfn_training_set,
 )
-from nba_ou.utils.ci import annotate
 from nba_ou.utils.general_utils import get_season_year_from_date
 from nba_ou.utils.s3_models import make_s3_client
 
@@ -215,29 +215,20 @@ def predict_tabpfn(
         print_status("Databases updated")
 
     print_step_header(2, "Checking SBR Line Feed")
-    try:
-        freshness = check_live_feed(
-            datetime.strptime(date_to_predict, "%Y-%m-%d").date()
-        )
-    except Exception as e:  # noqa: BLE001 -- the check must not cost the run
-        annotate("warning", f"SBR feed check failed, continuing unchecked: {e}")
-    else:
-        print_status(freshness.describe(), ok=not freshness.stale)
-        if freshness.stale:
-            message = f"SBR line feed looks frozen: {freshness.describe()}"
-            if not allow_stale_lines:
-                annotate(
-                    "error",
-                    f"{message}; nothing predicted (--allow-stale-lines overrides).",
-                )
-                raise SystemExit(1)
-            annotate("warning", f"{message}; predicting anyway (--allow-stale-lines).")
+    # Covers stands in when SBR is frozen or empty (prediction.line_source).
+    lines = check_line_feed(
+        pd.Timestamp(date_to_predict).date(),
+        allow_stale_lines=allow_stale_lines,
+        load_scheduled_games=lambda: get_schedule_games(date_to_predict),
+        report=print_status,
+    )
 
     print_step_header(2, "Fetching Scheduled Games & Reports")
     scheduled_data = get_all_info_for_scheduled_games(
         date_to_predict=date_to_predict,
         nba_injury_reports_url=SETTINGS.nba_injury_reports_url,
         headless=SETTINGS.headless,
+        line_source=lines,
     )
     if scheduled_data["scheduled_games"].empty:
         print_status("No scheduled games for this date; nothing to predict.")
@@ -361,6 +352,10 @@ def tonight_closing_rows(
     rows = df_tonight[df_tonight["GAME_DATE"] == game_date].copy()
     if rows.empty:
         raise ValueError("No closing rows were built for tonight's games.")
+    # Set here, not in the builder: no feature step may ever see it.
+    rows[LINE_SOURCE_COLUMN] = (
+        rows["GAME_ID"].astype(str).map(scheduled_data.get("line_sources", {}))
+    )
     return rows
 
 

@@ -41,7 +41,11 @@ EASTERN = "America/New_York"
 
 @dataclass(frozen=True)
 class FeedFreshness:
-    """How long SBR's feed has been silent for one game day, as of ``as_of``."""
+    """How long a line feed has been silent for one game day, as of ``as_of``.
+
+    The feed is SBR's unless ``source`` says otherwise: Covers serves the same
+    ticks (``fetch_data.odds_covers.live``), so the same rule judges both.
+    """
 
     game_date: date
     as_of: pd.Timestamp
@@ -51,6 +55,7 @@ class FeedFreshness:
     quiet_minutes: float | None
     pending_games: int
     stale_minutes: int = FEED_STALE_MINUTES
+    source: str = "SBR"
 
     @property
     def stale(self) -> bool:
@@ -66,7 +71,7 @@ class FeedFreshness:
         )
         quiet = "n/a" if self.quiet_minutes is None else f"{self.quiet_minutes:.0f} min"
         return (
-            f"SBR feed for {self.game_date}: latest tick {latest}, quiet {quiet} "
+            f"{self.source} feed for {self.game_date}: latest tick {latest}, quiet {quiet} "
             f"(limit {self.stale_minutes}), {self.pending_games} game(s) still to tip"
         )
 
@@ -79,6 +84,7 @@ def assess_feed_freshness(
     as_of: pd.Timestamp,
     stale_minutes: int = FEED_STALE_MINUTES,
     watch_start_hour_et: int = WATCH_START_HOUR_ET,
+    source: str = "SBR",
 ) -> FeedFreshness:
     """Pure: the day's tick times and tip-offs -> how long the feed has been silent."""
     as_of = pd.Timestamp(as_of)
@@ -107,6 +113,7 @@ def assess_feed_freshness(
         quiet_minutes=quiet,
         pending_games=pending,
         stale_minutes=stale_minutes,
+        source=source,
     )
 
 

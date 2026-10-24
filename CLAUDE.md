@@ -66,7 +66,8 @@ survived the evaluation discipline in the `experiments` skill.
     only, 2026-27 on, unused and unmaintained — `docs/odds/moviodds_line_history.md`),
     and Covers in `line_history_covers` (`line_history_covers/`, SBR's feed
     for the nine US books incl. bet365 plus `consensus_opener` = BetMGM's
-    opener, 2026-27 on, not read yet — `docs/odds/covers_line_history.md`).
+    opener, 2026-27 on, read only by the prediction's live fallback —
+    `docs/odds/covers_line_history.md`).
     OddsLogic and MoviOdds automatic updates are disabled as of 2026-10-24:
     too slow and unstable for the value they add. Keep their implementations
     and existing data for possible future reuse; no maintenance or integration
@@ -209,6 +210,13 @@ results. In short:
   marked `SNAPSHOT_PASSED` (False = built from the ticks so far, not the
   trained snapshot). A failing slot does not stop the others; the run exits 1
   at the end. `--no-persist` predicts without storing.
+- SBR fallback (`prediction/line_source.py`): when SBR's feed is frozen or
+  serves no odds, tonight's lines (closing day-page odds and live line history)
+  come from Covers, with SBR's exact columns and books (consensus pick % from
+  the Covers Consensus page, SBR's own source). A game SBR does not
+  serve is filled from Covers. Each stored input row records its source in
+  `prediction.inputs.line_source` (1 SBR, 2 Covers); frames carry
+  `LINE_SOURCE`. Only both feeds frozen stops the run.
 - Intermediate input mode (`INTERMEDIATE_INPUT_MODE` under
   `[PredictionModels]`, `--intermediate-input` per run): in `latest` (the
   configured default) the slots in `LATEST_INPUT_SLOTS` (default `all`)

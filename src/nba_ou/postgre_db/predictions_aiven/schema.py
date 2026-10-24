@@ -19,6 +19,9 @@ Codes (``SMALLINT``):
 * ``runs.status``: 1 ok, 2 partial (some slot failed), 3 S3 upload failed.
 * ``model_builds.kind``: 1 registry model, 2 baseline, 3 TabPFN (fitted per
   run on a registry slot's spec; ``spec_id`` is that spec).
+* ``inputs.line_source``: where the row's lines came from -- 1 SBR, 2 Covers
+  (the fallback when SBR is down or frozen, ``prediction.line_source``);
+  NULL on rows stored before the column existed.
 """
 
 from __future__ import annotations
@@ -49,6 +52,12 @@ KIND_BASELINE = 2
 KIND_TABPFN = 3
 GAME_STATUS_SCHEDULED = 0
 GAME_STATUS_FINAL = 1
+LINE_SOURCE_SBR = 1
+LINE_SOURCE_COVERS = 2
+LINE_SOURCE_CODES: dict[str, int] = {
+    "sbr": LINE_SOURCE_SBR,
+    "covers": LINE_SOURCE_COVERS,
+}
 
 DDL_STATEMENTS: tuple[str, ...] = (
     """
@@ -118,9 +127,14 @@ DDL_STATEMENTS: tuple[str, ...] = (
         spread_bet_line_x2       SMALLINT,
         spread_price_home        SMALLINT,
         spread_price_away        SMALLINT,
+        line_source              SMALLINT,
         UNIQUE NULLS NOT DISTINCT
             (run_id, game_id, input_mode, snapshot_horizon_minutes)
     )
+    """,
+    # Added 2026-10-24 to a table created without it.
+    """
+    ALTER TABLE {schema}.inputs ADD COLUMN IF NOT EXISTS line_source SMALLINT
     """,
     # No key: a B-tree on (input_id, model_build_id) would weigh about as much
     # as the table. The run transaction prevents duplicates, and rows arrive in
@@ -140,11 +154,17 @@ DDL_STATEMENTS: tuple[str, ...] = (
     CREATE INDEX IF NOT EXISTS predictions_input_brin
         ON {schema}.predictions USING brin (input_id)
     """,
+    # Dropped and recreated, not replaced: CREATE OR REPLACE VIEW can only add
+    # columns at the end, and a new column of ``base`` lands in the middle.
     """
-    CREATE OR REPLACE VIEW {schema}.predictions_full AS
+    DROP VIEW IF EXISTS {schema}.predictions_full
+    """,
+    """
+    CREATE VIEW {schema}.predictions_full AS
     WITH base AS (
         SELECT p.*,
                i.run_id, i.game_id, i.input_mode, i.snapshot_horizon_minutes,
+               i.line_source,
                i.tipoff_at - make_interval(secs => p.time_to_tipoff_seconds)
                                                          AS predicted_at,
                i.tipoff_at                               AS tipoff_at_prediction,
