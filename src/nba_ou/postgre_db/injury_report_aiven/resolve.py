@@ -182,6 +182,10 @@ def load_game_dimension(
     A game with no tipoff from either source cannot clamp a span and is dropped
     here rather than loaded without one. The caller reports the count; see
     ``docs/injuries/report_db.md`` section 5.
+
+    NBA Cup / playoff placeholders may already have a tipoff but no teams.
+    They cannot identify a report matchup or satisfy ``ir_game``'s required
+    team columns, so they are excluded until both teams are known.
     """
     from nba_ou.fetch_data.nba_schedule.fetch_nba_schedule import fetch_schedules
 
@@ -201,7 +205,9 @@ def load_game_dimension(
         frames.append(indexed[columns].assign(tipoff_source=TIPOFF_GAME_TIME_INDEX))
 
     frame = pd.concat(frames, ignore_index=True)
-    frame = frame.dropna(subset=["tipoff_utc"])
+    for side in ("team_home", "team_away"):
+        frame[side] = frame[side].replace(r"^\s*$", pd.NA, regex=True)
+    frame = frame.dropna(subset=["tipoff_utc", "team_home", "team_away"])
     frame = _drop_stale_schedule_rows(frame, seasons, conn)
     # Schedule first, index second: identical data, but a keep="first" makes the
     # bulk source authoritative and the per-game one purely additive.
