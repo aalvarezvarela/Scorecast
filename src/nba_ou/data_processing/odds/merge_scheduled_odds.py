@@ -8,6 +8,30 @@ from nba_ou.postgre_db.odds.merge_odds_data import (
 )
 
 
+def _as_history_floats(predict: pd.DataFrame, history: pd.DataFrame) -> pd.DataFrame:
+    """``predict`` with each column that is ``float64`` in ``history`` as ``float64``.
+
+    Tonight's scraped odds mark a missing line as ``pd.NA``, which makes the
+    column ``object`` -- and, once concatenated, the stored seasons' column
+    too. The column's dtype then followed tonight's rows, and with it the
+    history memo's digest of every season. Stored odds hold NaN, so tonight's
+    rows take it as well. A column whose values are not numbers is left as it
+    was.
+    """
+    out = predict.copy()
+    for column in predict.columns:
+        if column not in history.columns or history[column].dtype != "float64":
+            continue
+        if out[column].dtype == "float64":
+            continue
+        values = out[column].astype("object").where(out[column].notna(), float("nan"))
+        try:
+            out[column] = values.astype("float64")
+        except (TypeError, ValueError):
+            pass
+    return out
+
+
 def _log_nan_columns(df: pd.DataFrame) -> None:
     """Log which columns have NaN values and how many rows are affected.
 
@@ -136,9 +160,15 @@ def merge_and_validate_scheduled_odds(
         scheduled_ids = set(df_odds_predict["game_id"].astype(str))
         df_odds = df_odds[~df_odds["game_id"].astype(str).isin(scheduled_ids)]
 
-    # Concatenate and sort
+    df_odds_predict = _as_history_floats(df_odds_predict, df_odds)
+
+    # Concatenate and sort. Stable, so a date's games keep the loader's order:
+    # an unstable sort put them in an order that depended on every other date,
+    # tonight's included, and so changed from one day to the next.
     df_odds_combined = pd.concat([df_odds, df_odds_predict], ignore_index=True)
-    df_odds_combined.sort_values(by="game_date", inplace=True, ascending=False)
+    df_odds_combined.sort_values(
+        by="game_date", inplace=True, ascending=False, kind="stable"
+    )
     df_odds_combined.reset_index(drop=True, inplace=True)
 
     return df_odds_combined

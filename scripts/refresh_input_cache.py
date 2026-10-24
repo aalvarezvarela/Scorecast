@@ -5,6 +5,7 @@
     python scripts/refresh_input_cache.py --tables nba_players.nba_players --seasons 2023 2024
     python scripts/refresh_input_cache.py --force               # refetch even if unchanged
     python scripts/refresh_input_cache.py --list                # what the store holds
+    python scripts/refresh_input_cache.py --check               # compare only, write nothing
 
 Each past season's server fingerprint (row count and a hash over every
 column) is compared with the stored one. An unchanged season only has its
@@ -13,8 +14,11 @@ as Parquet (``nba_ou.postgre_db.season_store``). The current season is never
 stored: loaders always query it.
 
 Run it daily after the games are final, and after any repair or backfill of a
-past season (with ``--seasons``), so loaders never read a stale season: one not
-validated within ``season_tables.MAX_VALIDATION_AGE`` is queried instead.
+past season (with ``--seasons``): loaders serve every stored finished season
+whatever its age (``season_tables.servable``), so a repaired season is stale in
+S3 until this replaces it. ``--check`` reports, per season, whether the stored
+entry still matches the server, without writing anything; ``CHANGED`` lines
+are the seasons a refresh would replace.
 
 ``line_history_aiven.closing_ticks`` and ``line_history_aiven.pregame_ticks`` (in
 the default ``--tables``) do the same for the Aiven ticks the odds repair and the
@@ -72,6 +76,11 @@ def main() -> int:
     parser.add_argument("--seasons", nargs="*", type=int, default=None)
     parser.add_argument("--force", action="store_true")
     parser.add_argument("--list", action="store_true", help="show the stored seasons")
+    parser.add_argument(
+        "--check",
+        action="store_true",
+        help="compare the stored seasons with the server; write nothing",
+    )
     args = parser.parse_args()
 
     unknown = sorted(
@@ -95,7 +104,11 @@ def main() -> int:
             continue
         started = time.perf_counter()
         outcome = refresh_season_ticks(
-            store, seasons, force=args.force, name=TICK_TABLES[table]
+            store,
+            seasons,
+            force=args.force,
+            name=TICK_TABLES[table],
+            check_only=args.check,
         )
         for season, result in outcome.items():
             print(f"{table:42s} {season}: {result}")
@@ -113,7 +126,12 @@ def main() -> int:
                 continue
             started = time.perf_counter()
             outcome = refresh_season_query(
-                spec, seasons, store=store, conn=conn, force=args.force
+                spec,
+                seasons,
+                store=store,
+                conn=conn,
+                force=args.force,
+                check_only=args.check,
             )
         for season, result in outcome.items():
             print(f"{name:42s} {season}: {result}")
@@ -140,7 +158,12 @@ def main() -> int:
                 continue
             started = time.perf_counter()
             outcome = refresh_season_table(
-                spec, seasons, store=store, conn=conn, force=args.force
+                spec,
+                seasons,
+                store=store,
+                conn=conn,
+                force=args.force,
+                check_only=args.check,
             )
             for season, result in outcome.items():
                 print(f"{name:42s} {season}: {result}")

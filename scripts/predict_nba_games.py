@@ -291,6 +291,12 @@ def predict_nba_games(
                 scheduled_data,
                 game_date=date_to_predict,
                 latest_input=bool(latest_slots),
+                # Every intermediate slot reads the latest row: build it alone.
+                latest_only=all(
+                    slot in latest_slots
+                    for slot in configured_slots
+                    if slot.horizon_minutes
+                ),
             )
             frames["intermediate_line"] = intermediate_df
             recorder.add_frame(

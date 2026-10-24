@@ -73,6 +73,9 @@ jobs:
             # Local copies of the season partitions, outside the checkout
             # (actions/checkout cleans it): finished seasons download once.
             NBA_OU_PARTITION_CACHE_DIR: ~/.cache/nba_ou/season_partitions
+            # Local input cache outside the checkout (actions/checkout cleans
+            # it): finished-season reads and ticks are fetched once per runner.
+            NBA_OU_INPUT_CACHE_DIR: ~/.cache/nba_ou/inputs
 
             # Cron runs in UTC; keep runtime consistent
             TZ: UTC

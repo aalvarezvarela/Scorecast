@@ -99,6 +99,10 @@ class _Tape:
     misses: list[str] = field(default_factory=list)
     #: Replay only: ``perturb(query, description, rows) -> rows``.
     perturb: object = None
+    #: Replay only: serve a query over a subset of a recorded query's cutoffs
+    #: (``_subset_of_cutoffs``).
+    subset_cutoffs: bool = False
+    subset_served: int = 0
 
     def save_index(self) -> None:
         index = {
@@ -140,6 +144,12 @@ def _execute(self, query, params=None, *, prepare=None, binary=None):
     if tape.mode == "replay":
         with tape.lock:
             recorded = tape.entries.get(key)
+            if not recorded and tape.subset_cutoffs:
+                subset = _subset_of_cutoffs(tape, text, params)
+                if subset is not None:
+                    tape.subset_served += 1
+                    _served[self] = _Served(description=subset[0], rows=subset[1])
+                    return self
             if not recorded:
                 tape.misses.append(key)
                 raise TapeMiss(
@@ -189,6 +199,49 @@ def _execute(self, query, params=None, *, prepare=None, binary=None):
             pickle.dump((description, rows), handle, protocol=pickle.HIGHEST_PROTOCOL)
     _served[self] = _Served(description=description, rows=rows)
     return self
+
+
+CUTOFF_PARAMS = ("game_ids", "snapshot_minutes", "as_of")
+
+
+def _recorded_params(key: str):
+    """A recorded query's parameters, from the ``repr`` its key holds."""
+    import datetime
+    import decimal
+
+    namespace = {"datetime": datetime, "Decimal": decimal.Decimal}
+    return eval(key.split("\x00", 1)[1], namespace)  # noqa: S307 -- our own tape
+
+
+def _subset_of_cutoffs(tape: _Tape, text: str, params):
+    """A cutoff query's rows from a recorded call over more cutoffs, or None.
+
+    The report reads at snapshots (``injury_report_aiven``) take parallel
+    arrays of cutoffs (``CUTOFF_PARAMS``) and return rows per cutoff, each
+    cutoff joined on its own. A call whose cutoffs are a subset of a recorded
+    call's, with every other parameter equal, is that call's rows of those
+    cutoffs, in the recorded order.
+    """
+    if not isinstance(params, dict) or not all(k in params for k in CUTOFF_PARAMS):
+        return None
+    wanted = set(zip(*(params[k] for k in CUTOFF_PARAMS), strict=True))
+    others = {k: v for k, v in params.items() if k not in CUTOFF_PARAMS}
+    for key, recorded in tape.entries.items():
+        if not key.startswith(text + "\x00") or not recorded:
+            continue
+        old = _recorded_params(key)
+        if {k: v for k, v in old.items() if k not in CUTOFF_PARAMS} != others:
+            continue
+        if not wanted <= set(zip(*(old[k] for k in CUTOFF_PARAMS), strict=True)):
+            continue
+        entry = recorded[0]
+        with open(tape.directory / entry["file"], "rb") as handle:
+            description, rows = pickle.load(handle)
+        names = [column[0] for column in description]
+        game, minutes = names.index("game_id"), names.index("snapshot_minutes")
+        pairs = {(g, m) for g, m, _ in wanted}
+        return description, [r for r in rows if (r[game], r[minutes]) in pairs]
+    return None
 
 
 def _description(self):
@@ -269,14 +322,18 @@ def record(directory: str | Path):
 
 
 @contextlib.contextmanager
-def replay(directory: str | Path, *, perturb=None):
+def replay(directory: str | Path, *, perturb=None, subset_cutoffs: bool = False):
     """Run the block with every query answered from the tape.
 
     ``perturb(query, description, rows)`` may rewrite each result before it is
     served, e.g. ``row_order.shuffle_within_order`` to test order sensitivity.
+    ``subset_cutoffs`` answers a report read at fewer snapshots than recorded
+    from the recorded one (``_subset_of_cutoffs``), as a build of tonight's
+    latest snapshots alone sends.
     """
     tape = _Tape.load(Path(directory))
     tape.perturb = perturb
+    tape.subset_cutoffs = subset_cutoffs
     with _patched(tape):
         yield tape
     if tape.misses:
@@ -286,6 +343,8 @@ def replay(directory: str | Path, *, perturb=None):
     ]
     if unused:
         print(f"[db_tape] {len(unused)} recorded query key(s) were not replayed.")
+    if tape.subset_served:
+        print(f"[db_tape] {tape.subset_served} cutoff query(ies) served as subsets.")
 
 
 def tape_summary(directory: str | Path) -> dict:

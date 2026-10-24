@@ -34,6 +34,7 @@ the folder of its topic, with a status line, and gets a row here.
 | [defect_fixes_2_5.md](pipeline/defect_fixes_2_5.md) | Implemented | The 2_5 defects found in October 2026 and how each was fixed | `data_processing/`, `postgre_db/` |
 | [speedup.md](pipeline/speedup.md) | Partial | Making the 2_5 builds faster without changing a value: caches, target mode, season partitions | `scripts/perf/`, `create_training_data/season_partitions.py` |
 | [prediction_input_cache_s3.md](pipeline/prediction_input_cache_s3.md) | Partial | Past seasons of every input table read from S3, the current season from the DB | `postgre_db/season_tables.py`, `scripts/refresh_input_cache.py` |
+| [prediction_runtime_plan.md](pipeline/prediction_runtime_plan.md) | Partial | Shorter daily prediction runs (A–E done, F deferred): trust frozen 2_5 seasons, latest-only rows, shared loads, model cache | `postgre_db/season_tables.py`, `create_training_data/history_memo.py`, `create_intermediate_line_df.py` |
 
 ## odds/ — odds and line-history data
 
@@ -80,5 +81,6 @@ the folder of its topic, with a status line, and gets a row here.
 |---|---|---|---|
 | [model_registry.md](serving/model_registry.md) | Implemented | The S3 slot registry: specs, builds, channels, daily refit and promotion | `modeling/registry_*.py`, `modeling/refit.py` |
 | [prediction_storage.md](serving/prediction_storage.md) | Implemented | The Aiven prediction store and the S3 run archive | `prediction/prediction_store.py`, `postgre_db/predictions_aiven/` |
+| [runner_timings.md](serving/runner_timings.md) | Research | Prediction and retrain durations on the self-hosted runner, cold and warm; what slows them | `scripts/predict_nba_games.py`, `scripts/retrain_prediction_models.py` |
 | [snapshot_triggers.md](serving/snapshot_triggers.md) | Implemented | Daily cron-job.org booking of predictor runs at every snapshot time and before tip-off | `scripts/cronjobs/schedule_snapshot_triggers.py`, `scheduling/cronjob_org.py` |
 | [ops_watchlist.md](serving/ops_watchlist.md) | Reference | Open checks on the daily jobs and their external sources | `.github/workflows/` |

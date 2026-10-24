@@ -204,3 +204,11 @@ def test_failed_fingerprint_fetches_and_stores_nothing(tmp_path):
         assert_identical(frame, _frame(2024))
     assert fetches == [2024, 2024]
     assert not (tmp_path / "t" / "k").exists()
+
+
+def test_cache_dir_expands_the_home_directory(monkeypatch, tmp_path):
+    from nba_ou.postgre_db import input_cache
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("NBA_OU_INPUT_CACHE_DIR", "~/.cache/nba_ou/inputs")
+    assert input_cache.cache_dir() == tmp_path / ".cache" / "nba_ou" / "inputs"

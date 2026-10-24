@@ -48,6 +48,9 @@ jobs:
             AIVEN_DB_PASSWORD: ${{ secrets.AIVEN_DB_PASSWORD }}
             ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
             S3_AWS_PROFILE: ""
+            # Local input cache outside the checkout (actions/checkout cleans
+            # it): finished-season reads and ticks are fetched once per runner.
+            NBA_OU_INPUT_CACHE_DIR: ~/.cache/nba_ou/inputs
 
             # Cron runs in UTC; keep runtime consistent
             TZ: UTC

@@ -916,6 +916,7 @@ def create_intermediate_line_df(
     live: LiveGameDay | None = None,
     target_game_ids=None,
     extra_target_snapshots: Mapping[str, int] | None = None,
+    target_snapshots: Mapping[str, int] | None = None,
     verbose: bool = True,
 ) -> pd.DataFrame | tuple[pd.DataFrame, pd.DataFrame]:
     """Build the (game, snapshot) dataset.
@@ -986,6 +987,14 @@ def create_intermediate_line_df(
     calibration on earlier games, which a full build has at grid horizons only,
     reads them at the nearest grid horizon (``nearest_grid_horizon``). The other
     games' history is the grid's, so a training build cannot change.
+
+    ``target_snapshots`` (tonight-only mode) builds each target game at one
+    snapshot only, in minutes before its tip; a target it leaves out gets no
+    row. An off-grid value is an extra snapshot as above. Each row kept is the
+    row the same build at every snapshot gives it: the other rows are dropped
+    once the snapshot side is built, and the injury stage then computes only
+    the horizons the kept rows read. The prediction job uses it when every
+    intermediate slot reads the latest snapshot.
     """
     targets = (
         None
@@ -1005,6 +1014,28 @@ def create_intermediate_line_df(
             raise ValueError(f"extra_target_snapshots of non-target games: {unknown}")
         if any(minutes < 0 for minutes in extra_snapshots.values()):
             raise ValueError("extra_target_snapshots must be minutes before tip")
+    only_snapshots: dict[str, int] | None = None
+    if target_snapshots is not None:
+        if targets is None:
+            raise ValueError("target_snapshots needs target_game_ids")
+        only_snapshots = {
+            str(game).strip(): int(minutes)
+            for game, minutes in target_snapshots.items()
+        }
+        unknown = sorted(set(only_snapshots) - targets)
+        if unknown:
+            raise ValueError(f"target_snapshots of non-target games: {unknown}")
+        if any(minutes < 0 for minutes in only_snapshots.values()):
+            raise ValueError("target_snapshots must be minutes before tip")
+        for game, minutes in only_snapshots.items():
+            if minutes in snapshot_grid:
+                continue
+            if extra_snapshots.get(game, minutes) != minutes:
+                raise ValueError(
+                    f"{game}: target snapshot T-{minutes} and extra snapshot "
+                    f"T-{extra_snapshots[game]} disagree"
+                )
+            extra_snapshots[game] = minutes
     # Argument validation before any I/O: a bad call should fail immediately,
     # not after opening a database connection.
     if base_lookback_seasons < 0:
@@ -1133,6 +1164,13 @@ def create_intermediate_line_df(
         snapshot_wide = _keep_extra_snapshots(
             snapshot_wide, snapshot_grid, extra_snapshots
         )
+    if only_snapshots is not None:
+        own = snapshot_wide["game_id"].astype(str).map(only_snapshots)
+        snapshot_wide = snapshot_wide.loc[
+            snapshot_wide["snapshot_minutes"].astype(int).eq(own)
+        ].reset_index(drop=True)
+        if verbose:
+            print(f"Target snapshots only: {dict(sorted(only_snapshots.items()))}")
     ridge_closing_lines = side.ridge_closing_lines
     if snapshot_history is not None:
         ridge_closing_lines = {

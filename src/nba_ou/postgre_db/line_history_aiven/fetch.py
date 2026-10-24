@@ -418,9 +418,9 @@ def _s3_season_ticks(name: str, key: str, seasons: list[int]) -> dict:
     """Finished seasons the S3 input cache holds, validated recently enough.
 
     The refresher (``refresh_season_ticks``) re-checks each finished season's
-    server fingerprint daily and uploads it when it changed; a season it has
-    not validated within ``season_tables.MAX_VALIDATION_AGE`` is not served
-    from here. Any failure means "not in S3": the caller fetches it.
+    server fingerprint daily and uploads it when it changed; whether a stored
+    season is served is ``season_tables.servable``. Any failure means "not in
+    S3": the caller fetches it.
     """
     from concurrent.futures import ThreadPoolExecutor
 
@@ -438,10 +438,7 @@ def _s3_season_ticks(name: str, key: str, seasons: list[int]) -> dict:
 
         def one(season):
             entry = store.entry(dataset, key, season)
-            if (
-                entry is None
-                or now - entry.validated_at > season_tables.MAX_VALIDATION_AGE
-            ):
+            if not season_tables.servable(entry, now):
                 return None
             frame = store.read(dataset, key, season, entry)
             return None if frame is None else (frame, entry.fingerprint)
@@ -536,10 +533,7 @@ def pregame_tick_fingerprints(
             if store is None or season >= current:
                 continue
             entry = store.entry(_ticks_dataset("pregame_ticks"), key, season)
-            if (
-                entry is not None
-                and now - entry.validated_at <= season_tables.MAX_VALIDATION_AGE
-            ):
+            if season_tables.servable(entry, now):
                 out[int(season)] = entry.fingerprint
     except Exception as exc:  # noqa: BLE001 -- S3 is only a shortcut
         print(
@@ -614,12 +608,14 @@ def refresh_season_ticks(
     force: bool = False,
     now=None,
     name: str = "closing_ticks",
+    check_only: bool = False,
 ) -> dict[int, str]:
     """Validate finished seasons of ticks in S3, uploading changed ones.
 
     ``name`` is a ``TICK_SPECS`` entry. The fingerprint is taken before the
     fetch, so ticks changing mid-fetch leave an entry the next refresh
-    replaces. The current season is skipped.
+    replaces. The current season is skipped. ``check_only`` compares the
+    fingerprints and writes nothing.
     """
     from nba_ou.postgre_db import season_tables
 
@@ -638,6 +634,9 @@ def refresh_season_ticks(
                 continue
             fingerprint = line_history_season_fingerprint(conn, season)
             entry = store.entry(dataset, key, season)
+            if check_only:
+                outcome[season] = season_tables.check_outcome(entry, fingerprint)
+                continue
             if entry is not None and entry.fingerprint == fingerprint and not force:
                 store.touch(dataset, key, season, entry, now)
                 outcome[season] = "unchanged"

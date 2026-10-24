@@ -7,16 +7,22 @@ availability effects compute each history row's raw effects for the
 shrinkage fit. For a finished season those results are the same every day,
 so this keeps them per season and reuses them.
 
-Reuse is never assumed. Each season's entry is keyed on
+Each season's entry is keyed on
 
-* the code (``code_key``): every ``nba_ou`` source file the memo's root module
-  can execute -- its import closure, followed statically, imports inside
-  functions included -- the versions of the distributions that closure
-  imports, the Python version and the main sportsbook. A change to any of
-  them refuses every entry of that memo; a change elsewhere in the package
-  leaves it alone. The root is the module that computes and stores the
-  entries, or the builder whose callables or prepared frames they are
-  computed from; and
+* the code (``code_key``). By default this is the frozen base schema: its
+  version, the memo's root modules and the main sportsbook. The 2_5 builders
+  are frozen (a change to a 2_5 value is a new base, ``3_0``), so a deploy
+  keeps every entry. ``NBA_OU_HISTORY_MEMO_FROZEN=0`` keys on the source
+  instead: every ``nba_ou`` source file the memo's root module can execute --
+  its import closure, followed statically, imports inside functions included
+  -- the versions of the distributions that closure imports, the Python
+  version and the main sportsbook. A change to any of them refuses every
+  entry of that memo; a change elsewhere in the package leaves it alone. The
+  root is the module that computes and stores the entries, or the builder
+  whose callables or prepared frames they are computed from. A code change
+  that does move a 2_5 value must therefore come with a rebuild of the frozen
+  entries: with ``NBA_OU_HISTORY_MEMO_REBUILD=1`` a build reads no entry and
+  writes every one it computes; and
 * a digest of the season's inputs as this build loaded them -- games, player
   box scores, odds after the closing-line repair, injuries and injury
   reports -- chained over every earlier season too. A history row of season
@@ -72,6 +78,16 @@ _DYNAMIC_IMPORT_ATTRS = frozenset(
 
 def history_memo_enabled() -> bool:
     return os.environ.get("NBA_OU_HISTORY_MEMO", "1") != "0"
+
+
+def history_memo_frozen() -> bool:
+    """``NBA_OU_HISTORY_MEMO_FROZEN=0`` keys entries on the source code."""
+    return os.environ.get("NBA_OU_HISTORY_MEMO_FROZEN", "1") != "0"
+
+
+def history_memo_rebuild() -> bool:
+    """``NBA_OU_HISTORY_MEMO_REBUILD=1``: read no entry, write every one."""
+    return os.environ.get("NBA_OU_HISTORY_MEMO_REBUILD", "0") == "1"
 
 
 def _module_path(module: str, package_root: Path, package: str) -> Path | None:
@@ -204,9 +220,33 @@ def _closure_key(
     return digest.hexdigest()[:20]
 
 
-@cache
 def code_key(*roots: str) -> str:
     """The code a memo rooted at ``roots`` (module names) depends on.
+
+    Frozen (the default, ``history_memo_frozen``): the base schema version,
+    the roots and the main sportsbook. Otherwise ``source_code_key``.
+    """
+    if history_memo_frozen():
+        return frozen_code_key(*roots)
+    return source_code_key(*roots)
+
+
+@cache
+def frozen_code_key(*roots: str) -> str:
+    """The base schema version, ``roots`` and the main sportsbook.
+
+    The roots keep memos of different builders apart, as the source key does.
+    """
+    from nba_ou.config.dataset_versions import BASE_SCHEMA_VERSION
+    from nba_ou.config.odds_columns import get_main_book
+
+    tag = hashlib.sha256("|".join(roots).encode()).hexdigest()[:8]
+    return f"frozen-{BASE_SCHEMA_VERSION}-{get_main_book()}-{tag}"
+
+
+@cache
+def source_code_key(*roots: str) -> str:
+    """Every source file ``roots`` can execute, its libraries and settings.
 
     ``config.ini`` is not hashed -- it changes with every promotion -- but
     its one setting that changes feature values, the main sportsbook, is.
@@ -406,6 +446,9 @@ class HistoryMemo:
 
     def load(self, name: str, season: int):
         if not self.usable(season):
+            return None
+        if history_memo_rebuild():
+            self.report.append(f"{name} {season}: rebuilt")
             return None
         try:
             raw = self.backend.get(self._key(name, season, "json"))
