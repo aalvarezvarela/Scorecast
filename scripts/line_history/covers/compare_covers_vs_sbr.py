@@ -76,13 +76,12 @@ def _same(joined: pd.DataFrame, market: str) -> pd.Series:
     col = MARKET_VALUE[market]
     same = np.ones(len(joined), dtype=bool)
     for side in ("left", "right"):
-        # Prices are nullable integers: a missing quote is not a match.
+        ours, theirs = joined[f"{side}_{col}_cov"], joined[f"{side}_{col}_sbr"]
+        # A line both stores nulled (``implausible_pregame_line``) is the same
+        # quote; a value on one side only is not.
         same &= (
-            joined[f"{side}_{col}_cov"]
-            .eq(joined[f"{side}_{col}_sbr"])
-            .fillna(False)
-            .to_numpy(dtype=bool)
-        )
+            ours.eq(theirs).fillna(False) | (ours.isna() & theirs.isna())
+        ).to_numpy(dtype=bool)
     return pd.Series(same, index=joined.index)
 
 
@@ -114,6 +113,8 @@ def report_freshness(cov: pd.DataFrame, sbr: pd.DataFrame) -> None:
 
 
 def report_parity(cov: pd.DataFrame, sbr: pd.DataFrame) -> None:
+    # SBR stores 2026-27 Caesars as "caesars_odds"; Covers keeps the older slug.
+    sbr = sbr.assign(book=sbr["book"].replace({"caesars_odds": "caesars"}))
     books = sorted((set(cov["book"]) & set(sbr["book"])) - {"consensus_opener"})
     print(f"\n=== Parity with SBR ({', '.join(books) or 'no shared books'})")
     if not books:
