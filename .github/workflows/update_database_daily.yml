@@ -119,6 +119,16 @@ jobs:
         run: |
           python scripts/update_databases/repair_sportsbook_closes.py
 
+      # The OIDC session from the first credentials step lasts 1 h, and the
+      # steps above can take longer than that, so the S3 steps below take a
+      # fresh session each.
+      - name: Refresh AWS credentials for the injury archive
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_TO_ASSUME }}
+          aws-region: eu-west-1
+          unset-current-credentials: true
+
       # Every report of the season published so far goes to the S3 archive;
       # the store then gets the spans of every finished game it does not hold
       # yet (at least the last 2 days are rebuilt). It holds a game once it is
@@ -126,6 +136,13 @@ jobs:
       - name: Store injury reports and finished games' spans
         run: |
           python scripts/injury_reports/daily_injury_reports.py
+
+      - name: Refresh AWS credentials for the input cache
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_TO_ASSUME }}
+          aws-region: eu-west-1
+          unset-current-credentials: true
 
       # Last: it validates every finished season of the tables above (and the
       # line-history ticks) against the server and re-uploads any that changed,
