@@ -115,6 +115,29 @@ def _report(label: str, ticks: pd.DataFrame) -> pd.DataFrame:
     return ticks
 
 
+def _candidate_game_ids(
+    conn: psycopg.Connection,
+    primary: pd.DataFrame,
+    *,
+    season_years=None,
+    game_ids=None,
+    markets: tuple[str, ...],
+    min_minutes_before_tip: int,
+    exclude_books: tuple[str, ...] = (),
+) -> list[str]:
+    """The games Covers should supply, decided on each game's latest Covers
+    tick (one aggregate row a game), so only those games' ticks are moved."""
+    latest = store.latest_pregame_ticks(
+        conn,
+        season_years=season_years,
+        game_ids=game_ids,
+        markets=markets,
+        min_minutes_before_tip=min_minutes_before_tip,
+        exclude_books=(*exclude_books, *COVERS_ONLY_BOOKS),
+    )
+    return fallback_game_ids(primary, latest)
+
+
 def pregame_ticks(
     primary: pd.DataFrame,
     season_years: list[int],
@@ -130,14 +153,23 @@ def pregame_ticks(
         def query(c):
             if not schema_mod.schema_exists(c):
                 return primary
+            ids = _candidate_game_ids(
+                c,
+                primary,
+                season_years=season_years,
+                markets=markets,
+                min_minutes_before_tip=min_minutes_before_tip,
+                exclude_books=exclude_books,
+            )
+            if not ids:
+                return primary
             covers = store.fetch_pregame_ticks(
                 season_years,
                 c,
                 markets=markets,
                 min_minutes_before_tip=min_minutes_before_tip,
+                game_ids=ids,
             )
-            if covers.empty:
-                return primary
             covers = covers[~covers["book"].isin(exclude_books)]
             return apply(primary, covers)
 
@@ -167,13 +199,24 @@ def closing_ticks(
         def query(c):
             if not schema_mod.schema_exists(c):
                 return primary
-            covers = store.fetch_closing_ticks(
+            ids = _candidate_game_ids(
                 c,
+                primary,
                 season_years=season_years,
                 game_ids=game_ids,
-                last_n=last_n,
                 markets=markets,
                 min_minutes_before_tip=min_minutes_before_tip,
+            )
+            covers = (
+                store.fetch_closing_ticks(
+                    c,
+                    game_ids=ids,
+                    last_n=last_n,
+                    markets=markets,
+                    min_minutes_before_tip=min_minutes_before_tip,
+                )
+                if ids
+                else pd.DataFrame()
             )
             out = apply(primary, covers) if not covers.empty else primary
             fingerprints = primary.attrs.get("season_fingerprints")

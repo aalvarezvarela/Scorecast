@@ -220,9 +220,15 @@ def fetch_pregame_ticks(
     *,
     markets: tuple[str, ...] = ALL_MARKETS,
     min_minutes_before_tip: int = DEFAULT_MIN_MINUTES_BEFORE_TIP,
+    game_ids: Iterable[str] | None = None,
 ) -> pd.DataFrame:
-    """Every pre-game tick of ``season_years``, in ``TICK_COLUMNS`` and decoded
-    like ``line_history_aiven.fetch.fetch_pregame_ticks``."""
+    """Every pre-game tick of ``season_years`` (only ``game_ids``, if given), in
+    ``TICK_COLUMNS`` and decoded like ``line_history_aiven.fetch.fetch_pregame_ticks``.
+    """
+    games_filter, params = sql.SQL(""), []
+    if game_ids is not None:
+        games_filter = sql.SQL("AND l.game_id = ANY(%s)")
+        params = [[str(g) for g in game_ids]]
     with conn.cursor() as cur:
         cur.execute(
             sql.SQL(
@@ -237,17 +243,85 @@ def fetch_pregame_ticks(
                   AND l.is_pregame
                   AND l.mins_to_tip <= %s
                   AND m.code = ANY(%s)
+                  {games_filter}
                 ORDER BY l.game_id, m.code, b.slug, l.line_ts
                 """
-            ).format(schema=sql.Identifier(SCHEMA)),
+            ).format(schema=sql.Identifier(SCHEMA), games_filter=games_filter),
             (
                 [int(s) for s in season_years],
                 -int(min_minutes_before_tip),
                 list(markets),
+                *params,
             ),
         )
         ticks = _rows_to_frame(cur, TICK_COLUMNS)
     return _decode_ticks(ticks)
+
+
+def latest_pregame_ticks(
+    conn: psycopg.Connection,
+    *,
+    season_years: Iterable[int] | None = None,
+    game_ids: Iterable[str] | None = None,
+    markets: tuple[str, ...] = ALL_MARKETS,
+    min_minutes_before_tip: int = DEFAULT_MIN_MINUTES_BEFORE_TIP,
+    exclude_books: Iterable[str] = (),
+) -> pd.DataFrame:
+    """game_id, season_year and the time of its latest pre-game tick: one row a
+    game, computed in the database. What the fallback decides on, without
+    moving every tick."""
+    filters, params = [], []
+    if season_years is not None:
+        filters.append(sql.SQL("l.season_year = ANY(%s)"))
+        params.append([int(s) for s in season_years])
+    if game_ids is not None:
+        filters.append(sql.SQL("l.game_id = ANY(%s)"))
+        params.append([str(g) for g in game_ids])
+    if not filters:
+        raise ValueError("Pass season_years or game_ids.")
+    with conn.cursor() as cur:
+        cur.execute(
+            sql.SQL(
+                """
+                SELECT l.game_id, max(l.season_year) AS season_year,
+                       max(l.line_ts) AS line_ts
+                FROM {schema}.lh_line l
+                JOIN {schema}.lh_market m USING (market_id)
+                JOIN {schema}.lh_book   b USING (book_id)
+                WHERE ({filters})
+                  AND l.is_pregame
+                  AND l.mins_to_tip <= %s
+                  AND m.code = ANY(%s)
+                  AND NOT (b.slug = ANY(%s))
+                GROUP BY l.game_id
+                ORDER BY l.game_id
+                """
+            ).format(
+                schema=sql.Identifier(SCHEMA), filters=sql.SQL(" OR ").join(filters)
+            ),
+            (
+                *params,
+                -int(min_minutes_before_tip),
+                list(markets),
+                list(exclude_books),
+            ),
+        )
+        rows = _rows_to_frame(cur, ["game_id", "season_year", "line_ts"])
+    rows["game_id"] = rows["game_id"].astype(str)
+    rows["line_ts"] = pd.to_datetime(rows["line_ts"], utc=True)
+    return rows
+
+
+def stored_game_ids(conn: psycopg.Connection, game_ids: Iterable[str]) -> set[str]:
+    """The games among ``game_ids`` this store holds."""
+    with conn.cursor() as cur:
+        cur.execute(
+            sql.SQL("SELECT game_id FROM {}.lh_game WHERE game_id = ANY(%s)").format(
+                sql.Identifier(SCHEMA)
+            ),
+            ([str(g) for g in game_ids],),
+        )
+        return {str(row[0]) for row in cur.fetchall()}
 
 
 def fetch_closing_ticks(
