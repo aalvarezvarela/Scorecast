@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import pandas as pd
 import psycopg
+import psycopg.sql
 
 from . import schema as schema_mod
 from . import store
@@ -270,3 +271,21 @@ def extend_fingerprints(fingerprints: dict, conn: psycopg.Connection) -> dict:
             fingerprint if covers is None else [*fingerprint, "covers", *covers]
         )
     return out
+
+
+def available_seasons(conn: psycopg.Connection) -> set[int]:
+    """The seasons of the Covers store's games; empty when it is unreadable."""
+    try:
+        if not schema_mod.schema_exists(conn):
+            return set()
+        with conn.cursor() as cur:
+            cur.execute(
+                psycopg.sql.SQL("SELECT DISTINCT season_year FROM {}.lh_game").format(
+                    psycopg.sql.Identifier(schema_mod.SCHEMA)
+                )
+            )
+            return {int(row[0]) for row in cur.fetchall()}
+    except Exception as exc:  # noqa: BLE001 -- SBR's seasons are still valid
+        conn.rollback()
+        print(f"! seasons: Covers fallback unavailable ({type(exc).__name__}: {exc})")
+        return set()

@@ -123,7 +123,7 @@ def main() -> int:
     store = make_store()
     seasons = args.seasons or store.get_manifest()["seasons"]
     margins = home_margins()
-    sbr_seasons = set(available_seasons())
+    sbr_seasons = set(available_seasons(covers_fallback=False))
 
     all_ticks = []
     for season in seasons:

@@ -118,3 +118,29 @@ def test_fingerprints_change_only_for_seasons_covers_holds(monkeypatch):
     out = fallback.extend_fingerprints({2022: ["sbr22"], 2023: ["sbr23"]}, conn)
     assert out[2022] == ["sbr22"]
     assert out[2023] == ["sbr23", "covers", "10", "123", "2", "456", "2", "m", "b"]
+
+
+class _SeasonCursor(_Cursor):
+    def fetchall(self):
+        return [(2018,), (2026,)]
+
+
+class _SeasonConn(_Conn):
+    def __init__(self):
+        self._cursor = _SeasonCursor([])
+
+    def rollback(self):
+        pass
+
+
+def test_covers_seasons_are_available(monkeypatch):
+    monkeypatch.setattr(fallback.schema_mod, "schema_exists", lambda conn: True)
+    assert fallback.available_seasons(_SeasonConn()) == {2018, 2026}
+
+
+def test_unreadable_covers_adds_no_season(monkeypatch):
+    def broken(conn):
+        raise RuntimeError("down")
+
+    monkeypatch.setattr(fallback.schema_mod, "schema_exists", broken)
+    assert fallback.available_seasons(_SeasonConn()) == set()

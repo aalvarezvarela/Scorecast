@@ -834,12 +834,19 @@ def _fetch_closing_ticks_once(
     return _decode_ticks(ticks)
 
 
-def available_seasons(*, conn: psycopg.Connection | None = None) -> list[int]:
+def available_seasons(
+    *, conn: psycopg.Connection | None = None, covers_fallback: bool = True
+) -> list[int]:
     """Seasons actually present in the store.
 
     2019-20 and 2020-21 are deliberately absent (Phase 0 could not pin their
     timezone), so this is the honest source for "what can we train on" rather
     than any hardcoded range.
+
+    ``covers_fallback`` adds the seasons of the Covers store's games, which the
+    tick readers supply: a season only Covers holds (2018-19's backfilled
+    games) is readable too. Pass False for the SBR store's own seasons (its
+    tick caches).
     """
     owned = conn is None
     conn = conn or connect_line_history_db()
@@ -849,7 +856,12 @@ def available_seasons(*, conn: psycopg.Connection | None = None) -> list[int]:
         )
         with conn.cursor() as cur:
             cur.execute(query)
-            return sorted(int(row[0]) for row in cur.fetchall())
+            seasons = {int(row[0]) for row in cur.fetchall()}
+        if covers_fallback:
+            from nba_ou.postgre_db.line_history_covers import fallback
+
+            seasons |= fallback.available_seasons(conn)
+        return sorted(seasons)
     finally:
         if owned:
             conn.close()

@@ -98,7 +98,9 @@ def main() -> int:
     )
 
     for table in [t for t in args.tables if t in TICK_TABLES]:
-        seasons = args.seasons or [s for s in available_seasons() if s < current]
+        seasons = args.seasons or [
+            s for s in available_seasons(covers_fallback=False) if s < current
+        ]
         if args.list:
             print(f"{table}: seasons {seasons} (see the S3 prefix for entries)")
             continue
