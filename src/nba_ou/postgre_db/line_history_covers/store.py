@@ -426,3 +426,28 @@ def fetch_consensus(
         consensus[column] = pd.to_numeric(consensus[column]).astype("int64")
     consensus["fetched_at"] = pd.to_datetime(consensus["fetched_at"], utc=True)
     return consensus.reset_index(drop=True)
+
+
+def fetch_book_ticks(
+    conn: psycopg.Connection, game_ids: Iterable[str], book: str
+) -> pd.DataFrame:
+    """Every tick of one book for ``game_ids``, in ``TICK_COLUMNS``, decoded.
+    Used for ``consensus_opener``, which the SBR line history does not carry."""
+    with conn.cursor() as cur:
+        cur.execute(
+            sql.SQL(
+                """
+                SELECT l.game_id, l.season_year, m.code, b.slug,
+                       l.line_ts, l.mins_to_tip, l.is_opener,
+                       l.left_line, l.left_price, l.right_line, l.right_price
+                FROM {schema}.lh_line l
+                JOIN {schema}.lh_market m USING (market_id)
+                JOIN {schema}.lh_book   b USING (book_id)
+                WHERE l.game_id = ANY(%s) AND b.slug = %s
+                ORDER BY l.game_id, m.code, l.line_ts
+                """
+            ).format(schema=sql.Identifier(SCHEMA)),
+            ([str(g) for g in game_ids], book),
+        )
+        ticks = _rows_to_frame(cur, TICK_COLUMNS)
+    return _decode_ticks(ticks)

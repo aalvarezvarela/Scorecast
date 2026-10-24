@@ -40,6 +40,11 @@ from nba_ou.postgre_db.config.db_config import (
     get_schema_name_odds_sportsbook,
 )
 from nba_ou.postgre_db.line_history_aiven.fetch import fetch_closing_ticks
+from nba_ou.postgre_db.odds_sportsbook.covers_fill import (
+    FILL_COLUMNS,
+    fill_from_covers,
+    load_covers_fill,
+)
 from nba_ou.postgre_db.odds_sportsbook.create_db.create_odds_sportsbook_db import (
     create_odds_sportsbook_table,
 )
@@ -158,13 +163,18 @@ def load_rows_to_repair(
     *,
     season_years: list[int] | None,
     redo: bool,
+    game_ids: list[str] | None = None,
 ) -> pd.DataFrame:
-    """Stored rows needing repair, with raw SBR values restored when ``redo``."""
+    """Stored rows needing repair, with raw SBR values restored when ``redo``.
+    ``game_ids`` narrows the rows to those games."""
     where = [sql.SQL("TRUE")]
     params: list = []
     if season_years is not None:
         where.append(sql.SQL("season_year = ANY(%s)"))
         params.append([int(s) for s in season_years])
+    if game_ids is not None:
+        where.append(sql.SQL("game_id = ANY(%s)"))
+        params.append([str(g) for g in game_ids])
     with conn.cursor() as cur:
         has_stamp = "closes_repaired_at" in _column_types(cur, schema, table)
     if not redo and has_stamp:
@@ -220,8 +230,14 @@ def repair_stored_closes(
     redo: bool = False,
     dry_run: bool = False,
     conn: psycopg.Connection | None = None,
+    game_ids: list[str] | None = None,
 ) -> dict[str, int]:
-    """Repair stored closes for ``season_years`` (``None`` = every season)."""
+    """Repair stored closes for ``season_years`` (``None`` = every season).
+
+    The consensus pick percentages and the consensus opener, which are not
+    per-book closes, are filled from the Covers store where SBR left them
+    empty (``covers_fill``), and written with the closes.
+    """
     schema = get_schema_name_odds_sportsbook()
     table = schema
     if not dry_run and not create_odds_sportsbook_table(drop_existing=False):
@@ -233,7 +249,12 @@ def repair_stored_closes(
         if not dry_run:
             ensure_repair_tables(conn, schema, table)
         rows = load_rows_to_repair(
-            conn, schema, table, season_years=season_years, redo=redo
+            conn,
+            schema,
+            table,
+            season_years=season_years,
+            redo=redo,
+            game_ids=game_ids,
         )
         if rows.empty:
             print("No stored games need a closing-line repair.")
@@ -249,6 +270,7 @@ def repair_stored_closes(
         )
         audit_repaired_closes(repaired, audit)
         print_repair_summary(audit)
+        repaired, covers_filled = _fill_from_covers(repaired)
 
         verified_games = set(
             audit.loc[audit["action"].ne(ACTION_UNVERIFIED), "game_id"].astype(str)
@@ -260,6 +282,8 @@ def repair_stored_closes(
             "games_without_line_history": int(waiting),
             "games_with_stale_history": len(stale_history_games(audit)),
             "cells": int(len(audit)),
+            "games_with_covers_pct": len(covers_filled["pct"]),
+            "games_with_covers_opener": len(covers_filled["opener"]),
         }
         if summary["games_with_stale_history"]:
             annotate(
@@ -276,7 +300,14 @@ def repair_stored_closes(
             return summary
 
         write = repaired[repaired["game_id"].isin(verified_games)]
-        _write_repair(conn, schema, table, write, audit[audit["game_id"].isin(verified_games)])
+        _write_repair(
+            conn,
+            schema,
+            table,
+            write,
+            audit[audit["game_id"].isin(verified_games)],
+            extra_columns=FILL_COLUMNS,
+        )
         print(
             f"Repaired {len(verified_games)} game(s); "
             f"{waiting} left for a later run (no line history yet)."
@@ -287,18 +318,42 @@ def repair_stored_closes(
             conn.close()
 
 
+def _fill_from_covers(repaired: pd.DataFrame) -> tuple[pd.DataFrame, dict]:
+    """``covers_fill`` on the repaired rows; unchanged when Covers is unreadable."""
+    empty = {"pct": [], "opener": []}
+    try:
+        percentages, openers = load_covers_fill(
+            repaired["game_id"].astype(str).unique().tolist()
+        )
+    except Exception as exc:  # noqa: BLE001 -- the closes are still repaired
+        annotate("warning", f"Covers consensus/opener fill unavailable: {exc}")
+        return repaired, empty
+    filled, games = fill_from_covers(repaired, percentages, openers)
+    if games["pct"] or games["opener"]:
+        print(
+            f"From Covers: pick percentages of {len(games['pct'])} game(s), "
+            f"consensus opener of {len(games['opener'])} game(s)"
+        )
+    return filled, games
+
+
 def _write_repair(
     conn: psycopg.Connection,
     schema: str,
     table: str,
     repaired: pd.DataFrame,
     audit: pd.DataFrame,
+    *,
+    extra_columns: list[str] = (),
 ) -> None:
-    """Back up raw rows, rewrite quotes and store the audit in one transaction."""
+    """Back up raw rows, rewrite quotes and store the audit in one transaction.
+    ``extra_columns`` (the Covers-filled non-book columns) are written too."""
     if repaired.empty:
         return
     game_ids = repaired["game_id"].astype(str).tolist()
-    quote_columns = closing_quote_columns(repaired)
+    quote_columns = closing_quote_columns(repaired) + [
+        c for c in extra_columns if c in repaired.columns
+    ]
 
     with conn.cursor() as cur:
         table_columns = list(_column_types(cur, schema, table))

@@ -50,15 +50,24 @@ def main() -> int:
         action="store_true",
         help="also recompute games already repaired, starting from the raw SBR rows",
     )
+    parser.add_argument(
+        "--game-id",
+        action="append",
+        help="only this game; repeatable (with --redo, recompute it from raw)",
+    )
     parser.add_argument("--dry-run", action="store_true", help="report only")
     args = parser.parse_args()
 
-    season_years = (
-        None if args.all_seasons else (args.season_year or [current_season_year()])
-    )
+    if args.all_seasons or (args.game_id and not args.season_year):
+        season_years = None  # game ids alone: whatever their season
+    else:
+        season_years = args.season_year or [current_season_year()]
     print(f"Seasons: {'all' if season_years is None else season_years}")
     summary = repair_stored_closes(
-        season_years=season_years, redo=args.redo, dry_run=args.dry_run
+        season_years=season_years,
+        redo=args.redo,
+        dry_run=args.dry_run,
+        game_ids=args.game_id,
     )
     print("Summary:")
     for key, value in summary.items():

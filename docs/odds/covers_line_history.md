@@ -427,8 +427,23 @@ The training side
   ticks through the same function. It runs after the Covers step, so it fills
   `odds_sportsbook` rows SBR left without lines. The 2026-10-23 dry run filled
   219 cells and replaced 31 of the 12 games.
-- **No `consensus_opener` from Covers.** Openers are not in the SBR line
-  history, so the repair does not touch them.
+- **Pick percentages and consensus opener** (`postgre_db/odds_sportsbook/covers_fill.py`).
+  These are not per-book closes, so the repair fills them from the Covers
+  store, only where SBR left them empty, and writes them with the closes.
+  - Percentages come from `lh_consensus`, through
+    `PickConsensus.sbr_consensus`, rounded as SBR renders them.
+  - The opener is the first `consensus_opener` tick per market. A market
+    whose two prices are not both there is taken whole: a frozen day page
+    leaves `0.0` lines with no price.
+  - `repair_sportsbook_closes.py --game-id G [--redo]` repairs single games.
+- **Run 2026-10-25** (seasons 2018, 2023, 2026, plus `--redo` of the two
+  2024-03-28 games), 58 games in all.
+  - Every `odds_sportsbook` row of a Covers game now has closes, percentages
+    and openers. The raw SBR rows are kept in `odds_sportsbook_sbr_raw`.
+  - Two rows stay unrepaired: 0021900945 and 0022000539, which have no line
+    anywhere.
+  - 129 of the 161 games of 2019-04..05-02 have no `odds_sportsbook` row at
+    all, so their Covers lines reach no closing row.
 - **A failed Covers read** leaves SBR's frame as it is, with a `!` line in the
   log.
 
