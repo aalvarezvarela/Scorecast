@@ -104,8 +104,10 @@ NBA_OU_TEST_PG_DSN='postgresql://nba_tests:nba_tests@localhost:5432/nba_tests' \
   python -m pytest -m postgres -q
 ```
 
-CI runs every test on pull requests and pushes to `main` with one line per test
-(`-v`), dumps every thread's stack if a test runs past 5 minutes, prints the 15
-slowest cases, and uploads `test-results/pytest.xml` as `pytest-results` even if tests
-fail. The pip dependency cache remains enabled. There is no reduced "fast"
-suite replacing the full merge checks.
+CI runs every test on pull requests and pushes to `main` with a `pytest-sugar`
+progress bar (`--force-sugar` enables it without an interactive terminal), failure
+details, and a final summary. GitHub Actions may render progress updates on
+multiple lines. CI dumps every thread's stack if a test runs past 5 minutes and
+uploads `test-results/pytest.xml` as `pytest-results` even if tests fail. The pip
+dependency cache remains enabled. There is no reduced "fast" suite replacing the
+full merge checks.
