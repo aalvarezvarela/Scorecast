@@ -11,7 +11,7 @@ from nba_ou.postgre_db import input_cache
 from nba_ou.postgre_db.input_cache import SeasonCache, code_key
 from nba_ou.postgre_db.line_history_aiven import fetch
 
-from .frame_identity import assert_identical
+from tests.support.frame_identity import assert_identical
 
 
 def _frame(season: int) -> pd.DataFrame:

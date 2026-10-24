@@ -9,7 +9,7 @@ from nba_ou.fetch_data.injury_reports import sync
 from nba_ou.fetch_data.injury_reports.archive import urls as U
 from nba_ou.postgre_db.injury_report_aiven.parse import ParsedReport
 
-from tests.fake_s3 import FakeS3Client
+from tests.support.fake_s3 import FakeS3Client
 
 DAY = "2026-10-16"
 AS_OF = pd.Timestamp("2026-10-16T18:30:00Z")

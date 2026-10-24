@@ -1,5 +1,7 @@
 """MoviOdds timelines, clocks, complete downloads and independent persistence."""
 
+from tests.support.paths import REPO_ROOT
+
 from contextlib import contextmanager
 from datetime import UTC, date, datetime
 from types import SimpleNamespace
@@ -686,10 +688,9 @@ def test_partial_game_failure_does_not_stop_next_game_and_archives_failures():
 
 def test_cli_dry_run_never_writes_even_with_create_schema(monkeypatch, tmp_path):
     import importlib.util
-    from pathlib import Path
 
     path = (
-        Path(__file__).parents[1]
+        REPO_ROOT
         / "scripts/update_databases/update_moviodds_line_history.py"
     )
     spec = importlib.util.spec_from_file_location("moviodds_cli", path)

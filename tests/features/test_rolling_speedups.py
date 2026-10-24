@@ -25,7 +25,7 @@ from nba_ou.data_processing.team.rolling import (
 )
 from nba_ou.data_processing.team.style_matchups import STYLE_SOURCE_COLUMNS
 
-from .frame_identity import assert_identical
+from tests.support.frame_identity import assert_identical
 
 
 def team_frame(seed: int = 0, n_teams: int = 6, games_per_season: int = 24):

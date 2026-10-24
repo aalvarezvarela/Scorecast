@@ -2,7 +2,7 @@
 
 It now reuses each date's past-game split and per-referee deltas across the
 games of that date. Compared with the previous implementation
-(``tests/legacy_referee_features.py``) bit for bit.
+(``tests/support/legacy/legacy_referee_features.py``) bit for bit.
 """
 
 from __future__ import annotations
@@ -14,8 +14,8 @@ from nba_ou.data_processing.referees.add_referee_features import (
     compute_referee_features,
 )
 
-from .frame_identity import assert_identical
-from .legacy_referee_features import compute_referee_features_before
+from tests.support.frame_identity import assert_identical
+from tests.support.legacy.legacy_referee_features import compute_referee_features_before
 
 REFEREES = [f"Referee {name}" for name in "ABCDEFGHIJKL"]
 

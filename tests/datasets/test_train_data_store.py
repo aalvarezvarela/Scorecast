@@ -15,7 +15,7 @@ from nba_ou.create_training_data.train_data_store import (
 )
 
 from scripts.organize_s3_train_data import plan_moves
-from tests.fake_s3 import FakeS3Client
+from tests.support.fake_s3 import FakeS3Client
 
 # --- layout ----------------------------------------------------------------
 

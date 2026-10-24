@@ -92,6 +92,10 @@ pytest = "^9.0.2"
 requires = ["poetry-core"]
 build-backend = "poetry.core.masonry.api"
 
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = [".", "src"]
+
 # -----------------------------
 # Black configuration
 # -----------------------------

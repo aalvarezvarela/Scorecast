@@ -2,7 +2,7 @@
 
 The lookup now selects a roster's rows through a per-player position index
 instead of masking the whole season on every call. Every call is compared with
-the previous implementation (``tests/legacy_player_lookup.py``): same rows, same
+the previous implementation (``tests/support/legacy/legacy_player_lookup.py``): same rows, same
 order, same index, dtypes and values.
 """
 
@@ -13,8 +13,8 @@ import pandas as pd
 import pytest
 from nba_ou.data_processing.past_injuries.past_injuries import create_player_lookup
 
-from .frame_identity import assert_identical
-from .legacy_player_lookup import create_player_lookup_before
+from tests.support.frame_identity import assert_identical
+from tests.support.legacy.legacy_player_lookup import create_player_lookup_before
 
 TEAMS = [1610612737 + t for t in range(4)]
 
@@ -136,7 +136,7 @@ def _use_previous_player_code(monkeypatch):
     """Route the builder through the per-statistic calls and the lookup it had."""
     from nba_ou.data_processing.players import attach_player_features
 
-    from .legacy_top_n_averages import get_top_n_averages_with_names_before
+    from tests.support.legacy.legacy_top_n_averages import get_top_n_averages_with_names_before
 
     monkeypatch.setattr(
         attach_player_features,
@@ -246,7 +246,7 @@ class _PreviousPlayerLookupIndex:
 def test_player_history_features_match_the_previous_code_path(monkeypatch):
     from nba_ou.utils.row_cache import RowCache
 
-    from .test_injury_stage_caching import _games, _report_states, _run
+    from tests.support.injury_states import _games, _report_states, _run
 
     team_games, players = _games()
     states = _report_states(team_games)
@@ -273,7 +273,7 @@ def test_top_n_split_matches_the_previous_function():
         precompute_cumulative_avg_stat,
     )
 
-    from .legacy_top_n_averages import get_top_n_averages_with_names_before
+    from tests.support.legacy.legacy_top_n_averages import get_top_n_averages_with_names_before
 
     df = players_frame(4).dropna(subset=["PLAYER_ID"])
     for stat in ("PTS", "MIN"):
@@ -321,7 +321,7 @@ def test_top_n_ranking_keeps_pandas_tie_and_nan_order():
         precompute_cumulative_avg_stat,
     )
 
-    from .legacy_top_n_averages import get_top_n_averages_with_names_before
+    from tests.support.legacy.legacy_top_n_averages import get_top_n_averages_with_names_before
 
     rng = np.random.default_rng(9)
     df = players_frame(5).dropna(subset=["PLAYER_ID"])
@@ -367,7 +367,7 @@ def test_precomputed_stat_players_change_nothing():
         precompute_stat_players,
     )
 
-    from .test_injury_stage_caching import _games, _report_states
+    from tests.support.injury_states import _games, _report_states
 
     team_games, players = _games()
     stats = ["PTS", "MIN", "PACE_PER40"]

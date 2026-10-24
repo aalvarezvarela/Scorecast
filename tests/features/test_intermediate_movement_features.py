@@ -11,7 +11,7 @@ from nba_ou.data_processing.line_history.movement_features import (
 )
 from nba_ou.data_processing.line_history.snapshots import build_snapshot_panel
 
-from .test_line_history_snapshots import make_ticks
+from tests.support.line_history import make_ticks
 
 
 def build(rows, grid, windows=(60, 180)):

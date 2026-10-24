@@ -1,3 +1,5 @@
+
+from tests.support.paths import REPO_ROOT
 from pathlib import Path
 
 import pytest
@@ -5,7 +7,7 @@ import yaml
 
 from training_pipeline.cli import deep_merge, find_base_config, load_config
 
-REPO_EXPERIMENTS = Path(__file__).resolve().parents[1] / "experiments"
+REPO_EXPERIMENTS = REPO_ROOT / "experiments"
 
 
 def test_deep_merge_overrides_leaves_without_dropping_siblings():

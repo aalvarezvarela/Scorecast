@@ -12,8 +12,8 @@ from nba_ou.modeling.registry_store import (
 )
 
 from scripts.archive_registry_builds import discover_slots, execute_moves, plan_slot
-from tests.fake_s3 import FakeS3Client
-from tests.test_model_registry_store import BUCKET, make_spec, publish
+from tests.support.fake_s3 import FakeS3Client
+from tests.support.model_registry import BUCKET, make_spec, publish
 
 OLD = datetime(2026, 9, 24, tzinfo=UTC)
 NEW = datetime(2026, 10, 5, 12, tzinfo=UTC)

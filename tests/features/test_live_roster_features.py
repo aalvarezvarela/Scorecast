@@ -355,7 +355,7 @@ def test_available_player_reads_all_prior_games_without_a_target_box_score(
     monkeypatch, array_steps, same_day_row
 ):
     monkeypatch.setattr(player_features, "ARRAY_ROSTER_STEPS", array_steps)
-    from .test_historical_player_availability import TARGET_GAME, _players, _team_rows
+    from tests.support.player_availability import TARGET_GAME, _players, _team_rows
 
     players = _players(target_star_minutes=0.0, target_star_points=None)
     star = players.PLAYER_ID.eq("star")

@@ -1,6 +1,6 @@
 """``compute_referee_features`` before per-date memoisation, verbatim.
 
-Reference for tests/test_referee_speedups.py only.
+Reference for tests/features/test_referee_speedups.py only.
 """
 
 import numpy as np

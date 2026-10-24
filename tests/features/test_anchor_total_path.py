@@ -12,7 +12,7 @@ from nba_ou.data_processing.line_history.cross_book import (
 from nba_ou.data_processing.line_history.movement_features import add_movement_features
 from nba_ou.data_processing.line_history.snapshots import build_snapshot_panel
 
-from .test_line_history_snapshots import make_ticks
+from tests.support.line_history import make_ticks
 
 
 def _panel(ticks: pd.DataFrame, windows=(60,)) -> pd.DataFrame:

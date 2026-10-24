@@ -7,14 +7,15 @@ season-gated, cleaning drops the family, and the treatment silently becomes a
 copy of the control.
 """
 
-from pathlib import Path
+from tests.support.paths import REPO_ROOT
+
 
 import pytest
 
 from training_pipeline.cli import load_config
 
 CAMPAIGN = (
-    Path(__file__).resolve().parents[1] / "experiments" / "lineup_projection_2026_09"
+    REPO_ROOT / "experiments" / "lineup_projection_2026_09"
 )
 PAIRS = {
     "line_error": ("a_line_error_control", "b_line_error_lineup"),

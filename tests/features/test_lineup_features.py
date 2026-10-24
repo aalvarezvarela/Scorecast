@@ -370,7 +370,7 @@ def test_the_three_point_columns_are_filled_when_stints_are_given(monkeypatch):
 
     from nba_ou.data_processing.lineups import features as features_module
 
-    from tests.test_style_matchup import DATES, _stints
+    from tests.support.style_matchup import DATES, _stints
 
     # The synthetic pool is small; lower the model's minimum for this test only.
     monkeypatch.setattr(

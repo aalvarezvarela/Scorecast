@@ -21,7 +21,7 @@ from nba_ou.data_processing.line_history.snapshots import (
     build_snapshot_panel,
 )
 
-from .frame_identity import assert_identical, random_ticks
+from tests.support.frame_identity import assert_identical, random_ticks
 
 GRID = (0, 30, 60, 120, 360, 720)
 
@@ -169,7 +169,7 @@ def test_anchor_path_matches_the_previous_implementation(seed, windows):
         add_anchor_total_path_features,
     )
 
-    from .legacy_anchor_total_path import add_anchor_total_path_features_before
+    from tests.support.legacy.legacy_anchor_total_path import add_anchor_total_path_features_before
 
     ticks = random_ticks(n_games=25, seed=seed)
     panel = build_snapshot_panel(ticks, grid=GRID)

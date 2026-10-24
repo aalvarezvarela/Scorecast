@@ -36,7 +36,7 @@ from nba_ou.modeling.registry_models import (
 )
 from nba_ou.modeling.registry_paths import ModelSlot, ModelTarget
 
-from tests.fake_s3 import FakeS3Client
+from tests.support.fake_s3 import FakeS3Client
 
 BUCKET = "b"
 LINE = "ODDS_TOTAL_LINE_bet365"

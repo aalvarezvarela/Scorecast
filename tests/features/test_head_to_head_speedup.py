@@ -10,7 +10,7 @@ from nba_ou.data_processing.historic_games.historic_games_statistics import (
     last_5_matchups_for_frame,
 )
 
-from .frame_identity import assert_identical
+from tests.support.frame_identity import assert_identical
 
 
 def _games(seed: int, *, ties: bool) -> pd.DataFrame:

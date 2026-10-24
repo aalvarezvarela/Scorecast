@@ -28,7 +28,7 @@ from nba_ou.prediction.prediction_store import (
 )
 from nba_ou.utils.s3_prediction_runs import upload_prediction_run
 
-from tests.fake_s3 import FakeS3Client
+from tests.support.fake_s3 import FakeS3Client
 
 BOOK = "bet365"
 GAME_1 = "0022600001"

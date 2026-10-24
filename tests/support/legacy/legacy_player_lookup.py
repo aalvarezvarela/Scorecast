@@ -1,6 +1,6 @@
 """``create_player_lookup`` before its per-player row index, verbatim.
 
-Reference for tests/test_player_lookup_speedups.py only.
+Reference for tests/features/test_player_lookup_speedups.py only.
 """
 
 from collections import defaultdict

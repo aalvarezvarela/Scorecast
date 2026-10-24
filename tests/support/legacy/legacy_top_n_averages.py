@@ -1,6 +1,6 @@
 """``get_top_n_averages_with_names`` before its split into state and ranking, verbatim.
 
-Reference for tests/test_player_lookup_speedups.py only.
+Reference for tests/features/test_player_lookup_speedups.py only.
 """
 
 

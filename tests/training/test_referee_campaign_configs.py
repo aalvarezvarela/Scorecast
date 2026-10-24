@@ -5,7 +5,8 @@ typo there does not error -- the column simply stays in -- so the design is
 checked against the real matcher and the real feature names.
 """
 
-from pathlib import Path
+from tests.support.paths import REPO_ROOT
+
 
 import pandas as pd
 import pytest
@@ -27,7 +28,7 @@ from nba_ou.data_processing.referees.referee_tendencies import (
 from training_pipeline.cli import load_config
 
 CAMPAIGN = (
-    Path(__file__).resolve().parents[1] / "experiments" / "referee_tendencies_2026_09"
+    REPO_ROOT / "experiments" / "referee_tendencies_2026_09"
 )
 
 LEGACY = {

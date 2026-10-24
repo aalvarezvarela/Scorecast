@@ -37,7 +37,7 @@ from nba_ou.data_processing.lineups.intermediate_features import (
     snapshot_lineup_features,
 )
 
-from tests.test_lineup_leakage import (
+from tests.support.lineup_world import (
     DATES,
     PROJECTION_COLUMNS,
     ROSTERS,

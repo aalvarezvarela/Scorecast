@@ -29,7 +29,7 @@ from nba_ou.postgre_db.season_tables import (
     refresh_season_table,
 )
 
-from .fake_s3 import FakeS3Client
+from tests.support.fake_s3 import FakeS3Client
 
 NOW = pd.Timestamp("2026-01-15 12:00", tz="UTC")  # season 2025 is current
 COLUMNS = ["game_id", "season_year", "game_date", "team", "pts", "line", "flag"]

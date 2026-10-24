@@ -12,7 +12,7 @@ from nba_ou.postgre_db.line_history_aiven.fetch import (
     MARKET_TOTALS,
 )
 
-from .frame_identity import assert_identical, random_ticks
+from tests.support.frame_identity import assert_identical, random_ticks
 
 GRID = (30, 60, 120, 360, 720)
 

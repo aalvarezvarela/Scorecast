@@ -96,8 +96,14 @@ survived the evaluation discipline in the `experiments` skill.
 - `.claude/skills/` — `experiments` (repo-specific training and evaluation)
   and four portable skills (`feature-engineering`, `sports-model-pipeline`,
   `odds-data-architecture`, `sports-data-architecture`).
-- `tests/` — pytest, one `test_*.py` per module; run in CI by
-  `.github/workflows/tests.yml`.
+- `tests/` — pytest, grouped by the module under test: `core/`, `datasets/`,
+  `features/`, `ingestion/`, `training/`, `prediction/`, `storage/`, and
+  `reporting/`. Shared builders and fakes live in `support/`, reference
+  implementations in `support/legacy/`. See `tests/README.md` for ownership
+  rules and `tests/MIGRATION.md` for the file mapping. Run the full suite with
+  `python -m pytest`; CI uses `.github/workflows/tests.yml`. Do not import
+  another test module for helpers; use `tests.support`. Resolve repository
+  paths through `tests.support.paths.REPO_ROOT`.
 - `streamlit/`, `.github/workflows/` — dashboard and the operational
   lifecycle (daily predict, DB updates, retrain → smoke test → promote,
   backups).

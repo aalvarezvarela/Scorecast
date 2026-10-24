@@ -15,28 +15,9 @@ from nba_ou.data_processing.line_history.snapshots import (
 )
 
 
-def make_ticks(rows: list[dict]) -> pd.DataFrame:
-    """Build a tick frame shaped like ``fetch_pregame_ticks`` output."""
-    base = {
-        "game_id": "0022300001",
-        "season_year": 2023,
-        "market": "totals",
-        "book": "bet365",
-        "is_opener": False,
-        "left_price": -110.0,
-        "right_price": -110.0,
-        "right_line": None,
-    }
-    records = []
-    for index, row in enumerate(rows):
-        record = {**base, **row}
-        record.setdefault("right_line", record["left_line"])
-        record["line_ts"] = pd.Timestamp("2023-11-01", tz="UTC") + pd.Timedelta(
-            minutes=index
-        )
-        records.append(record)
-    return pd.DataFrame(records)
-
+from tests.support.line_history import (
+    make_ticks,
+)
 
 def test_snapshot_carries_the_last_tick_at_or_before_the_horizon():
     ticks = make_ticks(

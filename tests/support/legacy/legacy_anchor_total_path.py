@@ -1,6 +1,6 @@
 """``add_anchor_total_path_features`` before reading horizons as an array, verbatim.
 
-Reference for tests/test_line_history_speedups.py only.
+Reference for tests/features/test_line_history_speedups.py only.
 """
 
 import numpy as np

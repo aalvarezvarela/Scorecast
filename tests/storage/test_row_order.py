@@ -7,7 +7,7 @@ import pandas as pd
 import pytest
 from nba_ou.postgre_db.row_order import canonical_row_order, final_order_by
 
-from .frame_identity import assert_identical
+from tests.support.frame_identity import assert_identical
 
 
 def _frame(seed: int = 0, n: int = 400) -> pd.DataFrame:

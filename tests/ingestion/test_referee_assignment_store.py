@@ -11,7 +11,7 @@ from nba_ou.fetch_data.referees.assignment_store import (
 )
 from nba_ou.fetch_data.referees.fetch_refs_data import ASSIGNMENT_COLUMNS
 
-from tests.fake_s3 import FakeS3Client
+from tests.support.fake_s3 import FakeS3Client
 
 DAY = "2026-10-16"
 NOW = pd.Timestamp("2026-10-16T13:05:22.123456Z")

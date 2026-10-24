@@ -14,7 +14,7 @@ from nba_ou.fetch_data.referees import fetch_refs_data as fetch
 from nba_ou.fetch_data.referees import load_assignments
 from nba_ou.fetch_data.referees.assignment_store import AssignmentStore
 
-from tests.fake_s3 import FakeS3Client
+from tests.support.fake_s3 import FakeS3Client
 
 
 @pytest.fixture(autouse=True)

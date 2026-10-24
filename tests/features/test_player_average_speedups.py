@@ -11,7 +11,7 @@ from nba_ou.data_processing.players.players_statistics import (
     precompute_cumulative_avg_stat,
 )
 
-from .frame_identity import assert_identical
+from tests.support.frame_identity import assert_identical
 
 
 def _players(seed: int, n: int = 4000) -> pd.DataFrame:

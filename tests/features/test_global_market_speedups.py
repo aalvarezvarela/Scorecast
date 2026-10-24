@@ -7,7 +7,7 @@ import pandas as pd
 import pytest
 from nba_ou.data_processing.merged_home_away_data import global_market_features as gm
 
-from .frame_identity import assert_identical
+from tests.support.frame_identity import assert_identical
 
 
 def _day_agg_before(values, dates, window_days, func):

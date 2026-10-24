@@ -10,8 +10,8 @@ from nba_ou.postgre_db import season_tables
 from nba_ou.postgre_db.line_history_aiven import fetch
 from nba_ou.postgre_db.season_store import SeasonStore
 
-from .fake_s3 import FakeS3Client
-from .frame_identity import assert_identical
+from tests.support.fake_s3 import FakeS3Client
+from tests.support.frame_identity import assert_identical
 
 
 class _FakeConn:
