@@ -321,7 +321,19 @@ Two fixes are possible:
 2. Make the digest per season independent of other seasons' rows. This
    changes no value.
 
-The user decides.
+**The user chose option 1, implemented in 7e130dd.**
+`merge_scheduled_odds._as_history_floats` gives each column that is
+`float64` in the stored odds `float64` in tonight's rows as well, so `pd.NA`
+becomes `NaN`.
+
+Checks:
+- **With `pd.NA` lines:** `prediction_runtime_parity.py --inject-na 3` gives
+  three of tonight's games NA FanDuel/BetRivers lines. The code before the fix
+  (`e1add6b`) and the fix produced identical frames and predictions
+  (`EQUAL`). The injected lines changed 46 closing columns against the run
+  without NA, so the injection took effect, and the fix moved none of them.
+- **Without `pd.NA`:** all four step 0 references are `EQUAL` (latest rows,
+  closing, predictions).
 
 ### C. Load each input table once per run (expected −0.5 to −1 min)
 
