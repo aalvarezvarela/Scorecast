@@ -415,13 +415,24 @@ def ingest_season(
     games["tipoff_utc"] = pd.to_datetime(games["tipoff_utc"], utc=True)
     rosters = R.load_rosters(source, seasons)
 
+    # Keep the full dimension for report resolution, but daily runs must only
+    # write the requested Eastern game dates, including late games whose UTC
+    # tipoff falls on the following day.
+    games_to_write = games
+    written_games = None
+    if write_game_dates is not None:
+        first, last = write_game_dates
+        game_dates = pd.to_datetime(games["game_date"]).dt.date
+        games_to_write = games.loc[(game_dates >= first) & (game_dates <= last)]
+        written_games = set(games_to_write["game_id"].astype(str))
+
     if dry_run:
         team_map = dict(zip(teams["report_name"], teams["nba_team_id"], strict=True))
     else:
         team_map = loader.upsert_teams(aiven, teams)
         for season_year in seasons:
             create_season_partition(aiven, season_year)
-        loader.upsert_games(aiven, games)
+        loader.upsert_games(aiven, games_to_write)
     tricode_to_team_id = {
         tricode: team_map[name]
         for tricode, name in zip(teams["tricode"], teams["report_name"], strict=True)
@@ -452,15 +463,7 @@ def ingest_season(
         not_filed = R.resolve_games(not_submitted, games, R.ResolutionReport())
         not_filed["team_id"] = not_filed["raw_team"].map(team_map)
 
-    written_games = None
-    if write_game_dates is not None:
-        first, last = write_game_dates
-        game_dates = pd.to_datetime(games["game_date"]).dt.date
-        written_games = set(
-            games.loc[(game_dates >= first) & (game_dates <= last), "game_id"].astype(
-                str
-            )
-        )
+    if written_games is not None:
         listed = listed[listed["game_id"].astype(str).isin(written_games)]
         if not not_filed.empty:
             not_filed = not_filed[not_filed["game_id"].astype(str).isin(written_games)]

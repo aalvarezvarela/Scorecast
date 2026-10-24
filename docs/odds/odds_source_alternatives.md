@@ -1,8 +1,10 @@
 # Odds source alternatives to Sportsbook Review
 
-Status: **Partial** (checked 2026-10-22) — research notes from 2026-10-21. Only
-the OddsTrader archive is implemented (2026-10-22, "S3 archive" below): a copy
-in S3, not a model input. Using any source as a backup or as features remains.
+Status: **Partial** (checked 2026-10-24) — research notes from 2026-10-21.
+Implemented: the OddsTrader archive (2026-10-22, "S3 archive" below), a copy in
+S3, and two line-history stores beside SBR, OddsLogic (2026-10-23) and MoviOdds
+for bet365 (2026-10-24). None is a model input yet. Using any source as a
+backup or as features remains.
 
 The question was
 whether another source could back up Sportsbook Review (SBR) when the site is
@@ -68,6 +70,18 @@ Notes:
 - **Before trusting any of them,** run it in parallel with SBR for a few weeks
   and compare per game, book and horizon. The models learned SBR's values,
   and a systematic half-point difference is larger than the edge being chased.
+
+### TheRundown: existing RapidAPI account tested (2026-10-24)
+
+The existing credentials work for NBA 2026-27: live per-book quotes, openers,
+closes and all three core market histories were retrieved. DraftKings,
+FanDuel, BetMGM and Caesars overlap with SBR; bet365, BetRivers and Fanatics
+are absent from the authenticated catalog and official book reference.
+This is a possible **partial** technical backup. V1 closing timestamps need
+comparison against reconciled tip-offs, and the applicable RapidAPI storage
+and model-use rights remain unverified. See the
+[bounded probe and documentation review](therundown_backup_probe.md) for
+coverage counts, API-version distinctions, limitations and the repeatable CLI.
 
 ## OddsTrader
 
@@ -295,6 +309,32 @@ Commands, under `scripts/line_history/oddstrader/`:
 - `build_oddstrader_line_history.py` turns `raw/` into `line_history/`.
 - `compare_oddstrader_vs_sbr.py` reports coverage, freshness, the spread and
   moneyline orientation against realised margins, and parity with SBR.
+
+## OddsLogic (WagerTalk)
+
+The odds on wagertalk.com come from OddsLogic's free widget. It answers with
+each book's full line history: spread, total and moneyline, timed in UTC,
+archived from 2020-12-01. It has DraftKings, FanDuel, BetMGM, Caesars,
+Fanatics, Hard Rock and BetRivers (unlisted id 60), plus ESPN BET, Circa,
+South Point and Kalshi. **It has no bet365.**
+
+Since 2026-10-23 it is stored daily in the Aiven schema
+`line_history_oddslogic`, from the 2026-27 season on. Endpoints, book
+identification, parsing rules and parity with SBR:
+[oddslogic_line_history.md](oddslogic_line_history.md).
+
+## MoviOdds (bet365)
+
+MoviOdds publishes bet365's pregame history per fixture: total, spread and
+moneyline, every price change timed in UTC, in decimal odds. It is the same
+bet365 feed SBR had: on the first 16 games of 2026-27, before SBR froze,
+moneyline prices matched 16/16 and spread quotes 15/16. It has no games from
+earlier seasons, so it cannot backfill or be checked against SBR's history.
+
+From 2026-10-24 the code stores it in the Aiven schema `line_history_moviodds`,
+with a daily step after OddsLogic. Fixture matching, the rule for selections
+the provider relabels with the other team's name, and parity with SBR:
+[moviodds_line_history.md](moviodds_line_history.md).
 
 ## What sits behind sportsbookreview.com today
 
