@@ -229,6 +229,39 @@ def _pinned_builds(builds: dict[str, str], record: bool, slot_seconds: dict):
 # -- run -------------------------------------------------------------------------
 
 
+#: The lines a live scrape returned as ``pd.NA`` for one game (2026-10-23).
+MISSING_LINE_COLUMNS = (
+    "total_fanduel_line_over",
+    "total_fanduel_line_under",
+    "spread_fanduel_line_away",
+    "spread_fanduel_line_home",
+    "total_betrivers_line_over",
+    "total_betrivers_line_under",
+    "spread_betrivers_line_away",
+    "spread_betrivers_line_home",
+)
+
+
+def _inject_missing_lines(games: int) -> None:
+    """Tonight's first ``games`` games' ``MISSING_LINE_COLUMNS`` as ``pd.NA``,
+    as the live scrape returns a line a book has not posted."""
+    import pandas as pd
+    from nba_ou.data_processing.odds import merge_scheduled_odds
+
+    original = merge_scheduled_odds.merge_yahoo_sportsbook_odds
+
+    def merged(*args, **kwargs):
+        frame = original(*args, **kwargs).copy()
+        order = frame["game_id"].astype(str).sort_values().index[:games]
+        for column in MISSING_LINE_COLUMNS:
+            if column in frame.columns:
+                frame[column] = frame[column].astype("object")
+                frame.loc[order, column] = pd.NA
+        return frame
+
+    merge_scheduled_odds.merge_yahoo_sportsbook_odds = merged
+
+
 def _parameters(function) -> set[str]:
     import inspect
 
@@ -315,6 +348,8 @@ def run(args: argparse.Namespace) -> int:
 
     # The replayed game day stands in for the live scrape.
     intermediate_frame.fetch_live_game_day = lambda *a, **k: live
+    if args.inject_na:
+        _inject_missing_lines(args.inject_na)
 
     configured_slots = SETTINGS.prediction_model_slots
     latest_slots = latest_input_slots(configured_slots, args.intermediate_input)
@@ -407,6 +442,7 @@ def run(args: argparse.Namespace) -> int:
         ),
         "pythonhashseed": os.environ.get("PYTHONHASHSEED"),
         "s3_cache": args.s3_cache,
+        "inject_na": args.inject_na,
         "memo": args.memo,
         "latest_slots": len(latest_slots),
         "rows": {name: len(frame) for name, frame in frames.items()},
@@ -491,6 +527,13 @@ def main() -> int:
         "--s3-cache",
         action="store_true",
         help="keep the input cache and S3 season store on (to test them)",
+    )
+    run_parser.add_argument(
+        "--inject-na",
+        type=int,
+        default=0,
+        metavar="GAMES",
+        help="give tonight's first GAMES games pd.NA lines (MISSING_LINE_COLUMNS)",
     )
     run_parser.add_argument(
         "--intermediate-input",

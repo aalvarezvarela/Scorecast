@@ -427,3 +427,38 @@ def test_past_games_keep_the_loader_order_whatever_tonight_holds(monkeypatch):
         past = result[result["game_date"] < datetime.date(2026, 4, 14)]
         orders.append(past["game_id"].tolist())
     assert orders[0] == orders[1] == df_odds["game_id"].tolist()
+
+
+def test_tonights_missing_lines_take_the_historys_float_dtype(monkeypatch):
+    """A line missing tonight (pd.NA) is NaN, so the combined column keeps the
+    stored float64 dtype whatever tonight's rows hold."""
+    import nba_ou.data_processing.odds.merge_scheduled_odds as mod
+
+    df_odds = _make_historical_odds()
+    df_odds["total_betmgm_line_over"] = [220.5, 221.0, 219.5, 222.0, 218.5]
+
+    def tonight(line):
+        frame = df_odds.head(2).copy()
+        frame["game_id"] = ["0052600001", "0052600002"]
+        frame["game_date"] = datetime.date(2026, 4, 14)
+        frame["total_betmgm_line_over"] = pd.Series([223.5, line], dtype="object")
+        return frame
+
+    results = []
+    for line in (pd.NA, 224.0):
+        monkeypatch.setattr(
+            mod, "merge_yahoo_sportsbook_odds", lambda y, s, value=line, **k: tonight(value)
+        )
+        results.append(
+            merge_and_validate_scheduled_odds(
+                df_odds, pd.DataFrame(), pd.DataFrame(), strict_mode=-1
+            )
+        )
+    with_na, without = results
+    assert with_na["total_betmgm_line_over"].dtype == "float64"
+    assert (with_na.dtypes == without.dtypes).all()
+    stored = with_na["game_id"].isin(df_odds["game_id"])
+    pd.testing.assert_frame_equal(
+        with_na[stored].reset_index(drop=True), without[stored].reset_index(drop=True)
+    )
+    assert with_na.loc[with_na["game_id"] == "0052600002", "total_betmgm_line_over"].isna().all()
