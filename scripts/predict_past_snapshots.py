@@ -43,6 +43,7 @@ from nba_ou.prediction.intermediate_frame import (
     PASSTHROUGH_COLUMNS,
     tonight_intermediate_frame,
 )
+from nba_ou.prediction.line_source import LineSource
 from nba_ou.prediction.prediction import load_registry_model_and_predict
 from nba_ou.prediction.prediction_store import (
     PredictionRunRecorder,
@@ -82,7 +83,11 @@ def intermediate_slots(slots: list) -> list:
 
 def past_scheduled_data(game_date: str) -> dict:
     """What ``tonight_intermediate_frame`` reads of the schedule, for a date
-    whose games may have started or finished."""
+    whose games may have started or finished.
+
+    The lines are SBR's; a game SBR has no ticks for, or whose SBR history
+    stops well before tip, is read from Covers (``prediction.line_source``).
+    """
     scheduled = replay_scheduled_games(game_date)
     if scheduled.empty:
         return {"scheduled_games": scheduled}
@@ -90,6 +95,7 @@ def past_scheduled_data(game_date: str) -> dict:
         "scheduled_games": scheduled,
         "df_referees_scheduled": process_scheduled_referee_assignments(scheduled),
         "roster_snapshots": load_live_rosters(scheduled),
+        "line_source": LineSource(pd.Timestamp(game_date).date()),
     }
 
 

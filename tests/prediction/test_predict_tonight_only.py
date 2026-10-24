@@ -17,6 +17,7 @@ from nba_ou.prediction.baseline_predictions import (
     HISTORICAL_AVERAGE_LINE_ERROR_BASELINE_MODEL_NAME,
     baseline_history_window,
 )
+from nba_ou.prediction.line_source import LineSource
 
 import scripts.predict_nba_games as job
 
@@ -42,6 +43,11 @@ class _NullRecorder:
 
     def add_baseline(self, name, predictions, **_):
         self.outputs.append(predictions)
+
+
+def _sbr_lines(game_date, **_):
+    """The feed check of a day SBR is fresh: no network."""
+    return LineSource(game_date)
 
 
 def _history() -> pd.DataFrame:
@@ -97,6 +103,7 @@ def test_baselines_read_history_from_the_layer_inputs(monkeypatch):
         ),
     )
     monkeypatch.setattr(job, "update_all_databases", lambda **_: None)
+    monkeypatch.setattr(job, "check_line_feed", _sbr_lines)
     monkeypatch.setattr(
         job,
         "get_all_info_for_scheduled_games",
@@ -172,6 +179,7 @@ def test_a_failing_slot_does_not_stop_the_others(monkeypatch, capsys):
         ),
     )
     monkeypatch.setattr(job, "update_all_databases", lambda **_: None)
+    monkeypatch.setattr(job, "check_line_feed", _sbr_lines)
     monkeypatch.setattr(
         job,
         "get_all_info_for_scheduled_games",
@@ -262,6 +270,7 @@ def test_a_failing_supabase_write_does_not_cost_the_prediction_store(
         ),
     )
     monkeypatch.setattr(job, "update_all_databases", lambda **_: None)
+    monkeypatch.setattr(job, "check_line_feed", _sbr_lines)
     monkeypatch.setattr(
         job,
         "get_all_info_for_scheduled_games",

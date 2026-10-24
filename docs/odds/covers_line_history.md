@@ -2,9 +2,12 @@
 
 Status: **Implemented** (2026-10-24). A line-history source beside SBR, stored
 in the Aiven schema `line_history_covers` from the 2026-27 season on (plus the
-backfilled past games), with the SBR store's tables. It is SBR's fallback, per
-game, in the stored reads and in tonight's prediction
-([Fallback](#fallback)).
+backfilled past games, [SBR gaps in past seasons](#sbr-gaps-in-past-seasons)),
+with the SBR store's tables, plus each game's Covers Consensus pick counts
+(`lh_consensus`, from 2026-10-25). It is SBR's per-game fallback in the
+prediction, read live ([Live fallback](#live-fallback-for-predictions)), and
+in the stored line-history reads that training uses
+([Fallback in the stored reads](#fallback-in-the-stored-reads)).
 
 ## Why
 
@@ -22,9 +25,10 @@ Plain GETs, no auth, server-rendered HTML. Only a browser user agent is sent.
 |---|---|
 | `/sports/nba/matchups?selectedDate=YYYY-MM-DD` | The date's games. Each is an `<article id="nba-<covers id>">` whose attributes name both teams in full (`data-away-team-fullname=memphis grizzlies`, unquoted). |
 | `/sport/MatchupOdds/LineHistoryBrick?gameId=<id>&location=odds&countryCode=us&stateProvince=nj&oddsFormat=american&betType=total` | One game's history of moneyline, spread and total, for every book: about 1.8 MB. The lower-case path answers with a 302 to this one. |
+| `contests.covers.com/consensus/matchupconsensusdetails?gameId=<id>` | One game's Covers Consensus pick counts ([below](#consensus-pick-percentages)). |
 
-So one game costs one request, and a date one more. The client pauses 1.2–2 s
-between requests.
+So one game costs two requests (lines and pick counts), and a date one more.
+The client pauses 1.2–2 s between requests.
 
 **Region.** The books depend on `countryCode`/`stateProvince`, not on where
 the request comes from. Every US state gives the same nine books. Ontario
@@ -125,6 +129,21 @@ Code: `postgre_db/line_history_covers/`. The layout is the OddsLogic store's.
 - **Tables.** `lh_book`, `lh_market`, `lh_game`, `lh_line` (list-partitioned
   by season) and `lh_load_meta`, from `line_history_aiven.schema.DDL_STATEMENTS`
   verbatim. `lh_game.event_id` is the Covers game id.
+- **`lh_consensus`** is this store's own table (`schema.COVERS_DDL_STATEMENTS`):
+  one row per stored game with its Covers Consensus pick counts, the counts
+  SBR's `*_consensus_pct_*` shares are taken from.
+
+  | Column | Type | |
+  |---|---|---|
+  | `game_id` | TEXT | primary key, references `lh_game` |
+  | `season_year` | SMALLINT | |
+  | `spread_away_picks`, `spread_home_picks` | INTEGER | ATS "Total Picks" |
+  | `total_over_picks`, `total_under_picks` | INTEGER | O/U "Total Picks" |
+  | `fetched_at` | TIMESTAMPTZ | when the page was read |
+
+  A count of 0 is a count. The counts are read once, at least 4 hours after
+  tip-off, so they are the final ones. `PickConsensus.sbr_consensus` turns a
+  row into SBR's shares.
 - **Writes are insert-only.** COPY goes to an UNLOGGED staging table, followed
   by one `INSERT ... ON CONFLICT DO NOTHING` per season. Fetching a stored game
   again only adds what was missing.
@@ -133,7 +152,8 @@ Code: `postgre_db/line_history_covers/`. The layout is the OddsLogic store's.
   ticks. A write that fails rolls the game back, so it is never taken for a
   stored one.
 - **Reads.** `store.fetch_pregame_ticks` and `store.fetch_games` return the
-  frames the SBR readers return.
+  frames the SBR readers return. `store.fetch_consensus(conn, season_years,
+  game_ids)` returns the stored pick counts. No reader uses them yet.
 - **The SBR modules are not changed for another schema.** They are in the code
   closure that keys the training-data caches, so this package repeats their
   few SQL statements instead.
@@ -147,10 +167,82 @@ source does, so the parser can be redone without the site.
     train_data/odds_sources/covers/raw/v1/<YYYY-MM-DD>/
       matchups/<fetched_at>.html.gz
       <covers_id>/<fetched_at>.html.gz
+      <covers_id>/consensus/<fetched_at>.html.gz
 
 The HTML is stored as served, gzipped. Each fetch writes a new key, so the
 archive is insert-only. A failed archive write is reported and does not stop
 the store.
+
+## Live fallback for predictions
+
+When SBR's feed is frozen or empty, tonight's lines come from Covers, read
+live and never stored. The code is `prediction/line_source.py` (the
+decision), `postgre_db/line_history_covers/live.py` (the fetch and the line
+history) and `fetch_data/odds_covers/day_odds.py` (the closing frame's odds).
+Each stored prediction records the source of its input row
+(`prediction.inputs.line_source`: 1 SBR, 2 Covers,
+`docs/serving/prediction_storage.md`).
+
+- **When.** The decision is made once per run, before anything reads a line.
+  - SBR's feed check (`feed_freshness`) finds it fresh → SBR.
+  - SBR frozen, or its check failing → Covers is fetched (one request for the
+    date, one per game, ~25 s for 8 games) and judged by the same rule.
+    Fresh → Covers for every game. Frozen too → the run stops as before
+    (`--allow-stale-lines` predicts on SBR anyway). With the check failing
+    and no usable Covers, the run carries on with SBR, unchecked.
+  - SBR chosen, but its day page has no odds at all (2026-10-24: eight games
+    listed, every cell empty) or its live line history no tick → the run
+    switches to Covers.
+  - SBR chosen and serving most games → a game it does not price, or gives no
+    tick, is filled from Covers.
+  - The end-of-day past-snapshot run has no game left to tip, so the check
+    cannot tell. A game whose SBR history stops more than
+    `TRUNCATED_HISTORY_MINUTES` before tip moves to Covers, if Covers goes
+    on later.
+- **Closing frame, same columns.** `covers_day_odds` builds the
+  `oddsTableModel` SBR's JSON engine parses, from Covers ticks, and runs it
+  through the engine's own parsers and day merge. The columns therefore come
+  out with SBR's names, order and rounding:
+  - The book list is SBR's (`SBR_DAY_PAGE_BOOKS`). theScore gets no column,
+    and Hard Rock Bet, the eighth book, is dropped by the parsers as on SBR.
+  - Per book, the current line is the latest pre-tip tick at the fetch; the
+    opener is `consensus_opener`.
+  - The consensus pick percentages (`*_consensus_pct_*`, tonight's values are
+    features of every production slot) come from the Covers Consensus page,
+    one more request per game (below). A game whose page fails keeps them
+    empty.
+- **Intermediate frame.** Covers' games go through SBR's
+  `live_frames_from_scraped`, without `thescore` and `consensus_opener`
+  (absent from the SBR store), so the books are the eight the models trained
+  on. Covers is read again at that step, as SBR's live history is.
+- **Force it.** `predict_nba_games.py --line-source covers` reads Covers
+  without checking either feed (`--no-persist` for a dry run).
+
+### Consensus pick percentages
+
+SBR's `consensus` (`overPickPercent`, `homeSpreadPickPercent`, ...) is the
+**Covers Consensus**: the share of Covers users' picks per side. SBR's game
+ids are Covers'. One game's counts:
+
+    https://contests.covers.com/consensus/matchupconsensusdetails?gameId=<covers id>
+
+- **Parsing.** `parse.parse_consensus` reads the public section
+  (`consensus_analysis_content`), not the experts' section after it. It takes
+  its two "Total Picks" rows (`finalWagersleft`/`finalWagersRight`): ATS
+  away/home, then O/U over/under.
+- **Converting.** `PickConsensus.sbr_consensus` turns them into SBR's shares.
+  The moneyline is 0, as SBR serves it. SBR's day-page parser then rounds them
+  as it rounds its own.
+- **Agreement with SBR** (30 games of 2025-11-12, 2026-01-15 and 2026-03-05,
+  read 2026-10-24):
+
+  | Share | Same rounded value | Median gap | Max gap | Correlation |
+  |---|---|---|---|---|
+  | Home spread | 0.73 | 0.16 pt | 0.65 pt | 0.9998 |
+  | Over | 0.63 | 0.34 pt | 1.39 pt | 0.998 |
+
+  These are the same counts read at another moment: SBR's 56.98% on game
+  388572 is exactly 396/695 picks, while Covers now shows 410/722.
 
 ## Daily update
 
@@ -170,6 +262,19 @@ and unmaintained.
     a feed freeze. Such a game is not stored for 3 days after tip-off
     (`TRUNCATED_HOLD_DAYS`) and is fetched again on every run. After that it
     is stored as it is.
+- **Pick counts.** Every game stored in `lh_game` without an `lh_consensus`
+  row, once it is at least 4 hours past tip-off, gets its Covers Consensus
+  page: one request per game, archived raw. This covers the stored games
+  without counts and the games the run has just stored. The counts are
+  fetched in the date's group, after the date's lines are written.
+  - A page without counts (the section is there, the "Total Picks" rows are
+    not) is not stored. It is fetched again, with a warning, on the next run.
+  - A failed request or parse is a failure like a line-history one (exit 1).
+    It stops neither the date's lines nor the other games.
+  - `--consensus-only` fetches no lines and only fills the counts of stored
+    games, for a backfill. `--dates` limits it to those dates. With
+    `--dry-run` the pages are parsed and nothing is written.
+    `--save-dir` writes the rows to `lh_consensus.parquet`.
 - **Retries.** A stored game from the last 3 days (`--retry-days`) that misses
   one of the ten books is fetched again.
   - Hard Rock and theScore skip some games, so those games are re-requested
@@ -192,6 +297,8 @@ and unmaintained.
     + Cleveland Cavaliers @ Philadelphia 76ers (0022600006): 10 book(s), 2395 tick(s), last pre-tip tick 1 min before tip [7.2 MB, 6.3 s]
     - Denver Nuggets @ Oklahoma City Thunder (0022600007): not finished (tip +1.2 h ago), next run
     stored 1 new game(s) and 2395 new tick(s) (of 2395 prepared)
+    + CLE @ PHI (0022600006): consensus ATS 296 away / 517 home, O/U 213 over / 317 under
+    stored the consensus of 1 new game(s) (of 1 prepared)
   ::endgroup::
   ```
 
@@ -206,6 +313,8 @@ python scripts/update_databases/update_covers_line_history.py
 # a past season, nothing written
 python scripts/update_databases/update_covers_line_history.py \
     --dry-run --dates 2026-01-15 --save-dir /tmp/covers
+# only the pick counts of stored games that have none
+python scripts/update_databases/update_covers_line_history.py --consensus-only
 ```
 
 ## Validation
@@ -291,14 +400,14 @@ Books absent from whole seasons (not flagged per game): BetMGM in 2019-20
 (38%) and 2020-21 (none), Caesars in 2019-20 (72%), BetRivers before 2021-22.
 Covers has BetMGM from 2019-10 and no BetRivers before 2021-22.
 
-## Fallback
+## Fallback in the stored reads
 
 Both sources serve one feed, so where SBR has a game the two agree; Covers
 only fills what SBR lacks. A game is always read whole from one source, and
 the books only Covers carries (`thescore`, `consensus_opener`) are dropped, so
 it has the same books whichever it comes from.
 
-**Stored reads**, the training side
+The training side
 (`postgre_db/line_history_covers/fallback.py`, called by
 `line_history_aiven.fetch`'s `fetch_pregame_ticks`, `fetch_closing_ticks` and
 `fetch_games`; `covers_fallback=False` turns it off):
@@ -330,4 +439,6 @@ it has the same books whichever it comes from.
   unmapped books in the step's warnings.
 - **Only the US view.** Ontario's Pinnacle would need a second request per
   game and a new book map.
-- **No public-betting split.** It is not on these pages.
+- **No money split.** The consensus page counts picks, as SBR's consensus
+  does; there is no share of bets or money (that is Yahoo's,
+  `odds_yahoo/`).

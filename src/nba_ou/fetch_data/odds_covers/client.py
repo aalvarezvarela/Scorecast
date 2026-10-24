@@ -9,6 +9,12 @@ Two plain GETs, no auth, server-rendered HTML:
   and total in one answer (about 1.8 MB). The books depend on
   ``countryCode``/``stateProvince``; any US state gives the same nine. The
   lower-case path answers with a 302 to this one, so this one is used directly.
+
+A third, on ``contests.covers.com``, is read by the prediction's live fallback
+and stored by the daily update (``lh_consensus``):
+``/consensus/matchupconsensusdetails?gameId=<covers id>``, the "Covers
+Consensus" pick counts of one game, which is what SBR's consensus pick
+percentages are (``parse.parse_consensus``).
 """
 
 from __future__ import annotations
@@ -35,6 +41,10 @@ DEFAULT_RETRIES = 3
 
 #: Every line-history answer carries these tabs, empty or not.
 HISTORY_MARKER = 'id="lh-tab-total"'
+
+CONSENSUS_URL = "https://contests.covers.com/consensus/matchupconsensusdetails"
+#: Every consensus answer carries this section, with or without picks.
+CONSENSUS_MARKER = 'id="consensus_analysis_content"'
 
 _HEADERS = {
     "User-Agent": (
@@ -67,6 +77,10 @@ def history_url(covers_id: int) -> str:
         }
     )
     return f"{BASE_URL}/sport/MatchupOdds/LineHistoryBrick?{query}"
+
+
+def consensus_url(covers_id: int) -> str:
+    return f"{CONSENSUS_URL}?{urlencode({'gameId': int(covers_id)})}"
 
 
 class CoversClient:
@@ -126,4 +140,11 @@ class CoversClient:
         text = self.get_text(history_url(covers_id))
         if HISTORY_MARKER not in text:
             raise CoversError(f"no line-history tabs in the answer for {covers_id}")
+        return text
+
+    def consensus(self, covers_id: int) -> str:
+        """One game's Covers Consensus page (pick counts per side)."""
+        text = self.get_text(consensus_url(covers_id))
+        if CONSENSUS_MARKER not in text:
+            raise CoversError(f"no consensus section in the answer for {covers_id}")
         return text

@@ -265,6 +265,7 @@ game read the same row.
 | `total_price_over`, `total_price_under` | `SMALLINT`, nullable | American odds at `total_bet_line_x2`, same quote. |
 | `spread_price_home`, `spread_price_away` | `SMALLINT`, nullable | American odds at `spread_bet_line_x2`, same quote. |
 | `total_line_age_minutes`, `spread_line_age_minutes` | `REAL`, nullable | Minutes since that quote was last observed, at the row's time. |
+| `line_source` | `SMALLINT`, nullable | Where the row's lines came from: `1 = SBR`, `2 = Covers` (the fallback when SBR is frozen or empty, `docs/odds/covers_line_history.md`). Null on rows stored before 2026-10-24. Added to existing stores by `create_schema` (`ALTER TABLE ... ADD COLUMN IF NOT EXISTS`). |
 
 Unique `NULLS NOT DISTINCT (run_id, game_id, input_mode,
 snapshot_horizon_minutes)`.
@@ -351,11 +352,16 @@ All analysis reads `predictions_full`: the small tables are joined once, the
 market columns are picked by target, and grading is computed. Nothing in it
 is stored, so changing a grading rule never rewrites rows.
 
+The view is dropped and created again by `create_schema`, not replaced:
+`CREATE OR REPLACE VIEW` only adds columns at the end, and `line_source` sits
+in `base`.
+
 ```sql
-CREATE OR REPLACE VIEW prediction.predictions_full AS
+CREATE VIEW prediction.predictions_full AS
 WITH base AS (
     SELECT p.*,
            i.run_id, i.game_id, i.input_mode, i.snapshot_horizon_minutes,
+           i.line_source,
            i.tipoff_at - make_interval(secs => p.time_to_tipoff_seconds)
                                                      AS predicted_at,
            i.tipoff_at                               AS tipoff_at_prediction,

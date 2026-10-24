@@ -106,6 +106,12 @@ latest input only:
 Each prediction carries `INPUT_MODE` (`latest`/`own`), the input row's
 `TIME_TO_MATCH_MIN` and `INPUT_LIMITED_COUNT` in its S3 snapshot; the
 Postgres table keeps its columns until the prediction store is decided.
+When SBR's feed is frozen or empty, tonight's line history comes from Covers
+instead, the same feed (`prediction/line_source.py`;
+`docs/odds/covers_line_history.md`, "Live fallback for predictions"). Each
+row carries `LINE_SOURCE` (`sbr`/`covers`), stored as
+`prediction.inputs.line_source`.
+
 Features whose meaning grows with time elapsed (`MINUTES_SINCE_OPEN`,
 `N_MOVES_SO_FAR`, ...) are left as they are: the model reads the real values,
 outside its training range at a much later moment.

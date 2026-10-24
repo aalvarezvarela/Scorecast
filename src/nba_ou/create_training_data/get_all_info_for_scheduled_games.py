@@ -21,10 +21,18 @@ from nba_ou.data_processing.referees.process_refs_scheduled_game import (
 )
 from nba_ou.fetch_data.injury_reports.sync import synchronize_injury_reports
 from nba_ou.fetch_data.live_rosters import load_live_rosters
+from nba_ou.fetch_data.odds_covers.day_odds import covers_day_odds
 from nba_ou.fetch_data.odds_sportsbook.scrape_sportsbook import scrape_sportsbook_days
 from nba_ou.fetch_data.odds_yahoo.process_yahoo_day import yahoo_one_row_per_game
 from nba_ou.fetch_data.odds_yahoo.scrape_yahoo import scrape_yahoo_days
 from nba_ou.fetch_data.scheduled_game.get_schedule_games import get_schedule_games
+from nba_ou.prediction.line_source import (
+    COVERS,
+    SBR,
+    LineSource,
+    fill_ids,
+    priced_game_ids,
+)
 
 
 def _normalize_team_series(series: pd.Series) -> pd.Series:
@@ -221,12 +229,45 @@ def get_yahoo_prediction_data(
     return df_yahoo_with_game_id
 
 
+def _day_odds_with_game_id(
+    df_sportsbook: pd.DataFrame, scheduled_games: pd.DataFrame
+) -> pd.DataFrame:
+    """A day-page frame as the closing builder reads it: scheduled games only."""
+    # Same rule as training: stored-only books never reach a prediction frame.
+    df_sportsbook = drop_sportsbook_metadata_columns(
+        drop_history_only_book_columns(df_sportsbook)
+    )
+    if df_sportsbook.empty:
+        return df_sportsbook
+
+    # Merge with scheduled_games to get the game_id
+    df_sportsbook_with_game_id = merge_odds_with_scheduled_games(
+        df_sportsbook, scheduled_games
+    )
+    # Remove duplicates based on game identifiers
+    df_sportsbook_with_game_id = df_sportsbook_with_game_id.drop_duplicates(
+        subset=["game_date", "team_home", "team_away"], keep="first"
+    )
+    # drop NA rows on game ID as they are not scheduled games
+    return df_sportsbook_with_game_id.dropna(subset=["game_id"])
+
+
 def get_sportsbook_prediction_data(
-    date_to_predict: str, scheduled_games: pd.DataFrame, *, headless: bool
+    date_to_predict: str,
+    scheduled_games: pd.DataFrame,
+    *,
+    headless: bool,
+    line_source: LineSource | None = None,
 ) -> pd.DataFrame:
     """Get Sportsbook Review odds data for the prediction date.
 
     Fetches odds (totals, spread, moneyline) for date of prediction, merges with scheduled games to get game_id.
+
+    With a ``line_source``, a game SBR does not price (or every game, when the
+    run reads Covers) gets the same columns rebuilt from Covers
+    (``odds_covers.day_odds``), and ``line_source.closing_sources`` records
+    each game's source. An SBR day page with no odds at all switches the run
+    to Covers.
 
     Args:
         date_to_predict (str): Date in format 'YYYY-MM-DD'
@@ -238,34 +279,56 @@ def get_sportsbook_prediction_data(
     # Parse the date and get date + 1
     base_date = datetime.strptime(date_to_predict, "%Y-%m-%d").date()
 
-    # Scrape both dates to account for timezone differences
-    days_to_scrape = [base_date]
-    df_sportsbook = asyncio.run(
-        scrape_sportsbook_days(days_to_scrape, headless=headless)
-    )
+    df_sportsbook = pd.DataFrame()
+    if line_source is None or not line_source.uses_covers:
+        try:
+            df_sportsbook = asyncio.run(
+                scrape_sportsbook_days([base_date], headless=headless)
+            )
+        except Exception as exc:
+            if line_source is None:
+                raise
+            print(f"SBR day odds failed for {date_to_predict}: {exc}")
+        df_sportsbook = _day_odds_with_game_id(df_sportsbook, scheduled_games)
+        if line_source is not None and not priced_game_ids(df_sportsbook):
+            line_source.switch_to_covers(
+                f"SBR day page has no odds for {date_to_predict}"
+            )
 
-    # Same rule as training: stored-only books never reach a prediction frame.
-    df_sportsbook = drop_sportsbook_metadata_columns(
-        drop_history_only_book_columns(df_sportsbook)
-    )
+    if line_source is not None:
+        served = set() if line_source.uses_covers else priced_game_ids(df_sportsbook)
+        df_sportsbook = (
+            df_sportsbook[df_sportsbook["game_id"].astype(str).isin(served)]
+            if served
+            else pd.DataFrame()
+        )
+        missing = fill_ids(scheduled_games["game_id"], served)
+        sources = dict.fromkeys(sorted(served), SBR)
+        if missing:
+            day = line_source.covers_day(scheduled_games, game_ids=missing)
+            df_covers = _day_odds_with_game_id(
+                covers_day_odds(
+                    [day.games[g] for g in missing if g in day.games],
+                    game_date=base_date,
+                    as_of=day.as_of,
+                    consensus=day.consensus,
+                ),
+                scheduled_games,
+            )
+            sources.update(dict.fromkeys(df_covers.get("game_id", []), COVERS))
+            df_sportsbook = (
+                df_covers
+                if df_sportsbook.empty
+                else pd.concat([df_sportsbook, df_covers], ignore_index=True)
+            )
+        line_source.closing_sources = {str(k): v for k, v in sources.items()}
 
     # Check if we got any data
     if df_sportsbook.empty:
         print(f"No Sportsbook odds data found for {date_to_predict}")
         raise ValueError("No Sportsbook odds data found")
 
-    # Merge with scheduled_games to get the game_id
-    df_sportsbook_with_game_id = merge_odds_with_scheduled_games(
-        df_sportsbook, scheduled_games
-    )
-    # Remove duplicates based on game identifiers
-    df_sportsbook_with_game_id = df_sportsbook_with_game_id.drop_duplicates(
-        subset=["game_date", "team_home", "team_away"], keep="first"
-    )
-    # drop NA rows on game ID as they are not scheduled games
-    df_sportsbook_with_game_id = df_sportsbook_with_game_id.dropna(subset=["game_id"])
-
-    return df_sportsbook_with_game_id
+    return df_sportsbook
 
 
 def get_all_info_for_scheduled_games(
@@ -275,6 +338,7 @@ def get_all_info_for_scheduled_games(
     headless: bool | None = None,
     *,
     dataset_type: str = "closing_line",
+    line_source: LineSource | None = None,
 ) -> dict:
     """Get all information needed for scheduled games prediction.
 
@@ -288,6 +352,9 @@ def get_all_info_for_scheduled_games(
         headless (bool | None): Playwright mode. If None, uses SETTINGS.headless.
         dataset_type: Closing requires both teams to have filed. Intermediate
             keeps uncovered games, whose snapshot injury features remain NaN.
+        line_source: The run's line source (``prediction.line_source``): SBR
+            with Covers filling the games it does not price, or Covers. None
+            reads SBR only, as before.
 
     Returns:
         dict: Dictionary containing:
@@ -299,6 +366,10 @@ def get_all_info_for_scheduled_games(
             - games_not_updated: Games to exclude for missing filing coverage;
               always empty for intermediate requests.
             - games_missing_injury_reports: Games with at least one uncovered team.
+            - line_source: the ``line_source`` passed, shared with the
+              intermediate frame's line-history read.
+            - line_sources: GAME_ID -> source of its day-page odds
+              (``"sbr"``/``"covers"``); empty without a ``line_source``.
     """
     if dataset_type not in {"closing_line", "intermediate_line"}:
         raise ValueError(f"Unknown prediction dataset type: {dataset_type}")
@@ -323,6 +394,8 @@ def get_all_info_for_scheduled_games(
             "games_not_updated": [],
             "games_missing_injury_reports": [],
             "roster_snapshots": pd.DataFrame(),
+            "line_source": line_source,
+            "line_sources": {},
         }
 
     # Convert team IDs to team names using TEAM_ID_MAP
@@ -400,7 +473,10 @@ def get_all_info_for_scheduled_games(
         date_to_predict, scheduled_games_for_merge, headless=headless
     )
     df_odds_sportsbook_scheduled = get_sportsbook_prediction_data(
-        date_to_predict, scheduled_games_for_merge, headless=headless
+        date_to_predict,
+        scheduled_games_for_merge,
+        headless=headless,
+        line_source=line_source,
     )
 
     return {
@@ -414,4 +490,8 @@ def get_all_info_for_scheduled_games(
         "df_odds_sportsbook_scheduled": df_odds_sportsbook_scheduled,
         "games_not_updated": games_not_updated,
         "games_missing_injury_reports": games_missing_injury_reports,
+        "line_source": line_source,
+        "line_sources": (
+            {} if line_source is None else dict(line_source.closing_sources)
+        ),
     }
