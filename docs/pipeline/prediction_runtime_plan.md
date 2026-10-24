@@ -335,6 +335,22 @@ Checks:
 - **Without `pd.NA`:** all four step 0 references are `EQUAL` (latest rows,
   closing, predictions).
 
+**Frozen memo seeded in S3 (2026-10-24, user's go-ahead).**
+- How: one live predictor build of the current code with persistence off,
+  writing only memo entries. The database update, the injury-report sync and
+  the roster snapshots were refused.
+- What: 66 objects (14.1 MB) under `train_data/input_cache/v1/memo/` with
+  `frozen-2_5-bet365-*` keys, covering `player_history_rows`,
+  `availability_effects`, `closing_line_repair` and
+  `intermediate_snapshot_history`.
+- The intermediate injury memos could not be seeded. The SBR feed is frozen,
+  so no game that day had ticks, and the intermediate build stopped
+  ("No pre-game ticks"). The first CI runs with ticks fill them, one horizon
+  at a time, since B builds only the horizons in use.
+- Check: a second build with an empty local memo and an empty input cache read
+  every closing entry from S3. It wrote nothing locally and missed nothing.
+  Its closing rows took 174 s, against 422 s with an empty memo.
+
 ### C. Load each input table once per run (expected −0.5 to −1 min)
 
 The closing and intermediate builds are independent pipelines by design.
