@@ -419,6 +419,27 @@ The training side
   - No 2025-26 game: its freezes are the same in Covers.
 - **After the caches.** The fallback runs after the S3 and local tick caches,
   which keep holding SBR's reads only.
+- **Read lazily.** The decision uses each game's latest Covers tick, which the
+  database aggregates (`store.latest_pregame_ticks`). Only the chosen games'
+  ticks are moved, so a full Covers season (about 3M ticks) is never
+  transferred.
+- **Seasons and readiness.** `available_seasons()` adds the Covers seasons, so
+  the intermediate builder keeps 2018-19. `covers_fallback=False` gives SBR's
+  own seasons, which the tick-cache refresher uses. The season partitions
+  count a game Covers holds as built-ready
+  (`season_partitions._line_history_game_ids`).
+- **Rebuilding the partitions.** A fallback change moves more than its own
+  games. Checked 2026-10-25 against the stored closing partitions:
+  - 2023-24: the 14 games' lines, then the league-wide EWM features of the
+    228 games after them.
+  - 2018-19: the 32 playoff games.
+  - Rolling windows that skip NaN carry the newly filled values into the
+    next season (2019-20, 2024-25).
+  - The global fits (referee tendencies, availability effects) move a
+    little everywhere.
+
+  So rebuild every closing season, and the intermediate seasons 2023 and
+  2024, after an update to the same cutoff.
 - **Fingerprints.** The season fingerprints that key the odds-repair and
   intermediate memos (`season_fingerprints`, `pregame_tick_fingerprints`) get
   the Covers season's appended, only for a season Covers holds games of. Other
