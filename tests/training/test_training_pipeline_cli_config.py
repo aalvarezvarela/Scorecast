@@ -1,10 +1,10 @@
 
-from tests.support.paths import REPO_ROOT
 from pathlib import Path
 
 import pytest
 import yaml
 
+from tests.support.paths import REPO_ROOT
 from training_pipeline.cli import deep_merge, find_base_config, load_config
 
 REPO_EXPERIMENTS = REPO_ROOT / "experiments"

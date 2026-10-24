@@ -14,10 +14,10 @@ from nba_ou.data_processing.line_history.snapshots import (
     snapshot_coverage,
 )
 
-
 from tests.support.line_history import (
     make_ticks,
 )
+
 
 def test_snapshot_carries_the_last_tick_at_or_before_the_horizon():
     ticks = make_ticks(

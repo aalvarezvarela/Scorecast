@@ -136,7 +136,9 @@ def _use_previous_player_code(monkeypatch):
     """Route the builder through the per-statistic calls and the lookup it had."""
     from nba_ou.data_processing.players import attach_player_features
 
-    from tests.support.legacy.legacy_top_n_averages import get_top_n_averages_with_names_before
+    from tests.support.legacy.legacy_top_n_averages import (
+        get_top_n_averages_with_names_before,
+    )
 
     monkeypatch.setattr(
         attach_player_features,
@@ -273,7 +275,9 @@ def test_top_n_split_matches_the_previous_function():
         precompute_cumulative_avg_stat,
     )
 
-    from tests.support.legacy.legacy_top_n_averages import get_top_n_averages_with_names_before
+    from tests.support.legacy.legacy_top_n_averages import (
+        get_top_n_averages_with_names_before,
+    )
 
     df = players_frame(4).dropna(subset=["PLAYER_ID"])
     for stat in ("PTS", "MIN"):
@@ -321,7 +325,9 @@ def test_top_n_ranking_keeps_pandas_tie_and_nan_order():
         precompute_cumulative_avg_stat,
     )
 
-    from tests.support.legacy.legacy_top_n_averages import get_top_n_averages_with_names_before
+    from tests.support.legacy.legacy_top_n_averages import (
+        get_top_n_averages_with_names_before,
+    )
 
     rng = np.random.default_rng(9)
     df = players_frame(5).dropna(subset=["PLAYER_ID"])

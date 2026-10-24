@@ -185,6 +185,13 @@ def test_unfiled_side_has_nan_injury_features_even_with_legacy_values(
     assert pd.isna(result["INJ_FRESH_OUT_PTS_SUM_BEFORE"])
 
 
+def _worker_dies(horizon):
+    # Module level so the pool can pickle it and the failure happens inside the
+    # worker. A local function fails to pickle in the queue feeder thread, which
+    # can deadlock ProcessPoolExecutor's shutdown lock once _stop kills the pool.
+    raise RuntimeError("worker died")
+
+
 def test_horizons_in_processes_equal_the_horizons_in_turn(monkeypatch, tmp_path):
     """Forked horizons give the same rows, memo entries and sums as a loop."""
     from nba_ou.create_training_data import history_memo
@@ -250,10 +257,66 @@ def test_horizons_in_processes_equal_the_horizons_in_turn(monkeypatch, tmp_path)
     assert forked_priors == priors and len(priors) == 4
 
     # A failing worker costs time, never a value: the horizons run in turn.
-    def broken(horizon):
-        raise RuntimeError("worker died")
-
-    monkeypatch.setattr(ii, "_forked_horizon", broken)
+    monkeypatch.setattr(ii, "_forked_horizon", _worker_dies)
     fallback_rows, fallback_tables, fallback_priors = run(2)
     pd.testing.assert_frame_equal(fallback_rows, rows)
     assert fallback_tables == tables and fallback_priors == priors
+
+
+def test_only_the_horizons_with_result_rows_are_computed():
+    from nba_ou.create_training_data import intermediate_injuries as ii
+
+    states = {h: object() for h in (0, 30, 60, 240, 243, 360)}
+    tonight = pd.DataFrame({"GAME_ID": ["a", "b"], "TIME_TO_MATCH_MIN": [243, 360]})
+    assert ii._wanted_horizons(states, tonight) == [243, 360]
+    every = pd.DataFrame({"GAME_ID": ["a"] * 6, "TIME_TO_MATCH_MIN": list(states)})
+    assert ii._wanted_horizons(states, every) == list(states)
+
+
+def test_a_subset_of_forked_horizons_equals_those_horizons_in_turn(
+    monkeypatch, tmp_path
+):
+    from nba_ou.create_training_data import history_memo
+    from nba_ou.create_training_data import intermediate_injuries as ii
+
+    game_ids = [f"00224{g:05d}" for g in range(4)]
+    horizons = [30, 60, 120, 240]
+    cutoffs = pd.DataFrame(
+        [(g, h) for g in game_ids for h in horizons],
+        columns=["game_id", "snapshot_minutes"],
+    )
+
+    def one_horizon(base, context, state, *args, horizon=None, priors=None, **kw):
+        return pd.DataFrame(
+            {"GAME_ID": game_ids, "X": [state * 10 + i for i in range(4)]}
+        )
+
+    monkeypatch.setattr(ii, "_one_horizon", one_horizon)
+
+    def caches(memo):
+        return [
+            history_memo.PersistentRowCache(memo, name, season_of=lambda key: 2024)
+            for name in ("p", "e")
+        ]
+
+    def inputs_for(memo):
+        players, effects = caches(memo)
+        return ii._HorizonInputs(
+            base=None, context=None, states={h: h // 30 for h in horizons},
+            cutoffs=cutoffs, injuries=None, box=None, voting=None,
+            player_rows=players, all_star_rows=None, prepared_players=None,
+            prepared_all_star=None, effect_cache=effects, targets=None,
+            priors={}, first_current_season=None, current_rosters={},
+        )
+
+    memo = history_memo.HistoryMemo(
+        history_memo._LocalBackend(tmp_path), {2024: "a"}, 2024, code="c"
+    )
+    forked = ii._horizons_in_processes(
+        inputs_for(memo), memo, 2, None, horizons=[60, 240]
+    )
+    in_turn = [ii._horizon_features(inputs_for(memo), h) for h in (60, 240)]
+    pd.testing.assert_frame_equal(
+        pd.concat(forked, ignore_index=True), pd.concat(in_turn, ignore_index=True)
+    )
+    assert set(pd.concat(forked)["TIME_TO_MATCH_MIN"]) == {60, 240}

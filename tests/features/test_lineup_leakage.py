@@ -22,20 +22,20 @@ from nba_ou.data_processing.lineups.features import (
     attach_lineup_features,
 )
 
-
 from tests.support.lineup_world import (
+    DATES,
     PROJECTION_COLUMNS,
-    H,
+    ROSTERS,
+    SAME_DAY,
+    TARGET,
+    TARGET_DATE,
     A,
     C,
-    ROSTERS,
-    DATES,
-    TARGET_DATE,
+    H,
     _game_id,
-    TARGET,
-    SAME_DAY,
     _world,
 )
+
 
 @pytest.fixture(autouse=True)
 def calibrate_from_few_games(monkeypatch):

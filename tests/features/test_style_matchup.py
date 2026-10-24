@@ -14,11 +14,11 @@ from nba_ou.data_processing.lineups.style_matchup import (
     stint_directions,
 )
 
-
 from tests.support.style_matchup import (
-    _stints,
     DATES,
+    _stints,
 )
+
 
 def _ids(team):
     base = 100 if team == "H" else 200

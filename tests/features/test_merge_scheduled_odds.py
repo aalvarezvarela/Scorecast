@@ -392,3 +392,73 @@ def test_a_stored_row_of_a_scheduled_game_gives_way_to_tonights(monkeypatch):
     rows = result[result["game_id"] == "0052500001"]
     assert rows["total_betmgm_line_over"].tolist() == [2.0]
     assert len(result) == len(df_odds)
+
+
+def test_past_games_keep_the_loader_order_whatever_tonight_holds(monkeypatch):
+    """A date's games keep the loader's order: tonight's rows cannot reorder
+    them, so the history memo's per-season digests repeat from day to day."""
+    import nba_ou.data_processing.odds.merge_scheduled_odds as mod
+
+    # Many games per date, in the loader's (descending date) order.
+    rows = []
+    for day in range(30, 0, -1):
+        for game in range(12):
+            row = {c: 0.0 for c in _base_odds_cols()}
+            row["game_id"] = f"00225{day:03d}{game:02d}"
+            row["game_date"] = datetime.date(2026, 1, day)
+            row["season_year"] = 2025
+            rows.append(row)
+    df_odds = pd.DataFrame(rows)
+
+    def tonight(n_games: int) -> pd.DataFrame:
+        frame = df_odds.head(n_games).copy()
+        frame["game_id"] = [f"00526{i:05d}" for i in range(n_games)]
+        frame["game_date"] = datetime.date(2026, 4, 14)
+        return frame
+
+    orders = []
+    for n_games in (1, 7):
+        monkeypatch.setattr(
+            mod, "merge_yahoo_sportsbook_odds", lambda y, s, n=n_games, **k: tonight(n)
+        )
+        result = merge_and_validate_scheduled_odds(
+            df_odds, pd.DataFrame(), pd.DataFrame(), strict_mode=-1
+        )
+        past = result[result["game_date"] < datetime.date(2026, 4, 14)]
+        orders.append(past["game_id"].tolist())
+    assert orders[0] == orders[1] == df_odds["game_id"].tolist()
+
+
+def test_tonights_missing_lines_take_the_historys_float_dtype(monkeypatch):
+    """A line missing tonight (pd.NA) is NaN, so the combined column keeps the
+    stored float64 dtype whatever tonight's rows hold."""
+    import nba_ou.data_processing.odds.merge_scheduled_odds as mod
+
+    df_odds = _make_historical_odds()
+    df_odds["total_betmgm_line_over"] = [220.5, 221.0, 219.5, 222.0, 218.5]
+
+    def tonight(line):
+        frame = df_odds.head(2).copy()
+        frame["game_id"] = ["0052600001", "0052600002"]
+        frame["game_date"] = datetime.date(2026, 4, 14)
+        frame["total_betmgm_line_over"] = pd.Series([223.5, line], dtype="object")
+        return frame
+
+    results = []
+    for line in (pd.NA, 224.0):
+        monkeypatch.setattr(
+            mod, "merge_yahoo_sportsbook_odds", lambda y, s, value=line, **k: tonight(value)
+        )
+        results.append(
+            merge_and_validate_scheduled_odds(
+                df_odds, pd.DataFrame(), pd.DataFrame(), strict_mode=-1
+            )
+        )
+    with_na, without = results
+    assert with_na["total_betmgm_line_over"].dtype == "float64"
+    assert (with_na.dtypes == without.dtypes).all()
+    stored = with_na["game_id"].isin(df_odds["game_id"])
+    pd.testing.assert_frame_equal(
+        with_na[stored].reset_index(drop=True), without[stored].reset_index(drop=True)
+    )
+    assert with_na.loc[with_na["game_id"] == "0052600002", "total_betmgm_line_over"].isna().all()

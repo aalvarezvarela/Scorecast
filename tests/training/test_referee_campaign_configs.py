@@ -5,9 +5,6 @@ typo there does not error -- the column simply stays in -- so the design is
 checked against the real matcher and the real feature names.
 """
 
-from tests.support.paths import REPO_ROOT
-
-
 import pandas as pd
 import pytest
 from nba_ou.data_processing.missing_data.clean_df_for_training import (
@@ -25,6 +22,7 @@ from nba_ou.data_processing.referees.referee_tendencies import (
     UNKNOWN_COUNT_FEATURE,
 )
 
+from tests.support.paths import REPO_ROOT
 from training_pipeline.cli import load_config
 
 CAMPAIGN = (

@@ -14,6 +14,7 @@ Every document has one `Status:` line under its title:
 |---|---|
 | **Reference** | Describes how the code works today; keep it in sync when the code changes |
 | **Implemented** | A design document whose implementation exists; the body may still read as a plan |
+| **Unmaintained** | Implemented but unused; automatic updates are disabled and the code is retained for possible future reuse without maintenance |
 | **Partial** | Part of the design is implemented; the status line says what remains |
 | **Plan** | Not implemented |
 | **Research** | Measurements or findings, not a design |
@@ -34,6 +35,7 @@ the folder of its topic, with a status line, and gets a row here.
 | [defect_fixes_2_5.md](pipeline/defect_fixes_2_5.md) | Implemented | The 2_5 defects found in October 2026 and how each was fixed | `data_processing/`, `postgre_db/` |
 | [speedup.md](pipeline/speedup.md) | Partial | Making the 2_5 builds faster without changing a value: caches, target mode, season partitions | `scripts/perf/`, `create_training_data/season_partitions.py` |
 | [prediction_input_cache_s3.md](pipeline/prediction_input_cache_s3.md) | Partial | Past seasons of every input table read from S3, the current season from the DB | `postgre_db/season_tables.py`, `scripts/refresh_input_cache.py` |
+| [prediction_runtime_plan.md](pipeline/prediction_runtime_plan.md) | Partial | Shorter daily prediction runs (A–E done, F deferred): trust frozen 2_5 seasons, latest-only rows, shared loads, model cache | `postgre_db/season_tables.py`, `create_training_data/history_memo.py`, `create_intermediate_line_df.py` |
 
 ## odds/ — odds and line-history data
 
@@ -41,9 +43,10 @@ the folder of its topic, with a status line, and gets a row here.
 |---|---|---|---|
 | [line_history_updating.md](odds/line_history_updating.md) | Reference | Daily and backfill updates of the Aiven `line_history` store | `scripts/update_databases/update_line_history_database.py` |
 | [line_history_phase0_findings.md](odds/line_history_phase0_findings.md) | Research | Tipoff source, timezones, match rates and in-play rows behind the store | `postgre_db/line_history_aiven/` |
-| [odds_source_alternatives.md](odds/odds_source_alternatives.md) | Partial | Odds APIs, OddsTrader, OddsLogic and MoviOdds as a backup or extra books for SBR; the OddsTrader S3 archive | `fetch_data/odds_oddstrader/` |
-| [oddslogic_line_history.md](odds/oddslogic_line_history.md) | Implemented | OddsLogic (WagerTalk) line history: endpoints, book ids (BetRivers = 60, no bet365), parsing rules, the `line_history_oddslogic` store and its daily update | `fetch_data/odds_oddslogic/`, `postgre_db/line_history_oddslogic/` |
-| [moviodds_line_history.md](odds/moviodds_line_history.md) | Implemented | MoviOdds bet365 line history: fixture matching, relabelled-selection rule, the `line_history_moviodds` store, its daily update and parity with SBR's bet365 | `fetch_data/odds_moviodds/`, `postgre_db/line_history_moviodds/` |
+| [odds_source_alternatives.md](odds/odds_source_alternatives.md) | Partial | Odds APIs, OddsTrader and Covers as alternatives to SBR; OddsLogic and MoviOdds implemented but unused and unmaintained | `fetch_data/odds_oddstrader/` |
+| [oddslogic_line_history.md](odds/oddslogic_line_history.md) | Unmaintained | OddsLogic (WagerTalk) ingestion implemented but unused; automatic updates disabled due to slowness, instability and limited value; retained for possible reuse | `fetch_data/odds_oddslogic/`, `postgre_db/line_history_oddslogic/` |
+| [moviodds_line_history.md](odds/moviodds_line_history.md) | Unmaintained | MoviOdds bet365 ingestion implemented but unused; automatic updates disabled due to slowness, instability and limited value; retained for possible reuse | `fetch_data/odds_moviodds/`, `postgre_db/line_history_moviodds/` |
+| [covers_line_history.md](odds/covers_line_history.md) | Implemented | Covers line history (SBR's feed, nine US books incl. bet365): endpoints, parsing rules, `consensus_opener` = BetMGM's opener, the `line_history_covers` store, its daily update and parity with SBR | `fetch_data/odds_covers/`, `postgre_db/line_history_covers/` |
 
 ## intermediate/ — snapshot (pre-close) datasets and serving
 
@@ -80,5 +83,6 @@ the folder of its topic, with a status line, and gets a row here.
 |---|---|---|---|
 | [model_registry.md](serving/model_registry.md) | Implemented | The S3 slot registry: specs, builds, channels, daily refit and promotion | `modeling/registry_*.py`, `modeling/refit.py` |
 | [prediction_storage.md](serving/prediction_storage.md) | Implemented | The Aiven prediction store and the S3 run archive | `prediction/prediction_store.py`, `postgre_db/predictions_aiven/` |
+| [runner_timings.md](serving/runner_timings.md) | Research | Prediction and retrain durations on the self-hosted runner, cold and warm; what slows them | `scripts/predict_nba_games.py`, `scripts/retrain_prediction_models.py` |
 | [snapshot_triggers.md](serving/snapshot_triggers.md) | Implemented | Daily cron-job.org booking of predictor runs at every snapshot time and before tip-off | `scripts/cronjobs/schedule_snapshot_triggers.py`, `scheduling/cronjob_org.py` |
 | [ops_watchlist.md](serving/ops_watchlist.md) | Reference | Open checks on the daily jobs and their external sources | `.github/workflows/` |

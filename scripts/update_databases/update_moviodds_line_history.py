@@ -1,5 +1,9 @@
 """Store finished NBA games' bet365 histories in the separate MoviOdds schema.
 
+Unused and unmaintained since 2026-10-24: too slow and unstable for the value
+it adds. Automatic updates are disabled; kept for possible future reuse.
+See docs/odds/moviodds_line_history.md.
+
 First deployment: --create-schema. Inspect without remote writes: --dry-run
 --start-date 2026-10-20 --end-date 2026-10-22 --save-dir /tmp/moviodds.
 Explicit dates re-fetch even complete games; existing rows are never replaced.

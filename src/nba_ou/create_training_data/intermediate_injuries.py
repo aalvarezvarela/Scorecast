@@ -583,6 +583,19 @@ def _horizon_features(inputs: _HorizonInputs, horizon: int) -> pd.DataFrame:
     return features
 
 
+def _wanted_horizons(
+    states: Mapping[int, object], snapshots: pd.DataFrame
+) -> list[int]:
+    """The horizons of ``states`` that ``snapshots`` has rows at, in order.
+
+    Only those produce features: another horizon would compute every earlier
+    game there for no row of the result. A build of tonight's latest snapshots
+    alone runs one horizon per tip-off group.
+    """
+    wanted = set(pd.to_numeric(snapshots["TIME_TO_MATCH_MIN"]).astype(int))
+    return [horizon for horizon in states if int(horizon) in wanted]
+
+
 def _horizon_workers(n_horizons: int) -> int:
     """Processes for the horizons: ``NBA_OU_INJURY_WORKERS``, else up to 8.
 
@@ -597,8 +610,10 @@ def _horizon_workers(n_horizons: int) -> int:
     return max(1, min(8, cores - 1, n_horizons))
 
 
-#: Past this, the forked horizons are abandoned and run in turn.
-FORKED_TIMEOUT_SECONDS = 600
+#: Past this, the forked horizons are abandoned and run in turn. A cold
+#: history memo needs ~15 min on 4 cores; at 600 s the pool was abandoned and
+#: the serial rerun repeated all its work.
+FORKED_TIMEOUT_SECONDS = 3600
 
 #: The forked workers' inputs: set in the parent just before the fork, so
 #: every worker reads them from the copied memory instead of a pickle.
@@ -637,6 +652,7 @@ def _horizons_in_processes(
     workers: int,
     progress: str | None,
     while_waiting: Callable[[], None] | None = None,
+    horizons: list[int] | None = None,
 ) -> list[pd.DataFrame]:
     """The horizons in forked processes, each the same computation as in turn.
 
@@ -649,7 +665,7 @@ def _horizons_in_processes(
     global _FORKED_INPUTS
     memo.wait()
     _FORKED_INPUTS = inputs
-    horizons = list(inputs.states)
+    horizons = list(inputs.states) if horizons is None else horizons
     pool = ProcessPoolExecutor(
         max_workers=workers, mp_context=multiprocessing.get_context("fork")
     )
@@ -1036,10 +1052,16 @@ def add_snapshot_injury_features(
         # Realized absences: the same at every horizon.
         injured_players=realized,
     )
-    workers = _horizon_workers(len(states)) if memo is not None else 1
+    horizons = _wanted_horizons(states, snapshots)
+    workers = _horizon_workers(len(horizons)) if memo is not None else 1
     if workers > 1:
         parts = _horizons_in_processes(
-            inputs, memo, workers, progress, while_waiting=while_waiting
+            inputs,
+            memo,
+            workers,
+            progress,
+            while_waiting=while_waiting,
+            horizons=horizons,
         )
     else:
         if while_waiting is not None:
@@ -1047,8 +1069,8 @@ def add_snapshot_injury_features(
         parts = [
             _horizon_features(inputs, horizon)
             for horizon in tqdm(
-                states,
-                total=len(states),
+                horizons,
+                total=len(horizons),
                 desc=progress,
                 unit="snapshot",
                 disable=progress is None,

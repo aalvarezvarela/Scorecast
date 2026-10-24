@@ -244,3 +244,53 @@ def test_memo_roots_cover_their_stages():
     assert memo.code_key("nba_ou.create_training_data.create_df_to_predict") != (
         memo.code_key(memo.INTERMEDIATE_BUILDER)
     )
+
+
+def test_frozen_code_key_ignores_the_source(monkeypatch):
+    root = "nba_ou.create_training_data.create_df_to_predict"
+    frozen = memo.code_key(root)
+    assert frozen.startswith("frozen-2_5-")
+    assert frozen != memo.code_key(memo.INTERMEDIATE_BUILDER)  # roots kept apart
+    # A change to the builders' source moves the source key, not the frozen one.
+    monkeypatch.setattr(memo, "_closure_key", lambda roots, **kwargs: "changed")
+    memo.source_code_key.cache_clear()
+    try:
+        assert memo.code_key(root) == frozen
+        monkeypatch.setenv("NBA_OU_HISTORY_MEMO_FROZEN", "0")
+        assert memo.code_key(root) == "changed"
+    finally:
+        memo.source_code_key.cache_clear()
+
+
+def test_frozen_code_key_follows_the_main_book(monkeypatch):
+    from nba_ou.config import odds_columns
+
+    root = "nba_ou.create_training_data.create_df_to_predict"
+    before = memo.code_key(root)
+    monkeypatch.setattr(odds_columns, "get_main_book", lambda: "otherbook")
+    memo.frozen_code_key.cache_clear()
+    try:
+        assert memo.code_key(root) != before
+        assert "otherbook" in memo.code_key(root)
+    finally:
+        memo.frozen_code_key.cache_clear()
+
+
+def test_rebuild_reads_nothing_and_rewrites(tmp_path, monkeypatch):
+    backend = memo._LocalBackend(tmp_path)
+    digests = memo.season_input_digests(_inputs(), [2021])
+    writer = memo.HistoryMemo(backend, digests, 2021, code="c")
+    writer.table("rows", 2021)["k"] = "old"
+    writer.flush()
+
+    monkeypatch.setenv("NBA_OU_HISTORY_MEMO_REBUILD", "1")
+    rebuilt = memo.HistoryMemo(backend, digests, 2021, code="c")
+    table = rebuilt.table("rows", 2021)
+    assert table == {}
+    table["k"] = "new"
+    rebuilt.flush()
+
+    monkeypatch.delenv("NBA_OU_HISTORY_MEMO_REBUILD")
+    assert memo.HistoryMemo(backend, digests, 2021, code="c").table("rows", 2021) == {
+        "k": "new"
+    }

@@ -335,3 +335,88 @@ def test_latest_input_slots_all_or_rows(tmp_path, monkeypatch):
     monkeypatch.setattr(job, "SETTINGS", settings)
     chosen = job.latest_input_slots(settings.prediction_model_slots)
     assert [slot.horizon_minutes for slot in chosen] == [360]
+
+
+# ---- building the latest snapshots alone -------------------------------------
+
+
+def _tonight(monkeypatch, *, as_of):
+    """``tonight_intermediate_frame`` with the live day and the builder faked;
+    returns it and the builder's recorded keyword arguments."""
+    from nba_ou.prediction import intermediate_frame as module
+
+    games = pd.DataFrame(
+        {"game_id": ["g1", "g2"], "tipoff_utc": [TIP, TIP + pd.Timedelta(hours=3)]}
+    )
+    live = SimpleNamespace(
+        line_history=SimpleNamespace(games=games), game_ids=["g1", "g2"], as_of=as_of
+    )
+    monkeypatch.setattr(module, "fetch_live_game_day", lambda *a, **k: live)
+    calls = []
+
+    def builder(**kwargs):
+        calls.append(kwargs)
+        wanted = kwargs.get("target_snapshots") or {}
+        extra = kwargs.get("extra_target_snapshots") or {}
+        rows = (
+            [(g, m) for g, m in wanted.items()]
+            if wanted
+            else [(g, m) for g in ("g1", "g2") for m in (30, 240)]
+            + list(extra.items())
+        )
+        frame = pd.DataFrame(rows, columns=["GAME_ID", "TIME_TO_MATCH_MIN"])
+        tips = frame["GAME_ID"].map({"g1": TIP, "g2": TIP + pd.Timedelta(hours=3)})
+        scoring = frame.assign(
+            SNAPSHOT_TS_UTC=tips - pd.to_timedelta(frame["TIME_TO_MATCH_MIN"], unit="m")
+        )
+        return frame, scoring
+
+    monkeypatch.setattr(module, "create_intermediate_line_df", builder)
+    scheduled = {"scheduled_games": pd.DataFrame({"GAME_ID": ["g1", "g2"], "GAME_TIME": [1, 2]})}
+    return module, scheduled, calls
+
+
+def test_latest_only_builds_each_games_latest_snapshot_alone(monkeypatch):
+    as_of = TIP - pd.Timedelta(minutes=243)
+    module, scheduled, calls = _tonight(monkeypatch, as_of=as_of)
+    frame = module.tonight_intermediate_frame(
+        scheduled, game_date="2026-04-10", latest_input=True, latest_only=True
+    )
+    assert calls[-1]["target_snapshots"] == {"g1": 243, "g2": 423}
+    assert "extra_target_snapshots" not in calls[-1]
+    assert frame[LATEST_INPUT_COLUMN].all() and len(frame) == 2
+
+    full = module.tonight_intermediate_frame(
+        scheduled, game_date="2026-04-10", latest_input=True
+    )
+    assert calls[-1]["extra_target_snapshots"] == {"g1": 243, "g2": 423}
+    assert "target_snapshots" not in calls[-1]
+    latest = full[full[LATEST_INPUT_COLUMN]].reset_index(drop=True)
+    pd.testing.assert_frame_equal(latest, frame.reset_index(drop=True))
+
+
+def test_latest_only_needs_latest_input(monkeypatch):
+    module, scheduled, _ = _tonight(monkeypatch, as_of=TIP)
+    with pytest.raises(ValueError, match="latest_only needs latest_input"):
+        module.tonight_intermediate_frame(
+            scheduled, game_date="2026-04-10", latest_only=True
+        )
+
+
+def test_target_snapshots_are_validated_before_any_io():
+    from nba_ou.create_training_data.create_intermediate_line_df import (
+        create_intermediate_line_df,
+    )
+
+    with pytest.raises(ValueError, match="needs target_game_ids"):
+        create_intermediate_line_df(target_snapshots={"g1": 30})
+    with pytest.raises(ValueError, match="non-target games"):
+        create_intermediate_line_df(target_game_ids=["g1"], target_snapshots={"g2": 30})
+    with pytest.raises(ValueError, match="minutes before tip"):
+        create_intermediate_line_df(target_game_ids=["g1"], target_snapshots={"g1": -5})
+    with pytest.raises(ValueError, match="disagree"):
+        create_intermediate_line_df(
+            target_game_ids=["g1"],
+            target_snapshots={"g1": 47},
+            extra_target_snapshots={"g1": 48},
+        )

@@ -8,17 +8,17 @@ from nba_ou.data_processing.players.attach_player_features import (
     add_player_history_features,
 )
 
-
 from tests.support.player_availability import (
-    TEAM,
     OTHER_TEAM,
     SEASON_ID,
     SEASON_YEAR,
     TARGET_GAME,
-    _team_rows,
+    TEAM,
     _player_row,
     _players,
+    _team_rows,
 )
+
 
 def _run(
     *,

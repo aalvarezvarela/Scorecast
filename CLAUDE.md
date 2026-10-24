@@ -58,12 +58,19 @@ survived the evaluation discipline in the `experiments` skill.
     `total_line_col()`, `spread_line_home_col()`), `market_columns.py`,
     `leakage.py`, `identity_columns.py`, `dataset_versions.py`.
   - `postgre_db/`, `fetch_data/` — DB layer (Supabase + Aiven) and raw-data
-    ingestion. Line history has three Aiven stores with the same tables: SBR
+    ingestion. Line history has four Aiven stores with the same tables: SBR
     in `line_history` (`line_history_aiven/`, read by the pipeline),
     OddsLogic/WagerTalk in `line_history_oddslogic` (`line_history_oddslogic/`,
-    2026-27 on, no bet365, not read yet — `docs/odds/oddslogic_line_history.md`)
-    and MoviOdds in `line_history_moviodds` (`line_history_moviodds/`, bet365
-    only, 2026-27 on, not read yet — `docs/odds/moviodds_line_history.md`).
+    2026-27 on, no bet365, unused and unmaintained — `docs/odds/oddslogic_line_history.md`),
+    MoviOdds in `line_history_moviodds` (`line_history_moviodds/`, bet365
+    only, 2026-27 on, unused and unmaintained — `docs/odds/moviodds_line_history.md`),
+    and Covers in `line_history_covers` (`line_history_covers/`, SBR's feed
+    for the nine US books incl. bet365 plus `consensus_opener` = BetMGM's
+    opener, 2026-27 on, not read yet — `docs/odds/covers_line_history.md`).
+    OddsLogic and MoviOdds automatic updates are disabled as of 2026-10-24:
+    too slow and unstable for the value they add. Keep their implementations
+    and existing data for possible future reuse; no maintenance or integration
+    into training/prediction is planned.
 - `training_pipeline/` — second installable package: the experiment framework
   (config, data prep, walk-forward CV, Optuna tuning, holdout, betting
   evaluation, leaderboards, promotion). **Read the `experiments` skill before
@@ -87,7 +94,7 @@ survived the evaluation discipline in the `experiments` skill.
   legacy. Campaign configs name the exact file they read.
 - `docs/` — topic folders (`pipeline/`, `odds/`, `intermediate/`, `injuries/`,
   `lineups/`, `serving/`); `docs/README.md` indexes every document with its
-  status (Reference / Implemented / Partial / Plan / Research / Superseded).
+  status (Reference / Implemented / Unmaintained / Partial / Plan / Research / Superseded).
   `pipeline/training_data_processing.md` is the detailed reference for the
   closing-line feature pipeline; `pipeline/feature_engineering_overview.md` is
   the map of data sources, storage and which module builds each feature family.
