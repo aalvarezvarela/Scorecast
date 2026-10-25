@@ -44,6 +44,12 @@ INPUT_MODE_CODES: dict[str, int] = {
 WORKFLOW_DAILY = 1
 WORKFLOW_PAST_SNAPSHOTS = 2
 WORKFLOW_TABPFN = 3
+#: The workflow's name in the run's S3 archive folder.
+WORKFLOW_NAMES: dict[int, str] = {
+    WORKFLOW_DAILY: "daily",
+    WORKFLOW_PAST_SNAPSHOTS: "past_snapshots",
+    WORKFLOW_TABPFN: "tabpfn",
+}
 RUN_STATUS_OK = 1
 RUN_STATUS_PARTIAL = 2
 RUN_STATUS_S3_FAILED = 3

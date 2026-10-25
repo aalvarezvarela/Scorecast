@@ -107,7 +107,7 @@ with one Parquet per model and only the closing frame archived) with one
 folder per run:
 
 ```text
-prediction_snapshots/v2/{game_date}/{run_uuid}/
+prediction_snapshots/v2/game_date={game_date}/{started_at}_{workflow}_{run_uuid}/
   manifest.json                # run metadata, see below
   inputs_closing_line.parquet       # the closing rows the models read
   inputs_intermediate_line.parquet  # latest run: each game's latest row;
@@ -115,6 +115,13 @@ prediction_snapshots/v2/{game_date}/{run_uuid}/
   predictions.parquet          # every output of this run, long format
 ```
 
+- The run folder starts with the UTC start time (`20261025T190012Z`), so a
+  date's runs list in the order they ran, then the workflow (`daily`,
+  `past_snapshots`, `tabpfn`) and `runs.run_uuid`. `game_date=` is a
+  Hive-style partition: DuckDB or pyarrow read `prediction_snapshots/v2/` as
+  one dataset and prune by date. The archive is not split by schema version:
+  one run mixes slots of different versions over shared input rows, and every
+  prediction row carries its `schema_version`.
 - Each input row is written **once per run, not once per model**. All models
   of a frame read the same base row.
 - `predictions.parquet` mirrors the SQL rows with their input row's lines,
@@ -219,7 +226,7 @@ fields; `status = 0`, scores null), and completed by the finished-games job.
 | Column | Type | Meaning |
 | --- | --- | --- |
 | `run_id` | `INTEGER` identity PK | |
-| `run_uuid` | `UUID` unique | Also the S3 folder name. |
+| `run_uuid` | `UUID` unique | Also the end of the S3 run folder's name. |
 | `workflow` | `SMALLINT` | `1` daily predictor, `2` past-snapshot run, `3` TabPFN run (`scripts/predict_tabpfn.py`). |
 | `started_at`, `finished_at` | `TIMESTAMPTZ` | UTC. |
 | `git_sha` | `TEXT` | |
@@ -608,7 +615,7 @@ Not done yet:
 - `src/nba_ou/prediction/input_limits.py`
 - `src/nba_ou/prediction/baseline_predictions.py`
 - `src/nba_ou/create_training_data/live_game_day.py`
-- `src/nba_ou/utils/s3_prediction_snapshots.py`
+- `src/nba_ou/utils/s3_prediction_runs.py`
 - `scripts/predict_nba_games.py`, `scripts/predict_past_snapshots.py`
 - `.github/workflows/nba_predictor_daily.yml`,
   `.github/workflows/nba_predict_past_snapshots.yml`,

@@ -85,12 +85,6 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Configure AWS credentials (OIDC)
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          role-to-assume: ${{ secrets.AWS_ROLE_TO_ASSUME }}
-          aws-region: eu-west-1
-
       # A fresh venv per run: the runner's tool-cache Python is shared by
       # every job, so packages another job left there would hide a missing
       # dependency here.
@@ -126,9 +120,27 @@ jobs:
         id: games
         run: python scripts/check_games_today.py ${{ inputs.refit_without_games && '--always' || '' }}
 
+      # The OIDC session lasts 1 h and the refit alone can take most of it, so
+      # each S3 step below takes a fresh session: the first one here, after the
+      # install, so the refit gets the whole hour.
+      - name: Configure AWS credentials for the refit
+        if: ${{ steps.games.outputs.refit == 'true' }}
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_TO_ASSUME }}
+          aws-region: eu-west-1
+
       - name: Refit enabled slots from their specs
         if: ${{ steps.games.outputs.refit == 'true' }}
         run: python scripts/retrain_prediction_models.py ${{ steps.slots.outputs.args }}
+
+      - name: Refresh AWS credentials for the smoke test and promotion
+        if: ${{ steps.games.outputs.refit == 'true' }}
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_TO_ASSUME }}
+          aws-region: eu-west-1
+          unset-current-credentials: true
 
       # Loads each staged booster and checks it agrees with its spec before
       # anything is pointed at it. Promotion is a single pointer write, so

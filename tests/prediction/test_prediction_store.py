@@ -10,7 +10,7 @@ from __future__ import annotations
 import io
 import json
 import os
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta, timezone
 
 import pandas as pd
 import pyarrow.parquet as pq
@@ -26,7 +26,7 @@ from nba_ou.prediction.prediction_store import (
     dropped_na_games,
     persist_prediction_run,
 )
-from nba_ou.utils.s3_prediction_runs import upload_prediction_run
+from nba_ou.utils.s3_prediction_runs import run_prefix, upload_prediction_run
 
 from tests.support.fake_s3 import FakeS3Client
 
@@ -499,7 +499,11 @@ def test_run_archive_writes_each_input_row_once():
         s3_client=s3, bucket="b", recorder=recorder, tables=tables
     )
     assert failures == []
-    assert base == f"prediction_snapshots/v2/2026-10-20/{recorder.run_uuid}/"
+    started = tables.run["started_at"]
+    assert base == (
+        "prediction_snapshots/v2/game_date=2026-10-20/"
+        f"{started:%Y%m%dT%H%M%SZ}_daily_{recorder.run_uuid}/"
+    )
     intermediate = pq.read_table(
         io.BytesIO(s3.store[f"{base}inputs_intermediate_line.parquet"])
     )
@@ -524,6 +528,32 @@ def test_run_archive_writes_each_input_row_once():
     }
     assert len(manifest["support_table_version"]) == 12
     assert [s["status"] for s in manifest["slots"]] == ["predicted"] * 6
+
+
+def test_run_folders_list_in_the_order_they_ran():
+    uuid = "3f2a9c1e-0000-0000-0000-000000000000"
+    madrid = timezone(timedelta(hours=2))
+    prefixes = [
+        run_prefix("2026-10-25", started, workflow, uuid)
+        for started, workflow in [
+            # Out of order on purpose; a Madrid time is stored as UTC.
+            (
+                datetime(2026, 10, 26, 4, 0, tzinfo=UTC),
+                store_schema.WORKFLOW_PAST_SNAPSHOTS,
+            ),
+            (
+                datetime(2026, 10, 25, 21, 0, 12, tzinfo=madrid),
+                store_schema.WORKFLOW_DAILY,
+            ),
+            (datetime(2026, 10, 25, 15, 0), store_schema.WORKFLOW_TABPFN),
+        ]
+    ]
+    assert sorted(prefixes) == [
+        f"prediction_snapshots/v2/game_date=2026-10-25/20261025T150000Z_tabpfn_{uuid}/",
+        f"prediction_snapshots/v2/game_date=2026-10-25/20261025T190012Z_daily_{uuid}/",
+        "prediction_snapshots/v2/game_date=2026-10-25/"
+        f"20261026T040000Z_past_snapshots_{uuid}/",
+    ]
 
 
 def test_manifest_is_written_when_a_file_fails():

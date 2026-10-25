@@ -2,7 +2,9 @@
 
 Folder layout
 ─────────────
-prediction_snapshots/v2/{game_date}/{run_uuid}/
+prediction_snapshots/v2/game_date={game_date}/{started_at}_{workflow}_{run_uuid}/
+                               ← started_at in UTC (20261025T190012Z); workflow
+                                 daily, past_snapshots or tabpfn
   manifest.json                ← run metadata, per-slot outcomes, file status
   inputs_closing_line.parquet  ← the closing rows the models read
   inputs_intermediate_line.parquet
@@ -33,6 +35,7 @@ import pandas as pd
 import pyarrow as pa
 import pyarrow.parquet as pq
 
+from nba_ou.postgre_db.predictions_aiven.schema import WORKFLOW_NAMES
 from nba_ou.utils.s3_models import upload_bytes_to_s3
 
 if TYPE_CHECKING:
@@ -41,9 +44,29 @@ if TYPE_CHECKING:
 DEFAULT_RUN_PREFIX = "prediction_snapshots/v2"
 
 
-def run_prefix(game_date: str, run_uuid, *, prefix: str = DEFAULT_RUN_PREFIX) -> str:
-    """``prediction_snapshots/v2/2026-10-21/<uuid>/``."""
-    return f"{prefix}/{game_date}/{run_uuid}/"
+def run_prefix(
+    game_date: str,
+    started_at,
+    workflow: int,
+    run_uuid,
+    *,
+    prefix: str = DEFAULT_RUN_PREFIX,
+) -> str:
+    """``prediction_snapshots/v2/game_date=2026-10-21/20261021T190012Z_daily_<uuid>/``.
+
+    The UTC start first, so a date's runs list in the order they ran; the
+    workflow tells them apart without opening a manifest; the UUID is
+    ``runs.run_uuid``. ``game_date=`` lets Parquet readers treat the archive as
+    one dataset partitioned by date.
+    """
+    stamp = pd.Timestamp(started_at)
+    stamp = (
+        stamp.tz_localize("UTC") if stamp.tzinfo is None else stamp.tz_convert("UTC")
+    )
+    return (
+        f"{prefix}/game_date={game_date}/"
+        f"{stamp:%Y%m%dT%H%M%SZ}_{WORKFLOW_NAMES[workflow]}_{run_uuid}/"
+    )
 
 
 def compact_parquet_bytes(frame: pd.DataFrame) -> bytes:
@@ -93,7 +116,13 @@ def upload_prediction_run(
     Returns the folder key and the files that failed to upload. The manifest
     itself failing raises.
     """
-    base = run_prefix(recorder.game_date, recorder.run_uuid, prefix=prefix)
+    base = run_prefix(
+        recorder.game_date,
+        tables.run["started_at"],
+        tables.run["workflow"],
+        recorder.run_uuid,
+        prefix=prefix,
+    )
     files: dict[str, dict] = {}
     failures: list[str] = []
 

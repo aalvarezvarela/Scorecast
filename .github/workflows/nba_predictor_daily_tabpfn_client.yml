@@ -89,12 +89,6 @@ jobs:
               with:
                   python-version: "3.12"
 
-            - name: Configure AWS credentials (OIDC)
-              uses: aws-actions/configure-aws-credentials@v4
-              with:
-                  role-to-assume: ${{ secrets.AWS_ROLE_TO_ASSUME }}
-                  aws-region: eu-west-1
-
             # A fresh venv per run: the runner's tool-cache Python is shared by
             # every job, so packages another job left there would hide a missing
             # dependency here.
@@ -112,6 +106,15 @@ jobs:
             # The scheduled-games odds scrape drives a browser.
             - name: Install Playwright browsers
               run: playwright install chromium
+
+            # Taken right before the run, not at the start: the 1 h OIDC
+            # session then outlasts the job's 60 min timeout, so the S3 writes
+            # at the end of the run cannot find it expired.
+            - name: Configure AWS credentials (OIDC)
+              uses: aws-actions/configure-aws-credentials@v4
+              with:
+                  role-to-assume: ${{ secrets.AWS_ROLE_TO_ASSUME }}
+                  aws-region: eu-west-1
 
             - name: Run TabPFN predictor
               run: |
