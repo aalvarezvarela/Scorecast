@@ -137,7 +137,7 @@ def main() -> int:
     if ol.empty:
         print("No OddsLogic ticks.")
         return 1
-    sbr = fetch_pregame_ticks(args.seasons)
+    sbr = fetch_pregame_ticks(args.seasons, covers_fallback=False)
     sbr = sbr[sbr["game_id"].isin(ol["game_id"].unique())]
     print(
         f"{ol['game_id'].nunique():,} OddsLogic games ({len(ol):,} ticks); "

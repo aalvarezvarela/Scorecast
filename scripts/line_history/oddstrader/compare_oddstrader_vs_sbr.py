@@ -134,7 +134,7 @@ def main() -> int:
         )
         report_orientation(ticks, margins)
         if season in sbr_seasons:
-            sbr = fetch_pregame_ticks([season])
+            sbr = fetch_pregame_ticks([season], covers_fallback=False)
             sbr = sbr[sbr["game_id"].isin(ticks["game_id"].unique())]
             report_parity(ticks, sbr)
 
