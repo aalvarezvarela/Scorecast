@@ -39,6 +39,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import time
 from dataclasses import dataclass, field
 from datetime import date
 
@@ -55,6 +56,10 @@ from nba_ou.scheduling.cronjob_org import (
 from nba_ou.scheduling.cronjob_org import dispatch_url as workflow_dispatch_url
 
 TIMEZONE = "Europe/Madrid"
+# Pause between write calls: cron-job.org limits PUT /jobs to five a minute
+# and throttles calls in quick succession (one --apply once stopped after
+# creating the first job).
+API_SPACING_S = 13
 # (month, day) the jobs stop running: after the Finals, before Summer League.
 SEASON_END = (7, 10)
 
@@ -172,6 +177,7 @@ def apply_jobs(api_key: str, github_token: str) -> None:
         j["title"]: j["jobId"] for j in cronjob_request("GET", "/jobs", api_key)["jobs"]
     }
     for job in JOBS:
+        time.sleep(API_SPACING_S)
         payload = {"job": job_payload(job, github_token)}
         if job.title in existing:
             job_id = existing[job.title]
@@ -184,6 +190,7 @@ def apply_jobs(api_key: str, github_token: str) -> None:
     for title in RETIRED_TITLES:
         if title in existing:
             job_id = existing[title]
+            time.sleep(API_SPACING_S)
             cronjob_request(
                 "PATCH", f"/jobs/{job_id}", api_key, {"job": {"enabled": False}}
             )
