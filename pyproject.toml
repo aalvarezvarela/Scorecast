@@ -49,12 +49,14 @@ optional = true
 xgboost-cpu = "2.1.4"
 
 # Data-source ingestion: odds scrapers (headless Chromium, `playwright install
-# chromium`), injury-report PDFs, and the HTML tables pandas.read_html parses.
+# chromium`; Yahoo over plain async HTTP, httpx), injury-report PDFs, and the
+# HTML tables pandas.read_html parses.
 [tool.poetry.group.scrape.dependencies]
 beautifulsoup4 = "^4.14.2"
 lxml = "^6.0.2"
 pymupdf = "^1.26.6"
 playwright = "^1.57.0"
+httpx = "^0.28.1"
 
 # training_pipeline: campaign configs, Optuna search, reports.
 [tool.poetry.group.train.dependencies]

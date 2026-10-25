@@ -168,7 +168,7 @@ formats change.
 | official.nba.com/referee-assignments | tonight's referees | `fetch_data/referees/fetch_refs_data.py` | page layout (parsed with `pd.read_html`, needs `lxml`) |
 | ak-static.cms.nba.com injury report PDFs | injury reports | `fetch_data/injury_reports` | file naming / timestamps; item 4 |
 | sportsbookreview.com (JSON in `__NEXT_DATA__`) | closing odds, line history | `fetch_data/odds_sportsbook` | new or renamed books (a rename creates a new `lh_book` slug); book order (closing table reads only the first 7) |
-| sports.yahoo.com (Playwright) | Yahoo odds and betting % | `fetch_data/odds_yahoo` | page changes; Yahoo features are droppable |
+| sports.yahoo.com (plain HTTP, the Next.js payload) | Yahoo odds and betting % | `fetch_data/odds_yahoo` | renamed payload fields (`bets`, `wagerPercentage` = % of bets, `stakePercentage` = % of money); "page(s) could not be read" in the log (failed server renders are retried, 4 attempts); Yahoo features are droppable |
 | RapidAPI odds (`ODDS_API_KEY`) | odds | `postgre_db/odds/update_odds` | key quota / expiry |
 | basketball-reference All-Star voting | all-star features | `postgre_db/all_star_voting/scrape_all_star_voting.py` | hard-coded `NBA_2026_voting.html` / `END_YEAR = 2026`; 2026-27 voting (January 2027) is `NBA_2027_voting.html` |
 | github.com/shufinskiy/nba_data | play-by-play archive | `fetch_data/nba_lineups/pbp_archive.py` | when the 2026-27 files appear |

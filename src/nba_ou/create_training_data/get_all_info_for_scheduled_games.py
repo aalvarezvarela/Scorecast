@@ -1,6 +1,6 @@
 import asyncio
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime
 from zoneinfo import ZoneInfo
 
 import pandas as pd
@@ -23,7 +23,6 @@ from nba_ou.fetch_data.injury_reports.sync import synchronize_injury_reports
 from nba_ou.fetch_data.live_rosters import load_live_rosters
 from nba_ou.fetch_data.odds_covers.day_odds import covers_day_odds
 from nba_ou.fetch_data.odds_sportsbook.scrape_sportsbook import scrape_sportsbook_days
-from nba_ou.fetch_data.odds_yahoo.process_yahoo_day import yahoo_one_row_per_game
 from nba_ou.fetch_data.odds_yahoo.scrape_yahoo import scrape_yahoo_days
 from nba_ou.fetch_data.scheduled_game.get_schedule_games import get_schedule_games
 from nba_ou.prediction.line_source import (
@@ -180,12 +179,12 @@ def merge_odds_with_scheduled_games(
 
 
 def get_yahoo_prediction_data(
-    date_to_predict: str, scheduled_games: pd.DataFrame, *, headless: bool
+    date_to_predict: str, scheduled_games: pd.DataFrame
 ) -> pd.DataFrame:
     """Get Yahoo odds data for the prediction date.
 
-    Fetches odds for both the date and date+1 to account for timezone differences
-    (Yahoo uses local time in Europe). Merges with scheduled games to get game_id.
+    Scrapes Yahoo's odds for the games on ``date_to_predict`` (a US date) and
+    merges them with the scheduled games to get the game_id.
 
     Args:
         date_to_predict (str): Date in format 'YYYY-MM-DD'
@@ -194,34 +193,15 @@ def get_yahoo_prediction_data(
     Returns:
         pd.DataFrame: Yahoo odds data merged with game_id for the scheduled games
     """
-    # Parse the date and get date + 1
     base_date = datetime.strptime(date_to_predict, "%Y-%m-%d").date()
-    next_date = base_date + timedelta(days=1)
+    df_yahoo = asyncio.run(scrape_yahoo_days([base_date]))
 
-    # Scrape both dates to account for timezone differences
-    days_to_scrape = [next_date, base_date]
-    df_yahoo = asyncio.run(
-        scrape_yahoo_days(
-            days_to_scrape, headless=headless, target_dates=[base_date] * 2
-        )
-    )
-
-    # Check if we got any data
     if df_yahoo.empty:
         print(f"No Yahoo odds data found for {date_to_predict}")
         return pd.DataFrame()
 
-    # Convert from 2 rows per game to 1 row per game
-    df_yahoo_processed = yahoo_one_row_per_game(df_yahoo)
-
     # Merge with scheduled_games to get the game_id
-    df_yahoo_with_game_id = merge_odds_with_scheduled_games(
-        df_yahoo_processed, scheduled_games
-    )
-    # Remove duplicates from scraping multiple dates for timezone coverage
-    df_yahoo_with_game_id = df_yahoo_with_game_id.drop_duplicates(
-        subset=["game_date", "team_home", "team_away"], keep="first"
-    )
+    df_yahoo_with_game_id = merge_odds_with_scheduled_games(df_yahoo, scheduled_games)
 
     # drop NA rows on game ID as they are not shceuled games
     df_yahoo_with_game_id = df_yahoo_with_game_id.dropna(subset=["game_id"])
@@ -470,7 +450,7 @@ def get_all_info_for_scheduled_games(
     print("Processing odds data for scheduled games...")
     # Fetch Yahoo odds data for the scheduled games using the temp dataframe
     df_odds_yahoo_scheduled = get_yahoo_prediction_data(
-        date_to_predict, scheduled_games_for_merge, headless=headless
+        date_to_predict, scheduled_games_for_merge
     )
     df_odds_sportsbook_scheduled = get_sportsbook_prediction_data(
         date_to_predict,

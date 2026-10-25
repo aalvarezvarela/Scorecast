@@ -96,19 +96,8 @@ def update_all_databases(
 
         for attempt in range(max_retries + 1):
             try:
-                yahoo_results = update_odds_yahoo_database(
-                    season_year=season_year,
-                    headless=headless,
-                    add_one_day=True,  # Add one day to catch any late updates for yesterday's games
-                )
+                yahoo_results = update_odds_yahoo_database(season_year=season_year)
                 print(f"Yahoo update results: {yahoo_results}")
-                print(
-                    "Rechecking Yahoo odds after 1 day to catch any date issue games..."
-                )
-                yahoo_results = update_odds_yahoo_database(
-                    season_year=season_year, headless=headless, add_one_day=False
-                )
-                print(f"Yahoo reupdate results: {yahoo_results}")
                 break
             except Exception as e:
                 if attempt < max_retries:
