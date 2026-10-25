@@ -31,6 +31,7 @@ from nba_ou.postgre_db.injuries_refs.fetch_refs_db.get_refs_db import (
 from nba_ou.postgre_db.odds.merge_odds_data import (
     load_and_merge_odds_yahoo_sportsbookreview,
 )
+from nba_ou.utils.seasons import drop_exhibition_games
 
 EASTERN = ZoneInfo("America/New_York")
 REFEREE_RELEASE_HOUR_ET = 9
@@ -143,6 +144,9 @@ def add_intermediate_referee_features(
         raise RuntimeError("Could not load team games for referee history.")
     team_games.columns = team_games.columns.str.upper()
     team_games["GAME_ID"] = team_games["GAME_ID"].astype(str)
+    # The legacy estimator averages every crew game it is given; the closing
+    # builder hands it its own rows, which have no exhibitions either.
+    team_games = drop_exhibition_games(team_games, "GAME_ID")
     odds = load_and_merge_odds_yahoo_sportsbookreview(
         season_years=seasons,
         normalize_total_lines=normalize_total_lines,

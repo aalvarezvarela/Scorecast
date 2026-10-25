@@ -83,11 +83,19 @@ same code:
   features (`last_status_before_tip`, `filing_at_tip`, `report_age_at_tip`,
   `listed_status_events`, `listed_pairs`, `status_spans`, `filing_spans`). The
   per-snapshot reads ask for given games and are unchanged.
+- The two places that load games themselves: the intermediate referee
+  builder (`intermediate_referees.py`) and the extra referee-history seasons of
+  the closing builder (`_load_referee_history_inputs`). The intermediate one
+  mattered: its legacy `REF_*` estimator averaged every crew game it was given,
+  and the referee store holds preseason and All-Star crews (157 such games with
+  a box score in 2023-24 and 2024-25). The closing estimator reads its own rows,
+  which never had them. So the intermediate `REF_*` values move too.
 - `season_partitions`: an exhibition is never a game to build or to wait for.
 
 Already restricted, so unchanged: the box history behind the per-horizon
 injury features (`load_player_box_history`), the lineup data (regular season
-and playoffs), referee tendencies and roster continuity. `filter_valid_games`
+and playoffs), the line history (SBR and Covers store no exhibition), the odds
+tables, referee tendencies and roster continuity. `filter_valid_games`
 now drops exhibitions before its two-rows-per-game check, so its warning no
 longer lists preseason games against non-NBA clubs. Its output is the same.
 
@@ -142,6 +150,8 @@ for one closing and one intermediate season (2024). Expected:
 - player columns differ (TOP-N, `*_CUM_AVG`, availability), mostly in October
   and November;
 - team, odds and line-history columns are identical;
-- see whether the legacy `REF_*` columns and the row or NaN counts move. A
+- intermediate legacy `REF_*` columns move (preseason crews are gone), closing
+  ones do not;
+- see whether the row or NaN counts move. A
   rookie without preseason minutes is NaN now, and `max_na_per_row` can drop a
   row it kept before.

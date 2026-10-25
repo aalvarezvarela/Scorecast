@@ -189,3 +189,56 @@ def test_referee_spread_interaction_uses_snapshot_quote():
     assert result.loc[0, "REF_CREW_POSS_X_ABS_SPREAD_BEFORE"] == 0.5
     assert "ODDS_SPREAD_bet365" not in result.columns
     assert frame.loc[0, "ODDS_SPREAD_bet365"] == -15.0
+
+
+def test_the_referee_history_has_no_exhibition_games(monkeypatch):
+    """The closing builder's legacy referee features read its own rows, which
+    hold no preseason or All-Star game; the intermediate ones must not either."""
+    from nba_ou.create_training_data import intermediate_referees as module
+
+    games = pd.DataFrame(
+        {
+            "game_id": ["0012500001", "0022500001", "0032500001", "0042500101"],
+            "game_date": pd.to_datetime(["2025-10-10"] * 4),
+            "season_year": [2025] * 4,
+            "pts": [100] * 4,
+            "pf": [20] * 4,
+        }
+    )
+    seen = {}
+
+    def legacy(team_games, *args, **kwargs):
+        seen["legacy"] = sorted(team_games["GAME_ID"])
+        return pd.DataFrame({"GAME_ID": ["0022500001"]})
+
+    def tendencies(out, *, df_team_games, **kwargs):
+        seen["tendencies"] = sorted(df_team_games["GAME_ID"])
+        return out
+
+    monkeypatch.setattr(module, "load_games_from_db", lambda **kw: games.copy())
+    monkeypatch.setattr(
+        module,
+        "load_and_merge_odds_yahoo_sportsbookreview",
+        lambda **kw: pd.DataFrame({"game_id": ["0022500001"]}),
+    )
+    monkeypatch.setattr(
+        module,
+        "get_refs_data_from_db",
+        lambda seasons: pd.DataFrame(
+            {"GAME_ID": ["0022500001"], "FIRST_NAME": ["Ref"], "LAST_NAME": ["A"]}
+        ),
+    )
+    monkeypatch.setattr(module, "_legacy_referee_features", legacy)
+    monkeypatch.setattr(module, "add_referee_tendency_features", tendencies)
+
+    base = pd.DataFrame(
+        {
+            "GAME_ID": ["0022500001"],
+            "GAME_DATE": pd.to_datetime(["2025-10-22"]),
+            "SEASON_YEAR": [2025],
+        }
+    )
+    module.add_intermediate_referee_features(base)
+
+    assert seen["legacy"] == ["0022500001", "0042500101"]
+    assert seen["tendencies"] == ["0022500001", "0042500101"]
