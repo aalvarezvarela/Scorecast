@@ -103,10 +103,6 @@ jobs:
                   pip install -r requirements/predict-tabpfn-cuda.txt
                   pip install --no-deps -e .
 
-            # The scheduled-games odds scrape drives a browser.
-            - name: Install Playwright browsers
-              run: playwright install chromium
-
             # Taken right before the run, not at the start: the 1 h OIDC
             # session then outlasts the job's 60 min timeout, so the S3 writes
             # at the end of the run cannot find it expired.

@@ -261,7 +261,7 @@ fonttools==4.56.0 ; python_version >= "3.11" and python_version < "3.14" \
     --hash=sha256:f59746f7953f69cc3290ce2f971ab01056e55ddd0fb8b792c31a8acd7fee2d28 \
     --hash=sha256:fa760e5fe8b50cbc2d71884a1eff2ed2b95a005f02dda2fa431560db0ddd927f \
     --hash=sha256:ffda9b8cd9cb8b301cae2602ec62375b59e2e2108a117746f12215145e3f786c
-greenlet==3.3.0 ; python_version >= "3.11" and python_version < "3.14" \
+greenlet==3.3.0 ; python_version >= "3.11" and python_version < "3.14" and (sys_platform == "darwin" and platform_machine == "x86_64" or (sys_platform != "darwin" or platform_machine != "x86_64") and (platform_machine == "aarch64" or platform_machine == "ppc64le" or platform_machine == "x86_64" or platform_machine == "amd64" or platform_machine == "AMD64" or platform_machine == "win32" or platform_machine == "WIN32")) and python_version >= "3.10" \
     --hash=sha256:047ab3df20ede6a57c35c14bf5200fcf04039d50f908270d3f9a7a82064f543b \
     --hash=sha256:087ea5e004437321508a8d6f20efc4cfec5e3c30118e1417ea96ed1d93950527 \
     --hash=sha256:0a5d554d0712ba1de0a6c94c640f7aeba3f85b3a6e1f2899c11c2c0428da9365 \
@@ -1000,15 +1000,6 @@ pillow==11.1.0 ; python_version >= "3.11" and python_version < "3.14" \
 platformdirs==4.3.6 ; python_version >= "3.11" and python_version < "3.14" \
     --hash=sha256:357fb2acbc885b0419afd3ce3ed34564c13c9b95c89360cd9563f73aa5e2b907 \
     --hash=sha256:73e575e1408ab8103900836b97580d5307456908a03e92031bab39e4554cc3fb
-playwright==1.57.0 ; python_version >= "3.11" and python_version < "3.14" \
-    --hash=sha256:1dd93b265688da46e91ecb0606d36f777f8eadcf7fbef12f6426b20bf0c9137c \
-    --hash=sha256:284ed5a706b7c389a06caa431b2f0ba9ac4130113c3a779767dda758c2497bb1 \
-    --hash=sha256:38a1bae6c0a07839cdeaddbc0756b3b2b85e476c07945f64ece08f1f956a86f1 \
-    --hash=sha256:5f065f5a133dbc15e6e7c71e7bc04f258195755b1c32a432b792e28338c8335e \
-    --hash=sha256:6caefb08ed2c6f29d33b8088d05d09376946e49a73be19271c8cd5384b82b14c \
-    --hash=sha256:9351c1ac3dfd9b3820fe7fc4340d96c0d3736bb68097b9b7a69bd45d25e9370c \
-    --hash=sha256:99104771abc4eafee48f47dac2369e0015516dc1ce8c409807d2dd440828b9a4 \
-    --hash=sha256:a4a9d65027bce48eeba842408bcc1421502dfd7e41e28d207e94260fa93ca67e
 pluggy==1.7.0 ; python_version >= "3.11" and python_version < "3.14" \
     --hash=sha256:7dd7b0d8832ba3cb632c306926ded123429211b83641b35dc5c41ad2d34f9bec \
     --hash=sha256:d1eaa46ebb595891b860ab086b4d09c8588af65ebd4361b8e8f4bb8920b90ba8
@@ -1230,9 +1221,6 @@ pydantic-core==2.33.2 ; python_version >= "3.11" and python_version < "3.14" \
 pydantic==2.11.10 ; python_version >= "3.11" and python_version < "3.14" \
     --hash=sha256:802a655709d49bd004c31e865ef37da30b540786a46bfce02333e0e24b5fe29a \
     --hash=sha256:dc280f0982fbda6c38fada4e476dc0a4f3aeaf9c6ad4c28df68a666ec3c61423
-pyee==13.0.0 ; python_version >= "3.11" and python_version < "3.14" \
-    --hash=sha256:48195a3cddb3b1515ce0695ed76036b5ccc2ef3a9f963ff9f77aec0139845498 \
-    --hash=sha256:b391e3c5a434d1f5118a25615001dbc8f669cf410ab67d04c4d4e07c55481c37
 pygments==2.19.1 ; python_version >= "3.11" and python_version < "3.14" \
     --hash=sha256:61c16d2a8576dc0649d9f39e089b5f02bcd27fba10d8fb4dcc28173f7a45151f \
     --hash=sha256:9ea1544ad55cecf4b8242fab6dd35a93bbce657034b0611ee383099054ab6d8c

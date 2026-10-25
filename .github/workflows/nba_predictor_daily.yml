@@ -87,11 +87,6 @@ jobs:
                   pip install -r requirements/predict-cuda.txt
                   pip install --no-deps -e .
 
-            # The scheduled-games odds scrape drives a browser. Installed here
-            # so the job does not depend on the runner's own state.
-            - name: Install Playwright browsers
-              run: playwright install chromium
-
             # Every enabled slot (closing and intermediate, all targets)
             # predicts on every run, whatever the time to tip.
             - name: Run NBA predictor
