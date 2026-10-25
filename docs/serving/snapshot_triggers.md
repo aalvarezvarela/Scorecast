@@ -32,15 +32,20 @@ day, `schedule_snapshot_triggers.yml` runs
      Examples: an early tip's T-1080, a noon game's T-720.
 3. adds one **TabPFN** run (`nba_predictor_daily_tabpfn_client.yml`:
    `line_error`, `line=intermediate`, `horizon_minutes=360`, `update_db=false`)
-   at the first tip-off of the day minus 6 h (`--tabpfn-lead-minutes`, 0 = none),
-   predicting every game. The first game's T-360 snapshot has just passed. The
-   later games are built from their ticks so far.
+   between 6 h 30 and 5 h before the first tip-off of the day
+   (`TABPFN_WINDOW_MINUTES`; `--no-tabpfn` = none), predicting every game. It
+   takes the minute of that window farthest from every predictor run, so on
+   the one runner neither waits long for the other; on a tie, the minute
+   nearest the first game's T-360. Predictor runs fall on :00/:30 (tips on
+   the half hour, horizons in multiples of 30 min), so TabPFN usually lands
+   15 min from the nearest one. Before the first game's T-360 its row is built
+   from the ticks so far, like the later games' rows.
 4. after the last game, whose end is estimated as its tip-off + 150 min
    (`GAME_LENGTH_MINUTES`), adds:
    - the date's past-snapshot predictions (`nba_predict_past_snapshots.yml`,
      `game_date` passed) 30 min after that end;
    - the final scores, finished matches and lineups
-     (`update_finished_matches_daily.yml`) 1 h after it.
+     (`update_finished_matches_daily.yml`) 2 h after it.
 5. books cron-job.org jobs that dispatch those workflows at those times.
 
 ## The day's schedule
@@ -53,11 +58,11 @@ All on the one self-hosted runner. The fixed jobs come from `setup_cronjobs.py`
 | 09:00 | `retrain_prediction_models.yml` (`update_database`, `promote`) | database update; on a game day, then refit, smoke test, promotion |
 | 10:00 | `schedule_snapshot_triggers.yml` | books everything below |
 | each snapshot | `nba_predictor_daily.yml` | every enabled slot |
-| first tip − 6 h | `nba_predictor_daily_tabpfn_client.yml` | TabPFN line_error, T-360 slot |
+| first tip − 6 h 30 … − 5 h, away from the predictor runs | `nba_predictor_daily_tabpfn_client.yml` | TabPFN line_error, T-360 slot |
 | last end + 30 min | `nba_predict_past_snapshots.yml` | the date's intermediate slots on their own snapshots |
-| last end + 1 h | `update_finished_matches_daily.yml` | final scores (prediction store), finished matches, lineups |
+| last end + 2 h | `update_finished_matches_daily.yml` | final scores (prediction store), finished matches, lineups |
 
-On 2026-10-22 (last tip 01:30 UTC), the post-game runs land at 06:30 and 07:00
+On 2026-10-22 (last tip 01:30 UTC), the post-game runs land at 06:30 and 08:00
 Madrid.
 
 **Retrain on a day without games.** `scripts/check_games_today.py` reads
@@ -76,7 +81,7 @@ pass meanwhile.
 the 10:00 scheduler fails, no past-snapshot or final-score run is booked. The
 final-score update retries every tipped game without a score on its next run,
 so a day lost is caught up on the next game day. An overtime game still in
-progress at +1 h is left for that next run too.
+progress at +2 h is left for that next run too.
 
 ## Which snapshot each run predicts from
 
