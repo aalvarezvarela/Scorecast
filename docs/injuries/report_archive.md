@@ -1517,6 +1517,11 @@ miss:
   permission problem here loses the snapshots **silently**; predictions still
   succeed.
 
+*Update 2026-10-25:* `s3_prediction_snapshots.py` is gone. Runs are archived
+under `prediction_snapshots/v2/` by `s3_prediction_runs.py`
+(`docs/serving/prediction_storage.md`), and a failed upload is no longer
+silent: it fails the run and sets `runs.status` 3. The grant is still unverified.
+
 **This does not necessarily mean CI is broken.** The workflows authenticate with
 **OIDC role assumption** (`secrets.AWS_ROLE_TO_ASSUME`, with `S3_AWS_PROFILE: ""`),
 which is a *different* identity from the local CLI user — that role may well have
