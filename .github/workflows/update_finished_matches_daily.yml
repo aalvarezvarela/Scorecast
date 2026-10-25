@@ -10,6 +10,7 @@ on:
 
 permissions:
     contents: read
+    id-token: write
 
 jobs:
     run:
@@ -26,6 +27,10 @@ jobs:
             # Aiven: the prediction store's games (final scores).
             AIVEN_DB_URL: ${{ secrets.AIVEN_DB_URL }}
             AIVEN_DB_PASSWORD: ${{ secrets.AIVEN_DB_PASSWORD }}
+
+            # S3 (lineup raw archive): empty means "use the ambient OIDC
+            # credentials" rather than the named profile in config.ini.
+            S3_AWS_PROFILE: ""
 
         steps:
             - name: Checkout
@@ -73,6 +78,15 @@ jobs:
             # game past tip-off without a final score is looked up again.
             - name: Update prediction store results
               run: python scripts/prediction_store/update_game_results.py
+
+            # Only the lineup update reads S3. Taken here, not at the start,
+            # so the 1 h OIDC session covers this step whatever the ones above
+            # took.
+            - name: Configure AWS credentials (OIDC)
+              uses: aws-actions/configure-aws-credentials@v4
+              with:
+                  role-to-assume: ${{ secrets.AWS_ROLE_TO_ASSUME }}
+                  aws-region: eu-west-1
 
             - name: Update validated lineup stints
               run: python scripts/lineups/update_lineups.py --local-root data --s3
