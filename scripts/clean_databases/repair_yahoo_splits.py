@@ -47,16 +47,18 @@ from nba_ou.postgre_db.odds_yahoo.update_yahoo.update_yahoo_database import (
 )
 from psycopg import sql
 
-SPLIT_COLUMNS = [
-    f"{market}_pct_{kind}_{side}"
+#: The four split columns of each market; a market is rewritten as a whole.
+MARKET_SPLIT_COLUMNS = {
+    market: [
+        f"{market}_pct_{kind}_{side}" for kind in ("bets", "money") for side in sides
+    ]
     for market, sides in (
         ("total", ("over", "under")),
         ("spread", ("away", "home")),
         ("moneyline", ("away", "home")),
     )
-    for kind in ("bets", "money")
-    for side in sides
-]
+}
+SPLIT_COLUMNS = [c for columns in MARKET_SPLIT_COLUMNS.values() for c in columns]
 LINE_COLUMNS = [
     "spread_home",
     "spread_away",
@@ -101,7 +103,7 @@ def scrape_rows(stored: pd.DataFrame) -> pd.DataFrame:
     days = sorted(set(stored["game_date"]))
     fresh = asyncio.run(scrape_yahoo_days(days))
     if fresh.empty:
-        return fresh
+        return pd.DataFrame(columns=["game_id", *LINE_COLUMNS, *SPLIT_COLUMNS])
     fresh = merge_sportsbook_with_games(
         _normalize_team_names(fresh), _normalize_game_id(games)
     )
@@ -122,6 +124,15 @@ def build_proposals(stored: pd.DataFrame, fresh: pd.DataFrame) -> pd.DataFrame:
     lines_match = pd.Series(True, index=merged.index)
     for column in LINE_COLUMNS:
         lines_match &= _same(merged[column], merged[f"{column}_new"])
+    # A market the fresh page gives without all four splits is kept as
+    # stored: a missing value is no evidence, and must not overwrite one.
+    merged["markets_kept"] = ""
+    for market, columns in MARKET_SPLIT_COLUMNS.items():
+        incomplete = merged[[f"{c}_new" for c in columns]].isna().any(axis=1)
+        for column in columns:
+            merged.loc[incomplete, f"{column}_new"] = merged.loc[incomplete, column]
+        merged.loc[incomplete, "markets_kept"] += f"{market} "
+    merged["markets_kept"] = merged["markets_kept"].str.strip()
     changed = [
         ~_same(merged[column], merged[f"{column}_new"]) for column in SPLIT_COLUMNS
     ]
@@ -177,6 +188,12 @@ def main() -> int:
     proposals = build_proposals(stored, scrape_rows(stored))
     proposals.to_csv(args.proposals_csv, index=False)
     print(proposals["status"].value_counts().to_string())
+    kept = proposals[
+        (proposals["markets_kept"] != "") & ~proposals["status"].str.endswith("skipped")
+    ]
+    if not kept.empty:
+        print(f"{len(kept)} row(s) keep the stored splits of a market Yahoo gave none:")
+        print(kept[["game_id", "game_date", "team_away", "team_home", "markets_kept"]])
     print(f"Proposals: {args.proposals_csv}")
 
     repairs = proposals[proposals["status"] == "repair"]
