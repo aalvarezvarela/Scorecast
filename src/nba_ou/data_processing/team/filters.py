@@ -1,4 +1,5 @@
-from nba_ou.utils.seasons import classify_season_type
+from nba_ou.config.constants import EXHIBITION_SEASON_TYPES
+from nba_ou.utils.seasons import classify_season_type, is_exhibition_game_id
 
 
 def filter_valid_games(df):
@@ -7,7 +8,9 @@ def filter_valid_games(df):
 
     This ensures that only complete games (both teams present) are included
     in the dataset, removing any incomplete or malformed game records.
-    Also excludes Preseason and All Star games.
+    Also excludes Preseason and All Star games (``EXHIBITION_SEASON_TYPES``),
+    first, so the incomplete-entry warning does not list preseason games
+    against non-NBA clubs.
 
     Args:
         df (pd.DataFrame): Team game statistics DataFrame with SEASON_TYPE column
@@ -15,6 +18,8 @@ def filter_valid_games(df):
     Returns:
         pd.DataFrame: Filtered DataFrame containing only valid games
     """
+    df = df[~is_exhibition_game_id(df["GAME_ID"]).to_numpy()]
+
     # Filter to games with exactly 2 team entries
     valid_games = df["GAME_ID"].value_counts()
     invalid_games = valid_games[valid_games != 2]
@@ -44,6 +49,6 @@ def filter_valid_games(df):
     df = df[df["GAME_ID"].isin(valid_games)]
     df.loc[:, "SEASON_TYPE"] = df["GAME_ID"].apply(classify_season_type)
     df.loc[:, "SEASON_YEAR"] = df["SEASON_ID"].astype(str).str[-4:].astype(int)
-    df = df[~df["SEASON_TYPE"].isin(["Preseason", "All Star"])]
+    df = df[~df["SEASON_TYPE"].isin(EXHIBITION_SEASON_TYPES)]
 
     return df

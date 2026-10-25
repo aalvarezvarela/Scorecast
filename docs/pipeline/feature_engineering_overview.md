@@ -114,6 +114,11 @@ ticks + news timeline ──► G2 news reaction, G3 cross-market, G4 Ridges ─
                                                                + scoring sidecar
 ```
 
+Every input above is read without preseason and All-Star games
+(`drop_exhibition_games` in the loaders, [exhibition_games.md](exhibition_games.md)).
+Playoffs stay in the feature inputs; the training rows are regular season and
+play-in (`TRAINING_SEASON_TYPES`).
+
 ## 4. Feature families
 
 In the "Datasets" column, **C** is the closing dataset and **I** is the

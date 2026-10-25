@@ -744,11 +744,14 @@ def _games_table(seasons: Sequence[int]) -> pd.DataFrame:
     from nba_ou.postgre_db.games.fetch_data_from_db.fetch_data_from_games_db import (
         load_games_from_db,
     )
+    from nba_ou.utils.seasons import drop_exhibition_games
 
     games = load_games_from_db(seasons=[f"{y}-{(y + 1) % 100:02d}" for y in seasons])
     if games is None:
         raise PartitionError("Could not load the games table.")
-    return games
+    # No dataset has a row for a preseason or All-Star game, so none is a
+    # game to build or to wait for.
+    return drop_exhibition_games(games, "game_id")
 
 
 def finished_game_ids(start: date, end: date) -> list[str]:

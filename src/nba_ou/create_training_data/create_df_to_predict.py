@@ -147,7 +147,7 @@ from nba_ou.postgre_db.odds.merge_odds_data import (
     load_and_merge_odds_yahoo_sportsbookreview,
 )
 from nba_ou.utils.general_utils import get_season_year_from_date
-from nba_ou.utils.seasons import get_seasons_between_dates
+from nba_ou.utils.seasons import drop_exhibition_games, get_seasons_between_dates
 
 warnings.simplefilter(action="ignore", category=FutureWarning)
 
@@ -202,7 +202,8 @@ def _load_referee_history_inputs(
                 f"Could not load games for referee history seasons {missing_game_seasons}."
             )
         df_extra_games.columns = df_extra_games.columns.str.upper()
-        game_frames.insert(0, df_extra_games)
+        # As the loaded seasons are (load_all_nba_data_from_db).
+        game_frames.insert(0, drop_exhibition_games(df_extra_games, "GAME_ID"))
     df_team_games = pd.concat(game_frames, ignore_index=True)
 
     odds_columns = [
