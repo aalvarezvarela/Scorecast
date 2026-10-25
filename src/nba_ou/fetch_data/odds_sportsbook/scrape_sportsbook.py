@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import asyncio
 import json
 import random
@@ -7,7 +9,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import date
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import pandas as pd
 import requests
@@ -21,9 +23,22 @@ from nba_ou.fetch_data.odds_sportsbook.process_total_lines_data import (
     load_one_day_totals_csv,
 )
 from nba_ou.postgre_db.odds_sportsbook.process_sportsbook_data import merge_daily_frames
-from playwright.async_api import Page, async_playwright
-from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 from tqdm import tqdm
+
+# Playwright drives only the fallback browser engine; the jobs use the JSON
+# engine and do not install it (Poetry group ``browser``).
+try:
+    from playwright.async_api import TimeoutError as PlaywrightTimeoutError
+    from playwright.async_api import async_playwright
+except ImportError:
+    async_playwright = None
+
+    class PlaywrightTimeoutError(Exception):  # type: ignore[no-redef]
+        """Stands in when Playwright is not installed; never raised."""
+
+
+if TYPE_CHECKING:
+    from playwright.async_api import Page
 
 BASE_URL = "https://www.sportsbookreview.com"
 TIMEOUT_MS = 10_000
@@ -1092,6 +1107,11 @@ async def scrape_sportsbook_days_browser(
     if not days:
         return pd.DataFrame()
 
+    if async_playwright is None:
+        raise RuntimeError(
+            "The browser engine needs Playwright: `poetry install --with browser` "
+            "and `playwright install chromium`."
+        )
     merged_days: list[pd.DataFrame] = []
 
     async with async_playwright() as p:

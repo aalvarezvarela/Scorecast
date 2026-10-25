@@ -68,10 +68,6 @@ jobs:
           pip install -r requirements/db-update.txt
           pip install --no-deps -e .
 
-      - name: Install Playwright browsers
-        run: |
-          playwright install chromium
-
       - name: DB sanity check
         run: |
           python - <<'PY'

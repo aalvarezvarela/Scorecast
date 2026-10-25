@@ -48,12 +48,18 @@ optional = true
 [tool.poetry.group.cpu.dependencies]
 xgboost-cpu = "2.1.4"
 
-# Data-source ingestion: odds scrapers (headless Chromium, `playwright install
-# chromium`), injury-report PDFs, and the HTML tables pandas.read_html parses.
+# Data-source ingestion: odds scrapers over plain HTTP (Yahoo with httpx),
+# injury-report PDFs, and the HTML tables pandas.read_html parses.
 [tool.poetry.group.scrape.dependencies]
 beautifulsoup4 = "^4.14.2"
 lxml = "^6.0.2"
 pymupdf = "^1.26.6"
+httpx = "^0.28.1"
+
+# Headless Chromium (`playwright install chromium`) for the manual scrapers
+# only: SBR's fallback browser engine (`--engine browser`) and the All-Star
+# voting scrape. No job exports this group.
+[tool.poetry.group.browser.dependencies]
 playwright = "^1.57.0"
 
 # training_pipeline: campaign configs, Optuna search, reports.

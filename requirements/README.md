@@ -30,6 +30,11 @@ out `scrape` on purpose: the refit builds the closing frame for history, so it
 never reaches the odds scrapers or the injury-report PDFs, although those
 modules are in its static import closure.
 
+No file includes the `browser` group (Playwright): every job scrapes over
+plain HTTP, and Chromium is only needed by the manual scrapers (SBR's
+`--engine browser` fallback, the All-Star voting scrape). Playwright is
+imported only where those run, so the jobs import without it.
+
 ## CUDA and CPU
 
 XGBoost ships as two distributions with the same `xgboost` import:
