@@ -35,7 +35,7 @@ def main(argv=None) -> int:
     else:
         with connect_line_history_db() as conn:
             conn.read_only = True
-            sbr = fetch_pregame_ticks(args.seasons, conn=conn)
+            sbr = fetch_pregame_ticks(args.seasons, conn=conn, covers_fallback=False)
     sbr = sbr[(sbr["book"] == "bet365") & sbr["game_id"].isin(movi["game_id"])]
     comparison = compare.snapshot_comparison(movi, sbr)
     summary = compare.summarize(comparison)

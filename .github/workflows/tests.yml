@@ -57,10 +57,10 @@ jobs:
           python -m pip install -r requirements/tests-cpu.txt
 
       - name: Run tests
-        # -v prints one line per test, so the live log shows progress; a test
-        # stuck for 5 minutes dumps every thread's stack instead of hanging.
+        # Force the progress bar in CI; a test stuck for 5 minutes dumps
+        # every thread's stack instead of hanging.
         run: >-
-          python -m pytest tests/ -v --durations=15
+          python -m pytest tests/ --force-sugar
           -o faulthandler_timeout=300
           --junitxml=test-results/pytest.xml
 

@@ -32,7 +32,7 @@ class _BaseReached(Exception):
 @pytest.fixture
 def base_start(monkeypatch):
     observed = {}
-    monkeypatch.setattr(builder, "available_seasons", lambda: [2021, 2022])
+    monkeypatch.setattr(builder, "available_seasons", lambda **kw: [2021, 2022])
     monkeypatch.setattr(
         builder,
         "fetch_pregame_ticks",
@@ -126,3 +126,37 @@ def test_a_deeper_lookback_would_reach_seasons_with_no_odds(base_start, capsys):
     assert "WARNING: base features start at 2018" in output
     assert "closing-odds tables begin at 2019" in output
     assert "without warming any odds rollup" in output
+
+
+# --- seasons only the Covers fallback holds ---------------------------------
+
+
+def _covers_seasons(**kw):
+    """SBR from 2021; the Covers fallback adds 2019 (its backfilled games)."""
+    return [2021, 2022] if kw.get("covers_fallback") is False else [2019, 2021, 2022]
+
+
+def _scope(monkeypatch, base_start, **kwargs):
+    monkeypatch.setattr(builder, "available_seasons", _covers_seasons)
+    observed = {}
+
+    def capture(**kw):
+        observed.update(kw)
+        raise _BaseReached
+
+    monkeypatch.setattr(builder, "create_base_game_features", capture)
+    with pytest.raises(_BaseReached):
+        create_intermediate_line_df(
+            combine_fanatics_and_caesars=False, verbose=False, **kwargs
+        )
+    return observed["season_start_date"]
+
+
+def test_a_covers_only_season_does_not_widen_the_default_scope(monkeypatch, base_start):
+    # The default scope (and so the base lookback) is SBR's: 2021 - 2 seasons.
+    assert _scope(monkeypatch, base_start) == pd.Timestamp("2019-10-01")
+
+
+def test_a_covers_only_season_asked_for_is_kept(monkeypatch, base_start):
+    start = _scope(monkeypatch, base_start, season_years=[2019, 2021])
+    assert start == pd.Timestamp("2017-10-01")

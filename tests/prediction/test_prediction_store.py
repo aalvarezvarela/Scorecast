@@ -57,6 +57,8 @@ def closing_frame() -> pd.DataFrame:
             "GAME_ID": [GAME_1, GAME_2],
             f"ODDS_TOTAL_LINE_{BOOK}": [224.5, 230.3],
             f"ODDS_SPREAD_LINE_HOME_{BOOK}": [-3.5, 2.0],
+            # SBR served the first game; the second came from Covers.
+            "LINE_SOURCE": ["sbr", "covers"],
         }
     )
 
@@ -87,6 +89,7 @@ def intermediate_frame() -> pd.DataFrame:
                     "ODDS_SNAP_SPR_BET365_PRICE_RIGHT": 100.0,
                     "ODDS_SNAP_SPR_BET365_LINE_AGE_MINUTES": 9.0,
                     "LATEST_INPUT": minutes != 360,
+                    "LINE_SOURCE": "sbr" if game == GAME_1 else "covers",
                 }
             )
     return pd.DataFrame(rows)
@@ -247,6 +250,28 @@ def test_inputs_one_row_per_frame_row_and_mode():
     ]
     # Two closing slots, two latest slots, one own slot and a baseline.
     assert len(tables.predictions) == 2 * 2 + 2 * 2 + 1 + 2
+    # 1 SBR, 2 Covers: each input row keeps its frame row's source.
+    assert inputs["line_source"].tolist() == [1, 1, 1, 2, 2]
+
+
+def test_a_frame_without_line_source_stores_null():
+    recorder = PredictionRunRecorder(workflow=1, game_date="2026-10-20", book=BOOK)
+    recorder.set_schedule(schedule())
+    closing = closing_frame().drop(columns="LINE_SOURCE")
+    recorder.add_frame("closing_line", closing, version="2_5")
+    recorder.add_predictions(
+        output(closing, dataset_type="closing_line", target="line_error", horizon=0),
+        label="closing line_error",
+    )
+    assert recorder.tables(status=1).inputs["line_source"].isna().all()
+
+
+def test_line_source_column_is_added_to_existing_stores():
+    ddl = store_schema.ddl_script()
+    assert "line_source              SMALLINT" in ddl
+    assert "ADD COLUMN IF NOT EXISTS line_source SMALLINT" in ddl
+    assert ddl.index("DROP VIEW IF EXISTS") < ddl.index("CREATE VIEW")
+    assert store_schema.LINE_SOURCE_CODES == {"sbr": 1, "covers": 2}
 
 
 def test_game_date_is_the_schedule_date():
@@ -696,6 +721,7 @@ def test_view_grades_against_the_bet_line(conn):
     assert model["model_edge"] == pytest.approx(1.5)
     assert model["season_type"] == 2 and model["season_year"] == 2026
     assert model["run_status"] == 1 and model["workflow"] == 1
+    assert model["line_source"] == 1
     baseline = closing_total[closing_total["kind"] == 2].iloc[0]
     assert baseline["pick_result"] == -1
     # Spread at -3.5 (home margin), actual +10: the AWAY pick loses.

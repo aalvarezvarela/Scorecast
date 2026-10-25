@@ -7,7 +7,9 @@ opener. From the 2026-27 season on. Run it after the games update, so
 ``nba_games`` knows last night's games.
 
 Each run fetches every finished game the store does not hold yet, and again
-the games of the last ``--retry-days`` days missing a book. Raw answers are
+the games of the last ``--retry-days`` days missing a book. Then every stored
+game without Covers Consensus pick counts (``lh_consensus``) gets them, one
+request per game; ``--consensus-only`` does only that. Raw answers are
 archived to S3 (insert-only) before they are parsed. Writes are insert-only.
 
 Exits 1 when a request or a parse failed, so a source outage shows on the
@@ -22,16 +24,25 @@ Examples::
     # plan and parse without writing anything (no Aiven or S3 writes)
     python scripts/update_databases/update_covers_line_history.py --dry-run
 
+    # only the pick counts of the stored games that have none (a backfill)
+    python scripts/update_databases/update_covers_line_history.py --consensus-only
+
     # specific dates; with --dry-run any season, written to Parquet for checks
     python scripts/update_databases/update_covers_line_history.py \
         --dry-run --dates 2026-01-15 --save-dir /tmp/covers
+
+    # backfill past games whose SBR history is missing or incomplete: their
+    # lines, then their pick counts (--consensus-only: counts only)
+    python scripts/line_history/covers/audit_sbr_gaps.py --out /tmp/sbr_gaps.csv
+    python scripts/update_databases/update_covers_line_history.py \
+        --games-file /tmp/sbr_gaps.csv --reasons no_game no_ticks truncated
 """
 
 from __future__ import annotations
 
 import argparse
 import sys
-from datetime import date
+from datetime import UTC, date, datetime
 from pathlib import Path
 
 import pandas as pd
@@ -63,6 +74,12 @@ def _requested_dates(args) -> list[date] | None:
     return None
 
 
+def _read_table(path: Path) -> pd.DataFrame:
+    if path.suffix == ".parquet":
+        return pd.read_parquet(path)
+    return pd.read_csv(path, dtype={"game_id": str})
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -79,11 +96,27 @@ def main() -> int:
     parser.add_argument("--start-date", type=_parse_date)
     parser.add_argument("--end-date", type=_parse_date)
     parser.add_argument(
+        "--games-file",
+        type=Path,
+        help="backfill the games of an audit_sbr_gaps.py --out file (.csv or "
+        ".parquet), any season; stored games are skipped",
+    )
+    parser.add_argument(
+        "--reasons",
+        nargs="+",
+        help="with --games-file: only the games flagged with one of these reasons",
+    )
+    parser.add_argument(
         "--retry-days",
         type=int,
         default=update_mod.DEFAULT_RETRY_DAYS,
         help="fetch again the games this recent that miss a book "
         f"(default: {update_mod.DEFAULT_RETRY_DAYS})",
+    )
+    parser.add_argument(
+        "--consensus-only",
+        action="store_true",
+        help="fetch no lines: only the pick counts of stored games that have none",
     )
     parser.add_argument(
         "--no-archive", action="store_true", help="do not archive raw answers to S3"
@@ -94,9 +127,32 @@ def main() -> int:
         help="also write the prepared lh_line/lh_game rows here as Parquet",
     )
     args = parser.parse_args()
+    if args.reasons and not args.games_file:
+        parser.error("--reasons needs --games-file")
+    if args.games_file and (args.dates or args.start_date or args.end_date):
+        parser.error("--games-file takes no dates: they come from the file")
 
-    dates = _requested_dates(args)
-    if dates and not args.dry_run and dates[0] < update_mod.FIRST_DATE:
+    games_df = None
+    backfill: set[str] | None = None
+    if args.games_file:
+        backfill = update_mod.backfill_game_ids(
+            _read_table(args.games_file), args.reasons
+        )
+        games_df = load_games_for_line_history_creation()
+        listed = games_df[games_df["game_id"].astype(str).isin(backfill)]
+        dates = sorted(set(pd.to_datetime(listed["game_date"]).dt.date))
+        print(f"Backfill: {len(backfill)} game(s) from {args.games_file}")
+        if not dates:
+            print("No game of the file is in nba_games; nothing to do.")
+            return 0
+    else:
+        dates = _requested_dates(args)
+    if (
+        dates
+        and backfill is None
+        and not args.dry_run
+        and dates[0] < update_mod.FIRST_DATE
+    ):
         print(
             f"error: the store starts on {update_mod.FIRST_DATE}; earlier dates "
             "are only allowed with --dry-run"
@@ -114,7 +170,8 @@ def main() -> int:
         return 0
 
     print(f"Covers line history, season(s) {seasons}")
-    games_df = load_games_for_line_history_creation()
+    if games_df is None:
+        games_df = load_games_for_line_history_creation()
     if games_df.empty:
         print("No games returned from nba_games; nothing to do.")
         return 1
@@ -129,18 +186,45 @@ def main() -> int:
             schema_mod.create_schema(conn)
             print(f"Schema {schema_mod.SCHEMA} ready.")
         exists = schema_mod.schema_exists(conn)
-        if not exists and not args.dry_run:
-            print(
-                f"error: schema {schema_mod.SCHEMA} does not exist; "
-                "run once with --create-schema"
+        has_consensus = exists and schema_mod.consensus_table_exists(conn)
+        if not has_consensus and not args.dry_run:
+            missing = (
+                f"table {schema_mod.SCHEMA}.lh_consensus"
+                if exists
+                else f"schema {schema_mod.SCHEMA}"
             )
+            print(f"error: {missing} does not exist; run once with --create-schema")
             return 2
 
+        now = datetime.now(UTC)
         plan: dict = {}
+        consensus = update_mod.ConsensusPlan()
         for season_year in seasons:
+            stored_counts = (
+                store.stored_consensus_game_ids(conn, season_year)
+                if has_consensus
+                else set()
+            )
+            consensus.stored |= stored_counts
+            if exists:
+                stored_games = store.fetch_game_events(conn, season_year)
+                if dates and not stored_games.empty:
+                    stored_games = stored_games[stored_games["game_date"].isin(dates)]
+                if backfill is not None and not stored_games.empty:
+                    # A backfill fills the counts of its own games only.
+                    stored_games = stored_games[stored_games["game_id"].isin(backfill)]
+                consensus.targets.update(
+                    update_mod.plan_consensus(stored_games, stored_counts, now=now)
+                )
+            if args.consensus_only:
+                continue
             stored = store.stored_game_books(conn, season_year) if exists else {}
             games = update_mod.season_games(games_df, season_year)
-            if dates:
+            if backfill is not None:
+                season_plan = update_mod.plan_backfill(
+                    games[games["game_id"].isin(backfill)], stored, today=today
+                )
+            elif dates:
                 season_plan = update_mod.plan_requests(
                     games[games["game_date"].isin(dates)],
                     stored,
@@ -155,10 +239,12 @@ def main() -> int:
             plan.update(season_plan)
 
         result = update_mod.UpdateResult()
-        if plan:
+        if plan or consensus.targets:
             print(
                 f"Plan: {sum(len(g) for g in plan.values())} game(s) on "
-                f"{len(plan)} date(s)"
+                f"{len(plan)} date(s); consensus of "
+                f"{sum(len(t) for t in consensus.targets.values())} stored game(s) "
+                f"on {len(consensus.targets)} date(s)"
             )
             archive = None
             if not args.dry_run and not args.no_archive:
@@ -175,8 +261,10 @@ def main() -> int:
                     client=client,
                     archive=archive,
                     dry_run=args.dry_run,
+                    now=now,
                     # Flushed per line, so the workflow log follows the run live.
                     progress=lambda line: print(line, flush=True),
+                    consensus=consensus,
                 )
                 requests_made = client.requests_made
             if result.inserted_ticks or result.inserted_games:
@@ -198,15 +286,19 @@ def main() -> int:
 
 def _report(result: update_mod.UpdateResult, requests_made: int, args) -> None:
     print(
-        f"\nFetched {result.fetched_games} game(s) in {requests_made} request(s); "
-        f"prepared {result.prepared_ticks} tick(s)"
+        f"\nFetched {result.fetched_games} game(s) and "
+        f"{result.consensus_fetched} consensus page(s) in {requests_made} "
+        f"request(s); prepared {result.prepared_ticks} tick(s) and "
+        f"{sum(len(f) for f in result.consensus_frames)} consensus row(s) "
+        f"(of {result.consensus_planned} planned)"
     )
     if args.dry_run:
         print("Dry run: nothing written.")
     else:
         print(
-            f"Inserted {result.inserted_games} game(s) and "
-            f"{result.inserted_ticks} tick(s)"
+            f"Inserted {result.inserted_games} game(s), "
+            f"{result.inserted_ticks} tick(s) and "
+            f"{result.consensus_inserted} consensus row(s)"
         )
     if result.dropped:
         print(f"Dropped: {result.dropped}")
@@ -228,6 +320,10 @@ def _report(result: update_mod.UpdateResult, requests_made: int, args) -> None:
             result.feed_tipoff_missing,
         ),
         ("game(s) without any line history, left for the next run", result.empty_games),
+        (
+            "game(s) whose consensus page has no pick counts, left for the next run",
+            result.consensus_empty,
+        ),
         ("request(s) or parse(s) failed", result.failed),
     ):
         if items:
@@ -254,6 +350,11 @@ def _report(result: update_mod.UpdateResult, requests_made: int, args) -> None:
         rows.to_parquet(args.save_dir / "lh_line.parquet", index=False)
         games.to_parquet(args.save_dir / "lh_game.parquet", index=False)
         print(f"Saved {len(rows)} row(s) and {len(games)} game(s) to {args.save_dir}")
+    if args.save_dir and result.consensus_frames:
+        args.save_dir.mkdir(parents=True, exist_ok=True)
+        counts = pd.concat(result.consensus_frames, ignore_index=True)
+        counts.to_parquet(args.save_dir / "lh_consensus.parquet", index=False)
+        print(f"Saved {len(counts)} consensus row(s) to {args.save_dir}")
 
 
 if __name__ == "__main__":

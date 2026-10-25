@@ -97,8 +97,27 @@ def fetch_games(
     season_years: list[int],
     *,
     conn: psycopg.Connection | None = None,
+    covers_fallback: bool = True,
 ) -> pd.DataFrame:
-    """Return the ``lh_game`` dimension for ``season_years``."""
+    """Return the ``lh_game`` dimension for ``season_years``.
+
+    ``covers_fallback`` adds the Covers store's games SBR does not hold
+    (``line_history_covers.fallback``), as the tick readers add their ticks.
+    """
+    games = _fetch_games_once(season_years, conn=conn)
+    if not covers_fallback:
+        return games
+    from nba_ou.postgre_db.line_history_covers import fallback
+
+    return fallback.games(games, [int(s) for s in season_years], conn=conn)
+
+
+def _fetch_games_once(
+    season_years: list[int],
+    *,
+    conn: psycopg.Connection | None = None,
+) -> pd.DataFrame:
+    """``fetch_games`` from the SBR store alone."""
     owned = conn is None
     conn = conn or connect_line_history_db()
     try:
@@ -172,8 +191,13 @@ def fetch_pregame_ticks(
     min_minutes_before_tip: int = DEFAULT_MIN_MINUTES_BEFORE_TIP,
     conn: psycopg.Connection | None = None,
     use_cache: bool = False,
+    covers_fallback: bool = True,
 ) -> pd.DataFrame:
     """Return every pre-game tick for ``season_years``, decoded.
+
+    ``covers_fallback`` takes from the Covers store the games SBR's history
+    lacks or cuts short (``line_history_covers.fallback``), after the caches:
+    those hold SBR's reads only.
 
     One query per season, each on a fresh connection and retried if Aiven drops
     it: all seasons at once is ~2.5M rows, and on 2026-09-17 that single
@@ -189,19 +213,28 @@ def fetch_pregame_ticks(
         "min_minutes_before_tip": min_minutes_before_tip,
     }
     if conn is not None:
-        return _fetch_pregame_ticks_once(season_years, conn=conn, **kwargs)
-    if use_cache:
-        return _cached_season_ticks(
+        ticks = _fetch_pregame_ticks_once(season_years, conn=conn, **kwargs)
+    elif use_cache:
+        ticks = _cached_season_ticks(
             "pregame_ticks",
             [int(s) for s in season_years],
             lambda **chunk: _fetch_pregame_ticks_once(chunk["season_years"], **kwargs),
             (_fetch_pregame_ticks_once,),
             kwargs,
         )
-    return _fetch_with_retries(
-        [{"season_years": [int(s)]} for s in season_years],
-        lambda season_years: _fetch_pregame_ticks_once(season_years, **kwargs),
-        _chunk_label,
+    else:
+        ticks = _fetch_with_retries(
+            [{"season_years": [int(s)]} for s in season_years],
+            lambda season_years: _fetch_pregame_ticks_once(season_years, **kwargs),
+            _chunk_label,
+        )
+    ticks = _alias_books(ticks, exclude_books)
+    if not covers_fallback:
+        return ticks
+    from nba_ou.postgre_db.line_history_covers import fallback
+
+    return fallback.pregame_ticks(
+        ticks, [int(s) for s in season_years], conn=conn, **kwargs
     )
 
 
@@ -299,8 +332,14 @@ def fetch_closing_ticks(
     min_minutes_before_tip: int = DEFAULT_MIN_MINUTES_BEFORE_TIP,
     conn: psycopg.Connection | None = None,
     use_cache: bool = False,
+    covers_fallback: bool = True,
 ) -> pd.DataFrame:
     """Priced pre-game ticks of finished games, for reconstructing the close.
+
+    ``covers_fallback`` takes from the Covers store the games SBR's history
+    lacks or cuts short (``line_history_covers.fallback``), after the caches,
+    and appends the Covers season's fingerprint to
+    ``attrs["season_fingerprints"]`` where Covers holds games of it.
 
     ``use_cache`` reuses a season's ticks from the local input cache while its
     server-side fingerprint (``line_history_season_fingerprint``) is unchanged; see
@@ -318,13 +357,63 @@ def fetch_closing_ticks(
         "markets": markets,
         "min_minutes_before_tip": min_minutes_before_tip,
     }
+    if season_years is None and game_ids is None:
+        raise ValueError("Pass season_years or game_ids.")
+    ticks = _fetch_sbr_closing_ticks(
+        season_years=season_years,
+        game_ids=game_ids,
+        conn=conn,
+        use_cache=use_cache,
+        **kwargs,
+    )
+    ticks = _alias_books(ticks)
+    if not covers_fallback:
+        return ticks
+    from nba_ou.postgre_db.line_history_covers import fallback
+
+    return fallback.closing_ticks(
+        ticks,
+        season_years=None if season_years is None else [int(s) for s in season_years],
+        game_ids=None if game_ids is None else [str(g) for g in game_ids],
+        conn=conn,
+        **kwargs,
+    )
+
+
+def _alias_books(ticks: pd.DataFrame, exclude_books=()) -> pd.DataFrame:
+    """A renamed SBR book under its old slug (``BOOK_SLUG_ALIASES``: 2026-27's
+    ``caesars_odds`` is ``caesars``), with the exclusions applied again to the
+    renamed rows. After the caches, which keep the store's rows as stored."""
+    from nba_ou.fetch_data.odds_sportsbook.scrape_sportsbook import (
+        BOOK_SLUG_ALIASES,
+    )
+
+    if ticks.empty or not ticks["book"].isin(list(BOOK_SLUG_ALIASES)).any():
+        return ticks
+    attrs = dict(ticks.attrs)
+    out = ticks.assign(book=ticks["book"].replace(BOOK_SLUG_ALIASES))
+    out = out[~out["book"].isin(exclude_books)]
+    # A game stored under both slugs (re-ingested after the fix) keeps one copy.
+    key = ["game_id", "market", "book", "line_ts"]
+    out = out.drop_duplicates(key).sort_values(key, kind="stable")
+    out = out.reset_index(drop=True)
+    out.attrs = attrs
+    return out
+
+
+def _fetch_sbr_closing_ticks(
+    *,
+    season_years: list[int] | None,
+    game_ids: list[str] | None,
+    conn: psycopg.Connection | None,
+    use_cache: bool,
+    **kwargs,
+) -> pd.DataFrame:
+    """``fetch_closing_ticks`` from the SBR store alone."""
     if conn is not None or (season_years is not None and game_ids is not None):
         return _fetch_closing_ticks_once(
             season_years=season_years, game_ids=game_ids, conn=conn, **kwargs
         )
-    if season_years is None and game_ids is None:
-        raise ValueError("Pass season_years or game_ids.")
-
     if season_years is not None and use_cache:
         return _cached_season_ticks(
             "closing_ticks",
@@ -504,6 +593,7 @@ def pregame_tick_fingerprints(
     exclude_books: tuple[str, ...] = (),
     markets: tuple[str, ...] = ALL_MARKETS,
     min_minutes_before_tip: int = DEFAULT_MIN_MINUTES_BEFORE_TIP,
+    covers_fallback: bool = True,
 ) -> dict[int, list]:
     """Each season's server fingerprint, as ``fetch_pregame_ticks`` would
     validate it, without reading the ticks.
@@ -546,7 +636,18 @@ def pregame_tick_fingerprints(
                 cur.execute(f"SET statement_timeout = '{FINGERPRINT_TIMEOUT}'")
             for season in missing:
                 out[season] = line_history_season_fingerprint(conn, season)
-    return {season: out[int(season)] for season in season_years}
+    out = {season: out[int(season)] for season in season_years}
+    if not covers_fallback:
+        return out
+    # fetch_pregame_ticks adds Covers' games, so its fingerprint is an input too.
+    from nba_ou.postgre_db.line_history_covers import fallback
+
+    try:
+        with connect_line_history_db() as conn:
+            return fallback.extend_fingerprints(out, conn)
+    except Exception as exc:  # noqa: BLE001 -- as the tick read's own fallback
+        print(f"! pregame ticks: Covers fingerprints unavailable ({exc})")
+        return out
 
 
 def _closing_ticks_spec() -> tuple:
@@ -756,12 +857,19 @@ def _fetch_closing_ticks_once(
     return _decode_ticks(ticks)
 
 
-def available_seasons(*, conn: psycopg.Connection | None = None) -> list[int]:
+def available_seasons(
+    *, conn: psycopg.Connection | None = None, covers_fallback: bool = True
+) -> list[int]:
     """Seasons actually present in the store.
 
     2019-20 and 2020-21 are deliberately absent (Phase 0 could not pin their
     timezone), so this is the honest source for "what can we train on" rather
     than any hardcoded range.
+
+    ``covers_fallback`` adds the seasons of the Covers store's games, which the
+    tick readers supply: a season only Covers holds (2018-19's backfilled
+    games) is readable too. Pass False for the SBR store's own seasons (its
+    tick caches).
     """
     owned = conn is None
     conn = conn or connect_line_history_db()
@@ -771,7 +879,12 @@ def available_seasons(*, conn: psycopg.Connection | None = None) -> list[int]:
         )
         with conn.cursor() as cur:
             cur.execute(query)
-            return sorted(int(row[0]) for row in cur.fetchall())
+            seasons = {int(row[0]) for row in cur.fetchall()}
+        if covers_fallback:
+            from nba_ou.postgre_db.line_history_covers import fallback
+
+            seasons |= fallback.available_seasons(conn)
+        return sorted(seasons)
     finally:
         if owned:
             conn.close()

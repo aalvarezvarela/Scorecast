@@ -1060,18 +1060,24 @@ def create_intermediate_line_df(
     if exclude_caesars:
         excluded_books += (CAESARS_BOOK,)
 
-    store_seasons = available_seasons()
+    # The default scope is SBR's seasons: it defines the dataset (the base
+    # lookback and every expanding mean start from its first season), so a
+    # season only the Covers fallback holds (2018-19's backfilled games) must
+    # not widen it. Asked for explicitly, such a season is readable.
+    store_seasons = available_seasons(covers_fallback=False)
+    readable_seasons = set(available_seasons()) | set(store_seasons)
     if live is not None and not live.line_history.games.empty:
-        store_seasons = sorted(
-            set(store_seasons)
-            | set(int(y) for y in live.line_history.games["season_year"].unique())
+        live_seasons = set(
+            int(y) for y in live.line_history.games["season_year"].unique()
         )
+        store_seasons = sorted(set(store_seasons) | live_seasons)
+        readable_seasons |= live_seasons
     if live is not None and recent_limit_to_include is None:
         recent_limit_to_include = live.history_limit
     if season_years is None:
         season_years = store_seasons
     else:
-        season_years = sorted(set(season_years) & set(store_seasons))
+        season_years = sorted(set(season_years) & readable_seasons)
     if not season_years:
         raise ValueError(
             f"No requested season is present in the line-history store "

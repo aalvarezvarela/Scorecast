@@ -187,7 +187,7 @@ def main() -> int:
     if cov.empty:
         print("No Covers ticks.")
         return 1
-    sbr = fetch_pregame_ticks(args.seasons)
+    sbr = fetch_pregame_ticks(args.seasons, covers_fallback=False)
     sbr = sbr[sbr["game_id"].isin(cov["game_id"].unique())]
     print(
         f"{cov['game_id'].nunique():,} Covers games ({len(cov):,} ticks); "

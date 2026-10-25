@@ -63,11 +63,13 @@ from nba_ou.postgre_db.predictions_aiven.schema import (
     KIND_BASELINE,
     KIND_REGISTRY,
     KIND_TABPFN,
+    LINE_SOURCE_CODES,
     RUN_STATUS_OK,
     RUN_STATUS_PARTIAL,
     RUN_STATUS_S3_FAILED,
     TARGET_CODES,
 )
+from nba_ou.prediction.line_source import LINE_SOURCE_COLUMN
 from nba_ou.utils.general_utils import get_season_year_from_date
 
 CLOSING_LINE = "closing_line"
@@ -141,6 +143,7 @@ INPUT_COLUMNS = [
     "total_model_line",
     "spread_model_line",
     *BET_COLUMNS,
+    "line_source",
 ]
 PREDICTION_COLUMNS = [
     *INPUT_KEY,
@@ -206,6 +209,14 @@ def _column(frame: pd.DataFrame, name: str) -> pd.Series:
     if name in frame.columns:
         return pd.to_numeric(frame[name], errors="coerce")
     return pd.Series(np.nan, index=frame.index)
+
+
+def line_source_codes(frame: pd.DataFrame) -> pd.Series:
+    """Each frame row's line-source code (``LINE_SOURCE_CODES``); NA when the
+    frame does not say."""
+    if LINE_SOURCE_COLUMN not in frame.columns:
+        return pd.Series(pd.NA, index=frame.index, dtype="Int16")
+    return frame[LINE_SOURCE_COLUMN].map(LINE_SOURCE_CODES).astype("Int16")
 
 
 def bet_line_columns(
@@ -704,7 +715,9 @@ class PredictionRunRecorder:
                     frame, spread_line_home_col(self.book)
                 ).to_numpy(),
             )
-            parts.append(pd.concat([part, bets.reset_index(drop=True)], axis=1))
+            part = pd.concat([part, bets.reset_index(drop=True)], axis=1)
+            part["line_source"] = line_source_codes(frame).to_numpy()
+            parts.append(part)
         if not parts:
             return pd.DataFrame(columns=INPUT_COLUMNS)
         inputs = pd.concat(parts, ignore_index=True)[INPUT_COLUMNS]
