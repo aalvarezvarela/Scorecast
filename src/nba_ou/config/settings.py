@@ -254,13 +254,16 @@ class Settings:
         implicit part of an enabled slot's identity -- every row of
         ``ENABLED_MODELS`` states its own version, so a 2_6 slot can be
         promoted while the 2_5 slots keep serving, with no flag day.
+
+        Unset, it is the base version, the one production serves on, not the
+        newest buildable layer.
         """
-        from nba_ou.config.dataset_versions import TRAINING_DATA_SCHEMA_VERSION
+        from nba_ou.config.dataset_versions import BASE_SCHEMA_VERSION
 
         configured = self.config.get(
             "PredictionModels", "DEFAULT_SCHEMA_VERSION", fallback=""
         ).strip()
-        return configured or TRAINING_DATA_SCHEMA_VERSION
+        return configured or BASE_SCHEMA_VERSION
 
     @property
     def prediction_model_slots(self) -> list:

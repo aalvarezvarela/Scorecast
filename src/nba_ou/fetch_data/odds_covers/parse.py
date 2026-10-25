@@ -330,12 +330,13 @@ def scraped_game(
     text: str,
     tipoff_utc: datetime,
     fetched_at: datetime,
+    status_text: str = "Final",
 ) -> ParsedGame:
     """One game's line-history answer -> a :class:`ScrapedGame`.
 
     ``tipoff_utc`` is the NBA schedule feed's: Covers' finished games carry no
-    tip time. ``status_text`` is ``"Final"`` because callers only build settled
-    games (``is_settled``).
+    tip time. ``status_text`` defaults to ``"Final"`` because the store only
+    builds settled games (``is_settled``); the live fallback passes its own.
     """
     ticks: list[LineTick] = []
     unknown: set[int] = set()
@@ -358,13 +359,64 @@ def scraped_game(
             tipoff_utc=tipoff_utc,
             team_away=game.team_away,
             team_home=game.team_home,
-            status_text="Final",
+            status_text=status_text,
             away_score=None,
             home_score=None,
             ticks=tuple(ticks),
         ),
         unknown_books=frozenset(unknown),
     )
+
+
+@dataclass(frozen=True)
+class PickConsensus:
+    """One game's Covers Consensus pick counts, per side.
+
+    SBR's consensus pick percentages are these counts' shares: its game ids
+    are Covers', and on past games the two agree within a point (SBR's are
+    read at another moment of the same counts).
+    """
+
+    spread_away: int
+    spread_home: int
+    total_over: int
+    total_under: int
+
+    def sbr_consensus(self) -> dict[str, float]:
+        """The ``gameView.consensus`` SBR's day page would carry."""
+
+        def share(part: int, other: int) -> float:
+            return 100.0 * part / (part + other) if part + other else 0.0
+
+        return {
+            # SBR serves no moneyline consensus: zeros, rendered empty.
+            "homeMoneyLinePickPercent": 0,
+            "awayMoneyLinePickPercent": 0,
+            "homeSpreadPickPercent": share(self.spread_home, self.spread_away),
+            "awaySpreadPickPercent": share(self.spread_away, self.spread_home),
+            "overPickPercent": share(self.total_over, self.total_under),
+            "underPickPercent": share(self.total_under, self.total_over),
+        }
+
+
+_FINAL_PICKS_RE = re.compile(
+    r'finalWagersleft">\s*(\d+)\s*<.*?finalWagersRight">\s*(\d+)\s*<', re.S
+)
+
+
+def parse_consensus(text: str) -> PickConsensus | None:
+    """The consensus page's two "Total Picks" rows: ATS (away, home), then O/U
+    (over, under). Only the public consensus section is read; the experts'
+    section after it is not. None when the page has not both rows."""
+    start = text.find('id="consensus_analysis_content"')
+    if start < 0:
+        return None
+    end = text.find('id="experts_analysis_content"', start)
+    rows = _FINAL_PICKS_RE.findall(text[start : end if end > 0 else len(text)])
+    if len(rows) < 2:
+        return None
+    (away, home), (over, under) = rows[:2]
+    return PickConsensus(int(away), int(home), int(over), int(under))
 
 
 def is_settled(tipoff_utc: datetime, now: datetime) -> bool:

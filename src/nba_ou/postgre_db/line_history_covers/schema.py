@@ -9,6 +9,10 @@ one for another per game. Two differences, both in content:
 * ``lh_game.event_id`` is the Covers game id, and ``tipoff_utc`` the NBA
   schedule feed's (Covers' finished games carry no tip time).
 
+One table is Covers' own (``COVERS_DDL_STATEMENTS``): ``lh_consensus``, each
+stored game's Covers Consensus pick counts, the counts SBR's
+``*_consensus_pct_*`` shares are taken from.
+
 The SBR modules are not parameterised for another schema on purpose: they are
 in the code closure that keys the training-data caches, and any edit there
 invalidates them. This module reuses their constants and repeats their few
@@ -29,6 +33,21 @@ from nba_ou.postgre_db.line_history_aiven.schema import (
 
 SCHEMA = "line_history_covers"
 
+#: Tables of this store only, created after the SBR store's.
+COVERS_DDL_STATEMENTS: tuple[str, ...] = (
+    """
+    CREATE TABLE IF NOT EXISTS {schema}.lh_consensus (
+        game_id           TEXT PRIMARY KEY REFERENCES {schema}.lh_game (game_id),
+        season_year       SMALLINT    NOT NULL,
+        spread_away_picks INTEGER     NOT NULL,
+        spread_home_picks INTEGER     NOT NULL,
+        total_over_picks  INTEGER     NOT NULL,
+        total_under_picks INTEGER     NOT NULL,
+        fetched_at        TIMESTAMPTZ NOT NULL
+    )
+    """,
+)
+
 
 def create_schema(conn: psycopg.Connection) -> None:
     """Create the schema and its tables, and register markets and books."""
@@ -36,7 +55,7 @@ def create_schema(conn: psycopg.Connection) -> None:
         cur.execute(
             sql.SQL("CREATE SCHEMA IF NOT EXISTS {}").format(sql.Identifier(SCHEMA))
         )
-        for statement in DDL_STATEMENTS:
+        for statement in (*DDL_STATEMENTS, *COVERS_DDL_STATEMENTS):
             cur.execute(sql.SQL(statement).format(schema=sql.Identifier(SCHEMA)))
         for market_id, code in MARKETS:
             cur.execute(
@@ -90,6 +109,16 @@ def schema_exists(conn: psycopg.Connection) -> bool:
     with conn.cursor() as cur:
         cur.execute(
             "SELECT 1 FROM information_schema.schemata WHERE schema_name = %s",
+            (SCHEMA,),
+        )
+        return cur.fetchone() is not None
+
+
+def consensus_table_exists(conn: psycopg.Connection) -> bool:
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT 1 FROM information_schema.tables "
+            "WHERE table_schema = %s AND table_name = 'lh_consensus'",
             (SCHEMA,),
         )
         return cur.fetchone() is not None

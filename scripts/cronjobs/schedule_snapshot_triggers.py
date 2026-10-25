@@ -13,14 +13,16 @@ has passed. The T-30 snapshot (``EXACT_HORIZONS``) always gets a run at its own
 time.
 
 Also one TabPFN run (``nba_predictor_daily_tabpfn_client.yml``, ``TABPFN``:
-line_error on its T-360 intermediate slot, every game) at the first tip-off
-minus ``--tabpfn-lead-minutes`` (360): the first game's snapshot has just
-passed, the later games read their ticks so far.
+line_error on its T-360 intermediate slot, every game) between 6 h 30 and 5 h
+before the first tip-off (``TABPFN_WINDOW_MINUTES``), at the minute of that
+window farthest from every predictor run, so neither waits long for the other
+on the one runner; on a tie, the minute nearest the first game's T-360. The
+later games read their ticks so far. ``--no-tabpfn`` leaves it out.
 
 And, after the last game, whose end is estimated as its tip-off plus
 ``GAME_LENGTH_MINUTES``: the past-snapshot predictions of the date
 (``nba_predict_past_snapshots.yml``, ``game_date`` passed) 30 min after it, and
-the final scores (``update_finished_matches_daily.yml``) an hour after it.
+the final scores (``update_finished_matches_daily.yml``) two hours after it.
 
 Left out: times already past, and times outside the game date in US/Pacific --
 the predictor predicts the slate of its run's Pacific date, so a trigger before
@@ -89,14 +91,17 @@ TABPFN = Dispatch(
         ("update_db", "false"),
     ),
 )
-DEFAULT_TABPFN_LEAD_MINUTES = 360
+# Minutes before the first tip-off the TabPFN run may fall in (earliest, latest).
+TABPFN_WINDOW_MINUTES = (390, 300)
+# Its slot's horizon: ties go to the minute nearest the first game's snapshot.
+TABPFN_HORIZON_MINUTES = 360
 FINISHED_MATCHES = Dispatch("update_finished_matches_daily.yml")
 PAST_SNAPSHOTS_WORKFLOW = "nba_predict_past_snapshots.yml"
 # Tip-off to final buzzer: about 2 h 15 min, more with overtime.
 GAME_LENGTH_MINUTES = 150
 # After the last game's estimated end.
 PAST_SNAPSHOTS_AFTER_END_MINUTES = 30
-FINISHED_MATCHES_AFTER_END_MINUTES = 60
+FINISHED_MATCHES_AFTER_END_MINUTES = 120
 POOL_PREFIX = "Scorecast - snapshot trigger "
 # A busy night needs about 10 jobs; more than this means something is off.
 MAX_POOL = 30
@@ -252,24 +257,38 @@ def trigger_times(
 def tabpfn_time(
     tipoffs: Iterable[tuple[str, datetime]],
     now: datetime,
-    lead_minutes: int = DEFAULT_TABPFN_LEAD_MINUTES,
+    predictor_runs: Iterable[datetime] = (),
     window: tuple[datetime, datetime] | None = None,
 ) -> datetime | None:
-    """The TabPFN run: the first tip-off minus ``lead_minutes``, or None when
-    there is no game, ``lead_minutes`` is 0, or the time is past or outside
-    ``window``."""
+    """The TabPFN run: the minute of ``TABPFN_WINDOW_MINUTES`` before the first
+    tip-off farthest from every predictor run, on a tie the one nearest the
+    first game's T-360. Minutes already past or outside ``window`` are left
+    out; None when there is no game or no minute is left."""
     tips = [tipoff for _, tipoff in tipoffs]
-    if not tips or lead_minutes <= 0:
+    if not tips:
         return None
-    at = min(tips) - timedelta(minutes=lead_minutes)
-    at = at.astimezone(UTC).replace(second=0, microsecond=0)
-    if at <= now + MIN_LEAD:
-        print(f"! TabPFN at {_clock(at)} skipped: already past")
+    first = min(tips).astimezone(UTC).replace(second=0, microsecond=0)
+    earliest, latest = (first - timedelta(minutes=m) for m in TABPFN_WINDOW_MINUTES)
+    minutes = int((latest - earliest) / timedelta(minutes=1))
+    candidates = [
+        at
+        for at in (earliest + timedelta(minutes=i) for i in range(minutes + 1))
+        if at > now + MIN_LEAD and (window is None or window[0] <= at < window[1])
+    ]
+    if not candidates:
+        print(
+            f"! TabPFN between {_clock(earliest)} and {_clock(latest)} skipped: "
+            "already past or outside the predictor's date"
+        )
         return None
-    if window is not None and not window[0] <= at < window[1]:
-        print(f"! TabPFN at {_clock(at)} skipped: outside the predictor's date")
-        return None
-    return at
+    runs = list(predictor_runs)
+    snapshot = first - timedelta(minutes=TABPFN_HORIZON_MINUTES)
+
+    def clearance(at: datetime) -> timedelta:
+        return min((abs(at - run) for run in runs), default=timedelta.max)
+
+    # Equally far from the runs and the snapshot: the later minute, past it.
+    return max(candidates, key=lambda at: (clearance(at), -abs(at - snapshot), at))
 
 
 def post_game_runs(
@@ -423,12 +442,7 @@ def main() -> None:
         default=DEFAULT_OFFSET_MINUTES,
         help="fire this long after each snapshot",
     )
-    parser.add_argument(
-        "--tabpfn-lead-minutes",
-        type=int,
-        default=DEFAULT_TABPFN_LEAD_MINUTES,
-        help="TabPFN run this long before the first tip-off (0 = none)",
-    )
+    parser.add_argument("--no-tabpfn", action="store_true", help="book no TabPFN run")
     args = parser.parse_args()
 
     now = datetime.now(UTC)
@@ -445,7 +459,7 @@ def main() -> None:
 
     window = predictor_window(game_date)
     triggers = trigger_times(tipoffs, horizons, now, args.offset_minutes, window)
-    tabpfn_at = tabpfn_time(tipoffs, now, args.tabpfn_lead_minutes, window)
+    tabpfn_at = None if args.no_tabpfn else tabpfn_time(tipoffs, now, triggers, window)
     after_games = post_game_runs(tipoffs, game_date, now)
     groups = group_schedules(triggers)
     if tabpfn_at is not None:
@@ -457,7 +471,15 @@ def main() -> None:
     for at, reasons in triggers.items():
         print(f"  {_clock(at)}  {', '.join(reasons)}")
     if tabpfn_at is not None:
-        print(f"TabPFN line_error T-360: {_clock(tabpfn_at)}")
+        gap = min((abs(tabpfn_at - at) for at in triggers), default=None)
+        print(
+            f"TabPFN line_error T-360: {_clock(tabpfn_at)}"
+            + (
+                f" ({gap // timedelta(minutes=1)} min from a predictor run)"
+                if gap
+                else ""
+            )
+        )
     for at, dispatch in after_games:
         print(f"After the last game: {dispatch.workflow_file} at {_clock(at)}")
     print(f"{len(groups)} job(s)")

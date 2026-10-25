@@ -68,7 +68,10 @@ At a high level, `create_df_to_predict()` does this:
 1. Determine the historical cutoff date.
 2. Determine which seasons to load.
 3. Optionally collect extra historical matchup games for same-day prediction.
-4. Load team game logs and player boxscores from PostgreSQL.
+4. Load team game logs and player boxscores from PostgreSQL. The loaders drop
+   preseason and All-Star games (`drop_exhibition_games`), as do the injury
+   and injury-report loaders: no feature reads an exhibition
+   ([exhibition_games.md](exhibition_games.md)).
 5. Load and merge Yahoo plus Sportsbook Review odds.
 6. Clean and enrich team-level rows.
 7. Load injury data and attach player/injury plus roster-continuity features.
@@ -240,9 +243,10 @@ The major steps are:
      actual total points minus that line.
 
 5. `filter_valid_games()`
+   - Drops preseason and All-Star games first (the loaders already have, so
+     this guards other callers).
    - Keeps only games with exactly two team entries.
    - Classifies season type.
-   - Drops preseason and All-Star games.
    - Adds integer `SEASON_YEAR`.
 
 6. `add_overtime_history_features()`

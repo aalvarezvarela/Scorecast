@@ -284,6 +284,16 @@ TRAINING_SEASON_TYPES: tuple[str, ...] = (
     "Play-In Tournament",
 )
 
+# Season types no feature reads: exhibitions. Preseason rotations are
+# experiments (starters play 15-25 minutes, camp invitees play a lot) and
+# All-Star games are mini-games without defence. They are dropped when the
+# builders' inputs are loaded (``nba_ou.utils.seasons.drop_exhibition_games``),
+# so player averages, injury history and report history never count them.
+EXHIBITION_SEASON_TYPES: tuple[str, ...] = (
+    "Preseason",
+    "All Star",
+)
+
 # ==============================================================================
 # GAME CONFIGURATION
 # ==============================================================================

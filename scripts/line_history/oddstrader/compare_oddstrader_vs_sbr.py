@@ -123,7 +123,7 @@ def main() -> int:
     store = make_store()
     seasons = args.seasons or store.get_manifest()["seasons"]
     margins = home_margins()
-    sbr_seasons = set(available_seasons())
+    sbr_seasons = set(available_seasons(covers_fallback=False))
 
     all_ticks = []
     for season in seasons:
@@ -134,7 +134,7 @@ def main() -> int:
         )
         report_orientation(ticks, margins)
         if season in sbr_seasons:
-            sbr = fetch_pregame_ticks([season])
+            sbr = fetch_pregame_ticks([season], covers_fallback=False)
             sbr = sbr[sbr["game_id"].isin(ticks["game_id"].unique())]
             report_parity(ticks, sbr)
 

@@ -20,9 +20,10 @@ The day, Madrid time, on the one self-hosted runner:
     09:00  database update, then -- on a game day -- refit, smoke test and
            promotion
     10:00  booking of the day's runs (schedule_snapshot_triggers.py): the
-           predictor at every snapshot time, TabPFN line_error at the first
-           tip-off - 6 h, and after the last game's estimated end the
-           past-snapshot predictions (+30 min) and final scores (+1 h)
+           predictor at every snapshot time, TabPFN line_error between 6 h 30
+           and 5 h before the first tip-off, away from the predictor runs,
+           and after the last game's estimated end the
+           past-snapshot predictions (+30 min) and final scores (+2 h)
 
 The jobs expire at the end of ``SEASON_END`` (10 July) and simply stop running;
 nothing needs deleting. Re-run ``--apply`` before the next season starts: it

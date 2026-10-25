@@ -313,7 +313,7 @@ def test_post_game_runs_follow_the_last_games_estimated_end():
     # Last tip 02:30 UTC + 150 min = 05:00 estimated end.
     assert [at for at, _ in runs] == [
         _utc("2026-10-23 05:30"),
-        _utc("2026-10-23 06:00"),
+        _utc("2026-10-23 07:00"),
     ]
     past, finished = (dispatch for _, dispatch in runs)
     assert past.workflow_file == "nba_predict_past_snapshots.yml"
@@ -334,7 +334,7 @@ def test_post_game_payload_passes_the_game_date():
         "/actions/workflows/update_finished_matches_daily.yml/dispatches"
     )
     assert json.loads(payload["extendedData"]["body"]) == {"ref": "main"}
-    assert group.fire_times() == [_utc("2026-10-23 02:30")]
+    assert group.fire_times() == [_utc("2026-10-23 03:30")]
 
 
 def test_refit_only_on_a_game_day(monkeypatch):
@@ -349,19 +349,34 @@ def test_refit_only_on_a_game_day(monkeypatch):
     assert check.should_refit("2026-10-23") is True
 
 
-def test_tabpfn_runs_six_hours_before_the_first_tip():
+def test_tabpfn_takes_the_window_minute_farthest_from_the_predictor():
     tips = [("A@B", _utc("2026-10-22 23:30")), ("C@D", _utc("2026-10-22 23:00"))]
     now = _utc("2026-10-22 08:00")
+    # Window 16:30-18:00 (first tip - 6 h 30 ... - 5 h); its T-360 is 17:00.
+    # Without predictor runs: the T-360 itself.
     assert job.tabpfn_time(tips, now) == _utc("2026-10-22 17:00")
-    assert job.tabpfn_time(tips, now, lead_minutes=0) is None
+    # Runs every half hour: 15 min from each at best; of 16:45 and 17:15, as
+    # near the T-360, the later one.
+    half_hours = [_utc(f"2026-10-22 {h}") for h in ("16:30", "17:00", "17:30", "18:00")]
+    assert job.tabpfn_time(tips, now, half_hours) == _utc("2026-10-22 17:15")
+    # The largest gap wins over the T-360: 16:30-17:30 is 60 min wide.
+    runs = [_utc("2026-10-22 16:30"), _utc("2026-10-22 17:30")]
+    assert job.tabpfn_time(tips, now, runs) == _utc("2026-10-22 17:00")
+    runs = [_utc("2026-10-22 16:00"), _utc("2026-10-22 17:00")]
+    assert job.tabpfn_time(tips, now, runs) == _utc("2026-10-22 18:00")
     assert job.tabpfn_time([], now) is None
-    # Past by the time the scheduler runs.
-    assert job.tabpfn_time(tips, _utc("2026-10-22 17:30")) is None
-    # A noon-ET Christmas game: 06:00 ET is inside the Pacific date (from 08:00 UTC).
+    # Part of the window past by the time the scheduler runs: what is left.
+    assert job.tabpfn_time(tips, _utc("2026-10-22 17:40"), half_hours) == (
+        _utc("2026-10-22 17:45")
+    )
+    assert job.tabpfn_time(tips, _utc("2026-10-22 18:00")) is None
+    # A 09:00-ET Christmas game: the window starts before Pacific midnight
+    # (08:00 UTC), so the minutes before it are left out.
     window = job.predictor_window("2026-12-25")
-    christmas = [("A@B", _utc("2026-12-25 17:00"))]
-    assert job.tabpfn_time(christmas, now.replace(month=12, day=24), 360, window) == (
-        _utc("2026-12-25 11:00")
+    christmas = [("A@B", _utc("2026-12-25 14:00"))]
+    late = [_utc("2026-12-25 09:00")]
+    assert job.tabpfn_time(christmas, now.replace(month=12, day=24), late, window) == (
+        _utc("2026-12-25 08:00")
     )
 
 

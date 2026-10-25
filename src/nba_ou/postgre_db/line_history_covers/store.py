@@ -6,6 +6,9 @@ staging table and one ``INSERT ... SELECT`` per season. With ``commit=False``
 the writes join the caller's transaction, so a game and its lines land
 together or not at all (``update.ingest_games``). Reads return the frames
 ``line_history_aiven.fetch`` returns, decoded the same way.
+
+``lh_consensus`` (the Covers Consensus pick counts, one row per stored game)
+is insert-only too: a game's counts are read once, after it is over.
 """
 
 from __future__ import annotations
@@ -33,6 +36,29 @@ from nba_ou.postgre_db.line_history_aiven.load import (
 from nba_ou.postgre_db.line_history_aiven.transform import OUTPUT_COLUMNS
 
 from .schema import SCHEMA
+
+#: ``lh_consensus`` columns, in insert order.
+CONSENSUS_COLUMNS = [
+    "game_id",
+    "season_year",
+    "spread_away_picks",
+    "spread_home_picks",
+    "total_over_picks",
+    "total_under_picks",
+    "fetched_at",
+]
+_PICK_COLUMNS = CONSENSUS_COLUMNS[2:6]
+
+#: ``lh_game`` with its Covers id: what a consensus request needs.
+GAME_EVENT_COLUMNS = [
+    "game_id",
+    "game_date",
+    "season_year",
+    "tipoff_utc",
+    "event_id",
+    "team_home",
+    "team_away",
+]
 
 
 def insert_games(
@@ -194,9 +220,15 @@ def fetch_pregame_ticks(
     *,
     markets: tuple[str, ...] = ALL_MARKETS,
     min_minutes_before_tip: int = DEFAULT_MIN_MINUTES_BEFORE_TIP,
+    game_ids: Iterable[str] | None = None,
 ) -> pd.DataFrame:
-    """Every pre-game tick of ``season_years``, in ``TICK_COLUMNS`` and decoded
-    like ``line_history_aiven.fetch.fetch_pregame_ticks``."""
+    """Every pre-game tick of ``season_years`` (only ``game_ids``, if given), in
+    ``TICK_COLUMNS`` and decoded like ``line_history_aiven.fetch.fetch_pregame_ticks``.
+    """
+    games_filter, params = sql.SQL(""), []
+    if game_ids is not None:
+        games_filter = sql.SQL("AND l.game_id = ANY(%s)")
+        params = [[str(g) for g in game_ids]]
     with conn.cursor() as cur:
         cur.execute(
             sql.SQL(
@@ -211,14 +243,285 @@ def fetch_pregame_ticks(
                   AND l.is_pregame
                   AND l.mins_to_tip <= %s
                   AND m.code = ANY(%s)
+                  {games_filter}
                 ORDER BY l.game_id, m.code, b.slug, l.line_ts
                 """
-            ).format(schema=sql.Identifier(SCHEMA)),
+            ).format(schema=sql.Identifier(SCHEMA), games_filter=games_filter),
             (
                 [int(s) for s in season_years],
                 -int(min_minutes_before_tip),
                 list(markets),
+                *params,
             ),
+        )
+        ticks = _rows_to_frame(cur, TICK_COLUMNS)
+    return _decode_ticks(ticks)
+
+
+def latest_pregame_ticks(
+    conn: psycopg.Connection,
+    *,
+    season_years: Iterable[int] | None = None,
+    game_ids: Iterable[str] | None = None,
+    markets: tuple[str, ...] = ALL_MARKETS,
+    min_minutes_before_tip: int = DEFAULT_MIN_MINUTES_BEFORE_TIP,
+    exclude_books: Iterable[str] = (),
+) -> pd.DataFrame:
+    """game_id, season_year and the time of its latest pre-game tick: one row a
+    game, computed in the database. What the fallback decides on, without
+    moving every tick."""
+    filters, params = [], []
+    if season_years is not None:
+        filters.append(sql.SQL("l.season_year = ANY(%s)"))
+        params.append([int(s) for s in season_years])
+    if game_ids is not None:
+        filters.append(sql.SQL("l.game_id = ANY(%s)"))
+        params.append([str(g) for g in game_ids])
+    if not filters:
+        raise ValueError("Pass season_years or game_ids.")
+    with conn.cursor() as cur:
+        cur.execute(
+            sql.SQL(
+                """
+                SELECT l.game_id, max(l.season_year) AS season_year,
+                       max(l.line_ts) AS line_ts
+                FROM {schema}.lh_line l
+                JOIN {schema}.lh_market m USING (market_id)
+                JOIN {schema}.lh_book   b USING (book_id)
+                WHERE ({filters})
+                  AND l.is_pregame
+                  AND l.mins_to_tip <= %s
+                  AND m.code = ANY(%s)
+                  AND NOT (b.slug = ANY(%s))
+                GROUP BY l.game_id
+                ORDER BY l.game_id
+                """
+            ).format(
+                schema=sql.Identifier(SCHEMA), filters=sql.SQL(" OR ").join(filters)
+            ),
+            (
+                *params,
+                -int(min_minutes_before_tip),
+                list(markets),
+                list(exclude_books),
+            ),
+        )
+        rows = _rows_to_frame(cur, ["game_id", "season_year", "line_ts"])
+    rows["game_id"] = rows["game_id"].astype(str)
+    rows["line_ts"] = pd.to_datetime(rows["line_ts"], utc=True)
+    return rows
+
+
+def stored_game_ids(conn: psycopg.Connection, game_ids: Iterable[str]) -> set[str]:
+    """The games among ``game_ids`` this store holds."""
+    with conn.cursor() as cur:
+        cur.execute(
+            sql.SQL("SELECT game_id FROM {}.lh_game WHERE game_id = ANY(%s)").format(
+                sql.Identifier(SCHEMA)
+            ),
+            ([str(g) for g in game_ids],),
+        )
+        return {str(row[0]) for row in cur.fetchall()}
+
+
+def fetch_closing_ticks(
+    conn: psycopg.Connection,
+    *,
+    season_years: Iterable[int] | None = None,
+    game_ids: Iterable[str] | None = None,
+    last_n: int | None = 5,
+    markets: tuple[str, ...] = ALL_MARKETS,
+    min_minutes_before_tip: int = DEFAULT_MIN_MINUTES_BEFORE_TIP,
+) -> pd.DataFrame:
+    """``line_history_aiven.fetch._fetch_closing_ticks_once`` on this schema:
+    the last ``last_n`` priced pre-game ticks per (game, market, book) of
+    finished games. The clock check is kept, though Covers' ``mins_to_tip`` is
+    derived from the tip-off and always agrees."""
+    filters, params = [], []
+    if season_years is not None:
+        filters.append(sql.SQL("l.season_year = ANY(%s)"))
+        params.append([int(s) for s in season_years])
+    if game_ids is not None:
+        filters.append(sql.SQL("l.game_id = ANY(%s)"))
+        params.append([str(g) for g in game_ids])
+    if not filters:
+        raise ValueError("Pass season_years or game_ids.")
+    query = sql.SQL(
+        """
+        WITH eligible AS (
+            SELECT l.game_id, l.season_year, m.code AS market,
+                   b.slug AS book, l.line_ts,
+                   l.mins_to_tip AS minutes_before_tip, l.is_opener,
+                   l.left_line, l.left_price, l.right_line, l.right_price,
+                   ROW_NUMBER() OVER (
+                       PARTITION BY l.game_id, m.code, b.slug
+                       ORDER BY l.line_ts DESC
+                   ) AS recency
+            FROM {schema}.lh_line l
+            JOIN {schema}.lh_game   g USING (game_id)
+            JOIN {schema}.lh_market m USING (market_id)
+            JOIN {schema}.lh_book   b USING (book_id)
+            WHERE ({filters})
+              AND l.is_pregame
+              AND l.mins_to_tip <= %s
+              AND m.code = ANY(%s)
+              AND l.left_price IS NOT NULL
+              AND l.right_price IS NOT NULL
+              AND g.tipoff_utc < now()
+              AND g.tipoff_utc - l.line_ts >= make_interval(mins => %s)
+              AND ABS(
+                  EXTRACT(EPOCH FROM (g.tipoff_utc - l.line_ts)) / 60.0
+                  + l.mins_to_tip
+              ) <= 1
+        )
+        SELECT game_id, season_year, market, book, line_ts,
+               minutes_before_tip, is_opener,
+               left_line, left_price, right_line, right_price
+        FROM eligible
+        WHERE %s::int IS NULL OR recency <= %s::int
+        ORDER BY game_id, market, book, line_ts
+        """
+    ).format(schema=sql.Identifier(SCHEMA), filters=sql.SQL(" OR ").join(filters))
+    params += [
+        -int(min_minutes_before_tip),
+        list(markets),
+        int(min_minutes_before_tip),
+        last_n,
+        last_n,
+    ]
+    with conn.cursor() as cur:
+        cur.execute(query, params)
+        ticks = _rows_to_frame(cur, TICK_COLUMNS)
+    return _decode_ticks(ticks)
+
+
+def season_fingerprint(conn: psycopg.Connection, season: int) -> list | None:
+    """The SBR store's season fingerprint (``line_history_season_fingerprint``)
+    on this schema, or None when the store holds no game of the season."""
+    from nba_ou.postgre_db.line_history_aiven.fetch import _CLOSING_TICKS_FINGERPRINT
+
+    query = sql.SQL(_CLOSING_TICKS_FINGERPRINT).format(schema=sql.Identifier(SCHEMA))
+    with conn.cursor() as cur:
+        cur.execute(query, {"season": int(season)})
+        values = [None if v is None else str(v) for v in cur.fetchone()]
+    return None if values[2] in (None, "0") else values
+
+
+def insert_consensus(
+    conn: psycopg.Connection, rows: pd.DataFrame, *, commit: bool = True
+) -> int:
+    """Add the pick counts of games that have none; stored counts are kept."""
+    if rows.empty:
+        return 0
+    query = sql.SQL(
+        "INSERT INTO {}.lh_consensus ({cols}) VALUES ({vals}) "
+        "ON CONFLICT (game_id) DO NOTHING"
+    ).format(
+        sql.Identifier(SCHEMA),
+        cols=sql.SQL(", ").join(map(sql.Identifier, CONSENSUS_COLUMNS)),
+        vals=sql.SQL(", ").join(sql.Placeholder() * len(CONSENSUS_COLUMNS)),
+    )
+    inserted = 0
+    with conn.cursor() as cur:
+        for row in rows[CONSENSUS_COLUMNS].itertuples(index=False, name=None):
+            cur.execute(query, tuple(_to_native(value) for value in row))
+            inserted += cur.rowcount
+    if commit:
+        conn.commit()
+    return inserted
+
+
+def stored_consensus_game_ids(conn: psycopg.Connection, season_year: int) -> set[str]:
+    """The games of the season whose pick counts are stored."""
+    with conn.cursor() as cur:
+        cur.execute(
+            sql.SQL(
+                "SELECT game_id FROM {}.lh_consensus WHERE season_year = %s"
+            ).format(sql.Identifier(SCHEMA)),
+            (int(season_year),),
+        )
+        return {str(game_id) for (game_id,) in cur.fetchall()}
+
+
+def fetch_game_events(conn: psycopg.Connection, season_year: int) -> pd.DataFrame:
+    """The season's ``lh_game`` rows with their Covers id (``event_id``)."""
+    with conn.cursor() as cur:
+        cur.execute(
+            sql.SQL(
+                "SELECT {cols} FROM {schema}.lh_game WHERE season_year = %s "
+                "ORDER BY game_date, game_id"
+            ).format(
+                cols=sql.SQL(", ").join(map(sql.Identifier, GAME_EVENT_COLUMNS)),
+                schema=sql.Identifier(SCHEMA),
+            ),
+            (int(season_year),),
+        )
+        games = _rows_to_frame(cur, GAME_EVENT_COLUMNS)
+    if games.empty:
+        return games
+    games["game_id"] = games["game_id"].astype(str)
+    games["game_date"] = pd.to_datetime(games["game_date"]).dt.date
+    games["tipoff_utc"] = pd.to_datetime(games["tipoff_utc"], utc=True)
+    return games.reset_index(drop=True)
+
+
+def fetch_consensus(
+    conn: psycopg.Connection,
+    season_years: Iterable[int] | None = None,
+    game_ids: Iterable[str] | None = None,
+) -> pd.DataFrame:
+    """Stored pick counts in ``CONSENSUS_COLUMNS``; every game when both filters
+    are None. ``parse.PickConsensus.sbr_consensus`` turns a row into SBR's
+    shares."""
+    filters, params = [], []
+    if season_years is not None:
+        filters.append(sql.SQL("season_year = ANY(%s)"))
+        params.append([int(s) for s in season_years])
+    if game_ids is not None:
+        filters.append(sql.SQL("game_id = ANY(%s)"))
+        params.append([str(g) for g in game_ids])
+    where = (
+        sql.SQL(" WHERE ") + sql.SQL(" AND ").join(filters) if filters else sql.SQL("")
+    )
+    with conn.cursor() as cur:
+        cur.execute(
+            sql.SQL(
+                "SELECT {cols} FROM {schema}.lh_consensus{where} ORDER BY game_id"
+            ).format(
+                cols=sql.SQL(", ").join(map(sql.Identifier, CONSENSUS_COLUMNS)),
+                schema=sql.Identifier(SCHEMA),
+                where=where,
+            ),
+            params,
+        )
+        consensus = _rows_to_frame(cur, CONSENSUS_COLUMNS)
+    consensus["game_id"] = consensus["game_id"].astype(str)
+    for column in ("season_year", *_PICK_COLUMNS):
+        consensus[column] = pd.to_numeric(consensus[column]).astype("int64")
+    consensus["fetched_at"] = pd.to_datetime(consensus["fetched_at"], utc=True)
+    return consensus.reset_index(drop=True)
+
+
+def fetch_book_ticks(
+    conn: psycopg.Connection, game_ids: Iterable[str], book: str
+) -> pd.DataFrame:
+    """Every tick of one book for ``game_ids``, in ``TICK_COLUMNS``, decoded.
+    Used for ``consensus_opener``, which the SBR line history does not carry."""
+    with conn.cursor() as cur:
+        cur.execute(
+            sql.SQL(
+                """
+                SELECT l.game_id, l.season_year, m.code, b.slug,
+                       l.line_ts, l.mins_to_tip, l.is_opener,
+                       l.left_line, l.left_price, l.right_line, l.right_price
+                FROM {schema}.lh_line l
+                JOIN {schema}.lh_market m USING (market_id)
+                JOIN {schema}.lh_book   b USING (book_id)
+                WHERE l.game_id = ANY(%s) AND b.slug = %s
+                ORDER BY l.game_id, m.code, l.line_ts
+                """
+            ).format(schema=sql.Identifier(SCHEMA)),
+            ([str(g) for g in game_ids], book),
         )
         ticks = _rows_to_frame(cur, TICK_COLUMNS)
     return _decode_ticks(ticks)

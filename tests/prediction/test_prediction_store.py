@@ -10,7 +10,7 @@ from __future__ import annotations
 import io
 import json
 import os
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta, timezone
 
 import pandas as pd
 import pyarrow.parquet as pq
@@ -26,7 +26,7 @@ from nba_ou.prediction.prediction_store import (
     dropped_na_games,
     persist_prediction_run,
 )
-from nba_ou.utils.s3_prediction_runs import upload_prediction_run
+from nba_ou.utils.s3_prediction_runs import run_prefix, upload_prediction_run
 
 from tests.support.fake_s3 import FakeS3Client
 
@@ -57,6 +57,8 @@ def closing_frame() -> pd.DataFrame:
             "GAME_ID": [GAME_1, GAME_2],
             f"ODDS_TOTAL_LINE_{BOOK}": [224.5, 230.3],
             f"ODDS_SPREAD_LINE_HOME_{BOOK}": [-3.5, 2.0],
+            # SBR served the first game; the second came from Covers.
+            "LINE_SOURCE": ["sbr", "covers"],
         }
     )
 
@@ -87,6 +89,7 @@ def intermediate_frame() -> pd.DataFrame:
                     "ODDS_SNAP_SPR_BET365_PRICE_RIGHT": 100.0,
                     "ODDS_SNAP_SPR_BET365_LINE_AGE_MINUTES": 9.0,
                     "LATEST_INPUT": minutes != 360,
+                    "LINE_SOURCE": "sbr" if game == GAME_1 else "covers",
                 }
             )
     return pd.DataFrame(rows)
@@ -247,6 +250,28 @@ def test_inputs_one_row_per_frame_row_and_mode():
     ]
     # Two closing slots, two latest slots, one own slot and a baseline.
     assert len(tables.predictions) == 2 * 2 + 2 * 2 + 1 + 2
+    # 1 SBR, 2 Covers: each input row keeps its frame row's source.
+    assert inputs["line_source"].tolist() == [1, 1, 1, 2, 2]
+
+
+def test_a_frame_without_line_source_stores_null():
+    recorder = PredictionRunRecorder(workflow=1, game_date="2026-10-20", book=BOOK)
+    recorder.set_schedule(schedule())
+    closing = closing_frame().drop(columns="LINE_SOURCE")
+    recorder.add_frame("closing_line", closing, version="2_5")
+    recorder.add_predictions(
+        output(closing, dataset_type="closing_line", target="line_error", horizon=0),
+        label="closing line_error",
+    )
+    assert recorder.tables(status=1).inputs["line_source"].isna().all()
+
+
+def test_line_source_column_is_added_to_existing_stores():
+    ddl = store_schema.ddl_script()
+    assert "line_source              SMALLINT" in ddl
+    assert "ADD COLUMN IF NOT EXISTS line_source SMALLINT" in ddl
+    assert ddl.index("DROP VIEW IF EXISTS") < ddl.index("CREATE VIEW")
+    assert store_schema.LINE_SOURCE_CODES == {"sbr": 1, "covers": 2}
 
 
 def test_game_date_is_the_schedule_date():
@@ -474,7 +499,11 @@ def test_run_archive_writes_each_input_row_once():
         s3_client=s3, bucket="b", recorder=recorder, tables=tables
     )
     assert failures == []
-    assert base == f"prediction_snapshots/v2/2026-10-20/{recorder.run_uuid}/"
+    started = tables.run["started_at"]
+    assert base == (
+        "prediction_snapshots/v2/game_date=2026-10-20/"
+        f"{started:%Y%m%dT%H%M%SZ}_daily_{recorder.run_uuid}/"
+    )
     intermediate = pq.read_table(
         io.BytesIO(s3.store[f"{base}inputs_intermediate_line.parquet"])
     )
@@ -499,6 +528,32 @@ def test_run_archive_writes_each_input_row_once():
     }
     assert len(manifest["support_table_version"]) == 12
     assert [s["status"] for s in manifest["slots"]] == ["predicted"] * 6
+
+
+def test_run_folders_list_in_the_order_they_ran():
+    uuid = "3f2a9c1e-0000-0000-0000-000000000000"
+    madrid = timezone(timedelta(hours=2))
+    prefixes = [
+        run_prefix("2026-10-25", started, workflow, uuid)
+        for started, workflow in [
+            # Out of order on purpose; a Madrid time is stored as UTC.
+            (
+                datetime(2026, 10, 26, 4, 0, tzinfo=UTC),
+                store_schema.WORKFLOW_PAST_SNAPSHOTS,
+            ),
+            (
+                datetime(2026, 10, 25, 21, 0, 12, tzinfo=madrid),
+                store_schema.WORKFLOW_DAILY,
+            ),
+            (datetime(2026, 10, 25, 15, 0), store_schema.WORKFLOW_TABPFN),
+        ]
+    ]
+    assert sorted(prefixes) == [
+        f"prediction_snapshots/v2/game_date=2026-10-25/20261025T150000Z_tabpfn_{uuid}/",
+        f"prediction_snapshots/v2/game_date=2026-10-25/20261025T190012Z_daily_{uuid}/",
+        "prediction_snapshots/v2/game_date=2026-10-25/"
+        f"20261026T040000Z_past_snapshots_{uuid}/",
+    ]
 
 
 def test_manifest_is_written_when_a_file_fails():
@@ -696,6 +751,7 @@ def test_view_grades_against_the_bet_line(conn):
     assert model["model_edge"] == pytest.approx(1.5)
     assert model["season_type"] == 2 and model["season_year"] == 2026
     assert model["run_status"] == 1 and model["workflow"] == 1
+    assert model["line_source"] == 1
     baseline = closing_total[closing_total["kind"] == 2].iloc[0]
     assert baseline["pick_result"] == -1
     # Spread at -3.5 (home margin), actual +10: the AWAY pick loses.

@@ -744,11 +744,14 @@ def _games_table(seasons: Sequence[int]) -> pd.DataFrame:
     from nba_ou.postgre_db.games.fetch_data_from_db.fetch_data_from_games_db import (
         load_games_from_db,
     )
+    from nba_ou.utils.seasons import drop_exhibition_games
 
     games = load_games_from_db(seasons=[f"{y}-{(y + 1) % 100:02d}" for y in seasons])
     if games is None:
         raise PartitionError("Could not load the games table.")
-    return games
+    # No dataset has a row for a preseason or All-Star game, so none is a
+    # game to build or to wait for.
+    return drop_exhibition_games(games, "game_id")
 
 
 def finished_game_ids(start: date, end: date) -> list[str]:
@@ -808,14 +811,19 @@ def build_rows(
 
 
 def _line_history_game_ids(game_ids: Sequence[str]) -> list[str]:
-    """The games among ``game_ids`` the line-history store holds."""
+    """The games among ``game_ids`` the line-history stores hold: SBR's, or
+    Covers' (its fallback in every line-history read,
+    ``line_history_covers.fallback``)."""
     from psycopg import sql
 
     from nba_ou.postgre_db.line_history_aiven.fetch import (
         SCHEMA,
         connect_line_history_db,
     )
+    from nba_ou.postgre_db.line_history_covers import schema as covers_schema
+    from nba_ou.postgre_db.line_history_covers import store as covers_store
 
+    ids = list(map(str, game_ids))
     conn = connect_line_history_db()
     try:
         with conn.cursor() as cur:
@@ -823,9 +831,12 @@ def _line_history_game_ids(game_ids: Sequence[str]) -> list[str]:
                 sql.SQL(
                     "SELECT game_id FROM {}.lh_game WHERE game_id = ANY(%s)"
                 ).format(sql.Identifier(SCHEMA)),
-                (list(map(str, game_ids)),),
+                (ids,),
             )
-            return sorted(str(row[0]) for row in cur.fetchall())
+            found = {str(row[0]) for row in cur.fetchall()}
+        if covers_schema.schema_exists(conn):
+            found |= covers_store.stored_game_ids(conn, ids)
+        return sorted(found)
     finally:
         conn.close()
 

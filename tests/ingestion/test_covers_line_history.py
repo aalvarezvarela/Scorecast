@@ -4,12 +4,15 @@ Pins the parsing rules the store relies on -- visible spans only, the side
 conventions, the year and time zone of the Eastern date labels, the per-minute
 collapse and the skipped OPEN table -- plus the rebuilt ``consensus_opener``,
 the request plan, the update loop's skips and that writes stay in the
-``line_history_covers`` schema. The markup is the site's, with the quotes of
+``line_history_covers`` schema; then the pick counts (``lh_consensus``): which
+games ask for them, that a failed one stops neither the lines nor the other
+games, and that a dry run writes nothing. The markup is the site's, with the quotes of
 MEM @ ORL on 2026-01-15 (BetMGM, bet365).
 """
 
 from __future__ import annotations
 
+import os
 from datetime import UTC, date, datetime
 
 import pandas as pd
@@ -481,6 +484,51 @@ class TestPlan:
         assert update_mod.FIRST_SEASON == 2026
 
 
+class TestBackfill:
+    GAMES = pd.DataFrame(
+        {
+            "game_id": ["0041800111", "0022301062", "0022301063"],
+            "game_date": [date(2019, 4, 13), date(2024, 3, 29), date(2024, 3, 29)],
+        }
+    )
+
+    def test_past_games_planned_before_first_date(self):
+        plan = update_mod.plan_backfill(self.GAMES, {}, today=date(2026, 10, 24))
+        assert plan == {
+            date(2019, 4, 13): {"0041800111": set(ACTIVE_BOOKS)},
+            date(2024, 3, 29): {
+                "0022301062": set(ACTIVE_BOOKS),
+                "0022301063": set(ACTIVE_BOOKS),
+            },
+        }
+
+    def test_stored_games_are_not_fetched_again(self):
+        # Even with a book missing: a backfilled game is as Covers had it.
+        stored = {"0022301062": {1}, "0041800111": set(ACTIVE_BOOKS)}
+        plan = update_mod.plan_backfill(self.GAMES, stored, today=date(2026, 10, 24))
+        assert plan == {date(2024, 3, 29): {"0022301063": set(ACTIVE_BOOKS)}}
+
+    def test_today_is_not_planned(self):
+        plan = update_mod.plan_backfill(self.GAMES, {}, today=date(2024, 3, 29))
+        assert list(plan) == [date(2019, 4, 13)]
+
+    def test_game_ids_filtered_by_reason(self):
+        flagged = pd.DataFrame(
+            {
+                # Read from CSV without dtype: leading zeros lost.
+                "game_id": [41800111, "0022301062", "0022100316", "0022000100"],
+                "reasons": ["no_game", "no_ticks", "no_main_book;late_start", None],
+            }
+        )
+        assert update_mod.backfill_game_ids(flagged) == {
+            "0041800111",
+            "0022301062",
+            "0022100316",
+        }
+        assert update_mod.backfill_game_ids(flagged, ["late_start"]) == {"0022100316"}
+        assert update_mod.backfill_game_ids(flagged, ["truncated"]) == set()
+
+
 def _nba_games(game_id: str = "0022500578") -> pd.DataFrame:
     """Team-game rows as ``load_games_for_line_history_creation`` returns them."""
     return pd.DataFrame(
@@ -530,11 +578,33 @@ def _run(client, *, schedule=None, now=FETCHED, archive=None, dry_run=True, conn
     )
 
 
+#: The Covers Consensus page: ATS (away, home) then O/U (over, under) "Total
+#: Picks", then the experts' section, which is not read.
+CONSENSUS_PAGE = """
+<div id="consensus_analysis_content">
+  <div class="covers-CoversConsensusDetailsTable-finalWagersleft">368</div>
+  <div class="covers-CoversConsensusDetailsTable-picksFinal--center">Total Picks</div>
+  <div class="covers-CoversConsensusDetailsTable-finalWagersRight">198</div>
+  <div class="covers-CoversConsensusDetailsTable-finalWagersleft"> 167 </div>
+  <div class="covers-CoversConsensusDetailsTable-picksFinal--center">Total Picks</div>
+  <div class="covers-CoversConsensusDetailsTable-finalWagersRight"> 0 </div>
+</div>
+<div id="experts_analysis_content" style="display: none">
+  <div class="covers-CoversConsensusDetailsTable-finalWagersleft">21</div>
+  <div class="covers-CoversConsensusDetailsTable-finalWagersRight">7</div>
+</div>
+"""
+
+#: The section is there, the counts are not (a game nobody picked yet).
+CONSENSUS_EMPTY = '<div id="consensus_analysis_content"></div>'
+
+
 def _client(answer: str = ANSWER):
     return FakeClient(
         {
             client_mod.matchups_url(DAY): MATCHUPS,
             client_mod.history_url(COVERS_ID): answer,
+            client_mod.consensus_url(COVERS_ID): CONSENSUS_PAGE,
         }
     )
 
@@ -773,7 +843,37 @@ class TestSchemaWrites:
             '"line_history_covers".lh_game',
             '"line_history_covers".lh_line',
             '"line_history_covers".lh_load_meta',
+            '"line_history_covers".lh_consensus',
         }
+
+    def test_consensus_table_is_covers_only_and_keyed_by_game(self):
+        conn = _Conn()
+        schema_mod.create_schema(conn)
+        (ddl,) = [s for s in conn.log if "lh_consensus" in s]
+        assert "CREATE TABLE IF NOT EXISTS" in ddl
+        assert "game_id           TEXT PRIMARY KEY" in ddl
+        assert 'REFERENCES "line_history_covers".lh_game (game_id)' in ddl
+        for column in store.CONSENSUS_COLUMNS[1:]:
+            assert column in ddl
+        assert "fetched_at        TIMESTAMPTZ" in ddl
+        # Created after lh_game, which it references.
+        game_ddl = next(i for i, s in enumerate(conn.log) if "lh_game (" in s)
+        assert conn.log.index(ddl) > game_ddl
+
+    def test_consensus_reads_and_writes_the_covers_schema(self):
+        conn = _Conn(rows=[("0022600001",), ("0022600002",)])
+        assert store.stored_consensus_game_ids(conn, 2026) == {
+            "0022600001",
+            "0022600002",
+        }
+        frame = pd.DataFrame(
+            [("0022600003", 2026, 1, 2, 3, 0, FETCHED)],
+            columns=store.CONSENSUS_COLUMNS,
+        )
+        assert store.insert_consensus(conn, frame) == 1
+        assert '"line_history_covers".lh_consensus' in conn.log[0]
+        assert "ON CONFLICT (game_id) DO NOTHING" in conn.log[1]
+        assert conn.commits == 1
 
     def test_stored_books_read_the_covers_schema(self):
         conn = _Conn(rows=[("0022600001", 26), ("0022600002", None)])
@@ -795,10 +895,14 @@ def _load_cli():
 
 
 class TestCli:
-    def _main(self, monkeypatch, client: FakeClient) -> int:
+    def _main(
+        self, monkeypatch, client: FakeClient, flags=(), stored_games=None
+    ) -> int:
         from contextlib import contextmanager
 
         cli = _load_cli()
+        if stored_games is None:
+            stored_games = pd.DataFrame(columns=store.GAME_EVENT_COLUMNS)
 
         @contextmanager
         def connection():
@@ -821,9 +925,16 @@ class TestCli:
         monkeypatch.setattr(cli, "CoversClient", ContextClient)
         monkeypatch.setattr(cli.schema_mod, "schema_exists", lambda conn: True)
         monkeypatch.setattr(cli.store, "stored_game_books", lambda conn, season: {})
+        monkeypatch.setattr(cli.schema_mod, "consensus_table_exists", lambda c: True)
+        monkeypatch.setattr(
+            cli.store, "stored_consensus_game_ids", lambda conn, season: set()
+        )
+        monkeypatch.setattr(
+            cli.store, "fetch_game_events", lambda conn, season: stored_games
+        )
         monkeypatch.setattr(
             "sys.argv",
-            ["update_covers_line_history.py", "--dry-run", "--dates", str(DAY)],
+            ["update_covers_line_history.py", "--dry-run", "--dates", str(DAY), *flags],
         )
         return cli.main()
 
@@ -832,4 +943,285 @@ class TestCli:
         assert self._main(monkeypatch, failing) == 1
 
     def test_clean_run_exits_0(self, monkeypatch):
-        assert self._main(monkeypatch, _client()) == 0
+        client = _client()
+        assert self._main(monkeypatch, client) == 0
+        # The game the run prepared gets its pick counts too.
+        assert client.urls[-1] == client_mod.consensus_url(COVERS_ID)
+
+    def test_consensus_only_fetches_no_lines(self, monkeypatch):
+        client = _client()
+        code = self._main(
+            monkeypatch, client, ["--consensus-only"], stored_games=_stored_games()
+        )
+        assert code == 0
+        assert client.urls == [client_mod.consensus_url(COVERS_ID)]
+
+    def test_failed_consensus_exits_1(self, monkeypatch):
+        failing = FakeClient({}, failing={client_mod.consensus_url(COVERS_ID)})
+        code = self._main(
+            monkeypatch, failing, ["--consensus-only"], stored_games=_stored_games()
+        )
+        assert code == 1
+
+
+# -- pick counts (lh_consensus) ------------------------------------------------
+
+OTHER_ID, OTHER_COVERS = "0022500579", 362627
+
+
+def _stored_games(*game_ids: str) -> pd.DataFrame:
+    """``lh_game`` rows as ``store.fetch_game_events`` returns them."""
+    game_ids = game_ids or ("0022500578",)
+    covers = {"0022500578": COVERS_ID, OTHER_ID: OTHER_COVERS}
+    return pd.DataFrame(
+        {
+            "game_id": list(game_ids),
+            "game_date": [DAY] * len(game_ids),
+            "season_year": [2025] * len(game_ids),
+            "tipoff_utc": [pd.Timestamp(TIPOFF)] * len(game_ids),
+            "event_id": [covers.get(g) for g in game_ids],
+            "team_home": ["ORL"] * len(game_ids),
+            "team_away": ["MEM"] * len(game_ids),
+        }
+    )
+
+
+def _consensus_plan(*game_ids: str, stored=()) -> update_mod.ConsensusPlan:
+    games = _stored_games(*game_ids)
+    return update_mod.ConsensusPlan(
+        targets=update_mod.plan_consensus(games, set(stored), now=FETCHED),
+        stored=set(stored),
+    )
+
+
+def _run_consensus(client, consensus, *, plan=None, dry_run=True, conn=None, **kw):
+    return update_mod.update_covers_line_history(
+        plan or {},
+        games_df=_nba_games(),
+        schedule=_schedule(),
+        conn=conn,
+        client=client,
+        dry_run=dry_run,
+        now=FETCHED,
+        progress=kw.pop("progress", lambda _: None),
+        consensus=consensus,
+        **kw,
+    )
+
+
+class TestConsensusPlan:
+    def test_stored_games_without_counts_are_planned(self):
+        games = _stored_games("0022500578", OTHER_ID)
+        plan = update_mod.plan_consensus(games, {OTHER_ID}, now=FETCHED)
+        assert plan == {
+            DAY: [
+                update_mod.ConsensusTarget(
+                    "0022500578", COVERS_ID, 2025, "MEM @ ORL (0022500578)"
+                )
+            ]
+        }
+
+    def test_unsettled_games_wait(self):
+        games = _stored_games()
+        early = TIPOFF + pd.Timedelta(hours=3, minutes=59)
+        assert update_mod.plan_consensus(games, set(), now=early) == {}
+        late = TIPOFF + pd.Timedelta(hours=4)
+        assert update_mod.plan_consensus(games, set(), now=late)
+
+    def test_game_without_a_covers_id_is_skipped(self):
+        games = _stored_games("0022500578", "0022500999")  # no Covers id
+        plan = update_mod.plan_consensus(games, set(), now=FETCHED)
+        assert [t.game_id for t in plan[DAY]] == ["0022500578"]
+
+    def test_naive_tipoffs_read_as_utc(self):
+        games = _stored_games()
+        games["tipoff_utc"] = [pd.Timestamp("2026-01-16 00:00")]
+        assert update_mod.plan_consensus(
+            games, set(), now=TIPOFF + pd.Timedelta(hours=4)
+        )
+
+
+class TestConsensusUpdate:
+    def test_counts_become_store_rows(self):
+        client = _client()
+        result = _run_consensus(client, _consensus_plan())
+        assert client.urls == [client_mod.consensus_url(COVERS_ID)]
+        (frame,) = result.consensus_frames
+        row = frame.iloc[0]
+        assert list(frame.columns) == store.CONSENSUS_COLUMNS
+        assert row.game_id == "0022500578" and row.season_year == 2025
+        assert (row.spread_away_picks, row.spread_home_picks) == (368, 198)
+        # Zero is a count, not a missing value.
+        assert (row.total_over_picks, row.total_under_picks) == (167, 0)
+        assert result.consensus_planned == 1 and result.consensus_fetched == 1
+        assert not result.failed and not result.frames
+
+    def test_dry_run_writes_and_archives_nothing(self):
+        conn, archive = _Conn(), _Archive()
+        result = _run_consensus(
+            _client(), _consensus_plan(), conn=conn, archive=archive, dry_run=True
+        )
+        assert result.consensus_frames and result.consensus_inserted == 0
+        assert conn.log == [] and conn.commits == 0 and archive.keys == []
+
+    def test_written_and_archived(self):
+        conn, archive = _Conn(), _Archive()
+        result = _run_consensus(
+            _client(), _consensus_plan(), conn=conn, archive=archive, dry_run=False
+        )
+        assert result.consensus_inserted == 1 and conn.commits == 1
+        assert any("lh_consensus" in s for s in conn.log)
+        (key,) = archive.keys
+        assert key.startswith(
+            "train_data/odds_sources/covers/raw/v1/2026-01-15/362626/consensus/"
+        )
+        assert key.endswith(".html.gz")
+
+    def test_game_with_counts_is_not_asked_again(self):
+        client = _client()
+        result = _run_consensus(
+            client,
+            _consensus_plan(stored={"0022500578"}),
+            plan={DAY: {"0022500578": set(ACTIVE_BOOKS)}},
+        )
+        assert result.frames  # the lines were fetched again
+        assert client_mod.consensus_url(COVERS_ID) not in client.urls
+
+    def test_a_game_stored_by_the_run_gets_its_counts(self):
+        client = _client()
+        lines: list[str] = []
+        result = _run_consensus(
+            client,
+            update_mod.ConsensusPlan(),
+            plan={DAY: {"0022500578": set(ACTIVE_BOOKS)}},
+            progress=lines.append,
+        )
+        assert result.frames and result.consensus_planned == 1
+        # Lines first, then the counts, in the date's one group.
+        assert client.urls[-2:] == [
+            client_mod.history_url(COVERS_ID),
+            client_mod.consensus_url(COVERS_ID),
+        ]
+        assert result.consensus_frames[0].iloc[0].game_id == "0022500578"
+        (counts,) = [line for line in lines if "consensus ATS" in line]
+        assert counts.startswith("  + MEM @ ORL (0022500578): consensus ATS 368 away")
+
+    def test_failed_consensus_stops_neither_lines_nor_other_games(self, monkeypatch):
+        monkeypatch.setattr(
+            store, "insert_lines", lambda c, rows, season, *, commit=True: len(rows)
+        )
+        client = _client()
+        client.failing.add(client_mod.consensus_url(OTHER_COVERS))
+        conn = _Conn()
+        result = _run_consensus(
+            client,
+            _consensus_plan(OTHER_ID),
+            plan={DAY: {"0022500578": set(ACTIVE_BOOKS)}},
+            conn=conn,
+            dry_run=False,
+        )
+        assert result.inserted_games == 1 and result.inserted_ticks > 0
+        (failure,) = result.failed
+        assert OTHER_ID in failure and "consensus" in failure
+        # The game the run stored still got its counts, after the failure.
+        assert result.consensus_inserted == 1
+        assert result.consensus_frames[0]["game_id"].tolist() == ["0022500578"]
+
+    def test_unparseable_page_is_a_failure_not_an_exception(self, monkeypatch):
+        def broken(text):
+            raise ValueError("unexpected markup")
+
+        monkeypatch.setattr(update_mod, "parse_consensus", broken)
+        result = _run_consensus(_client(), _consensus_plan())
+        (failure,) = result.failed
+        assert "consensus parse error" in failure and not result.consensus_frames
+
+    def test_page_without_counts_waits_for_the_next_run(self):
+        client = FakeClient({client_mod.consensus_url(COVERS_ID): CONSENSUS_EMPTY})
+        result = _run_consensus(client, _consensus_plan())
+        assert result.consensus_empty and not result.failed
+        assert not result.consensus_frames
+
+    def test_consensus_only_dates_get_their_own_group(self, monkeypatch):
+        monkeypatch.setenv("GITHUB_ACTIONS", "true")
+        lines: list[str] = []
+        _run_consensus(_client(), _consensus_plan(), progress=lines.append)
+        assert lines[0] == "::group::2026-01-15: consensus of 1 stored game(s)"
+        assert lines[-1] == "::endgroup::"
+        assert any(line.startswith("  + MEM @ ORL") for line in lines)
+
+    def test_without_a_consensus_plan_no_counts_are_asked(self):
+        client = _client()
+        result = _run(client)
+        assert client_mod.consensus_url(COVERS_ID) not in client.urls
+        assert result.consensus_planned == 0
+
+
+# -- the store, against a real PostgreSQL --------------------------------------
+
+DSN = os.getenv("NBA_OU_TEST_PG_DSN")
+needs_db = pytest.mark.skipif(not DSN, reason="NBA_OU_TEST_PG_DSN not set")
+
+
+@pytest.fixture
+def pg_conn():
+    import psycopg
+
+    def drop(connection):
+        with connection.cursor() as cur:
+            cur.execute(f"DROP SCHEMA IF EXISTS {schema_mod.SCHEMA} CASCADE")
+        connection.commit()
+
+    with psycopg.connect(DSN) as connection:
+        drop(connection)
+        schema_mod.create_schema(connection)
+        yield connection
+        connection.rollback()
+        drop(connection)
+
+
+@pytest.mark.postgres
+@needs_db
+def test_consensus_insert_and_read(pg_conn):
+    import psycopg
+
+    game_dim = _stored_games("0022500578", OTHER_ID)
+    store.insert_games(pg_conn, game_dim)
+    assert schema_mod.consensus_table_exists(pg_conn)
+    first = pd.DataFrame(
+        [
+            ("0022500578", 2025, 368, 198, 167, 0, FETCHED),
+            (OTHER_ID, 2025, 0, 0, 0, 0, FETCHED),
+        ],
+        columns=store.CONSENSUS_COLUMNS,
+    )
+    assert store.insert_consensus(pg_conn, first) == 2
+    # Insert-only: counts read again later do not replace the stored ones.
+    again = first.assign(spread_away_picks=999)
+    assert store.insert_consensus(pg_conn, again) == 0
+    assert store.stored_consensus_game_ids(pg_conn, 2025) == {"0022500578", OTHER_ID}
+    assert store.stored_consensus_game_ids(pg_conn, 2026) == set()
+
+    read = store.fetch_consensus(pg_conn, game_ids=["0022500578"])
+    assert read.to_dict("records") == [
+        {
+            "game_id": "0022500578",
+            "season_year": 2025,
+            "spread_away_picks": 368,
+            "spread_home_picks": 198,
+            "total_over_picks": 167,
+            "total_under_picks": 0,
+            "fetched_at": pd.Timestamp(FETCHED),
+        }
+    ]
+    assert len(store.fetch_consensus(pg_conn)) == 2
+    assert store.fetch_consensus(pg_conn, season_years=[2026]).empty
+
+    events = store.fetch_game_events(pg_conn, 2025)
+    assert events["event_id"].tolist() == [COVERS_ID, OTHER_COVERS]
+    assert update_mod.plan_consensus(events, set(), now=FETCHED)
+
+    # A game the store does not hold cannot get counts.
+    orphan = first.iloc[:1].assign(game_id="0022500001")
+    with pytest.raises(psycopg.errors.ForeignKeyViolation):
+        store.insert_consensus(pg_conn, orphan)

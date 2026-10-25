@@ -5,6 +5,7 @@
     train_data/odds_sources/covers/raw/v1/<YYYY-MM-DD>/
       matchups/<fetched_at>.html.gz            the date's matchups page
       <covers_id>/<fetched_at>.html.gz         one game's line-history answer
+      <covers_id>/consensus/<fetched_at>.html.gz   its Covers Consensus page
 
 Insert-only by construction: each fetch writes a new key named by its UTC
 fetch time, so a re-fetch of a game (a book that was missing) never replaces
@@ -32,6 +33,13 @@ def matchups_key(game_date: date, fetched_at: datetime) -> str:
 def game_key(game_date: date, covers_id: int, fetched_at: datetime) -> str:
     return (
         f"{RAW_PREFIX}/{game_date.isoformat()}/{int(covers_id)}/"
+        f"{_stamp(fetched_at)}.html.gz"
+    )
+
+
+def consensus_key(game_date: date, covers_id: int, fetched_at: datetime) -> str:
+    return (
+        f"{RAW_PREFIX}/{game_date.isoformat()}/{int(covers_id)}/consensus/"
         f"{_stamp(fetched_at)}.html.gz"
     )
 

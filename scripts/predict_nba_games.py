@@ -20,7 +20,7 @@ from nba_ou.create_training_data.schema_layers import (
     is_layered,
     newest_version,
 )
-from nba_ou.postgre_db.line_history_aiven.feed_freshness import check_live_feed
+from nba_ou.fetch_data.scheduled_game.get_schedule_games import get_schedule_games
 from nba_ou.postgre_db.predictions.create.create_ou_predictions_db import (
     upload_predictions_to_postgre,
 )
@@ -35,6 +35,7 @@ from nba_ou.prediction.intermediate_frame import (
     PASSTHROUGH_COLUMNS,
     tonight_intermediate_frame,
 )
+from nba_ou.prediction.line_source import LINE_SOURCE_COLUMN, check_line_feed
 from nba_ou.prediction.prediction import (
     load_registry_model_and_predict,
 )
@@ -42,7 +43,6 @@ from nba_ou.prediction.prediction_store import (
     PredictionRunRecorder,
     persist_prediction_run,
 )
-from nba_ou.utils.ci import annotate
 from nba_ou.utils.general_utils import get_season_year_from_date
 from nba_ou.utils.s3_models import (
     make_s3_client,
@@ -105,6 +105,7 @@ def predict_nba_games(
     dump_frames: str | Path | None = None,
     allow_stale_lines: bool = False,
     intermediate_input: str | None = None,
+    line_source: str | None = None,
 ) -> None:
     """
     Main execution function for the NBA prediction pipeline.
@@ -128,9 +129,12 @@ def predict_nba_games(
     injury-report sync in steps 1-3 still write. ``dump_frames`` writes the
     feature frames to that local directory, for inspection.
 
-    When SBR's feed has frozen (``feed_freshness``), every line the models would
-    read is hours old, so the run stops after the database update with exit 1
-    and predicts nothing; ``allow_stale_lines`` predicts anyway.
+    When SBR's feed has frozen (``feed_freshness``) or serves no odds, tonight's
+    lines come from Covers instead (``prediction.line_source``), and each stored
+    input row says which (``line_source``). Only when Covers is frozen too
+    does the run stop after the database update with exit 1 and predict
+    nothing; ``allow_stale_lines`` predicts anyway. ``line_source="covers"``
+    forces the fallback.
     """
     configure_tqdm_for_environment()
 
@@ -172,28 +176,16 @@ def predict_nba_games(
         raise
 
     # Step 1b: SBR's lines must still be moving, or every prediction below is
-    # made on lines frozen hours ago. The database update above stands either way.
+    # made on lines frozen hours ago; Covers stands in when it is not. The
+    # database update above stands either way.
     print_step_header(1, "Checking SBR Line Feed")
-    try:
-        freshness = check_live_feed(
-            datetime.strptime(date_to_predict, "%Y-%m-%d").date()
-        )
-    except Exception as e:  # noqa: BLE001 -- the check must not cost the run
-        annotate("warning", f"SBR feed check failed, continuing unchecked: {e}")
-    else:
-        print_status(freshness.describe(), ok=not freshness.stale)
-        if freshness.stale:
-            message = (
-                f"SBR line feed looks frozen: {freshness.describe()}. "
-                "Predictions would use stale lines"
-            )
-            if not allow_stale_lines:
-                annotate(
-                    "error",
-                    f"{message}; nothing predicted (--allow-stale-lines overrides).",
-                )
-                raise SystemExit(1)
-            annotate("warning", f"{message}; predicting anyway (--allow-stale-lines).")
+    lines = check_line_feed(
+        pd.Timestamp(date_to_predict).date(),
+        allow_stale_lines=allow_stale_lines,
+        load_scheduled_games=lambda: get_schedule_games(date_to_predict),
+        report=print_status,
+        force=line_source,
+    )
 
     # Step 2: Fetch scheduled games, referees, injuries and odds
     print_step_header(2, "Fetching Scheduled Games & Reports")
@@ -202,6 +194,7 @@ def predict_nba_games(
             date_to_predict=date_to_predict,
             nba_injury_reports_url=SETTINGS.nba_injury_reports_url,
             headless=SETTINGS.headless,
+            line_source=lines,
         )
         print_status("Fetched scheduled games, refs, injuries and odds")
         if scheduled_data["scheduled_games"].empty:
@@ -251,6 +244,12 @@ def predict_nba_games(
         df_to_predict = df_to_predict_total[
             df_to_predict_total["GAME_DATE"] == date_to_predict
         ].copy()
+        # Set here, not in the builder: no feature step may ever see it.
+        df_to_predict[LINE_SOURCE_COLUMN] = (
+            df_to_predict["GAME_ID"]
+            .astype(str)
+            .map(scheduled_data.get("line_sources", {}))
+        )
         print_status("Feature DataFrame prepared")
 
     except Exception as e:
@@ -517,6 +516,15 @@ if __name__ == "__main__":
             "snapshot). Default: [PredictionModels] INTERMEDIATE_INPUT_MODE."
         ),
     )
+    parser.add_argument(
+        "--line-source",
+        choices=("auto", "covers"),
+        default="auto",
+        help=(
+            "Where tonight's lines come from: auto (SBR, Covers when SBR is "
+            "frozen or empty) or covers (force the fallback, for tests)."
+        ),
+    )
     args = parser.parse_args()
 
     predict_nba_games(
@@ -527,4 +535,5 @@ if __name__ == "__main__":
         dump_frames=args.dump_frames,
         allow_stale_lines=args.allow_stale_lines,
         intermediate_input=args.intermediate_input,
+        line_source=args.line_source,
     )

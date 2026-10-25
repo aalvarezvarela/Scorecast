@@ -1235,6 +1235,9 @@ pymupdf==1.26.6 ; python_version >= "3.11" and python_version < "3.14" \
 pyparsing==3.2.1 ; python_version >= "3.11" and python_version < "3.14" \
     --hash=sha256:506ff4f4386c4cec0590ec19e6302d3aedb992fdc02c761e90416f158dacf8e1 \
     --hash=sha256:61980854fd66de3a90028d679a954d5f2623e83144b5afe5ee86f43d762e5f0a
+pytest-sugar==1.1.1 ; python_version >= "3.11" and python_version < "3.14" \
+    --hash=sha256:2f8319b907548d5b9d03a171515c1d43d2e38e32bd8182a1781eb20b43344cc8 \
+    --hash=sha256:73b8b65163ebf10f9f671efab9eed3d56f20d2ca68bda83fa64740a92c08f65d
 pytest==9.1.1 ; python_version >= "3.11" and python_version < "3.14" \
     --hash=sha256:1088fbde8f2b49d95a549a195707afa7a76a3ce9bcadc26b6d71f0ffda5fe313 \
     --hash=sha256:37a86b45efb9a47a61a36449063e8e18d0cab3161329fc099eb21783169c4f0c
@@ -1523,6 +1526,9 @@ sqlalchemy==2.0.46 ; python_version >= "3.11" and python_version < "3.14" \
     --hash=sha256:ebf7e1e78af38047e08836d33502c7a278915698b7c2145d045f780201679999 \
     --hash=sha256:f9c11766e7e7c0a2767dda5acb006a118640c9fc0a4104214b96269bfb78399e \
     --hash=sha256:ff33c6e6ad006bbc0f34f5faf941cfc62c45841c64c0a058ac38c799f15b5ede
+termcolor==3.3.0 ; python_version >= "3.11" and python_version < "3.14" \
+    --hash=sha256:348871ca648ec6a9a983a13ab626c0acce02f515b9e1983332b17af7979521c5 \
+    --hash=sha256:cf642efadaf0a8ebbbf4bc7a31cec2f9b5f21a9f726f4ccbb08192c9c26f43a5
 threadpoolctl==3.5.0 ; python_version >= "3.11" and python_version < "3.14" \
     --hash=sha256:082433502dd922bf738de0d8bcc4fdcbf0979ff44c42bd40f5af8a282f6fa107 \
     --hash=sha256:56c1e26c150397e58c4926da8eeee87533b1e32bef131bd4bf6a2f45f3185467

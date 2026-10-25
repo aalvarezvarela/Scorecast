@@ -34,7 +34,7 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--refresh", action="store_true")
     args = parser.parse_args()
-    seasons = fetch.available_seasons()
+    seasons = fetch.available_seasons(covers_fallback=False)
     current = season_tables.current_season_year()
     print(f"seasons {seasons}, current {current}")
     if args.refresh:
