@@ -31,6 +31,7 @@ import pandas as pd
 import psycopg
 
 from nba_ou.postgre_db.row_order import read_sql_canonical
+from nba_ou.utils.seasons import drop_exhibition_games
 
 from .schema import SCHEMA
 
@@ -327,11 +328,11 @@ def last_status_before_tip(
     stored = _through_s3(
         "last_status_before_tip", _LAST_STATUS_BEFORE_TIP, conn, season_years
     )
-    if stored is not None:
-        return stored
-    return read_sql_canonical(
-        _LAST_STATUS_BEFORE_TIP, conn, params=_season_params(season_years)
-    )
+    if stored is None:
+        stored = read_sql_canonical(
+            _LAST_STATUS_BEFORE_TIP, conn, params=_season_params(season_years)
+        )
+    return drop_exhibition_games(stored, "game_id")
 
 
 def filing_at_tip(
@@ -342,9 +343,11 @@ def filing_at_tip(
     A team-game with no row had no report listing its game before tip.
     """
     stored = _through_s3("filing_at_tip", _FILING_AT_TIP, conn, season_years)
-    if stored is not None:
-        return stored
-    return read_sql_canonical(_FILING_AT_TIP, conn, params=_season_params(season_years))
+    if stored is None:
+        stored = read_sql_canonical(
+            _FILING_AT_TIP, conn, params=_season_params(season_years)
+        )
+    return drop_exhibition_games(stored, "game_id")
 
 
 def report_age_at_tip(
@@ -352,11 +355,11 @@ def report_age_at_tip(
 ) -> pd.DataFrame:
     """Minutes between the last parsed report and each game's tipoff."""
     stored = _through_s3("report_age_at_tip", _REPORT_AGE_AT_TIP, conn, season_years)
-    if stored is not None:
-        return stored
-    return read_sql_canonical(
-        _REPORT_AGE_AT_TIP, conn, params=_season_params(season_years)
-    )
+    if stored is None:
+        stored = read_sql_canonical(
+            _REPORT_AGE_AT_TIP, conn, params=_season_params(season_years)
+        )
+    return drop_exhibition_games(stored, "game_id")
 
 
 def listed_status_events(
@@ -372,10 +375,10 @@ def listed_status_events(
         season_years,
         params=(("statuses", list(statuses)),),
     )
-    if stored is not None:
-        return stored
-    params = _season_params(season_years) | {"statuses": list(statuses)}
-    return read_sql_canonical(_LISTED_STATUS_EVENTS, conn, params=params)
+    if stored is None:
+        params = _season_params(season_years) | {"statuses": list(statuses)}
+        stored = read_sql_canonical(_LISTED_STATUS_EVENTS, conn, params=params)
+    return drop_exhibition_games(stored, "game_id")
 
 
 def listed_pairs(
@@ -383,9 +386,11 @@ def listed_pairs(
 ) -> pd.DataFrame:
     """Every (game, player) with any pre-tip designation, of any status."""
     stored = _through_s3("listed_pairs", _LISTED_PAIRS, conn, season_years)
-    if stored is not None:
-        return stored
-    return read_sql_canonical(_LISTED_PAIRS, conn, params=_season_params(season_years))
+    if stored is None:
+        stored = read_sql_canonical(
+            _LISTED_PAIRS, conn, params=_season_params(season_years)
+        )
+    return drop_exhibition_games(stored, "game_id")
 
 
 # --------------------------------------------------------------------------------
@@ -461,14 +466,20 @@ def status_spans(
     A NULL status means the player left the report; it is a change, so it is
     kept rather than filtered out as the as-of reads do.
     """
-    return read_sql_canonical(_STATUS_SPANS, conn, params=_season_params(season_years))
+    return drop_exhibition_games(
+        read_sql_canonical(_STATUS_SPANS, conn, params=_season_params(season_years)),
+        "game_id",
+    )
 
 
 def filing_spans(
     conn: psycopg.Connection, season_years: list[int] | None = None
 ) -> pd.DataFrame:
     """Every pre-tip filing span per team-game, with its ``submitted`` flag."""
-    return read_sql_canonical(_FILING_SPANS, conn, params=_season_params(season_years))
+    return drop_exhibition_games(
+        read_sql_canonical(_FILING_SPANS, conn, params=_season_params(season_years)),
+        "game_id",
+    )
 
 
 def team_game_schedule(

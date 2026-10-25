@@ -10,6 +10,7 @@ from typing import Literal
 import numpy as np
 import pandas as pd
 
+from nba_ou.config.constants import EXHIBITION_SEASON_TYPES
 from nba_ou.config.odds_columns import (
     get_main_book,
     moneyline_col,
@@ -315,7 +316,7 @@ def merge_total_spread_moneyline_by_game_id(
             )
         else:
             games_df = df_team[
-                ~df_team["SEASON_TYPE"].isin(["Preseason", "All Star"])
+                ~df_team["SEASON_TYPE"].isin(EXHIBITION_SEASON_TYPES)
             ].copy()
             games_df = games_df[games_df["SEASON_YEAR"] >= 2019]
             team_game_ids = set(games_df["GAME_ID"].dropna().unique())

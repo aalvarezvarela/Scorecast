@@ -592,3 +592,23 @@ def sp_with_targets(df: pd.DataFrame) -> pd.DataFrame:
     from nba_ou.modeling.refit import with_residual_targets
 
     return with_residual_targets(df)
+
+
+def test_no_preseason_or_all_star_game_is_a_game_to_build(monkeypatch):
+    from nba_ou.postgre_db.games.fetch_data_from_db import fetch_data_from_games_db
+
+    games = pd.DataFrame(
+        {
+            "game_id": ["0012400001", "0022400001", "0032400001", "0042400101"],
+            "game_date": ["2024-10-10", "2024-10-22", "2025-02-14", "2025-04-20"],
+            "season_year": [2024] * 4,
+        }
+    )
+    monkeypatch.setattr(
+        fetch_data_from_games_db, "load_games_from_db", lambda **kw: games.copy()
+    )
+    assert sp.season_game_ids(2024, date(2025, 6, 30)) == ["0022400001", "0042400101"]
+    assert sp.finished_game_ids(date(2024, 10, 1), date(2025, 6, 30)) == [
+        "0022400001",
+        "0042400101",
+    ]

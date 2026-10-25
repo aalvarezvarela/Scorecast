@@ -222,6 +222,18 @@ History
       built earlier carry the full Yahoo family and are left in place for the
       configs pinned to them.
 
+    Both datasets, rebuilt in place under the 2_5 label (the bug-fix precedent
+    of ``docs/pipeline/defect_fixes_2_5.md``): **no feature reads a preseason
+    or All-Star game** (``EXHIBITION_SEASON_TYPES``). Until then the team frame
+    dropped them, but the player box scores, the injury history and the
+    injury-report history did not, so preseason opened every player's
+    in-season EWMA and the TOP-N groups built on it (October ``PTS_CUM_AVG``
+    off by 3.2 points on average). Values move mostly in October and November
+    games; columns and names are unchanged. Playoffs stay in the features
+    (``LAST_ALL_*`` windows) and out of the training rows. Files and models
+    built before this change are not comparable with later ones.
+    ``docs/pipeline/exhibition_games.md``.
+
 ``2_6``
     First layered version, over ``2_5`` (``schema_layers/v2_6.py``).
 

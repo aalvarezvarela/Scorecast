@@ -41,7 +41,11 @@ from dataclasses import dataclass
 
 import numpy as np
 import pandas as pd
-from nba_ou.config.constants import OVERTIME_THRESHOLD_MINUTES, REGULATION_GAME_MINUTES
+from nba_ou.config.constants import (
+    EXHIBITION_SEASON_TYPES,
+    OVERTIME_THRESHOLD_MINUTES,
+    REGULATION_GAME_MINUTES,
+)
 from nba_ou.config.market_columns import spread_line_home_from_handicap
 from nba_ou.config.odds_columns import spread_col
 from nba_ou.data_processing.referees.add_referee_features import (
@@ -74,7 +78,7 @@ UNKNOWN_COUNT_FEATURE = "REF_CREW_UNKNOWN_COUNT_BEFORE"
 SAME_SEASON_PREFIX = "REF_CREW_SS_"
 UNMATCHED_OFFICIAL_PREFIX = "UNMATCHED:"
 
-EXCLUDED_SEASON_TYPES = ("Preseason", "All Star")
+EXCLUDED_SEASON_TYPES = EXHIBITION_SEASON_TYPES
 
 
 @dataclass(frozen=True)

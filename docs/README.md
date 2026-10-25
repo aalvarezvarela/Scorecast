@@ -33,6 +33,7 @@ the folder of its topic, with a status line, and gets a row here.
 | [feature_engineering_overview.md](pipeline/feature_engineering_overview.md) | Reference | Map of data sources, storage and the module behind each feature family | `data_processing/` |
 | [yahoo_features.md](pipeline/yahoo_features.md) | Reference | The compact 36-column Yahoo percentage contract | `config/yahoo_features.py` |
 | [defect_fixes_2_5.md](pipeline/defect_fixes_2_5.md) | Implemented | The 2_5 defects found in October 2026 and how each was fixed | `data_processing/`, `postgre_db/` |
+| [exhibition_games.md](pipeline/exhibition_games.md) | Partial | Preseason and All-Star games dropped from every feature input (2_5 in place); rebuild and retrain pending | `utils/seasons.py`, `postgre_db/config/db_loader.py`, `injury_report_aiven/fetch.py` |
 | [speedup.md](pipeline/speedup.md) | Partial | Making the 2_5 builds faster without changing a value: caches, target mode, season partitions | `scripts/perf/`, `create_training_data/season_partitions.py` |
 | [prediction_input_cache_s3.md](pipeline/prediction_input_cache_s3.md) | Partial | Past seasons of every input table read from S3, the current season from the DB | `postgre_db/season_tables.py`, `scripts/refresh_input_cache.py` |
 | [prediction_runtime_plan.md](pipeline/prediction_runtime_plan.md) | Partial | Shorter daily prediction runs (A–E done, F deferred): trust frozen 2_5 seasons, latest-only rows, shared loads, model cache | `postgre_db/season_tables.py`, `create_training_data/history_memo.py`, `create_intermediate_line_df.py` |

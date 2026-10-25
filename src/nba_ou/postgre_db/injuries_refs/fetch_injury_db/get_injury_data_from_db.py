@@ -3,9 +3,10 @@ from nba_ou.postgre_db.config.db_config import (
     connect_nba_db,
     get_schema_name_injuries,
 )
-from psycopg import sql
 from nba_ou.postgre_db.row_order import read_sql_canonical
 from nba_ou.postgre_db.season_tables import read_through
+from nba_ou.utils.seasons import drop_exhibition_games
+from psycopg import sql
 
 
 def _normalize_game_ids(game_ids) -> list[str]:
@@ -36,7 +37,8 @@ def get_injury_data_from_db(seasons=None, extra_game_ids=None):
             query; without either filter, all rows are loaded.
 
     Returns:
-        pd.DataFrame: Combined injury data for all seasons
+        pd.DataFrame: Combined injury data for all seasons, without preseason
+        and All-Star games (``drop_exhibition_games``).
     """
 
     schema = get_schema_name_injuries()
@@ -97,6 +99,7 @@ def get_injury_data_from_db(seasons=None, extra_game_ids=None):
 
         # Remove duplicates
         df_injuries = df_injuries.drop_duplicates()
+        df_injuries = drop_exhibition_games(df_injuries, "GAME_ID")
 
         print(f"Loaded {len(df_injuries)} injury records from database")
         return df_injuries
