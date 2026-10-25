@@ -228,6 +228,7 @@ def fetch_pregame_ticks(
             lambda season_years: _fetch_pregame_ticks_once(season_years, **kwargs),
             _chunk_label,
         )
+    ticks = _alias_books(ticks, exclude_books)
     if not covers_fallback:
         return ticks
     from nba_ou.postgre_db.line_history_covers import fallback
@@ -365,6 +366,7 @@ def fetch_closing_ticks(
         use_cache=use_cache,
         **kwargs,
     )
+    ticks = _alias_books(ticks)
     if not covers_fallback:
         return ticks
     from nba_ou.postgre_db.line_history_covers import fallback
@@ -376,6 +378,27 @@ def fetch_closing_ticks(
         conn=conn,
         **kwargs,
     )
+
+
+def _alias_books(ticks: pd.DataFrame, exclude_books=()) -> pd.DataFrame:
+    """A renamed SBR book under its old slug (``BOOK_SLUG_ALIASES``: 2026-27's
+    ``caesars_odds`` is ``caesars``), with the exclusions applied again to the
+    renamed rows. After the caches, which keep the store's rows as stored."""
+    from nba_ou.fetch_data.odds_sportsbook.scrape_sportsbook import (
+        BOOK_SLUG_ALIASES,
+    )
+
+    if ticks.empty or not ticks["book"].isin(list(BOOK_SLUG_ALIASES)).any():
+        return ticks
+    attrs = dict(ticks.attrs)
+    out = ticks.assign(book=ticks["book"].replace(BOOK_SLUG_ALIASES))
+    out = out[~out["book"].isin(exclude_books)]
+    # A game stored under both slugs (re-ingested after the fix) keeps one copy.
+    key = ["game_id", "market", "book", "line_ts"]
+    out = out.drop_duplicates(key).sort_values(key, kind="stable")
+    out = out.reset_index(drop=True)
+    out.attrs = attrs
+    return out
 
 
 def _fetch_sbr_closing_ticks(

@@ -41,6 +41,7 @@ from zoneinfo import ZoneInfo
 import requests
 from nba_ou.fetch_data.odds_sportsbook.scrape_sportsbook import (
     BASE_URL,
+    BOOK_SLUG_ALIASES,
     SLEEP_MAX_S,
     SLEEP_MIN_S,
     season_year_for_date,
@@ -167,7 +168,8 @@ def slugify_bookmaker(name: str) -> str:
 
     Kept byte-compatible with the CSV-era slugs so new rows land on the books
     already in the store ("Fanatics Sportsbook" -> ``fanatics_sportsbook``)
-    rather than creating near-duplicate entries.
+    rather than creating near-duplicate entries; a renamed book keeps its old
+    slug (``BOOK_SLUG_ALIASES``).
     """
     out: list[str] = []
     previous_underscore = False
@@ -178,7 +180,8 @@ def slugify_bookmaker(name: str) -> str:
         elif not previous_underscore:
             out.append("_")
             previous_underscore = True
-    return "".join(out).strip("_")
+    slug = "".join(out).strip("_")
+    return BOOK_SLUG_ALIASES.get(slug, slug)
 
 
 def _sleep_politely() -> None:

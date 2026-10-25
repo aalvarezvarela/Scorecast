@@ -94,6 +94,11 @@ async def has_no_odds_message(page: Page) -> bool:
         return False
 
 
+#: SBR renamed some books; their new slug -> the slug every earlier season
+#: carries (line history and day-page columns). 2026-27: "Caesars Odds".
+BOOK_SLUG_ALIASES: dict[str, str] = {"caesars_odds": "caesars"}
+
+
 def _slugify_book(book: str) -> str:
     s = book.strip().lower()
     out = []
@@ -106,8 +111,9 @@ def _slugify_book(book: str) -> str:
             if not prev_us:
                 out.append("_")
                 prev_us = True
-    slug = "".join(out).strip("_")
-    return slug.replace("logo", "").strip("_")
+    slug = "".join(out).strip("_").replace("logo", "").strip("_")
+    # A renamed book keeps the columns of every earlier season.
+    return BOOK_SLUG_ALIASES.get(slug, slug)
 
 
 async def extract_sbr_totals_full_game_rows(
