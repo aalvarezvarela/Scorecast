@@ -11,19 +11,26 @@ the daily workflows are instead started by cron-job.org, which calls the
 (daylight saving handled for us). Each workflow must keep ``workflow_dispatch``.
 
 Jobs are matched by title, so ``--apply`` is idempotent: an existing job is
-patched, a missing one is created. Add a workflow by appending to ``JOBS``; a
-job taken out of ``JOBS`` goes in ``RETIRED_TITLES``, which ``--apply``
+patched, a missing one is created. Add a workflow to the jobs of
+``read_schedule``; a job taken out of them goes in ``RETIRED_TITLES``, which ``--apply``
 disables (a job left on cron-job.org would keep firing).
 
-The day, Madrid time, on the one self-hosted runner:
+The day, on the one self-hosted runner, at the times of ``[Schedule]`` in
+``config.ini`` (09:00 and 10:00 Madrid by default):
 
-    09:00  database update, then -- on a game day -- refit, smoke test and
-           promotion
-    10:00  booking of the day's runs (schedule_snapshot_triggers.py): the
-           predictor at every snapshot time, TabPFN line_error between 6 h 30
-           and 5 h before the first tip-off, away from the predictor runs,
-           and after the last game's estimated end the
-           past-snapshot predictions (+30 min) and final scores (+2 h)
+    UPDATE_AND_RETRAIN_AT    database update, then -- on a game day -- refit,
+                             smoke test and promotion
+    SCHEDULE_PREDICTIONS_AT  booking of the day's runs
+                             (schedule_snapshot_triggers.py): the predictor at
+                             every snapshot time, TabPFN line_error between
+                             6 h 30 and 5 h before the first tip-off, away from
+                             the predictor runs, and after the last game's
+                             estimated end the past-snapshot predictions
+                             (+30 min) and final scores (+2 h)
+
+A changed time reaches cron-job.org only with ``--apply``. The repository
+variables ``DAILY_UPDATE_ENABLED`` and ``PREDICTIONS_ENABLED`` switch the
+workflows off without touching the jobs (docs/serving/snapshot_triggers.md).
 
 The jobs expire at the end of ``SEASON_END`` (10 July) and simply stop running;
 nothing needs deleting. Re-run ``--apply`` before the next season starts: it
@@ -40,10 +47,14 @@ import argparse
 import json
 import sys
 import time
+from configparser import ConfigParser
 from dataclasses import dataclass, field
-from datetime import date
+from datetime import date, datetime, timedelta
+from datetime import time as clock_time
+from zoneinfo import ZoneInfo
 
 import requests
+from nba_ou.config.settings import SETTINGS
 from nba_ou.scheduling.cronjob_org import (
     GITHUB_REPO,
     REQUEST_METHOD_POST,
@@ -55,7 +66,7 @@ from nba_ou.scheduling.cronjob_org import (
 )
 from nba_ou.scheduling.cronjob_org import dispatch_url as workflow_dispatch_url
 
-TIMEZONE = "Europe/Madrid"
+PACIFIC = ZoneInfo("US/Pacific")
 # Pause between write calls: cron-job.org limits PUT /jobs to five a minute
 # and throttles calls in quick succession (one --apply once stopped after
 # creating the first job).
@@ -74,27 +85,84 @@ class WorkflowJob:
     inputs: dict[str, str] = field(default_factory=dict)
 
 
-JOBS = [
-    # The database update runs as the retrain workflow's first job, so the
-    # refit never reads a half-updated database; the refit then promotes what
-    # passes the smoke test.
-    WorkflowJob(
-        title="Scorecast - update databases and retrain",
-        workflow_file="retrain_prediction_models.yml",
-        hour=9,
-        minute=0,
-        inputs={"update_database": "true", "promote": "true"},
-    ),
-    # Books the day's snapshot-time runs (one-off jobs in UTC, see
-    # schedule_snapshot_triggers.py). 10:00 Madrid is after Pacific midnight
-    # all year, so the game date is already the predictor's.
-    WorkflowJob(
-        title="Scorecast - schedule snapshot predictions",
-        workflow_file="schedule_snapshot_triggers.yml",
-        hour=10,
-        minute=0,
-    ),
-]
+def parse_clock(text: str) -> tuple[int, int]:
+    """``HH:MM`` as ``(hour, minute)``."""
+    hour, sep, minute = text.strip().partition(":")
+    if not (sep and hour.isdigit() and minute.isdigit() and len(minute) == 2):
+        raise ValueError(f"expected HH:MM, got {text!r}")
+    if not (0 <= int(hour) <= 23 and 0 <= int(minute) <= 59):
+        raise ValueError(f"not a time of day: {text!r}")
+    return int(hour), int(minute)
+
+
+def before_pacific_midnight(
+    hour: int, minute: int, timezone: str, year: int
+) -> list[date]:
+    """Days of ``year`` on which ``hour:minute`` in ``timezone`` still falls on
+    the previous US/Pacific date. The scheduler books the slate of its run's
+    Eastern date, and the predictor predicts its run's Pacific date, so a
+    booking before Pacific midnight would plan the wrong night."""
+    zone = ZoneInfo(timezone)
+    day, late = date(year, 1, 1), []
+    while day.year == year:
+        at = datetime.combine(day, clock_time(hour, minute), tzinfo=zone)
+        if at.astimezone(PACIFIC).date() != day:
+            late.append(day)
+        day += timedelta(days=1)
+    return late
+
+
+def read_schedule(config: ConfigParser) -> tuple[str, list[WorkflowJob]]:
+    """``[Schedule]`` of ``config.ini``: the timezone and the daily jobs."""
+    timezone = config.get("Schedule", "TIMEZONE", fallback="Europe/Madrid").strip()
+    ZoneInfo(timezone)  # fails on a misspelt zone
+    update = parse_clock(config.get("Schedule", "UPDATE_AND_RETRAIN_AT"))
+    booking = parse_clock(config.get("Schedule", "SCHEDULE_PREDICTIONS_AT"))
+    jobs = [
+        # The database update runs as the retrain workflow's first job, so the
+        # refit never reads a half-updated database; the refit then promotes
+        # what passes the smoke test.
+        WorkflowJob(
+            title="Scorecast - update databases and retrain",
+            workflow_file="retrain_prediction_models.yml",
+            hour=update[0],
+            minute=update[1],
+            inputs={"update_database": "true", "promote": "true"},
+        ),
+        # Books the day's snapshot-time runs (one-off jobs in UTC, see
+        # schedule_snapshot_triggers.py). It must run after Pacific midnight,
+        # when the game date is already the predictor's (check_schedule).
+        WorkflowJob(
+            title="Scorecast - schedule snapshot predictions",
+            workflow_file="schedule_snapshot_triggers.yml",
+            hour=booking[0],
+            minute=booking[1],
+        ),
+    ]
+    return timezone, jobs
+
+
+def check_schedule(jobs: list[WorkflowJob], timezone: str, today: date) -> None:
+    """Exit if the booking job would run before Pacific midnight on some day of
+    this year or the next (a season spans both)."""
+    for job in jobs:
+        if job.workflow_file != "schedule_snapshot_triggers.yml":
+            continue
+        late = [
+            day
+            for year in (today.year, today.year + 1)
+            for day in before_pacific_midnight(job.hour, job.minute, timezone, year)
+        ]
+        if late:
+            sys.exit(
+                f"[Schedule] SCHEDULE_PREDICTIONS_AT {job.hour:02d}:{job.minute:02d} "
+                f"{timezone} falls before US/Pacific midnight on {len(late)} day(s) "
+                f"(first {late[0]}): the scheduler would book the "
+                "previous night. Pick a later time."
+            )
+
+
+TIMEZONE, JOBS = read_schedule(SETTINGS.config)
 
 # Jobs taken out of JOBS: --apply disables them if they still exist.
 RETIRED_TITLES = [
@@ -206,6 +274,7 @@ def main() -> None:
     )
     args = parser.parse_args()
 
+    check_schedule(JOBS, TIMEZONE, date.today())
     github_token = read_secret("CRONJOB_GITHUB_DISPATCH_TOKEN")
     if args.check_token:
         sys.exit(0 if check_token(github_token) else 1)

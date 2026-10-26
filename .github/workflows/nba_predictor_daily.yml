@@ -29,6 +29,9 @@ permissions:
 
 jobs:
     run:
+        # Off switch: the repository variable PREDICTIONS_ENABLED set to false
+        # skips every run, booked or manual (docs/serving/snapshot_triggers.md).
+        if: ${{ vars.PREDICTIONS_ENABLED != 'false' }}
         runs-on: self-hosted
         timeout-minutes: 120
         env:

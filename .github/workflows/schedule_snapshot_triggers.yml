@@ -28,6 +28,10 @@ permissions:
 
 jobs:
     run:
+        # Off switch: the repository variable PREDICTIONS_ENABLED set to false
+        # books nothing, and the runs booked earlier skip themselves
+        # (docs/serving/snapshot_triggers.md).
+        if: ${{ vars.PREDICTIONS_ENABLED != 'false' }}
         # stats.nba.com often refuses GitHub-hosted runners' IPs.
         runs-on: self-hosted
         timeout-minutes: 15

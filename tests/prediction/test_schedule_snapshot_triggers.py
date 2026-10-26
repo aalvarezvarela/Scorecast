@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import configparser
 import json
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
+from zoneinfo import ZoneInfoNotFoundError
 
 import pandas as pd
+import pytest
 from nba_ou.modeling.registry_paths import ModelSlot
 
 import scripts.check_games_today as check
@@ -305,6 +308,50 @@ def test_setup_cronjobs_daily_jobs_and_retired_update_job():
         "nba_predict_past_snapshots.yml",
         "update_finished_matches_daily.yml",
     } <= set(setup.BOOKED_WORKFLOWS)
+
+
+def _schedule_config(update="09:00", booking="10:00", timezone="Europe/Madrid"):
+    config = configparser.ConfigParser()
+    config["Schedule"] = {
+        "TIMEZONE": timezone,
+        "UPDATE_AND_RETRAIN_AT": update,
+        "SCHEDULE_PREDICTIONS_AT": booking,
+    }
+    return config
+
+
+def test_setup_cronjobs_reads_the_daily_times_from_config():
+    timezone, jobs = setup.read_schedule(_schedule_config("08:15", "09:45"))
+    assert timezone == "Europe/Madrid"
+    assert {j.workflow_file: (j.hour, j.minute) for j in jobs} == {
+        "retrain_prediction_models.yml": (8, 15),
+        "schedule_snapshot_triggers.yml": (9, 45),
+    }
+
+
+@pytest.mark.parametrize("text", ["9", "9:5", "24:00", "09:60", "nine"])
+def test_setup_cronjobs_rejects_a_malformed_time(text):
+    with pytest.raises(ValueError):
+        setup.read_schedule(_schedule_config(update=text))
+
+
+def test_setup_cronjobs_rejects_an_unknown_timezone():
+    with pytest.raises(ZoneInfoNotFoundError):
+        setup.read_schedule(_schedule_config(timezone="Europe/Madird"))
+
+
+def test_booking_must_follow_pacific_midnight_all_year():
+    # 09:00 Madrid is Pacific midnight in most weeks and 01:00 in the weeks
+    # when only one side has changed its clocks.
+    assert setup.before_pacific_midnight(9, 0, "Europe/Madrid", 2026) == []
+    late = setup.before_pacific_midnight(8, 30, "Europe/Madrid", 2026)
+    assert date(2026, 1, 15) in late and date(2026, 3, 10) not in late
+    timezone, jobs = setup.read_schedule(_schedule_config(booking="08:30"))
+    with pytest.raises(SystemExit, match="before US/Pacific midnight"):
+        setup.check_schedule(jobs, timezone, date(2026, 10, 26))
+    # The retrain time is not checked.
+    timezone, jobs = setup.read_schedule(_schedule_config(update="05:00"))
+    setup.check_schedule(jobs, timezone, date(2026, 10, 26))
 
 
 def test_post_game_runs_follow_the_last_games_estimated_end():

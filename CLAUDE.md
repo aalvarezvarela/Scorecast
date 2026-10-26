@@ -213,6 +213,12 @@ results. In short:
   marked `SNAPSHOT_PASSED` (False = built from the ticks so far, not the
   trained snapshot). A failing slot does not stop the others; the run exits 1
   at the end. `--no-persist` predicts without storing.
+- Scheduling: cron-job.org dispatches the workflows. The two daily times
+  (update + retrain, booking of the day's runs) are `[Schedule]` in
+  `config.ini`, applied with `scripts/cronjobs/setup_cronjobs.py --apply`. The
+  repository variables `DAILY_UPDATE_ENABLED` and `PREDICTIONS_ENABLED`
+  (`false` = off) skip the update/refit and the prediction workflows.
+  Details: `docs/serving/snapshot_triggers.md`.
 - SBR fallback (`prediction/line_source.py`): when SBR's feed is frozen or
   serves no odds, tonight's lines (closing day-page odds and live line history)
   come from Covers, with SBR's exact columns and books (consensus pick % from
