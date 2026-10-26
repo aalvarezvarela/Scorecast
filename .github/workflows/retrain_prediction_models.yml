@@ -19,6 +19,10 @@ on:
         description: "Refit even when there are no games today (off = a day without games only updates the DB)"
         type: boolean
         default: false
+      force:
+        description: "Run even with DAILY_UPDATE_ENABLED set to false"
+        type: boolean
+        default: false
   # schedule:
   #   - cron: "56 13 * * *"
 
@@ -37,10 +41,13 @@ jobs:
   # NBA/odds sources block GitHub-hosted IPs. Training on a partial update would
   # use last night's SBR closes before they are repaired from line history.
   # Off switch: the repository variable DAILY_UPDATE_ENABLED set to false skips
-  # both jobs, booked or manual (docs/serving/snapshot_triggers.md).
+  # both jobs; a manual run with force ticked still goes
+  # (docs/serving/snapshot_triggers.md).
   update-database:
-    if: ${{ inputs.update_database && vars.DAILY_UPDATE_ENABLED != 'false' }}
+    if: ${{ inputs.update_database && (vars.DAILY_UPDATE_ENABLED != 'false' || inputs.force) }}
     uses: ./.github/workflows/update_database_daily.yml
+    with:
+      force: ${{ inputs.force }}
     secrets: inherit
 
   # Self-hosted, on the GPU the configurations were tuned on: CUDA and CPU
@@ -50,7 +57,7 @@ jobs:
   retrain:
     needs: update-database
     # Runs after a successful update, or straight away when it was switched off.
-    if: ${{ !cancelled() && vars.DAILY_UPDATE_ENABLED != 'false' && (needs.update-database.result == 'success' || needs.update-database.result == 'skipped') }}
+    if: ${{ !cancelled() && (vars.DAILY_UPDATE_ENABLED != 'false' || inputs.force) && (needs.update-database.result == 'success' || needs.update-database.result == 'skipped') }}
     runs-on: self-hosted
     timeout-minutes: 120
     env:

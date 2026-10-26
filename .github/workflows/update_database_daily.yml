@@ -2,8 +2,18 @@ name: Update PostgreSQL DB - Games, Players, Refs & Injuries (Local Runner)
 
 on:
   workflow_dispatch:
-  # Also run as the first job of retrain_prediction_models.yml.
+    inputs:
+      force:
+        description: "Run even with DAILY_UPDATE_ENABLED set to false"
+        type: boolean
+        default: false
+  # Also run as the first job of retrain_prediction_models.yml, which passes
+  # its own force.
   workflow_call:
+    inputs:
+      force:
+        type: boolean
+        default: false
   # schedule:
   #   - cron: "11 12 * * *"
   #   - cron: "11 13 * * *"
@@ -15,8 +25,9 @@ permissions:
 jobs:
   update-database:
     # Off switch: the repository variable DAILY_UPDATE_ENABLED set to false
-    # skips every run (docs/serving/snapshot_triggers.md).
-    if: ${{ vars.DAILY_UPDATE_ENABLED != 'false' }}
+    # skips every run; a run with force still goes
+    # (docs/serving/snapshot_triggers.md).
+    if: ${{ vars.DAILY_UPDATE_ENABLED != 'false' || inputs.force }}
     # Target your local machine
     runs-on: self-hosted
 
