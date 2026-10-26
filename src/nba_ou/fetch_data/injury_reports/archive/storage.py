@@ -70,8 +70,10 @@ class S3Storage:
     ) -> None:
         self.bucket = bucket
         self.client = make_s3_client(profile=profile, region=region)
-        # Canonical PDF keys are immutable. Share their local copies between
-        # the archive subprocess and ingest, isolating different S3 buckets.
+        # Share local copies of canonical PDFs between the archive subprocess
+        # and ingest, isolating different S3 buckets. A key is rewritten only
+        # through ``put``, which refreshes its copy; a cache that outlives the
+        # job can go stale only if another machine rewrites or deletes it.
         self.cache = LocalStorage(Path(cache_dir) / bucket) if cache_dir else None
 
     def _cache_put(self, key: str, data: bytes) -> None:
