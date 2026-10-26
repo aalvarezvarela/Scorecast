@@ -418,12 +418,18 @@ class SeasonPartitions:
             for season, manifest in manifests.items()
         ]
         columns = list(parts[0].columns)
-        for season, part in zip(manifests, parts, strict=True):
-            if list(part.columns) != columns:
+        for i, (season, part) in enumerate(zip(manifests, parts, strict=True)):
+            if list(part.columns) == columns:
+                continue
+            if set(part.columns) != set(columns):
                 raise PartitionError(
                     f"The {season} partition's columns differ from "
                     f"{next(iter(manifests))}'s: rebuild it."
                 )
+            # A season built on its own orders some columns by its own rows
+            # (the per-book snapshot columns follow the books' first
+            # appearance): the same columns, read in the first season's order.
+            parts[i] = part[columns]
         df = pd.concat(parts, ignore_index=True)
         limit = max(m.limit_date for m in manifests.values())
         digest = hashlib.sha256(
@@ -459,6 +465,33 @@ def split_into_partitions(
         )
         for season in seasons
     }
+
+
+def write_rebuilt_season(
+    partitions: SeasonPartitions,
+    season: int,
+    rows: pd.DataFrame,
+    *,
+    limit_date: date | str,
+    source: str,
+) -> PartitionManifest:
+    """Store a season rebuilt on its own with the newest other season's column
+    order and dtypes, as one full build gives every season.
+
+    A build of one season orders and types some columns by its own rows: the
+    per-book snapshot columns follow the order the books first appear in, and a
+    column without a missing value comes out as int. Rows whose columns are not
+    the stored ones (the builder changed) are stored as built; ``load`` refuses
+    them until every season is rebuilt.
+    """
+    manifests = partitions.manifests()
+    others = [s for s in manifests if s != season]
+    if others:
+        reference = max(others)
+        like = partitions.read(reference, manifest=manifests[reference]).iloc[:0]
+        if set(rows.columns) == set(like.columns):
+            rows = _match_stored_schema(rows.copy(), like)
+    return partitions.write(season, rows, limit_date=limit_date, source=source)
 
 
 @dataclass
