@@ -39,7 +39,11 @@ day, `schedule_snapshot_triggers.yml` runs
    moved or grouped. Each fires 2 min (`TABPFN_DELAY_MINUTES`) after the
    predictor run that covers its snapshot, which can be up to 30 min after the
    snapshot when the predictor groups it, so that run enters the runner's
-   queue first. The payload pins `game_date`, `game_ids` and
+   queue first. Coinciding TabPFN dispatches are then spread at least one
+   minute apart, in snapshot order (22:02, 22:03, 22:04, …), pushing on any
+   later run they would land on. Only dispatch times move; each job keeps its
+   own snapshot cutoff.
+   The payload pins `game_date`, `game_ids` and
    `as_of` (the snapshot itself) to that snapshot, so it does not predict
    unrelated games and a queue delay cannot switch it to the latest input. The
    intermediate builder reads line history and archived roster observations at
@@ -201,6 +205,19 @@ jobs on a 10-game night. Instead:
   `MAX_POOL=90` jobs, leaving room for both GETs under the 100-request allowance.
   The scheduler has a 30-minute timeout to allow the initial pool growth at
   one creation per 13 s; later days reuse the jobs.
+- Job titles append their purpose, for example
+  `Scorecast - snapshot trigger 02 | TabPFN T-240 CLE@PHI | snapshot 26/10 21:30 Madrid`.
+  TabPFN titles show up to two matchups (plus the remaining game count), the
+  horizon and the snapshot's Madrid time; the execution time remains in the
+  console's schedule column. A predictor job lists every Madrid time it fires
+  (`Predictor 22:00, 23:00, 00:00 Madrid`), since the console shows only the
+  next one. The post-game jobs read `Past snapshots <date>` and `Final scores`.
+  The numbered prefix identifies the reusable pool slot: both legacy and
+  descriptive names are recognized and updated in place, so applying the new
+  plan does not create duplicate jobs. A job disabled for the day goes back to
+  the bare `Scorecast - snapshot trigger NN` title. Disabled jobs are never
+  deleted: they wait for a day that needs more jobs, which saves the rate-limited
+  creations.
 - Schedules are in **UTC**, so a daylight-saving change cannot skip or repeat
   a trigger. Each schedule expires at the end of its UTC date, so a job left
   over from a day when the scheduler failed never fires again.

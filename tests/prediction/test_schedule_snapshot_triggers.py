@@ -207,18 +207,48 @@ def test_pool_patches_creates_and_disables_only_its_own_jobs():
         {"jobId": 98, "title": job.POOL_PREFIX + "x", "enabled": True},
     ]
     plan = job.plan_pool(existing, 3)
-    assert plan.assign == [
-        (job.pool_title(1), 11),
-        (job.pool_title(2), None),
-        (job.pool_title(3), 13),
-    ]
+    assert plan.assign == [(1, 11), (2, None), (3, 13)]
     # 04 is already disabled; 99 and 98 are not pool jobs.
-    assert plan.disable == [15]
+    assert plan.disable == [(5, 15)]
 
 
 def test_no_games_disables_the_whole_pool():
     existing = [{"jobId": 11, "title": job.pool_title(1), "enabled": True}]
-    assert job.plan_pool(existing, 0) == job.PoolPlan(assign=[], disable=[11])
+    assert job.plan_pool(existing, 0) == job.PoolPlan(assign=[], disable=[(1, 11)])
+
+
+def test_pool_reuses_legacy_and_descriptive_titles_without_duplicates():
+    group = job.ScheduleGroup(day=date(2026, 10, 22), minute=0, hours=(20,))
+    existing = [
+        {"jobId": 11, "title": job.pool_title(1), "enabled": True},
+        {"jobId": 12, "title": job.pool_title(2, group), "enabled": True},
+        {"jobId": 13, "title": job.pool_title(3, group), "enabled": True},
+        {"jobId": 99, "title": "Other job | Predictor", "enabled": True},
+    ]
+    plan = job.plan_pool(existing, 2)
+    assert plan.assign == [(1, 11), (2, 12)]
+    assert plan.disable == [(3, 13)]
+    assert job.pool_index(job.pool_title(2, group)) == 2
+    assert job.pool_index(job.POOL_PREFIX + "x | Predictor") is None
+    assert job.pool_index("Other job | Predictor") is None
+
+
+def test_predictor_title_lists_its_madrid_fire_times():
+    group = job.ScheduleGroup(day=date(2026, 10, 26), minute=0, hours=(21, 22, 23))
+    assert job.pool_title(1, group) == (
+        "Scorecast - snapshot trigger 01 | Predictor 22:00, 23:00, 00:00 Madrid"
+    )
+
+
+def test_postgame_titles_describe_the_workflow():
+    day = date(2026, 10, 22)
+    past = job.Dispatch(job.PAST_SNAPSHOTS_WORKFLOW, (("game_date", "2026-10-22"),))
+    for dispatch, purpose in (
+        (past, "Past snapshots 2026-10-22"),
+        (job.FINISHED_MATCHES, "Final scores"),
+    ):
+        group = job.ScheduleGroup(day=day, minute=0, hours=(20,), dispatch=dispatch)
+        assert job.pool_title(1, group).endswith(purpose)
 
 
 def test_payload_dispatches_the_daily_predictor():
@@ -246,14 +276,7 @@ def test_apply_pool_spaces_creates_and_disables_surplus(monkeypatch):
     monkeypatch.setattr(job, "cronjob_request", fake_request)
     day = pd.Timestamp("2026-10-22").date()
     groups = [job.ScheduleGroup(day=day, minute=m, hours=(20,)) for m in (2, 32, 50)]
-    plan = job.PoolPlan(
-        assign=[
-            (job.pool_title(1), 11),
-            (job.pool_title(2), None),
-            (job.pool_title(3), None),
-        ],
-        disable=[15],
-    )
+    plan = job.PoolPlan(assign=[(1, 11), (2, None), (3, None)], disable=[(5, 15)])
     assert job.apply_pool(plan, groups, "key", "token") == [11, 52, 53]
 
     assert [(m, p) for m, p, _ in calls] == [
@@ -262,7 +285,9 @@ def test_apply_pool_spaces_creates_and_disables_surplus(monkeypatch):
         ("PUT", "/jobs"),
         ("PATCH", "/jobs/15"),
     ]
-    assert calls[-1][2] == {"job": {"enabled": False}}
+    # Each job is titled with its day's purpose; a disabled one gets the bare title.
+    assert calls[0][2]["job"]["title"] == job.pool_title(1, groups[0])
+    assert calls[-1][2] == {"job": {"enabled": False, "title": job.pool_title(5)}}
     # One wait, between the two creates.
     assert sleeps == [job.CREATE_SPACING_S]
 
@@ -272,14 +297,28 @@ def _setup_job(workflow_file):
     return found
 
 
-def test_setup_cronjobs_payload_dispatches_on_main_in_madrid_time():
+def _configured_time(option: str) -> tuple[int, int]:
+    clock = datetime.strptime(
+        setup.SETTINGS.config.get("Schedule", option).strip(), "%H:%M"
+    )
+    return clock.hour, clock.minute
+
+
+def test_setup_cronjobs_payload_dispatches_on_main_in_configured_timezone():
     payload = setup.job_payload(_setup_job("schedule_snapshot_triggers.yml"), "secret")
     assert payload["url"] == (
         "https://api.github.com/repos/aalvarezvarela/Scorecast"
         "/actions/workflows/schedule_snapshot_triggers.yml/dispatches"
     )
-    assert payload["schedule"]["timezone"] == "Europe/Madrid"
-    assert (payload["schedule"]["hours"], payload["schedule"]["minutes"]) == ([9], [30])
+    assert (
+        payload["schedule"]["timezone"]
+        == setup.SETTINGS.config.get("Schedule", "TIMEZONE").strip()
+    )
+    hour, minute = _configured_time("SCHEDULE_PREDICTIONS_AT")
+    assert (payload["schedule"]["hours"], payload["schedule"]["minutes"]) == (
+        [hour],
+        [minute],
+    )
     assert payload["extendedData"]["body"] == '{"ref": "main"}'
     assert setup.redacted(payload)["extendedData"]["headers"]["Authorization"] == (
         "Bearer <redacted>"
@@ -288,7 +327,7 @@ def test_setup_cronjobs_payload_dispatches_on_main_in_madrid_time():
 
 def test_setup_cronjobs_retrain_updates_the_database_and_promotes():
     job = _setup_job("retrain_prediction_models.yml")
-    assert (job.hour, job.minute) == (8, 0)
+    assert (job.hour, job.minute) == _configured_time("UPDATE_AND_RETRAIN_AT")
     body = json.loads(setup.job_payload(job, "secret")["extendedData"]["body"])
     assert body == {
         "ref": "main",
@@ -299,8 +338,8 @@ def test_setup_cronjobs_retrain_updates_the_database_and_promotes():
 def test_setup_cronjobs_daily_jobs_and_retired_update_job():
     times = {job.workflow_file: (job.hour, job.minute) for job in setup.JOBS}
     assert times == {
-        "retrain_prediction_models.yml": (8, 0),
-        "schedule_snapshot_triggers.yml": (9, 30),
+        "retrain_prediction_models.yml": _configured_time("UPDATE_AND_RETRAIN_AT"),
+        "schedule_snapshot_triggers.yml": _configured_time("SCHEDULE_PREDICTIONS_AT"),
     }
     # The standalone update would run beside the retrain's own.
     assert setup.RETIRED_TITLES == ["Scorecast - update databases daily"]
@@ -437,18 +476,24 @@ def test_tabpfn_runs_each_game_at_each_exact_horizon_with_both_targets():
         assert inputs["game_date"] == "2026-10-22"
         # Fired after the predictor run of the same snapshot; as_of keeps it.
         snapshot = datetime.fromisoformat(inputs["as_of"])
-        assert at == snapshot + timedelta(minutes=job.TABPFN_DELAY_MINUTES)
+        assert at >= snapshot + timedelta(minutes=job.TABPFN_DELAY_MINUTES)
         horizon = int(inputs["horizon_minutes"])
         for game_id in inputs["game_ids"].split():
             assert (game_id, horizon) not in actual
             actual[(game_id, horizon)] = snapshot
     assert actual == expected
-    # Same minute, different horizons: separate runs with separate payloads.
-    simultaneous = [
-        dict(dispatch.inputs) for at, dispatch in runs if at == _utc("2026-10-22 17:02")
+    # Coinciding snapshots keep separate payloads but fire a minute apart.
+    coinciding = [
+        (at, dict(dispatch.inputs))
+        for at, dispatch in runs
+        if dict(dispatch.inputs)["as_of"] == "2026-10-22T17:00:00+00:00"
     ]
-    assert {p["horizon_minutes"] for p in simultaneous} == {"360", "480"}
-    assert len({p["game_ids"] for p in simultaneous}) == 2
+    assert [at for at, _ in coinciding] == [
+        _utc("2026-10-22 17:02"),
+        _utc("2026-10-22 17:03"),
+    ]
+    assert {p["horizon_minutes"] for _, p in coinciding} == {"360", "480"}
+    assert len({p["game_ids"] for _, p in coinciding}) == 2
 
 
 def test_tabpfn_nearby_tipoffs_are_not_delayed_or_grouped():
@@ -480,7 +525,7 @@ def test_tabpfn_fires_after_the_grouped_predictor_run_of_its_snapshot():
     ]
     assert [(at, inputs["as_of"], inputs["game_ids"]) for at, inputs in t360] == [
         (_utc("2026-10-22 17:32"), "2026-10-22T17:00:00+00:00", "0022600001"),
-        (_utc("2026-10-22 17:32"), "2026-10-22T17:30:00+00:00", "0022600002"),
+        (_utc("2026-10-22 17:33"), "2026-10-22T17:30:00+00:00", "0022600002"),
     ]
     covering = {reason: run for run, reasons in predictor.items() for reason in reasons}
     labels = {"0022600001": "A@B", "0022600002": "C@D"}
@@ -488,7 +533,86 @@ def test_tabpfn_fires_after_the_grouped_predictor_run_of_its_snapshot():
         inputs = dict(dispatch.inputs)
         for game_id in inputs["game_ids"].split():
             reason = f"{labels[game_id]} T-{inputs['horizon_minutes']}"
-            assert at == covering[reason] + timedelta(minutes=job.TABPFN_DELAY_MINUTES)
+            assert at >= covering[reason] + timedelta(minutes=job.TABPFN_DELAY_MINUTES)
+
+
+def test_two_t240_snapshots_have_descriptive_names_and_fire_at_2202_and_2203():
+    games = _tabpfn_games().iloc[:2].copy()
+    games["game_id"] = ["0022600125", "0022600126"]
+    games["tipoff_utc"] = pd.to_datetime(["2026-10-27T00:30Z", "2026-10-27T01:00Z"])
+    now = _utc("2026-10-26 20:00")
+    normal = job.trigger_times(job.game_tipoffs(games), [240], now)
+    runs = [
+        (at, dispatch)
+        for at, dispatch in job.tabpfn_runs(games, "2026-10-26", now, normal)
+        if dict(dispatch.inputs)["horizon_minutes"] == "240"
+    ]
+    assert [at.astimezone(job.MADRID).strftime("%H:%M") for at, _ in runs] == [
+        "22:02",
+        "22:03",
+    ]
+    assert [dict(dispatch.inputs)["as_of"] for _, dispatch in runs] == [
+        "2026-10-26T20:30:00+00:00",
+        "2026-10-26T21:00:00+00:00",
+    ]
+    titles = []
+    for index, (at, dispatch) in enumerate(runs, 2):
+        (group,) = job.group_schedules([at], dispatch)
+        payload = job.job_payload(job.pool_title(index, group), group, "secret")
+        titles.append(payload["title"])
+        assert "label" not in json.loads(payload["extendedData"]["body"])["inputs"]
+    assert titles == [
+        "Scorecast - snapshot trigger 02 | TabPFN T-240 A@B | snapshot 26/10 21:30 Madrid",
+        "Scorecast - snapshot trigger 03 | TabPFN T-240 C@D | snapshot 26/10 22:00 Madrid",
+    ]
+
+
+def test_staggering_resolves_cascading_collisions_in_a_stable_order():
+    games = _tabpfn_games()
+    games["tipoff_utc"] = pd.to_datetime(
+        [
+            "2026-10-22T23:00Z",
+            "2026-10-22T23:30Z",
+            "2026-10-22T23:31Z",
+        ]
+    )
+    now = _utc("2026-10-22 08:00")
+    normal = job.trigger_times(job.game_tipoffs(games), [360], now)
+    runs = job.tabpfn_runs(games, "2026-10-22", now, normal)
+    assert runs == job.tabpfn_runs(games.iloc[::-1], "2026-10-22", now, normal)
+    t360 = [
+        (at, dispatch)
+        for at, dispatch in runs
+        if dict(dispatch.inputs)["horizon_minutes"] == "360"
+    ]
+    assert [at for at, _ in t360] == [
+        _utc("2026-10-22 17:32"),
+        _utc("2026-10-22 17:33"),
+        _utc("2026-10-22 17:34"),
+    ]
+    assert all(
+        b[0] - a[0] >= timedelta(minutes=1)
+        for a, b in zip(runs, runs[1:], strict=False)
+    )
+
+
+def test_staggering_can_cross_utc_midnight_without_changing_the_snapshot():
+    games = _tabpfn_games().iloc[:2].copy()
+    games["tipoff_utc"] = pd.to_datetime(["2026-10-23T05:57Z", "2026-10-23T07:57Z"])
+    runs = job.tabpfn_runs(games, "2026-10-22", _utc("2026-10-22 22:00"))
+    coinciding = [
+        (at, dispatch)
+        for at, dispatch in runs
+        if dict(dispatch.inputs)["as_of"] == "2026-10-22T23:57:00+00:00"
+    ]
+    assert [at for at, _ in coinciding] == [
+        _utc("2026-10-22 23:59"),
+        _utc("2026-10-23 00:00"),
+    ]
+    for at, dispatch in coinciding:
+        (group,) = job.group_schedules([at], dispatch)
+        assert group.day == at.date()
+        assert dict(dispatch.inputs)["game_date"] == "2026-10-22"
 
 
 def test_tabpfn_skips_past_snapshots_and_postponed_games():
@@ -673,7 +797,8 @@ def test_booked_tabpfn_inputs_match_the_workflow_and_cli(monkeypatch):
         assert options["horizon_minutes"] == int(inputs["horizon_minutes"])
         assert options["game_ids"] == inputs["game_ids"].split()
         assert options["game_date"] == "2026-10-22"
-        assert pd.Timestamp(options["as_of"]) == at - timedelta(
+        assert pd.Timestamp(options["as_of"]) == pd.Timestamp(inputs["as_of"])
+        assert pd.Timestamp(options["as_of"]) <= at - timedelta(
             minutes=job.TABPFN_DELAY_MINUTES
         )
         assert options["update_db"] is False
