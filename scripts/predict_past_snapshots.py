@@ -189,6 +189,7 @@ def predict_past_snapshots(
                 # Stored below, each destination on its own.
                 persist=False,
                 latest_input=False,
+                report_required_max_horizon=SETTINGS.report_required_max_horizon,
             )
         except Exception as exc:  # noqa: BLE001 -- the other slots still run
             traceback.print_exc()

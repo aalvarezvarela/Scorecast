@@ -24,6 +24,7 @@ from nba_ou.prediction.prediction_store import (
     PredictionRunRecorder,
     bet_line_columns,
     dropped_na_games,
+    no_report_games,
     persist_prediction_run,
 )
 from nba_ou.utils.s3_prediction_runs import run_prefix, upload_prediction_run
@@ -506,6 +507,28 @@ def test_nan_budget_drops_are_recorded_per_slot():
     assert [(s["status"], s["dropped_na_games"]) for s in recorder.slots] == [
         ("predicted", [GAME_2]),
         ("skipped", [GAME_1]),
+    ]
+
+
+def test_missing_report_skips_are_recorded_per_slot():
+    recorder = new_recorder()
+    predictions = output(
+        closing_frame().head(1),
+        dataset_type="closing_line",
+        target="line_error",
+        horizon=0,
+    )
+    predictions.attrs["no_report_games"] = [GAME_2]
+    recorder.add_predictions(predictions, label="t60 line_error")
+    empty = pd.DataFrame()
+    empty.attrs["no_report_games"] = [GAME_1, GAME_2]
+    recorder.add_predictions(empty, label="t30 line_error")
+    assert no_report_games(empty) == [GAME_1, GAME_2]
+    assert [
+        (s["status"], s["reason"], s["no_report_games"]) for s in recorder.slots
+    ] == [
+        ("predicted", None, [GAME_2]),
+        ("skipped", "no game with both injury reports filed", [GAME_1, GAME_2]),
     ]
 
 

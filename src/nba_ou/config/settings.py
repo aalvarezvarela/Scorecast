@@ -314,6 +314,30 @@ class Settings:
         return mode
 
     @property
+    def report_required_max_horizon(self) -> int | None:
+        """``[PredictionModels] REPORT_REQUIRED_MAX_HORIZON``: intermediate
+        slots of this horizon (minutes) or shorter skip a game until both
+        teams' injury reports are filed (``nba_ou.prediction.report_requirement``).
+
+        Empty or absent: no intermediate slot skips.
+        """
+        value = self.config.get(
+            "PredictionModels", "REPORT_REQUIRED_MAX_HORIZON", fallback=""
+        ).strip()
+        if not value:
+            return None
+        try:
+            minutes = int(value)
+        except ValueError:
+            minutes = -1
+        if minutes < 0:
+            raise ValueError(
+                "[PredictionModels] REPORT_REQUIRED_MAX_HORIZON must be minutes "
+                f"before tip-off (an integer >= 0) or empty. Got: {value!r}"
+            )
+        return minutes
+
+    @property
     def latest_input_slots(self) -> list | None:
         """``[PredictionModels] LATEST_INPUT_SLOTS``: the slots that, in
         ``latest`` mode, predict from the latest snapshot.

@@ -344,7 +344,8 @@ def get_all_info_for_scheduled_games(
             - df_odds_yahoo_scheduled (pd.DataFrame): Yahoo odds data
             - df_odds_sportsbook_scheduled (pd.DataFrame): Sportsbook odds data
             - games_not_updated: Games to exclude for missing filing coverage;
-              always empty for intermediate requests.
+              always empty for intermediate requests. Every game when no team
+              has filed yet, which leaves the closing rows empty.
             - games_missing_injury_reports: Games with at least one uncovered team.
             - line_source: the ``line_source`` passed, shared with the
               intermediate frame's line-history read.
@@ -444,7 +445,9 @@ def get_all_info_for_scheduled_games(
     )
 
     if len(games_not_updated) == len(scheduled_games):
-        raise ValueError("No games were updated with injury data")
+        # Not an error: early in the day no team may have filed yet. The
+        # closing rows are then empty and their slots skip; the caller decides.
+        print("No game has both teams' injury reports filed yet: no closing rows")
 
     print("Fetched and processed scheduled games, referees, and injuries")
     print("Processing odds data for scheduled games...")

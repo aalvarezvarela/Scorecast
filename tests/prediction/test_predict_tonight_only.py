@@ -95,6 +95,7 @@ def test_baselines_read_history_from_the_layer_inputs(monkeypatch):
         SimpleNamespace(
             prediction_model_slots=[],
             intermediate_input_mode="own",
+            report_required_max_horizon=None,
             headless=True,
             nba_injury_reports_url="",
             s3_aws_profile=None,
@@ -171,6 +172,7 @@ def test_a_failing_slot_does_not_stop_the_others(monkeypatch, capsys):
         SimpleNamespace(
             prediction_model_slots=slots,
             intermediate_input_mode="own",
+            report_required_max_horizon=None,
             headless=True,
             nba_injury_reports_url="",
             s3_aws_profile=None,
@@ -262,6 +264,7 @@ def test_a_failing_supabase_write_does_not_cost_the_prediction_store(
                 )
             ],
             intermediate_input_mode="own",
+            report_required_max_horizon=None,
             headless=True,
             nba_injury_reports_url="",
             s3_aws_profile=None,
@@ -319,3 +322,84 @@ def test_a_failing_supabase_write_does_not_cost_the_prediction_store(
     # Supabase is not the store: its failure does not make the run partial.
     assert stored["partial"] is False
     assert "supabase down" in capsys.readouterr().out
+
+
+def test_no_filed_report_skips_the_closing_rows_not_the_run(monkeypatch, capsys):
+    """Before any team has filed, no closing row is built: the closing slots
+    and the baselines skip, and the intermediate slots still predict."""
+    from nba_ou.modeling.registry_paths import ModelSlot
+
+    slots = [
+        ModelSlot(
+            schema_version="2_5",
+            target="line_error",
+            horizon_minutes=horizon,
+            variant="main",
+        )
+        for horizon in (0, 60)
+    ]
+    monkeypatch.setattr(
+        job,
+        "SETTINGS",
+        SimpleNamespace(
+            prediction_model_slots=slots,
+            intermediate_input_mode="own",
+            report_required_max_horizon=300,
+            headless=True,
+            nba_injury_reports_url="",
+            s3_aws_profile=None,
+            s3_aws_region="eu-west-1",
+            s3_bucket="bucket",
+        ),
+    )
+    monkeypatch.setattr(job, "update_all_databases", lambda **_: None)
+    monkeypatch.setattr(job, "check_line_feed", _sbr_lines)
+    monkeypatch.setattr(
+        job,
+        "get_all_info_for_scheduled_games",
+        lambda **_: {
+            "scheduled_games": pd.DataFrame({"GAME_ID": ["g5"]}),
+            "games_not_updated": ["g5"],
+        },
+    )
+    monkeypatch.setattr(
+        job,
+        "create_df_to_predict",
+        lambda **_: pytest.fail("closing rows built with no report filed"),
+    )
+    intermediate = pd.DataFrame(
+        {"GAME_ID": ["g5"], "TIME_TO_MATCH_MIN": [60], "SNAPSHOT_PASSED": [False]}
+    )
+    monkeypatch.setattr(
+        job, "tonight_intermediate_frame", lambda *_, **__: intermediate
+    )
+    monkeypatch.setattr(job, "make_s3_client", lambda **_: object())
+    monkeypatch.setattr(job, "PredictionRunRecorder", _NullRecorder)
+    monkeypatch.setattr(
+        job,
+        "load_baseline_predictions_for_nba_games",
+        lambda **_: pytest.fail("baselines run without closing rows"),
+    )
+    served = {}
+
+    def serve(*, slot, frames, report_required_max_horizon, **_):
+        served[slot.horizon_minutes] = (sorted(frames), report_required_max_horizon)
+        if "closing_line" not in frames and slot.horizon_minutes == 0:
+            return pd.DataFrame()
+        return pd.DataFrame({"GAME_ID": ["g5"]})
+
+    monkeypatch.setattr(job, "load_registry_model_and_predict", serve)
+
+    class _Now:
+        @staticmethod
+        def now(tz=None):
+            return pd.Timestamp("2025-11-03 12:00", tz=tz).to_pydatetime()
+
+    monkeypatch.setattr(job, "datetime", _Now)
+    job.predict_nba_games(persist=False)
+
+    assert served == {0: (["intermediate_line"], 300), 60: (["intermediate_line"], 300)}
+    out = capsys.readouterr().out
+    assert "1 slot(s) predicted" in out
+    assert "baselines skipped" in out
+    assert "0 failure(s)" in out

@@ -87,6 +87,7 @@ def test_each_slot_reads_its_own_snapshot(monkeypatch):
         "SETTINGS",
         SimpleNamespace(
             prediction_model_slots=[_slot(0), _slot(30), _slot(60)],
+            report_required_max_horizon=None,
             s3_aws_profile=None,
             s3_aws_region="eu-west-1",
             s3_bucket="bucket",

@@ -95,8 +95,10 @@ replay diagnostics, rather than current predictions.
 Refresh failures log an error and leave Aiven at its previous known state.
 Existing stored reports can still be used with their report-age features.
 The closing job's existing filing requirement remains: games with an uncovered
-team are excluded, and if none have complete filing coverage the job stops.
-Unknown coverage does not imply a healthy roster.
+team are excluded. When none has complete filing coverage (early on a small
+slate), the closing rows are empty: the daily predictor skips its closing slots
+and baselines, and its intermediate slots still predict (2026-10-26; the run
+used to stop here). Unknown coverage does not imply a healthy roster.
 
 The shared fetcher accepts `dataset_type="intermediate_line"` to retain games
 even when neither team has filed. Its exclusion list (`games_not_updated`)

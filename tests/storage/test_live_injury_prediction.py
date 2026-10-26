@@ -183,6 +183,8 @@ def test_refresh_failure_uses_previous_aiven_state(monkeypatch, scheduled, caplo
 
 
 def test_unknown_filing_does_not_imply_a_healthy_roster(monkeypatch, scheduled):
+    """No team filed yet: every game is left out of the closing rows, and the
+    fetch itself does not fail (the intermediate slots still predict)."""
     monkeypatch.setattr(
         scheduled_module, "synchronize_injury_reports", lambda *a, **kw: None
     )
@@ -191,10 +193,12 @@ def test_unknown_filing_does_not_imply_a_healthy_roster(monkeypatch, scheduled):
         "load_prediction_report_state",
         lambda *a: report_state(filed=False),
     )
-    with pytest.raises(ValueError, match="No games were updated"):
-        scheduled_module.get_all_info_for_scheduled_games(
-            "2026-10-16", "unused", headless=True
-        )
+    result = scheduled_module.get_all_info_for_scheduled_games(
+        "2026-10-16", "unused", headless=True
+    )
+    assert result["games_not_updated"] == [GID]
+    assert result["games_missing_injury_reports"] == [GID]
+    assert result["injury_dict_scheduled"] == {}
 
 
 @pytest.mark.parametrize("missing", ["not_submitted", "no_report", "one_team"])

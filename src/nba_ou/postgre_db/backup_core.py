@@ -36,6 +36,7 @@ from typing import Any
 
 import pandas as pd
 import psycopg
+from psycopg import sql
 
 from nba_ou.postgre_db.config.db_config import get_config
 from nba_ou.utils.s3_models import make_s3_client
@@ -46,6 +47,10 @@ S3_BACKUP_PREFIX = "backups/db"
 
 #: Rows per SELECT batch. Bounds the driver's buffer, not the final frame.
 CHUNK_SIZE = 100_000
+
+#: Column types exported as their Postgres text form: Arrow cannot write the
+#: Python values psycopg returns for them (dicts of any shape, ``uuid.UUID``).
+TEXT_EXPORT_TYPES = ("json", "jsonb", "uuid")
 
 #: Filename of the per-schema manifest written beside that schema's Parquet.
 MANIFEST_NAME = "_manifest.json"
@@ -284,8 +289,44 @@ def export_table_to_parquet(
     schema: str,
     table: str,
 ) -> tuple[bytes, int]:
-    """Export one relation to an in-memory Parquet file."""
-    query = f'SELECT * FROM "{schema}"."{table}"'
+    """Export one relation, storing JSON/JSONB and UUID columns as text.
+
+    Arrow infers Python dicts as structs: empty objects cannot be written to
+    Parquet, and varying keys or mixed JSON types can lose information or fail.
+    Cast in Postgres so every JSON value survives, including JSON ``null``
+    (the string ``"null"``), distinct from SQL NULL (a missing value). UUIDs
+    arrive as ``uuid.UUID``, which Arrow cannot write at all
+    (``prediction.runs.run_uuid``); they are stored in their canonical form.
+    Restores must parse these text columns or cast them back to their types.
+    """
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT a.attname,
+                   a.atttypid = ANY(%s::regtype[]) AS as_text
+            FROM pg_attribute a
+            JOIN pg_class c ON c.oid = a.attrelid
+            JOIN pg_namespace n ON n.oid = c.relnamespace
+            WHERE n.nspname = %s AND c.relname = %s
+              AND a.attnum > 0 AND NOT a.attisdropped
+            ORDER BY a.attnum
+            """,
+            (list(TEXT_EXPORT_TYPES), schema, table),
+        )
+        columns = cur.fetchall()
+    projection = sql.SQL(", ").join(
+        (
+            sql.SQL("{}::text AS {}").format(sql.Identifier(name), sql.Identifier(name))
+            if as_text
+            else sql.Identifier(name)
+        )
+        for name, as_text in columns
+    )
+    query = (
+        sql.SQL("SELECT {} FROM {}.{}")
+        .format(projection, sql.Identifier(schema), sql.Identifier(table))
+        .as_string()
+    )
     chunks = [
         chunk
         for chunk in pd.read_sql(query, conn, chunksize=CHUNK_SIZE)  # type: ignore[call-overload]

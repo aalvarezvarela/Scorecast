@@ -211,8 +211,11 @@ results. In short:
   horizon. Every enabled slot predicts on every run, whatever the time to tip:
   closing slots every game, intermediate slots the row of their own horizon,
   marked `SNAPSHOT_PASSED` (False = built from the ticks so far, not the
-  trained snapshot). A failing slot does not stop the others; the run exits 1
-  at the end. `--no-persist` predicts without storing.
+  trained snapshot). A game without both teams' injury report is skipped by
+  the closing slots and by intermediate slots of horizon
+  `REPORT_REQUIRED_MAX_HORIZON` (300) or shorter
+  (`prediction/report_requirement.py`). A failing slot does not stop the
+  others; the run exits 1 at the end. `--no-persist` predicts without storing.
 - Scheduling: cron-job.org dispatches the workflows. The two daily times
   (update + retrain, booking of the day's runs) are `[Schedule]` in
   `config.ini`, applied with `scripts/cronjobs/setup_cronjobs.py --apply`. The

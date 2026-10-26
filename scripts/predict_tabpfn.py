@@ -235,6 +235,13 @@ def predict_tabpfn(
         return
 
     if dataset_type == CLOSING_LINE:
+        not_filed = {str(game) for game in scheduled_data["games_not_updated"]}
+        if not_filed >= set(scheduled_data["scheduled_games"]["GAME_ID"].astype(str)):
+            # Closing rows need both teams' injury report; none is filed yet.
+            print_status(
+                "No game has both injury reports filed yet; nothing to predict."
+            )
+            return
         print_step_header(2, "Preparing Tonight's Closing Rows")
         df_to_predict = tonight_closing_rows(
             scheduled_data, schema_version=schema_version, game_date=date_to_predict
