@@ -186,13 +186,6 @@ def create_players_table(drop_existing: bool = True):
                     sql.Identifier(schema),
                 )
             )
-            cur.execute(
-                sql.SQL("CREATE INDEX IF NOT EXISTS {} ON {}.{}(player_name)").format(
-                    sql.Identifier("idx_player_name"),
-                    sql.Identifier(schema),
-                    sql.Identifier(schema),
-                )
-            )
 
         conn.commit()
         conn.close()

@@ -49,7 +49,8 @@ def get_games_with_total_scored_points(
     only_null: bool = False,
 ) -> pd.DataFrame:
     """
-    Connects to the nba_predictions database and returns all predictions.
+    Returns predictions from the configured predictions table
+    (``SCHEMA_NAME_PREDICTIONS``, currently ``nba_ou_predictions``).
     By default, returns only games where total_scored_points IS NOT NULL.
 
     Args:
@@ -60,7 +61,7 @@ def get_games_with_total_scored_points(
                                        If False (default), returns games where total_scored_points IS NOT NULL.
 
     Returns:
-        pd.DataFrame: All columns from nba_predictions for rows matching the filter.
+        pd.DataFrame: All columns of the predictions table for rows matching the filter.
     """
     schema = get_schema_name_predictions()
     table = schema  # Your convention: table name = schema name

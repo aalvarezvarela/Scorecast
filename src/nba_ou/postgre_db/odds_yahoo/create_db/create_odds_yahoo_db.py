@@ -129,20 +129,6 @@ def create_odds_yahoo_table(drop_existing: bool = False) -> bool:
                     sql.Identifier(table),
                 )
             )
-            cur.execute(
-                sql.SQL("CREATE INDEX IF NOT EXISTS {} ON {}.{}(team_home)").format(
-                    sql.Identifier("idx_odds_yahoo_team_home"),
-                    sql.Identifier(schema),
-                    sql.Identifier(table),
-                )
-            )
-            cur.execute(
-                sql.SQL("CREATE INDEX IF NOT EXISTS {} ON {}.{}(team_away)").format(
-                    sql.Identifier("idx_odds_yahoo_team_away"),
-                    sql.Identifier(schema),
-                    sql.Identifier(table),
-                )
-            )
 
         conn.commit()
         conn.close()

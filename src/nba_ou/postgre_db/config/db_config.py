@@ -169,52 +169,12 @@ def get_schema_name_all_star_voting() -> str:
     )
 
 
-def get_schema_name_odds_mgm() -> str:
-    return get_config().get("Database", "SCHEMA_NAME_ODDS_MGM")
-
-
 def get_schema_name_odds_sportsbook() -> str:
     return get_config().get("Database", "SCHEMA_NAME_ODDS_SPORTSBOOK")
 
 
-def get_schema_name_odds_sportsbook_line_history_totals() -> str:
-    return get_config().get(
-        "Database",
-        "SCHEMA_NAME_ODDS_SPORTSBOOK_LINE_HISTORY_TOTALS",
-        fallback="odds_sportsbook_totals_line_history",
-    )
-
-
-def get_schema_name_odds_sportsbook_line_history_moneyline() -> str:
-    return get_config().get(
-        "Database",
-        "SCHEMA_NAME_ODDS_SPORTSBOOK_LINE_HISTORY_MONEYLINE",
-        fallback="odds_sportsbook_moneyline_line_history",
-    )
-
-
-def get_schema_name_odds_sportsbook_line_history_spread() -> str:
-    return get_config().get(
-        "Database",
-        "SCHEMA_NAME_ODDS_SPORTSBOOK_LINE_HISTORY_SPREAD",
-        fallback="odds_sportsbook_spread_line_history",
-    )
-
-
-def get_schema_name_sportsbook_matchup_history() -> str:
-    return get_config().get(
-        "Database",
-        "SCHEMA_NAME_SPORTSBOOK_MATCHUP_HISTORY",
-        fallback="sportsbook_matchup_history",
-    )
-
-
 def get_schema_name_odds_yahoo() -> str:
     return get_config().get("Database", "SCHEMA_NAME_ODDS_YAHOO")
-
-
-def get_schema_name_odds() -> str:
-    return get_config().get("Database", "SCHEMA_NAME_ODDS")
 
 
 def get_schema_name_predictions() -> str:
@@ -309,28 +269,8 @@ def connect_all_star_voting_db() -> psycopg.Connection:
     return connect_schema_db(get_schema_name_all_star_voting())
 
 
-def connect_odds_db() -> psycopg.Connection:
-    return connect_schema_db(get_schema_name_odds())
-
-
 def connect_odds_sportsbook_db() -> psycopg.Connection:
     return connect_schema_db(get_schema_name_odds_sportsbook())
-
-
-def connect_odds_sportsbook_line_history_totals_db() -> psycopg.Connection:
-    return connect_schema_db(get_schema_name_odds_sportsbook_line_history_totals())
-
-
-def connect_odds_sportsbook_line_history_moneyline_db() -> psycopg.Connection:
-    return connect_schema_db(get_schema_name_odds_sportsbook_line_history_moneyline())
-
-
-def connect_odds_sportsbook_line_history_spread_db() -> psycopg.Connection:
-    return connect_schema_db(get_schema_name_odds_sportsbook_line_history_spread())
-
-
-def connect_sportsbook_matchup_history_db() -> psycopg.Connection:
-    return connect_schema_db(get_schema_name_sportsbook_matchup_history())
 
 
 def connect_odds_yahoo_db() -> psycopg.Connection:

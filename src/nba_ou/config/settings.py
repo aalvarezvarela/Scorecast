@@ -52,8 +52,6 @@ CONFIG_SCHEMA = {
         "nba_game_time_index",
     ),
     "schema_name_players": ("Database", "SCHEMA_NAME_PLAYERS", str, None),
-    "schema_name_odds": ("Database", "SCHEMA_NAME_ODDS", str, None),
-    "schema_name_odds_mgm": ("Database", "SCHEMA_NAME_ODDS_MGM", str, None),
     "schema_name_odds_sportsbook": (
         "Database",
         "SCHEMA_NAME_ODDS_SPORTSBOOK",

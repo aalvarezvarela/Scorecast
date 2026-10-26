@@ -6,7 +6,7 @@ book's *last* number -- for 27% of games an in-play line. This applies
 writes the result back, so the table itself holds bettable closes and every
 consumer, not only the training loader, reads the same numbers.
 
-Three tables are involved, all in the ``odds_sportsbook`` schema:
+Two tables are involved, both in the ``odds_sportsbook`` schema:
 
 * ``odds_sportsbook`` -- per-book closing columns rewritten; ``closes_repaired_at``
   stamped on every game that had at least one line-history quote. Games with
@@ -15,8 +15,11 @@ Three tables are involved, all in the ``odds_sportsbook`` schema:
 * ``odds_sportsbook_sbr_raw`` -- the row exactly as SBR stored it, copied the
   first time a game is repaired and never touched again. ``--redo`` repairs
   from here, so reruns never compound.
-* ``odds_sportsbook_close_repair`` -- one audit row per (game, market, book):
-  what was done and the levels involved.
+
+The per-cell audit (what was done to each game, market and book, and the levels
+involved) drives the run summary only; it is not stored. Each cell's before and
+after are the two tables above. The ``odds_sportsbook_close_repair`` table that
+used to hold it was retired on 2026-10-26 (nothing read it).
 """
 
 from __future__ import annotations
@@ -52,26 +55,9 @@ from nba_ou.utils.ci import annotate
 from psycopg import sql
 
 RAW_TABLE = "odds_sportsbook_sbr_raw"
-AUDIT_TABLE = "odds_sportsbook_close_repair"
 
 #: Above this many games, ticks are fetched per season instead of per game id.
 _GAME_ID_FETCH_LIMIT = 1500
-
-_AUDIT_TYPES: dict[str, str] = {
-    "game_id": "TEXT NOT NULL",
-    "season_year": "INTEGER",
-    "market": "TEXT NOT NULL",
-    "book": "TEXT NOT NULL",
-    "action": "TEXT NOT NULL",
-    "sbr_level": "DOUBLE PRECISION",
-    "history_level": "DOUBLE PRECISION",
-    "final_level": "DOUBLE PRECISION",
-    "history_minutes_before_tip": "DOUBLE PRECISION",
-    "others_median": "DOUBLE PRECISION",
-    "others_range": "DOUBLE PRECISION",
-    "n_others": "DOUBLE PRECISION",
-    "deviation": "DOUBLE PRECISION",
-}
 
 
 def current_season_year(today: date | None = None) -> int:
@@ -109,7 +95,7 @@ def _column_types(cur: psycopg.Cursor, schema: str, table: str) -> dict[str, str
 
 
 def ensure_repair_tables(conn: psycopg.Connection, schema: str, table: str) -> None:
-    """Create the raw-backup and audit tables, and keep the backup's columns in sync."""
+    """Create the raw-backup table and keep its columns in sync."""
     with conn.cursor() as cur:
         cur.execute(
             sql.SQL(
@@ -134,16 +120,6 @@ def ensure_repair_tables(conn: psycopg.Connection, schema: str, table: str) -> N
                         sql.SQL(dtype),
                     )
                 )
-
-        columns = ", ".join(f"{name} {dtype}" for name, dtype in _AUDIT_TYPES.items())
-        cur.execute(
-            sql.SQL(
-                "CREATE TABLE IF NOT EXISTS {}.{} ("
-                + columns
-                + ", repaired_at TIMESTAMPTZ NOT NULL DEFAULT now(), "
-                "PRIMARY KEY (game_id, market, book))"
-            ).format(sql.Identifier(schema), sql.Identifier(AUDIT_TABLE))
-        )
     conn.commit()
 
 
@@ -300,14 +276,7 @@ def repair_stored_closes(
             return summary
 
         write = repaired[repaired["game_id"].isin(verified_games)]
-        _write_repair(
-            conn,
-            schema,
-            table,
-            write,
-            audit[audit["game_id"].isin(verified_games)],
-            extra_columns=FILL_COLUMNS,
-        )
+        _write_repair(conn, schema, table, write, extra_columns=FILL_COLUMNS)
         print(
             f"Repaired {len(verified_games)} game(s); "
             f"{waiting} left for a later run (no line history yet)."
@@ -342,11 +311,10 @@ def _write_repair(
     schema: str,
     table: str,
     repaired: pd.DataFrame,
-    audit: pd.DataFrame,
     *,
     extra_columns: list[str] = (),
 ) -> None:
-    """Back up raw rows, rewrite quotes and store the audit in one transaction.
+    """Back up raw rows and rewrite quotes in one transaction.
     ``extra_columns`` (the Covers-filled non-book columns) are written too."""
     if repaired.empty:
         return
@@ -392,32 +360,6 @@ def _write_repair(
                     repaired[quote_columns].itertuples(index=False, name=None),
                     strict=True,
                 )
-            ],
-        )
-
-        audit_columns = list(_AUDIT_TYPES)
-        upsert = sql.SQL(
-            "INSERT INTO {}.{} ({cols}, repaired_at) VALUES ({vals}, now()) "
-            "ON CONFLICT (game_id, market, book) DO UPDATE SET {sets}, "
-            "repaired_at = now()"
-        ).format(
-            sql.Identifier(schema),
-            sql.Identifier(AUDIT_TABLE),
-            cols=sql.SQL(", ").join(map(sql.Identifier, audit_columns)),
-            vals=sql.SQL(", ").join(sql.Placeholder() * len(audit_columns)),
-            sets=sql.SQL(", ").join(
-                sql.SQL("{c} = EXCLUDED.{c}").format(c=sql.Identifier(c))
-                for c in audit_columns
-                if c not in ("game_id", "market", "book")
-            ),
-        )
-        cur.executemany(
-            upsert,
-            [
-                tuple(_native(v) for v in row)
-                for row in audit[audit_columns]
-                .astype(object)
-                .itertuples(index=False, name=None)
             ],
         )
     conn.commit()

@@ -138,24 +138,6 @@ def create_refs_schema(drop_existing: bool = True):
             cur.execute(
                 sql.SQL(
                     """
-                CREATE INDEX IF NOT EXISTS idx_refs_game_date 
-                ON {}.{} (game_date)
-            """
-                ).format(sql.Identifier(schema), sql.Identifier("nba_refs"))
-            )
-
-            cur.execute(
-                sql.SQL(
-                    """
-                CREATE INDEX IF NOT EXISTS idx_refs_official_id 
-                ON {}.{} (official_id)
-            """
-                ).format(sql.Identifier(schema), sql.Identifier("nba_refs"))
-            )
-
-            cur.execute(
-                sql.SQL(
-                    """
                 CREATE INDEX IF NOT EXISTS idx_refs_game_id 
                 ON {}.{} (game_id)
             """
