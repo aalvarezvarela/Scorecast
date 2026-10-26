@@ -6,6 +6,9 @@ new data from the NBA API and loading it to PostgreSQL.
 """
 
 import pandas as pd
+from nba_ou.fetch_data.fetch_nba_data.inactive_rows import (
+    FIRST_BOX_SCORE_INACTIVES_SEASON,
+)
 from nba_ou.postgre_db.injuries_refs.creation.create_injuries_db import (
     upload_injuries_data_to_db,
 )
@@ -82,6 +85,10 @@ def update_refs_injuries_database(
     """
     Main function to update referees and injuries databases.
 
+    Fetches the box-score summary of every game not done yet: its referees
+    are not stored or, up to 2025-26, its inactive list is not. The summary's
+    inactive list, when it has one, goes to the injuries table as before.
+
     Args:
         season_year: Year to determine the season (e.g., 2023 for 2023-24)
         exclude_game_ids: Optional list of game IDs to exclude from uploads
@@ -94,18 +101,19 @@ def update_refs_injuries_database(
 
     print(f"Updating referees and injuries for season: {season_nullable}")
 
-    existing_injury_game_ids = get_existing_injury_game_ids_from_db(season_year)
-    existing_ref_game_ids = get_existing_ref_game_ids_from_db(season_year)
-
-    all_existing_game_ids = existing_injury_game_ids.intersection(existing_ref_game_ids)
-
-    print(
-        f"Total existing game IDs across both databases: {len(all_existing_game_ids)}"
-    )
+    existing_game_ids = get_existing_ref_game_ids_from_db(season_year)
+    if int(season_year) < FIRST_BOX_SCORE_INACTIVES_SEASON:
+        # The summary is these seasons' only source of the inactive list, so a
+        # game is done once both its crew and its inactives are stored.
+        existing_game_ids &= get_existing_injury_game_ids_from_db(season_year)
+    # From 2026-27 the summary's inactive list is empty and the box-score
+    # update stores it (``fetch_data.fetch_nba_data.inactive_rows``): the crew
+    # alone says a game is done, or every game would be fetched daily.
+    print(f"Games already done: {len(existing_game_ids)}")
 
     refs_df, injuries_df, limit_reached = fetch_refs_injuries_data(
         season_nullable,
-        existing_game_ids=all_existing_game_ids,
+        existing_game_ids=existing_game_ids,
         n_tries=3,
     )
 

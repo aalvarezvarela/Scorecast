@@ -294,9 +294,11 @@ def fetch_refs_injuries_data(
         for code, name in SEASON_TYPE_MAP.items()
         if name in ("Preseason", "All Star")
     }
+    # In game-id order, so a run cut short by the 299-game pause always leaves
+    # the same (newest) games for the next one.
     game_ids_to_fetch = [
         game_id
-        for game_id in game_ids_to_fetch
+        for game_id in sorted(game_ids_to_fetch)
         if str(game_id)[:3] not in excluded_types
     ]
     for game_id in tqdm(game_ids_to_fetch, desc="Fetching Refs/Injuries Data"):

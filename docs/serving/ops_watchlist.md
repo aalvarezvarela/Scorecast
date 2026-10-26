@@ -155,6 +155,26 @@ TabPFN, retrain, both DB updates): the install step's duration, and that the
 job gets past its imports. The venv is rebuilt every run from the runner's pip
 cache; if that is slow, keep one venv per job under the runner's work dir.
 
+### 7. Inactive list moved into the box score (seen 2026-10-26) — fixed in code
+
+From 2026-27, `BoxScoreSummaryV3` (and V2) return an empty inactive list. The
+same players come as `BoxScoreTraditionalV3` rows with `Inactive - <reason>`
+comments. Ingestion now splits them into `nba_injuries`
+(`fetch_data/fetch_nba_data/inactive_rows.py`), and `upload_players_data_to_db`
+refuses any that reach `nba_players`. Inactives are written before the
+players, so a failed write leaves the game to be fetched again. From 2026-27
+the refs update decides what to fetch from `nba_refs` alone; earlier seasons
+still require `nba_injuries` too, their only source being the summary. Games
+stored before the fix are moved by
+`scripts/update_databases/move_inactive_box_rows.py` (done 2026-10-26).
+
+**Check:**
+- After the move, the 2026 rows of `nba_players` contain no `Inactive%`
+  comment, and `nba_injuries` holds about 3-4 rows per team-game.
+- The refs/injuries step only fetches the new games.
+- If the NBA fills the summary's list again, both sources write the same
+  `(player_id, game_id)`, and `ON CONFLICT DO NOTHING` keeps one row.
+
 ## Season-rollover sources to keep an eye on
 
 External sources the daily jobs depend on. A new season is when URLs, IDs and
