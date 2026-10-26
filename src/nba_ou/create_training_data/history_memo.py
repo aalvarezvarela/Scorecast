@@ -288,14 +288,44 @@ def _frame_digest(frame: pd.DataFrame) -> bytes:
     return digest.digest()
 
 
+def _season_values(frame: pd.DataFrame) -> pd.DataFrame:
+    """A season's rows as their values, without the schema other rows impose.
+
+    Rows a build appends for tonight's games change the whole frame's schema,
+    not the earlier rows: their NaN outcomes turn integer columns into floats
+    (or nullable ``Int64``), and columns only they carry (``GAME_TIME``) are
+    NaN for every earlier row. So a column that is empty in the season is
+    left out, and numeric ones (bool included) are compared as float64.
+    """
+    columns = frame.columns[frame.notna().any().to_numpy()]
+    return pd.DataFrame(
+        {
+            column: (
+                frame[column].astype("float64")
+                if pd.api.types.is_numeric_dtype(frame[column])
+                else frame[column]
+            )
+            for column in columns
+        },
+        index=frame.index,
+    )
+
+
 def season_input_digests(
-    inputs: dict[str, tuple[pd.DataFrame, str]], seasons: Iterable[int]
+    inputs: dict[str, tuple[pd.DataFrame, str]],
+    seasons: Iterable[int],
+    *,
+    values_only: bool = False,
 ) -> dict[int, str]:
     """Chained digest per season of every input frame's rows up to it.
 
     ``inputs`` maps a name to ``(frame, game_id_column)``; a row belongs to
     the season its game id names. Rows keep the frame's order. The code is
     not part of it: it is in every entry's path (``HistoryMemo.code``).
+
+    ``values_only`` digests each season's rows through ``_season_values``, so
+    a build that also holds tonight's games and one that does not agree on
+    every earlier season.
     """
     per_frame = {}
     for name, (frame, game_id_column) in sorted(inputs.items()):
@@ -311,7 +341,10 @@ def season_input_digests(
         for name, (frame, frame_seasons) in sorted(per_frame.items()):
             digest.update(name.encode())
             if frame is not None and len(frame_seasons):
-                digest.update(_frame_digest(frame[frame_seasons == season]))
+                rows = frame[frame_seasons == season]
+                if values_only:
+                    rows = _season_values(rows)
+                digest.update(_frame_digest(rows))
         chain = digest.digest()
         out[season] = digest.hexdigest()
     return out

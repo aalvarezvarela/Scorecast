@@ -39,6 +39,50 @@ def test_digests_do_not_see_later_seasons():
     assert after == before
 
 
+def _with_tonight(games: pd.DataFrame) -> pd.DataFrame:
+    """``games`` plus a 2023 game not played yet, as a prediction build holds it."""
+    tonight = pd.DataFrame(
+        {"GAME_ID": ["0022300999"], "PTS": [pd.NA], "GAME_TIME": ["19:30"]}
+    )
+    grown = pd.concat([games.assign(GAME_TIME=None), tonight], ignore_index=True)
+    return grown.astype({"PTS": "Int64"})
+
+
+def test_values_only_digests_ignore_the_schema_tonight_imposes():
+    inputs = _inputs()
+    games, _ = inputs["games"]
+    live = {**inputs, "games": (_with_tonight(games), "GAME_ID")}
+    seasons = [2021, 2022, 2023]
+    stored = memo.season_input_digests(inputs, seasons, values_only=True)
+    tonight = memo.season_input_digests(live, seasons, values_only=True)
+    assert tonight[2021] == stored[2021]
+    assert tonight[2022] == stored[2022]
+    assert tonight[2023] != stored[2023]  # tonight's own season has a new row
+    # The schema-strict digests differ in every season.
+    strict = memo.season_input_digests(inputs, seasons)
+    assert memo.season_input_digests(live, seasons)[2021] != strict[2021]
+
+
+def test_values_only_digests_still_see_values():
+    inputs = _inputs()
+    games, _ = inputs["games"]
+    before = memo.season_input_digests(inputs, [2021, 2022], values_only=True)
+    changed = games.copy()
+    changed.loc[changed["GAME_ID"].str[3:5] == "21", "PTS"] += 1
+    after = memo.season_input_digests(
+        {**inputs, "games": (changed, "GAME_ID")}, [2021, 2022], values_only=True
+    )
+    assert after[2021] != before[2021]
+    assert after[2022] != before[2022]
+    filled = games.assign(NOTE=None)
+    filled.loc[filled["GAME_ID"].str[3:5] == "22", "NOTE"] = "x"
+    noted = memo.season_input_digests(
+        {**inputs, "games": (filled, "GAME_ID")}, [2021, 2022], values_only=True
+    )
+    assert noted[2021] == before[2021]  # empty in 2021: left out
+    assert noted[2022] != before[2022]
+
+
 def test_round_trip_and_refusals(tmp_path):
     backend = memo._LocalBackend(tmp_path)
     digests = memo.season_input_digests(_inputs(), [2021, 2022, 2023])
