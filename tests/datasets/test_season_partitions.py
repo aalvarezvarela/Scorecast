@@ -281,6 +281,54 @@ def test_seasons_with_different_columns_are_refused():
         partitions.load()
 
 
+def test_a_season_with_the_columns_in_another_order_reads_in_the_first_ones():
+    s3 = FakeS3Client()
+    partitions = _partitions(s3)
+    full = _games()
+    split_into_partitions(full, partitions, limit_date="2026-10-16", source="t")
+    season = full[full["SEASON_YEAR"] == 2024]
+    partitions.write(
+        2024, season[season.columns[::-1]], limit_date="2026-10-16", source="t"
+    )
+    pd.testing.assert_frame_equal(partitions.load().df, full, check_exact=True)
+
+
+def test_a_rebuilt_season_is_stored_in_the_other_seasons_order_and_dtypes():
+    s3 = FakeS3Client()
+    partitions = _partitions(s3)
+    full = _games()
+    split_into_partitions(full, partitions, limit_date="2026-10-16", source="t")
+    # Built alone: its own column order, and a dtype inferred over its own rows.
+    rows = full[full["SEASON_YEAR"] == 2023].copy()
+    rows["FEAT_C"] = rows["FEAT_C"].astype(object)
+    rows = rows[rows.columns[::-1]]
+
+    sp.write_rebuilt_season(
+        partitions, 2023, rows, limit_date="2026-10-16", source="rebuild 2023"
+    )
+
+    stored = partitions.read(2023)
+    assert list(stored.columns) == list(full.columns)
+    assert stored["FEAT_C"].dtype == full["FEAT_C"].dtype
+    pd.testing.assert_frame_equal(partitions.load().df, full, check_exact=True)
+
+
+def test_a_rebuilt_season_with_other_columns_is_stored_as_built():
+    s3 = FakeS3Client()
+    partitions = _partitions(s3)
+    full = _games()
+    split_into_partitions(full, partitions, limit_date="2026-10-16", source="t")
+    rows = full[full["SEASON_YEAR"] == 2025].assign(NEW_FEATURE=1.0)
+
+    sp.write_rebuilt_season(
+        partitions, 2025, rows, limit_date="2026-10-16", source="rebuild 2025"
+    )
+
+    assert "NEW_FEATURE" in partitions.read(2025).columns
+    with pytest.raises(PartitionError, match="columns differ"):
+        partitions.load()
+
+
 # --- the daily update --------------------------------------------------------------
 
 

@@ -25,7 +25,9 @@ Each training dataset is kept in S3 one season per file
 The dataset type and schema version of ``split`` come from the filename
 (``<dataset_type>_data_<schema>_<date>.parquet``). A rebuild builds every game
 of the season in target mode with today's cutoff: about 40 minutes for an
-intermediate season, a few for a closing one.
+intermediate season, a few for a closing one. It is stored in the other
+seasons' column order and dtypes, which a build of one season alone does not
+reproduce.
 """
 
 from __future__ import annotations
@@ -52,6 +54,7 @@ from nba_ou.create_training_data.season_partitions import (
     season_game_ids,
     split_into_partitions,
     update_from_database,
+    write_rebuilt_season,
 )
 from nba_ou.utils.s3_models import make_s3_client, read_s3_object_bytes
 
@@ -148,8 +151,8 @@ def cmd_rebuild(args) -> int:
         lost = set(stored["GAME_ID"].astype(str)) - set(rows["GAME_ID"].astype(str))
         if lost:
             print(f"{len(lost)} stored game(s) not rebuilt: {sorted(lost)[:10]}")
-    manifest = partitions.write(
-        args.season, rows, limit_date=limit, source=f"rebuild {args.season}"
+    manifest = write_rebuilt_season(
+        partitions, args.season, rows, limit_date=limit, source=f"rebuild {args.season}"
     )
     print(
         f"season {args.season}: {manifest.n_games} games, {manifest.n_rows} rows, "
