@@ -237,9 +237,11 @@ results. In short:
   every slot reads the row of its own horizon. `scripts/predict_past_snapshots.py`
   is the end-of-day `own` run. Details: `docs/intermediate/live_prediction.md`.
 - TabPFN runs on its own (`scripts/predict_tabpfn.py`, dispatch-only workflow
-  `nba_predictor_daily_tabpfn_client.yml`): one target and one line per run
-  (default `line_error` at the closing line; `--line intermediate` follows a
-  fixed horizon, T-360 by default). TabPFN keeps no model, so each run fits it
+  `nba_predictor_daily_tabpfn_client.yml`): one or more targets (`--targets`)
+  and one line per run (default `line_error` and `total_points` at the closing line;
+  `--line intermediate` follows a fixed horizon, T-360 by default); the targets
+  share the database update, tonight's rows and the stored run, and each gets
+  its own fit. TabPFN keeps no model, so each run fits it
   with `tabpfn-client` on the rows, features, NaN budget and window of that
   slot's production spec, read from the season partitions, and predicts
   tonight's rows. Stored as `model_builds.kind` 3 / `runs.workflow` 3.

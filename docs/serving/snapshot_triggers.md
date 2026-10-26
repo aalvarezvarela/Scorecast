@@ -32,7 +32,8 @@ day, `schedule_snapshot_triggers.yml` runs
      before Pacific midnight (03:00 ET) would predict the previous day's games.
      Examples: an early tip's T-1080, a noon game's T-720.
 3. adds one **TabPFN** run (`nba_predictor_daily_tabpfn_client.yml`:
-   `line_error`, `line=intermediate`, `horizon_minutes=360`, `update_db=false`)
+   `line_error total_points`, `line=intermediate`, `horizon_minutes=360`,
+   `update_db=false`)
    between 6 h 30 and 5 h before the first tip-off of the day
    (`TABPFN_WINDOW_MINUTES`; `--no-tabpfn` = none), predicting every game. It
    takes the minute of that window farthest from every predictor run, so on
@@ -48,6 +49,16 @@ day, `schedule_snapshot_triggers.yml` runs
    - the final scores, finished matches and lineups
      (`update_finished_matches_daily.yml`) 2 h after it.
 5. books cron-job.org jobs that dispatch those workflows at those times.
+
+The TabPFN workflow's `target` input is a list separated by spaces or commas,
+`line_error total_points` by default (also the script's default and what the
+scheduler requests). From the CLI, use for example
+`python scripts/predict_tabpfn.py --targets line_error` (`--target` remains an
+alias). Each target uses its own production spec and
+training window; database updates, the schedule and tonight's feature rows are
+shared, and all outputs are stored in one prediction run. If a target's inference
+fails, the other targets are still attempted and saved, and the run fails with
+a partial result. `--feature-slot` requires a single target.
 
 ## The day's schedule
 
@@ -74,7 +85,7 @@ skips the snapshots that pass meanwhile.
 | 09:00 | `retrain_prediction_models.yml` (`update_database`, `promote`) | database update; on a game day, then refit, smoke test, promotion |
 | 10:00 | `schedule_snapshot_triggers.yml` | books everything below |
 | each snapshot | `nba_predictor_daily.yml` | every enabled slot |
-| first tip − 6 h 30 … − 5 h, away from the predictor runs | `nba_predictor_daily_tabpfn_client.yml` | TabPFN line_error, T-360 slot |
+| first tip − 6 h 30 … − 5 h, away from the predictor runs | `nba_predictor_daily_tabpfn_client.yml` | TabPFN line_error + total_points, T-360 slots |
 | last end + 30 min | `nba_predict_past_snapshots.yml` | the date's intermediate slots on their own snapshots |
 | last end + 2 h | `update_finished_matches_daily.yml` | final scores (prediction store), finished matches, lineups |
 

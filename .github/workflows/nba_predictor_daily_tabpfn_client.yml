@@ -1,25 +1,22 @@
 name: Predictions - Upcoming Games with TabPFN
 
-# TabPFN on its own: one target and one line per run, fitted on the rows and
-# features of that slot's production build (closing: the frame the daily refit
+# TabPFN on its own: one or more targets and one line per run, each fitted on
+# the rows and features of its slot's production build (closing: the frame the daily refit
 # stores in S3; intermediate: the horizon's rows of the dataset the build was
 # fitted on), on tonight's rows built at run time. Triggered from an external
 # cron:
 #
+#     gh workflow run nba_predictor_daily_tabpfn_client.yml
 #     gh workflow run nba_predictor_daily_tabpfn_client.yml -f target=line_error
-#     gh workflow run nba_predictor_daily_tabpfn_client.yml -f target=line_error \
+#     gh workflow run nba_predictor_daily_tabpfn_client.yml \
 #         -f line=intermediate -f horizon_minutes=360
 on:
     workflow_dispatch:
         inputs:
             target:
-                description: "Target to fit and predict"
-                type: choice
-                options:
-                    - line_error
-                    - total_points
-                    - spread_error
-                default: line_error
+                description: "Targets separated by spaces or commas: line_error, total_points, spread_error"
+                type: string
+                default: line_error total_points
             line:
                 description: "Follow the closing slot, or the slot at a fixed time before tip-off"
                 type: choice
@@ -121,8 +118,10 @@ jobs:
                   aws-region: eu-west-1
 
             - name: Run TabPFN predictor
+              env:
+                  TABPFN_TARGETS: ${{ inputs.target }}
               run: |
-                  python scripts/predict_tabpfn.py --target ${{ inputs.target }} \
+                  python scripts/predict_tabpfn.py --targets "$TABPFN_TARGETS" \
                       --line ${{ inputs.line }} \
                       ${{ inputs.line == 'intermediate' && format('--horizon-minutes {0}', inputs.horizon_minutes) || '' }} \
                       ${{ !inputs.update_db && '--skip-db-update' || '' }} \
