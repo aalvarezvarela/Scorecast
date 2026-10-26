@@ -507,6 +507,9 @@ def test_multiple_targets_share_preparation_and_keep_their_specs(
         deps[name].assert_called_once()
     builder = "tonight_intermediate_frame" if horizon else "tonight_closing_rows"
     deps[builder].assert_called_once()
+    if horizon:
+        # Only the slot's horizon is built, not the whole snapshot grid.
+        assert deps[builder].call_args.kwargs["horizon"] == horizon
     fits = deps["fit_tabpfn"].call_args_list
     assert len(fits) == 2
     assert fits[0].args[0].X.columns.tolist() == FEATURES
@@ -575,7 +578,7 @@ def test_mixed_closing_schemas_use_one_frame_at_the_newest_version(monkeypatch):
 
 
 @pytest.mark.parametrize("horizon", [720, 480, 360, 240])
-def test_scheduled_tabpfn_uses_only_its_game_and_exact_snapshot_when_queued(
+def test_scheduled_tabpfn_predicts_every_game_at_its_exact_snapshot_when_queued(
     monkeypatch, horizon
 ):
     deps = _run_dependencies(monkeypatch, horizon=horizon)
@@ -595,14 +598,18 @@ def test_scheduled_tabpfn_uses_only_its_game_and_exact_snapshot_when_queued(
         line="intermediate",
         horizon_minutes=horizon,
         game_date="2026-10-21",
-        game_ids=["0022600001"],
         as_of=cutoff.isoformat(),
         update_db=False,
     )
     deps["update_all_databases"].assert_not_called()
     builder = deps["tonight_intermediate_frame"].call_args
     assert builder.kwargs["as_of"] == cutoff
-    assert builder.args[0]["scheduled_games"]["GAME_ID"].tolist() == ["0022600001"]
+    assert builder.kwargs["horizon"] == horizon
+    # Not only the game whose snapshot triggered the run: the whole slate.
+    assert builder.args[0]["scheduled_games"]["GAME_ID"].tolist() == [
+        "0022600001",
+        "0022600002",
+    ]
     assert (
         builder.args[0]["roster_snapshots"] is None
     )  # load archived observations at the cutoff
@@ -615,11 +622,11 @@ def test_scheduled_tabpfn_uses_only_its_game_and_exact_snapshot_when_queued(
         .call_args.args[0]
         .tables(status=store_schema.RUN_STATUS_OK)
     )
-    assert len(tables.predictions) == 2
+    assert len(tables.predictions) == 4
     assert set(tables.model_builds["target"]) == {1, 2}
     assert set(tables.model_builds["horizon_minutes"]) == {horizon}
     assert set(tables.predictions["snapshot_horizon_minutes"]) == {horizon}
-    assert set(tables.predictions["game_id"]) == {22600001}
+    assert set(tables.predictions["game_id"]) == {22600001, 22600002}
 
 
 def test_explicit_game_date_survives_a_change_of_pacific_date(monkeypatch):
@@ -655,13 +662,18 @@ def test_unknown_requested_game_fails_instead_of_predicting_the_whole_slate(
     deps["fit_tabpfn"].assert_not_called()
 
 
-def test_changed_tipoff_cannot_silently_use_a_different_snapshot(monkeypatch):
+def test_snapshots_far_from_the_cutoff_are_predicted_as_built(monkeypatch):
+    # Both games' T-360 (17:30 and 20:00 UTC) are over 15 min from --as-of:
+    # neither is the triggering snapshot, so nothing is waited for or rebuilt.
     deps = _run_dependencies(monkeypatch, horizon=360)
-    with pytest.raises(ValueError, match="tip-off may have changed"):
-        job.predict_tabpfn(
-            line="intermediate", game_ids=["0022600001"], as_of="2026-10-21T17:00:00Z"
-        )
-    deps["fit_tabpfn"].assert_not_called()
+    waited = []
+    monkeypatch.setattr(job, "_wait_until", waited.append)
+    job.predict_tabpfn(
+        line="intermediate", as_of="2026-10-21T17:00:00Z", update_db=False
+    )
+    deps["tonight_intermediate_frame"].assert_called_once()
+    assert waited == []
+    assert deps["fit_tabpfn"].call_count == 2
 
 
 @pytest.mark.parametrize("as_of", ["2026-10-21T17:25:00Z", "2026-10-21T17:35:00Z"])
@@ -674,12 +686,7 @@ def test_page_tipoff_a_few_minutes_off_rebuilds_at_the_rows_own_snapshot(
     snapshot = pd.Timestamp("2026-10-21 17:30", tz="UTC")
     waited = []
     monkeypatch.setattr(job, "_wait_until", waited.append)
-    job.predict_tabpfn(
-        line="intermediate",
-        game_ids=["0022600001"],
-        as_of=as_of,
-        update_db=False,
-    )
+    job.predict_tabpfn(line="intermediate", as_of=as_of, update_db=False)
     cutoffs = [
         call.kwargs["as_of"]
         for call in deps["tonight_intermediate_frame"].call_args_list
@@ -688,6 +695,51 @@ def test_page_tipoff_a_few_minutes_off_rebuilds_at_the_rows_own_snapshot(
     assert cutoffs == [pd.Timestamp(as_of), snapshot]
     assert waited == [snapshot]
     assert deps["fit_tabpfn"].call_count == 2
+
+
+def _snapshot_rows(**snapshots: str) -> pd.DataFrame:
+    return pd.DataFrame(
+        {
+            "GAME_ID": list(snapshots),
+            "SNAPSHOT_TS_UTC": pd.to_datetime(list(snapshots.values()), utc=True),
+        }
+    )
+
+
+@pytest.mark.parametrize("snapshot_games", [["0022600001"], None])
+def test_another_games_snapshot_minutes_away_is_not_the_runs(
+    monkeypatch, snapshot_games
+):
+    # Tip-offs 10 min apart: each snapshot has its own run, and neither
+    # rebuilds the slate at the other's snapshot.
+    rows = _snapshot_rows(
+        **{"0022600001": "2026-10-21 18:00", "0022600002": "2026-10-21 18:10"}
+    )
+    build = Mock()
+    monkeypatch.setattr(job, "_wait_until", Mock())
+    cutoff = pd.Timestamp("2026-10-21 18:00", tz="UTC")
+    got = job._rebuild_at_row_snapshot(rows, cutoff, build, snapshot_games)
+    assert got is rows
+    build.assert_not_called()
+
+
+def test_the_snapshot_games_page_tipoff_off_rebuilds_at_their_snapshot(
+    monkeypatch,
+):
+    # The run's game reads 18:05 on the line-history page; another game's
+    # snapshot is exactly at the cutoff, and is not the run's.
+    rows = _snapshot_rows(
+        **{"0022600001": "2026-10-21 18:05", "0022600002": "2026-10-21 18:00"}
+    )
+    build = Mock(return_value="rebuilt")
+    waited = []
+    monkeypatch.setattr(job, "_wait_until", waited.append)
+    cutoff = pd.Timestamp("2026-10-21 18:00", tz="UTC")
+    got = job._rebuild_at_row_snapshot(rows, cutoff, build, ["0022600001"])
+    snapshot = pd.Timestamp("2026-10-21 18:05", tz="UTC")
+    assert got == "rebuilt"
+    build.assert_called_once_with(snapshot)
+    assert waited == [snapshot]
 
 
 def test_wait_until_sleeps_only_for_a_snapshot_still_ahead(monkeypatch):
@@ -715,6 +767,8 @@ def test_cli_passes_scheduled_game_and_snapshot_inputs(monkeypatch):
             "0022600001,0022600002",
             "--as-of",
             "2026-10-21T11:30:00Z",
+            "--snapshot-game-ids",
+            "0022600001",
             "--skip-db-update",
         ]
     )
@@ -722,6 +776,7 @@ def test_cli_passes_scheduled_game_and_snapshot_inputs(monkeypatch):
     assert options["game_date"] == "2026-10-21"
     assert options["game_ids"] == ["0022600001", "0022600002"]
     assert options["as_of"] == "2026-10-21T11:30:00Z"
+    assert options["snapshot_game_ids"] == ["0022600001"]
     assert options["horizon_minutes"] == 720
     assert options["update_db"] is False
 
@@ -735,6 +790,15 @@ def test_cli_passes_scheduled_game_and_snapshot_inputs(monkeypatch):
         ["--line", "intermediate", "--as-of", "2026-10-21 12:00"],
         ["--line", "intermediate", "--as-of", "NaT"],
         ["--as-of", "2026-10-21T12:00:00Z"],
+        ["--line", "intermediate", "--snapshot-game-ids", "0022600001"],
+        [
+            "--line",
+            "intermediate",
+            "--as-of",
+            "2026-10-21T12:00:00Z",
+            "--snapshot-game-ids",
+            "22600001",
+        ],
     ],
 )
 def test_invalid_schedule_inputs_fail_before_starting(monkeypatch, args):

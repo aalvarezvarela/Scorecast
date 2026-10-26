@@ -3,7 +3,7 @@
     python scripts/predict_tabpfn.py [--targets line_error total_points] [--no-persist]
     python scripts/predict_tabpfn.py --line intermediate [--horizon-minutes 360]
     python scripts/predict_tabpfn.py --line intermediate --horizon-minutes 720 \
-        --game-date 2026-10-26 --game-ids 0022600001 --as-of 2026-10-26T11:00:00Z
+        --game-date 2026-10-26 --as-of 2026-10-26T11:00:00Z
 
 One or more targets and one line per run (``line_error`` and ``total_points``
 at the closing line by default; ``--line intermediate`` follows the slot of a fixed time before
@@ -22,7 +22,8 @@ rows and columns of that slot's production build
    rows are built from them, so they carry the lines of this moment: the
    closing rows, or the intermediate row of the horizon -- built from the
    ticks so far when the snapshot is still ahead (``SNAPSHOT_PASSED`` False),
-   as the daily predictor does.
+   as the daily predictor does. Every game of the slate that has not started
+   is predicted, at either line; only that horizon's rows are built.
 3. TabPFN is fitted separately for each target on its spec's rows and features.
    Tonight's rows are prepared once and all outputs share one prediction run.
    The run goes to the prediction store (S3 run archive + Aiven) with
@@ -37,7 +38,7 @@ from __future__ import annotations
 import argparse
 import os
 import time
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Collection, Sequence
 from datetime import date, datetime
 from zoneinfo import ZoneInfo
 
@@ -163,39 +164,40 @@ def _rebuild_at_row_snapshot(
     rows: pd.DataFrame,
     cutoff: pd.Timestamp,
     build_rows: Callable[[pd.Timestamp], pd.DataFrame],
+    snapshot_games: Collection[str] | None = None,
 ) -> pd.DataFrame:
-    """``rows`` cut at their own snapshot rather than at ``cutoff``.
+    """``rows`` with the games of ``cutoff``'s snapshot cut at their own snapshot.
 
     The scheduler times ``--as-of`` from the NBA scoreboard's tip-off, the rows
-    from the line-history page's. A few minutes apart is rounding between the
-    two: the rows are rebuilt at their own snapshot, after waiting for it to
-    pass, so none is cut before the snapshot it is labelled with. More than
-    ``TIPOFF_TOLERANCE_MINUTES`` apart is a moved game, and fails.
+    from the line-history page's. A row of the snapshot that triggered the run
+    (``snapshot_games``) up to ``TIPOFF_TOLERANCE_MINUTES`` from the cutoff is
+    a few minutes off by rounding between the two: the rows are rebuilt at that
+    snapshot, after waiting for it to pass, so none of them is cut before the
+    snapshot it is labelled with. Without ``snapshot_games`` (a manual run) the
+    snapshot nearest the cutoff is the run's: another game's a few minutes away
+    is its own, and has a run of its own. The other rows are the rest of the
+    slate: a snapshot already passed reads its own ticks, one still ahead the
+    lines so far (``SNAPSHOT_PASSED`` False), as the daily predictor predicts
+    them.
     """
     snapshots = pd.to_datetime(rows["SNAPSHOT_TS_UTC"], utc=True)
-    if (snapshots - cutoff).abs().max() > pd.Timedelta(
-        minutes=TIPOFF_TOLERANCE_MINUTES
-    ):
-        raise ValueError(
-            "Built snapshot times differ from --as-of by more than "
-            f"{TIPOFF_TOLERANCE_MINUTES} min; the tip-off may have changed."
-        )
-    if snapshots.eq(cutoff).all():
+    distance = (snapshots - cutoff).abs()
+    near = distance.le(pd.Timedelta(minutes=TIPOFF_TOLERANCE_MINUTES))
+    if snapshot_games is not None:
+        near &= rows["GAME_ID"].astype(str).isin(set(snapshot_games))
+    elif near.any():
+        near &= distance.eq(distance[near].min())
+    if snapshots[near].eq(cutoff).all():
         return rows
-    # Rows of different snapshots share one cutoff: the latest, so every row
-    # has passed; the earlier ones read their ticks up to their own snapshot.
-    snapshot = snapshots.max()
+    # Rows of different snapshots share one cutoff: the latest, so every near
+    # row has passed; the earlier ones read their ticks up to their own snapshot.
+    snapshot = snapshots[near].max()
     print_status(
         f"Line-history snapshot {snapshot} differs from --as-of {cutoff} "
         "(scoreboard vs page tip-off); rebuilding at the snapshot"
     )
     _wait_until(snapshot)
-    rebuilt = build_rows(snapshot)
-    if not pd.to_datetime(rebuilt["SNAPSHOT_TS_UTC"], utc=True).le(snapshot).all():
-        raise ValueError(
-            "Rebuilt snapshot times moved again; the tip-off may have changed."
-        )
-    return rebuilt
+    return build_rows(snapshot)
 
 
 def predict_tabpfn(
@@ -206,6 +208,7 @@ def predict_tabpfn(
     game_date: str | None = None,
     game_ids: Sequence[str] | None = None,
     as_of: str | None = None,
+    snapshot_game_ids: Sequence[str] | None = None,
     feature_slot: ModelSlot | None = None,
     model_version: str = DEFAULT_MODEL_VERSION,
     train_games: int | None = None,
@@ -221,11 +224,18 @@ def predict_tabpfn(
     ``DEFAULT_INTERMEDIATE_HORIZON``). ``feature_slot`` defaults to the enabled
     slot of each target at that line. An explicit ``feature_slot`` requires
     one target. ``persist=False`` stores nothing (the database update still writes).
-    ``game_date`` and ``game_ids`` pin a scheduled run to its slate and games;
-    ``as_of`` pins the intermediate input cutoff even when the runner is busy.
+    ``game_date`` pins a scheduled run to its slate and ``as_of`` the
+    intermediate input cutoff, even when the runner is busy; every game of the
+    slate not started when the run reads the schedule is predicted.
+    ``snapshot_game_ids`` names the games whose snapshot ``as_of`` is
+    (metadata, not a filter: ``_rebuild_at_row_snapshot``). ``game_ids``
+    (manual runs) keeps only those games.
     """
     targets = parse_targets(targets)
     wanted_games = None if game_ids is None else set(parse_game_ids(game_ids))
+    snapshot_games = (
+        None if snapshot_game_ids is None else parse_game_ids(snapshot_game_ids)
+    )
     cutoff = None if as_of is None else pd.Timestamp(as_of)
     if cutoff is not None and (
         pd.isna(cutoff) or cutoff.tzinfo is None or line != "intermediate"
@@ -408,7 +418,10 @@ def predict_tabpfn(
         def build_rows(as_of: pd.Timestamp | None) -> pd.DataFrame:
             rows = rows_of_horizon(
                 tonight_intermediate_frame(
-                    scheduled_data, game_date=date_to_predict, as_of=as_of
+                    scheduled_data,
+                    game_date=date_to_predict,
+                    as_of=as_of,
+                    horizon=horizon,
                 ),
                 specs[0],
             )
@@ -421,7 +434,9 @@ def predict_tabpfn(
         df_to_predict = build_rows(cutoff)
         frame_version = BASE_SCHEMA_VERSION
         if cutoff is not None:
-            df_to_predict = _rebuild_at_row_snapshot(df_to_predict, cutoff, build_rows)
+            df_to_predict = _rebuild_at_row_snapshot(
+                df_to_predict, cutoff, build_rows, snapshot_games
+            )
         passed = int(df_to_predict["SNAPSHOT_PASSED"].sum())
         print_status(
             f"{len(df_to_predict)} game(s) to predict; T-{horizon} passed for "
@@ -569,11 +584,22 @@ def main(argv: Sequence[str] | None = None) -> None:
     parser.add_argument(
         "--game-ids",
         nargs="+",
-        help="Only these game IDs, separated by spaces or commas (default: all).",
+        help=(
+            "Only these game IDs, separated by spaces or commas (default: every "
+            "game not started)."
+        ),
     )
     parser.add_argument(
         "--as-of",
         help="Intermediate snapshot cutoff in ISO 8601 with timezone (default: live).",
+    )
+    parser.add_argument(
+        "--snapshot-game-ids",
+        nargs="+",
+        help=(
+            "With --as-of: the games whose snapshot it is, separated by spaces or "
+            "commas. Not a filter: every game is still predicted."
+        ),
     )
     parser.add_argument(
         "--feature-slot",
@@ -619,6 +645,13 @@ def main(argv: Sequence[str] | None = None) -> None:
     try:
         targets = parse_targets(args.targets)
         game_ids = None if args.game_ids is None else parse_game_ids(args.game_ids)
+        snapshot_game_ids = (
+            None
+            if args.snapshot_game_ids is None
+            else parse_game_ids(args.snapshot_game_ids)
+        )
+        if snapshot_game_ids is not None and args.as_of is None:
+            raise ValueError("--snapshot-game-ids requires --as-of.")
         if args.as_of is not None:
             cutoff = pd.Timestamp(args.as_of)
             if pd.isna(cutoff) or cutoff.tzinfo is None or args.line != "intermediate":
@@ -637,6 +670,7 @@ def main(argv: Sequence[str] | None = None) -> None:
         game_date=None if args.game_date is None else args.game_date.isoformat(),
         game_ids=game_ids,
         as_of=args.as_of,
+        snapshot_game_ids=snapshot_game_ids,
         feature_slot=args.feature_slot,
         model_version=args.model_version,
         train_games=args.train_games,

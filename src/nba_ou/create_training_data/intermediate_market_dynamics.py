@@ -137,6 +137,7 @@ def intermediate_market_dynamics_columns(
     verbose: bool = True,
     history: pd.DataFrame | None = None,
     live_reports: LiveInjuryReports | None = None,
+    visible_until: pd.Timestamp | None = None,
 ) -> pd.DataFrame:
     """The G1, G2 and G3 columns of ``snapshots``' rows, on its index.
 
@@ -152,6 +153,10 @@ def intermediate_market_dynamics_columns(
     need cover ``snapshots``' games only. The beta reads the current and
     previous season, so only those history rows join it, and the news
     timeline is loaded for those seasons.
+
+    ``visible_until`` (tonight-only mode) is the run's cutoff: ``snapshots``'
+    games read the news published before it (``InjuryNewsTimeline.known_at``),
+    as their ticks stop there, even when the run starts later.
     """
     missing = [c for c in REQUIRED_COLUMNS if c not in snapshots]
     if missing:
@@ -170,6 +175,11 @@ def intermediate_market_dynamics_columns(
             seasons |= set(pd.to_numeric(beta_history["SEASON_YEAR"]).astype(int))
         timeline = load_injury_news_timeline(
             sorted(seasons), verbose=verbose, live_reports=live_reports
+        )
+    if visible_until is not None:
+        timeline = timeline.known_at(
+            snapshots["GAME_ID"].astype(str).unique(),
+            pd.Timestamp(visible_until).tz_convert("UTC").value,
         )
 
     rows = pd.DataFrame(

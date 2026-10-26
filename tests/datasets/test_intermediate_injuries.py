@@ -116,6 +116,63 @@ def test_report_states_are_partitioned_by_snapshot_horizon(monkeypatch):
     assert states[120].report_age["report_age_minutes"].tolist() == [15.0]
 
 
+def test_tonights_snapshots_ahead_of_the_cutoff_read_the_reports_before_it(
+    monkeypatch,
+):
+    # A queued run with cutoff 18:00 starts later: the store already holds the
+    # reports since. g1's T-360 (20:00) reads them as of 18:00, its report age
+    # still counted to 20:00; its T-720 (14:00) and earlier games are as read.
+    cutoff = pd.Timestamp("2026-10-21 18:00", tz="UTC")
+    cutoffs = pd.DataFrame(
+        {
+            "game_id": ["g0", "g1", "g1"],
+            "snapshot_minutes": [360, 360, 720],
+            "as_of": pd.to_datetime(
+                ["2026-10-20 20:00", "2026-10-21 20:00", "2026-10-21 14:00"],
+                utc=True,
+            ),
+        }
+    )
+    reads = []
+
+    def read(_conn, rows):
+        reads.append(rows)
+        keys = rows[["game_id", "snapshot_minutes"]].reset_index(drop=True)
+        return (
+            keys.assign(
+                team_id="h", player_id="p", status="out", reason_category="injury"
+            ),
+            keys.assign(team_id="h", submitted=True),
+            keys.assign(report_age_minutes=10.0),
+        )
+
+    monkeypatch.setattr(injuries.history_memo, "default_backend", lambda: None)
+    monkeypatch.setattr(injuries, "connect_nba_db", lambda *_: nullcontext(object()))
+    monkeypatch.setattr(injuries.fetch, "report_state_at_snapshots", read)
+    monkeypatch.setattr(
+        injuries.fetch,
+        "listed_status_events",
+        lambda *_: InjuryReportState.empty().status_events,
+    )
+    monkeypatch.setattr(
+        injuries.fetch,
+        "listed_pairs",
+        lambda *_: InjuryReportState.empty().listed_pairs,
+    )
+    states = injuries._states_at_snapshots(
+        cutoffs, target_game_ids={"g1"}, visible_until=cutoff
+    )
+    (rows,) = reads
+    assert pd.to_datetime(rows["as_of"], utc=True).tolist() == [
+        pd.Timestamp("2026-10-20 20:00", tz="UTC"),
+        cutoff,
+        pd.Timestamp("2026-10-21 14:00", tz="UTC"),
+    ]
+    ages = states[360].report_age.set_index("game_id")["report_age_minutes"]
+    assert ages.to_dict() == {"g0": 10.0, "g1": 130.0}
+    assert states[720].report_age["report_age_minutes"].tolist() == [10.0]
+
+
 @pytest.mark.parametrize("home_filed", [True, False])
 def test_unfiled_side_has_nan_injury_features_even_with_legacy_values(
     monkeypatch, home_filed

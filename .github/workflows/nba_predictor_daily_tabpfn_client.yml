@@ -33,11 +33,15 @@ on:
                 type: string
                 default: ""
             game_ids:
-                description: "Only these game IDs, separated by spaces or commas (empty = all)"
+                description: "Only these game IDs, separated by spaces or commas (empty = every game not started)"
                 type: string
                 default: ""
             as_of:
                 description: "Intermediate snapshot cutoff in ISO 8601 with timezone (empty = live)"
+                type: string
+                default: ""
+            snapshot_game_ids:
+                description: "With as_of: the games whose snapshot it is (not a filter; the scheduler fills it)"
                 type: string
                 default: ""
             update_db:
@@ -138,6 +142,7 @@ jobs:
                   TABPFN_GAME_DATE: ${{ inputs.game_date }}
                   TABPFN_GAME_IDS: ${{ inputs.game_ids }}
                   TABPFN_AS_OF: ${{ inputs.as_of }}
+                  TABPFN_SNAPSHOT_GAME_IDS: ${{ inputs.snapshot_game_ids }}
               run: |
                   args=()
                   if [[ "$TABPFN_LINE" == intermediate ]]; then
@@ -146,6 +151,7 @@ jobs:
                   if [[ -n "$TABPFN_GAME_DATE" ]]; then args+=(--game-date "$TABPFN_GAME_DATE"); fi
                   if [[ -n "$TABPFN_GAME_IDS" ]]; then args+=(--game-ids "$TABPFN_GAME_IDS"); fi
                   if [[ -n "$TABPFN_AS_OF" ]]; then args+=(--as-of "$TABPFN_AS_OF"); fi
+                  if [[ -n "$TABPFN_SNAPSHOT_GAME_IDS" ]]; then args+=(--snapshot-game-ids "$TABPFN_SNAPSHOT_GAME_IDS"); fi
                   python scripts/predict_tabpfn.py --targets "$TABPFN_TARGETS" \
                       --line "$TABPFN_LINE" "${args[@]}" \
                       ${{ !inputs.update_db && '--skip-db-update' || '' }} \

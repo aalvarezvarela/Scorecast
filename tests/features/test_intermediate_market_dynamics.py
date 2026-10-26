@@ -162,6 +162,23 @@ def test_later_reports_do_not_change_features_at_the_snapshot():
     assert _home_features(_timeline(later), 60).equals(_home_features(_timeline(), 60))
 
 
+def test_timeline_known_at_a_cutoff_is_the_store_last_updated_then():
+    # At T-90 the store held p2 as Questionable, still open: the Out report
+    # stamped at the cutoff was not published yet.
+    spans, filings, schedule, estimates = _inputs()
+    at_cutoff = spans[~(spans["player_id"].eq("p2") & spans["status"].eq("out"))]
+    at_cutoff.loc[at_cutoff["player_id"].eq("p2"), "valid_to"] = TIP
+    stored_then = build_news_timeline(at_cutoff, filings, schedule, estimates)
+    known = _timeline().known_at(["g1"], before_tip(90).value)
+    for minutes in (89, 60, 30):
+        got = _home_features(known, minutes)
+        assert got.equals(_home_features(stored_then, minutes))
+    assert _home_features(known, 60)["NEWS_EXP_PTS_W60"] == pytest.approx(0.0)
+    assert _home_features(known, 60)["MIN_SINCE_MATERIAL_NEWS"] == pytest.approx(120.0)
+    # Before the cutoff nothing changes.
+    assert _home_features(known, 120).equals(_home_features(_timeline(), 120))
+
+
 def test_news_column_names_pass_the_gate_and_are_not_odds_shaped():
     names = [news_column("NEWS_EXP_PTS_W60", side) for side in ("HOME", "AWAY")]
     assert all(is_kept_column(name) for name in names)

@@ -34,7 +34,12 @@ day, `schedule_snapshot_triggers.yml` runs
 3. adds **TabPFN** runs (`nba_predictor_daily_tabpfn_client.yml`) at each
    game's **T-720, T-480, T-360 and T-240** (12 h, 8 h, 6 h and 4 h before
    tip-off). Each run predicts `line_error total_points` with the production
-   specs and rows of that exact horizon (`line=intermediate`, `update_db=false`).
+   specs and rows of that exact horizon (`line=intermediate`, `update_db=false`),
+   for **every game of the slate not yet started** when it runs, as the closing
+   line does: the games whose snapshot triggered it at that snapshot, the later
+   ones from the lines so far (`SNAPSHOT_PASSED` false) and the earlier ones at
+   their own, already passed snapshot. Only that horizon's rows are built, so
+   the injury stage computes one horizon, not the whole grid.
    Games sharing a tip-off share a horizon's run; different tip-offs are never
    moved or grouped. Each fires 2 min (`TABPFN_DELAY_MINUTES`) after the
    predictor run that covers its snapshot, which can be up to 30 min after the
@@ -43,15 +48,23 @@ day, `schedule_snapshot_triggers.yml` runs
    minute apart, in snapshot order (22:02, 22:03, 22:04, …), pushing on any
    later run they would land on. Only dispatch times move; each job keeps its
    own snapshot cutoff.
-   The payload pins `game_date`, `game_ids` and
-   `as_of` (the snapshot itself) to that snapshot, so it does not predict
-   unrelated games and a queue delay cannot switch it to the latest input. The
-   intermediate builder reads line history and archived roster observations at
-   this cutoff. The cutoff comes from the NBA scoreboard's tip-off, the rows
-   from the line-history page's. When they differ by up to 15 min
-   (`TIPOFF_TOLERANCE_MINUTES`), the run waits for the rows' own snapshot to
-   pass and rebuilds them at it, so no row is cut before the snapshot it is
-   labelled with; more (a moved game) fails before paid inference.
+   The payload pins `game_date` and `as_of` (the snapshot itself), so a queue
+   delay cannot switch it to another slate or to the latest input; it carries
+   no `game_ids` filter, only `snapshot_game_ids`: the games whose snapshot it
+   is, as metadata. Every input stops at this cutoff, even when the run starts
+   later: line history and archived roster observations, and for a snapshot
+   still ahead the injury reports, the injury news timeline and the referee
+   release, all read as published before the cutoff (the report age is still
+   counted to the snapshot). Each row is then the one a live run at the cutoff
+   builds, though the store already holds what was published since. The cutoff
+   comes from the NBA scoreboard's tip-off, the rows from the line-history
+   page's. When a `snapshot_game_ids` row's snapshot is within 15 min of it
+   (`TIPOFF_TOLERANCE_MINUTES`) but not on it, the run waits for that snapshot
+   to pass and rebuilds at it, so no row of the triggering games is cut before
+   the snapshot it is labelled with. Another game's snapshot a few minutes away
+   has its own run and triggers nothing; a manual run without
+   `snapshot_game_ids` takes the snapshot nearest the cutoff as its own. A
+   moved game is just another row from the lines so far.
    `--no-tabpfn` books none of these runs. Snapshots already past when the
    scheduler runs (normally 09:30 Madrid) are lost, including early T-720s;
    there is no catch-up or previous-day booking.
@@ -193,8 +206,8 @@ jobs on a 10-game night. Instead:
   minute of several hours (`minutes=[m]`, `hours=[…]`, `mdays=[d]`,
   `months=[mo]`). It fires at exactly the planned times and no others. Runs
   mostly fall on :00 and :30, so a night needs about 4–8 jobs.
-- TabPFN needs **one job per (snapshot time, horizon)** because its game IDs
-  and cutoff change per run. Two targets share that job; games with the same
+- TabPFN needs **one job per (snapshot time, horizon)** because its cutoff
+  changes per run. Two targets share that job; games with the same
   tip-off share it too. Different horizons at the same minute remain separate.
 - **A fixed pool**, titled `Scorecast - snapshot trigger NN`. Each day the
   script makes one `GET /jobs`, then patches jobs 01..n with the day's
@@ -207,8 +220,9 @@ jobs on a 10-game night. Instead:
   one creation per 13 s; later days reuse the jobs.
 - Job titles append their purpose, for example
   `Scorecast - snapshot trigger 02 | TabPFN T-240 CLE@PHI | snapshot 26/10 21:30 Madrid`.
-  TabPFN titles show up to two matchups (plus the remaining game count), the
-  horizon and the snapshot's Madrid time; the execution time remains in the
+  TabPFN titles show up to two matchups whose snapshot it is (plus the
+  remaining game count; the run predicts the whole slate), the horizon and the
+  snapshot's Madrid time; the execution time remains in the
   console's schedule column. A predictor job lists every Madrid time it fires
   (`Predictor 22:00, 23:00, 00:00 Madrid`), since the console shows only the
   next one. The post-game jobs read `Past snapshots <date>` and `Final scores`.
@@ -239,12 +253,12 @@ A scheduled TabPFN run is equivalent to:
 ```bash
 python scripts/predict_tabpfn.py --targets line_error total_points \
   --line intermediate --horizon-minutes 720 --skip-db-update \
-  --game-date 2026-10-26 --game-ids 0022600001 \
-  --as-of 2026-10-26T11:00:00Z
+  --game-date 2026-10-26 --as-of 2026-10-26T11:00:00Z \
+  --snapshot-game-ids 0022600101 0022600102
 ```
 
-Manual runs can omit `game_ids` (all games), `game_date` (current Pacific date)
-and `as_of` (live). A cutoff requires an explicit timezone and intermediate mode.
+Manual runs can omit `game_date` (current Pacific date) and `as_of` (live), and
+can add `--game-ids` to predict only those games (the scheduler never does). A cutoff requires an explicit timezone and intermediate mode.
 
 The workflow needs the repository secrets `CRONJOB_API_KEY` and
 `CRONJOB_GITHUB_DISPATCH_TOKEN`. The second is a fine-grained PAT on this repo

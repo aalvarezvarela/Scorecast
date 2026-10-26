@@ -147,10 +147,43 @@ def _stored_report_states(
     return parts, later
 
 
+def _visible_cutoffs(
+    cutoffs: pd.DataFrame, visible_until: pd.Timestamp, targets: set[str]
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """``cutoffs`` with each target read at ``visible_until`` when its snapshot
+    falls after it, and those reads' (game_id, snapshot_minutes, minutes moved).
+    """
+    snapshot = pd.to_datetime(cutoffs["as_of"], utc=True)
+    visible_until = pd.Timestamp(visible_until).tz_convert("UTC")
+    later = cutoffs["game_id"].astype(str).isin(targets) & snapshot.gt(visible_until)
+    moved = pd.DataFrame(
+        {
+            "game_id": cutoffs.loc[later, "game_id"].astype(str),
+            "snapshot_minutes": cutoffs.loc[later, "snapshot_minutes"].astype(int),
+            "minutes": (snapshot[later] - visible_until).dt.total_seconds() / 60,
+        }
+    )
+    return cutoffs.assign(as_of=snapshot.mask(later, visible_until)), moved
+
+
+def _aged_to_snapshot(ages: pd.DataFrame, moved: pd.DataFrame) -> pd.DataFrame:
+    """``ages`` with the moved reads' report age counted up to their snapshot."""
+    offset = moved.set_index(["game_id", "snapshot_minutes"])["minutes"].reindex(
+        pd.MultiIndex.from_arrays(
+            [ages["game_id"].astype(str), ages["snapshot_minutes"].astype(int)]
+        )
+    )
+    return ages.assign(
+        report_age_minutes=pd.to_numeric(ages["report_age_minutes"])
+        + offset.fillna(0.0).to_numpy()
+    )
+
+
 def _states_at_snapshots(
     cutoffs: pd.DataFrame,
     live_reports: LiveInjuryReports | None = None,
     target_game_ids: set[str] | None = None,
+    visible_until: pd.Timestamp | None = None,
 ) -> dict[int, InjuryReportState]:
     """Bulk-read report spans at the exact timestamps used by market snapshots.
 
@@ -159,22 +192,37 @@ def _states_at_snapshots(
     With ``target_game_ids`` every other game's reads come from the memo
     (``_stored_report_states``); the parts are put in the order one read over
     every cutoff gives -- the canonical order is a function of the rows.
+
+    ``visible_until`` (tonight-only mode) is the run's cutoff: a target whose
+    snapshot is still ahead reads the reports published before it, its report
+    age still counted to the snapshot -- the row a live run at the cutoff
+    builds, even when this run starts later and the store already holds the
+    reports since.
     """
+    moved = None
     with connect_nba_db("aiven") as conn:
         parts, remaining = (
             _stored_report_states(conn, cutoffs, target_game_ids)
             if target_game_ids is not None
             else ([], cutoffs)
         )
+        if visible_until is not None and target_game_ids is not None:
+            # Tonight's reads only: the memo's keys stay those of the snapshots.
+            remaining, moved = _visible_cutoffs(
+                remaining, visible_until, target_game_ids
+            )
         if not remaining.empty or not parts:
             parts.append(live.report_state_at_snapshots(conn, remaining, live_reports))
         statuses, filings, ages = (
-            parts[0][i]
-            if len(parts) == 1
-            else canonical_row_order(
-                pd.concat(
-                    [part[i] for part in parts if not part[i].empty] or [parts[0][i]],
-                    ignore_index=True,
+            (
+                parts[0][i]
+                if len(parts) == 1
+                else canonical_row_order(
+                    pd.concat(
+                        [part[i] for part in parts if not part[i].empty]
+                        or [parts[0][i]],
+                        ignore_index=True,
+                    )
                 )
             )
             for i in range(3)
@@ -184,6 +232,8 @@ def _states_at_snapshots(
         events = fetch.listed_status_events(conn)
         listed = fetch.listed_pairs(conn)
 
+    if moved is not None and not moved.empty:
+        ages = _aged_to_snapshot(ages, moved)
     return snapshot_report_states(
         statuses,
         filings,
@@ -949,6 +999,7 @@ def add_snapshot_injury_features(
         target_game_ids=(
             None if target_game_ids is None else {str(g) for g in target_game_ids}
         ),
+        visible_until=context.live_as_of,
     )
     injuries = get_injury_data_from_db(context.player_context_seasons)
     # Normalised and turned into player form once: the same for every horizon.

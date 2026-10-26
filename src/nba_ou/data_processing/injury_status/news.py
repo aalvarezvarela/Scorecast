@@ -206,6 +206,30 @@ class InjuryNewsTimeline:
     team_games: pd.DataFrame
     filings: pd.DataFrame
 
+    def known_at(self, game_ids, cutoff_ns: int) -> InjuryNewsTimeline:
+        """The timeline as it stood at ``cutoff_ns`` for ``game_ids``.
+
+        Their reports stamped at or after the cutoff are not published yet,
+        and the filing open at it stays open: a read at a later time sees what
+        a read at that time would see from a store last updated at the cutoff.
+        """
+        games = {str(g) for g in game_ids}
+        late = self.events["game_id"].astype(str).isin(games) & self.events[
+            "time_ns"
+        ].ge(cutoff_ns)
+        filings = self.filings
+        ours = filings["game_id"].astype(str).isin(games)
+        filings = filings.loc[~(ours & filings["valid_from_ns"].ge(cutoff_ns))].copy()
+        still_open = filings["game_id"].astype(str).isin(games) & filings[
+            "valid_to_ns"
+        ].ge(cutoff_ns)
+        filings.loc[still_open, "valid_to_ns"] = np.iinfo(np.int64).max
+        return InjuryNewsTimeline(
+            events=self.events.loc[~late].reset_index(drop=True),
+            team_games=self.team_games,
+            filings=filings.reset_index(drop=True),
+        )
+
     # ---- point reads -----------------------------------------------------
 
     def _queries(self, game_ids, team_ids, times_ns) -> pd.DataFrame:

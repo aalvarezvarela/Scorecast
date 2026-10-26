@@ -18,9 +18,12 @@ slots, fired ``TABPFN_DELAY_MINUTES`` after the predictor run that covers the
 snapshot (a grouped run can fire up to ``GROUP_MINUTES`` after it), so that
 run is queued first. Coinciding TabPFN dispatches are spaced at least one
 minute apart, preserving their snapshot cutoffs. Games sharing a tip-off share each
-horizon's run. Each dispatch carries its game IDs, game date and snapshot
-cutoff, so queuing cannot change which games or timepoint it predicts. Snapshots before the daily booking are
-left out. ``--no-tabpfn`` leaves these out.
+horizon's run. Each run predicts every game of the slate not yet started, at
+that horizon: the triggering games at their snapshot, the later ones from the
+lines so far, as the daily predictor does. Each dispatch carries its game date
+and snapshot cutoff, so queuing cannot change which slate or timepoint it
+predicts. Snapshots before the daily booking are left out. ``--no-tabpfn``
+leaves these out.
 
 And, after the last game, whose end is estimated as its tip-off plus
 ``GAME_LENGTH_MINUTES``: the past-snapshot predictions of the date
@@ -175,9 +178,8 @@ def pool_title(index: int, group: ScheduleGroup | None = None) -> str:
     inputs = dict(dispatch.inputs)
     if dispatch.workflow_file == TABPFN_WORKFLOW:
         snapshot = datetime.fromisoformat(inputs["as_of"]).astimezone(MADRID)
-        games = dispatch.label or inputs["game_ids"]
         purpose = (
-            f"TabPFN T-{inputs['horizon_minutes']} {games} | "
+            f"TabPFN T-{inputs['horizon_minutes']} {dispatch.label} | "
             f"snapshot {snapshot:%d/%m %H:%M} Madrid"
         )
     elif dispatch == PREDICTOR:
@@ -283,8 +285,10 @@ def tabpfn_runs(
     now: datetime,
     predictor_runs: Mapping[datetime, tuple[str, ...]] | None = None,
 ) -> list[tuple[datetime, Dispatch]]:
-    """Runs per (snapshot minute, horizon), restricted to their game IDs, fired
-    ``TABPFN_DELAY_MINUTES`` after the predictor run that covers the snapshot.
+    """Runs per (snapshot minute, horizon), fired ``TABPFN_DELAY_MINUTES``
+    after the predictor run that covers the snapshot. Each predicts every game
+    not started when it runs; ``snapshot_game_ids`` (metadata, not a filter)
+    and the label name the games whose snapshot it is.
 
     ``predictor_runs`` is ``trigger_times``' plan: it groups snapshots and fires
     each group at its last one, so a snapshot's predictor run can be up to
@@ -329,8 +333,8 @@ def tabpfn_runs(
                     ("horizon_minutes", str(horizon)),
                     ("update_db", "false"),
                     ("game_date", game_date),
-                    ("game_ids", " ".join(sorted(game_ids))),
                     ("as_of", at.isoformat()),
+                    ("snapshot_game_ids", " ".join(sorted(game_ids))),
                 ),
                 label=", ".join(game_labels[game] for game in sorted(game_ids)[:2])
                 + (f" +{len(game_ids) - 2}" if len(game_ids) > 2 else ""),
@@ -344,7 +348,7 @@ def tabpfn_runs(
             run[0],
             dict(run[1].inputs)["as_of"],
             -int(dict(run[1].inputs)["horizon_minutes"]),
-            dict(run[1].inputs)["game_ids"],
+            run[1].label,
         ),
     )
     spaced: list[tuple[datetime, Dispatch]] = []
@@ -546,8 +550,9 @@ def main() -> None:
         print(
             f"  {_clock(at)}  TabPFN line_error + total_points "
             f"T-{inputs['horizon_minutes']} (snapshot "
-            f"{_clock(datetime.fromisoformat(inputs['as_of']))}): "
-            f"{inputs['game_ids']} (game date {inputs['game_date']})"
+            f"{_clock(datetime.fromisoformat(inputs['as_of']))} of "
+            f"{dispatch.label}): every game not started "
+            f"(game date {inputs['game_date']})"
         )
     for at, dispatch in after_games:
         print(f"After the last game: {dispatch.workflow_file} at {_clock(at)}")

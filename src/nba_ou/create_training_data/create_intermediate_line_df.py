@@ -1394,6 +1394,7 @@ def create_intermediate_line_df(
             verbose=verbose,
             history=history_rows,
             live_reports=live.injury_reports if live is not None else None,
+            visible_until=live.as_of if live is not None else None,
         )
 
     stage("Snapshot injury features (per horizon) ...")
@@ -1450,7 +1451,9 @@ def create_intermediate_line_df(
     merged = add_snapshot_referee_interactions(merged, book=anchor)
     # This masks the legacy, crew tendency and interaction families together.
     # Earlier snapshots must not inherit that game's eventual referee crew.
-    merged = mask_referees_before_release(merged)
+    merged = mask_referees_before_release(
+        merged, visible_until=live.as_of if live is not None else None
+    )
     missing_scores = [
         column
         for column in (PTS_HOME_COL, PTS_AWAY_COL)
