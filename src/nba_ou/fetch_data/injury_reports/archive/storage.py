@@ -8,10 +8,13 @@ flag and never a code path.
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 from typing import Protocol
 
 from nba_ou.utils.s3_models import make_s3_client
+
+logger = logging.getLogger(__name__)
 
 
 class Storage(Protocol):
@@ -57,9 +60,28 @@ class StorageAccessError(RuntimeError):
 
 
 class S3Storage:
-    def __init__(self, *, bucket: str, profile: str | None, region: str) -> None:
+    def __init__(
+        self,
+        *,
+        bucket: str,
+        profile: str | None,
+        region: str,
+        cache_dir: Path | None = None,
+    ) -> None:
         self.bucket = bucket
         self.client = make_s3_client(profile=profile, region=region)
+        # Share local copies of canonical PDFs between the archive subprocess
+        # and ingest, isolating different S3 buckets. A key is rewritten only
+        # through ``put``, which refreshes its copy; a cache that outlives the
+        # job can go stale only if another machine rewrites or deletes it.
+        self.cache = LocalStorage(Path(cache_dir) / bucket) if cache_dir else None
+
+    def _cache_put(self, key: str, data: bytes) -> None:
+        if self.cache is not None:
+            try:
+                self.cache.put(key, data, {})
+            except OSError as exc:
+                logger.warning("Could not cache injury report %s: %s", key, exc)
 
     def preflight(self, prefix: str) -> None:
         """Fail now, not after hours of discovery.
@@ -93,10 +115,19 @@ class S3Storage:
         return int(head["ContentLength"])
 
     def get(self, key: str) -> bytes | None:
+        if self.cache is not None:
+            try:
+                cached = self.cache.get(key)
+                if cached is not None:
+                    return cached
+            except OSError as exc:
+                logger.warning("Could not read cached injury report %s: %s", key, exc)
         try:
-            return self.client.get_object(Bucket=self.bucket, Key=key)["Body"].read()
+            data = self.client.get_object(Bucket=self.bucket, Key=key)["Body"].read()
         except Exception:
             return None
+        self._cache_put(key, data)
+        return data
 
     def put(self, key: str, data: bytes, metadata: dict[str, str]) -> None:
         self.client.put_object(
@@ -106,6 +137,9 @@ class S3Storage:
             ContentType="application/pdf",
             Metadata={k: str(v)[:1024] for k, v in metadata.items()},
         )
+        # Cache only after S3 acknowledges the upload. A local file must never
+        # make a failed archive write look successful.
+        self._cache_put(key, data)
 
     def describe(self) -> str:
         return f"s3://{self.bucket}"

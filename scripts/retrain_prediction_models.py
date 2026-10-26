@@ -24,8 +24,12 @@ reads the same partitions.
 import argparse
 import getpass
 import os
+import resource
 import sys
+import time
 from collections import defaultdict
+from collections.abc import Iterator
+from contextlib import contextmanager
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
@@ -68,6 +72,76 @@ def configure_tqdm_for_environment() -> None:
     mode = os.getenv("NBA_OU_GITHUB_ACTIONS_TQDM", "disable").strip().lower()
     if os.getenv("GITHUB_ACTIONS", "").lower() == "true" and mode != "keep":
         os.environ.setdefault("TQDM_DISABLE", "1")
+
+
+def _duration(seconds: float) -> str:
+    minutes, seconds = divmod(int(round(seconds)), 60)
+    return f"{minutes}m {seconds:02d}s"
+
+
+def _peak_rss() -> str:
+    """This process's memory peak so far, and the largest finished child's
+    (the intermediate builder forks its horizons). Linux reports KiB."""
+    own = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024**2
+    child = resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss / 1024**2
+    return f"{own:.1f} GB" + (f" (largest child {child:.1f} GB)" if child else "")
+
+
+class PhaseTimings:
+    """Wall time of each phase, printed as it ends and summed per dataset type.
+
+    The summary gives each dataset's chain -- partition update, frame reads,
+    fits -- on its own: what it would take on a runner of its own.
+    """
+
+    PHASES = ("update", "frame", "fit")
+
+    def __init__(self) -> None:
+        self.started = time.perf_counter()
+        # (dataset type, phase) -> [seconds per run, runs that raised]
+        self.totals: dict[tuple[str, str], list] = defaultdict(lambda: [[], 0])
+
+    @contextmanager
+    def phase(self, dataset_type: str, phase: str, label: str) -> Iterator[None]:
+        started = time.perf_counter()
+        failed = False
+        try:
+            yield
+        except BaseException:
+            failed = True
+            raise
+        finally:
+            seconds = time.perf_counter() - started
+            entry = self.totals[(dataset_type, phase)]
+            entry[0].append(seconds)
+            entry[1] += failed
+            print(
+                f"[time] {label}: {_duration(seconds)}"
+                f"{' (did not finish)' if failed else ''}; peak RSS {_peak_rss()}",
+                flush=True,
+            )
+
+    def summary(self) -> str:
+        lines = ["Timings (wall clock):"]
+        for dataset_type in sorted({key[0] for key in self.totals}):
+            parts, total = [], 0.0
+            for phase in self.PHASES:
+                runs, failed = self.totals.get((dataset_type, phase), ([], 0))
+                if not runs:
+                    continue
+                total += sum(runs)
+                parts.append(
+                    f"{phase} {len(runs)}x {_duration(sum(runs))}"
+                    + (f" ({failed} did not finish)" if failed else "")
+                )
+            lines.append(
+                f"  {dataset_type:<18} {' | '.join(parts)} | total {_duration(total)}"
+            )
+        lines.append(
+            f"  whole run {_duration(time.perf_counter() - self.started)}; "
+            f"peak RSS {_peak_rss()}"
+        )
+        return "\n".join(lines)
 
 
 def _today_limit_date() -> str:
@@ -147,6 +221,7 @@ def main() -> int:
         )
         return 0
 
+    timings = PhaseTimings()
     s3 = make_s3_client(profile=SETTINGS.s3_aws_profile, region=SETTINGS.s3_aws_region)
     bucket = SETTINGS.s3_bucket
     actor = _current_user()
@@ -190,7 +265,10 @@ def main() -> int:
             continue
         print(f"[{dataset_type}] bringing the season partitions up to {limit_date}...")
         try:
-            report = update_from_database(store, limit_date=limit_date)
+            with timings.phase(
+                dataset_type, "update", f"{dataset_type} partition update"
+            ):
+                report = update_from_database(store, limit_date=limit_date)
         except Exception as exc:  # noqa: BLE001 -- the other dataset still refits
             unusable[dataset_type] = f"season partitions not updated: {exc}"
             annotate("error", f"[{dataset_type}] {unusable[dataset_type]}")
@@ -258,12 +336,13 @@ def main() -> int:
             print(f"[{label}] would read the training frame")
         else:
             try:
-                frame = resolve_training_frame(
-                    specs[group[0].describe()],
-                    partitions=partitions,
-                    base_frames=base_frames,
-                    layer_context=layer_context,
-                )
+                with timings.phase(dataset_type, "frame", f"{label} frame"):
+                    frame = resolve_training_frame(
+                        specs[group[0].describe()],
+                        partitions=partitions,
+                        base_frames=base_frames,
+                        layer_context=layer_context,
+                    )
             except TrainingFrameUnavailable as exc:
                 # Not a failure: a slot the daily refit cannot build (a pooled
                 # or layered intermediate spec) keeps serving the build it has
@@ -298,32 +377,35 @@ def main() -> int:
                 print("  dry run    : not fitted\n")
                 continue
             try:
-                result = refit_from_spec(spec, slot=slot, frame=frame, fitted_by=actor)
-                window = spec.training.train_games
-                if window is not None and result.fit.n_train_games < window:
-                    annotate(
-                        "warning",
-                        f"{slot.describe()}: fitted on {result.fit.n_train_games} "
-                        f"games, short of the spec's {window}.",
+                with timings.phase(dataset_type, "fit", slot.describe()):
+                    result = refit_from_spec(
+                        spec, slot=slot, frame=frame, fitted_by=actor
                     )
-                if not args.no_stage:
-                    write_build(
-                        s3_client=s3,
-                        bucket=bucket,
-                        slot=slot,
-                        fit=result.fit,
-                        model_bytes=model_bytes_of(result.model),
-                        spec=spec,
-                    )
-                    set_build_channel(
-                        s3_client=s3,
-                        bucket=bucket,
-                        slot=slot,
-                        channel=Channel.STAGING,
-                        fit_id=result.fit.fit_id,
-                        set_by=actor,
-                        reason="daily refit",
-                    )
+                    window = spec.training.train_games
+                    if window is not None and result.fit.n_train_games < window:
+                        annotate(
+                            "warning",
+                            f"{slot.describe()}: fitted on {result.fit.n_train_games} "
+                            f"games, short of the spec's {window}.",
+                        )
+                    if not args.no_stage:
+                        write_build(
+                            s3_client=s3,
+                            bucket=bucket,
+                            slot=slot,
+                            fit=result.fit,
+                            model_bytes=model_bytes_of(result.model),
+                            spec=spec,
+                        )
+                        set_build_channel(
+                            s3_client=s3,
+                            bucket=bucket,
+                            slot=slot,
+                            channel=Channel.STAGING,
+                            fit_id=result.fit.fit_id,
+                            set_by=actor,
+                            reason="daily refit",
+                        )
             except Exception as exc:  # noqa: BLE001 - one slot must not stop the rest
                 failures += 1
                 print(f"  FAILED     : {exc}\n", file=sys.stderr)
@@ -347,6 +429,7 @@ def main() -> int:
         f"{failures} failure(s), {unavailable} slot(s) kept on their current "
         "build (no training frame)."
     )
+    print(timings.summary())
     if staged and not args.dry_run and not args.no_stage:
         print("Promote them with: python scripts/promote_build.py --execute")
     return 1 if failures else 0

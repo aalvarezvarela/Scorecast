@@ -109,6 +109,7 @@ def test_an_unrefittable_intermediate_slot_leaves_the_job_green(daily_retrain, c
     out = capsys.readouterr()
     assert "keeping the current build" in out.err
     assert "1 slot(s) kept on their current build" in out.out
+    assert "Timings (wall clock):" in out.out
 
 
 def test_a_real_refit_failure_still_fails_the_job(daily_retrain):

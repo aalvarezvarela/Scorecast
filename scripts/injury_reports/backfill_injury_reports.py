@@ -111,6 +111,7 @@ def _make_storage(args: argparse.Namespace) -> Storage:
         bucket=args.bucket or SETTINGS.s3_bucket,
         profile=SETTINGS.s3_aws_profile,
         region=SETTINGS.s3_aws_region,
+        cache_dir=Path(args.cache_dir) if args.cache_dir else None,
     )
 
 
@@ -221,6 +222,11 @@ def main() -> int:
         ),
     )
     dest.add_argument("--manifest-root", default=str(DEFAULT_MANIFEST_ROOT))
+    dest.add_argument(
+        "--cache-dir",
+        default=None,
+        help="keep local copies of archived PDFs for subsequent ingest",
+    )
     dest.add_argument(
         "--no-manifest-sync",
         action="store_true",
