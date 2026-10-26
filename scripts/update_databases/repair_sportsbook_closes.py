@@ -2,9 +2,8 @@
 
 SBR day pages show each book's last number, which for many games is a live
 line. This replaces every stored per-book close with the last valid pre-tip
-quote from the Aiven line history, clears clear cross-book mistakes, keeps the
-untouched SBR row in ``odds_sportsbook_sbr_raw`` and an audit row per cell in
-``odds_sportsbook_close_repair``. See
+quote from the Aiven line history, clears clear cross-book mistakes and keeps the
+untouched SBR row in ``odds_sportsbook_sbr_raw``. See
 ``nba_ou.postgre_db.odds_sportsbook.repair_closes``.
 
 Only games not yet repaired are processed, so it is cheap to run daily -- after

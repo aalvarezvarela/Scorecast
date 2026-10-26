@@ -125,15 +125,10 @@ def create_all_star_voting_table(drop_existing: bool = False) -> bool:
             _migrate_existing_all_star_voting_table(cur, schema, table)
 
             index_specs = [
-                ("idx_all_star_voting_team_name", "team_name"),
                 ("idx_all_star_voting_season_year", "season_year"),
                 (
                     "idx_all_star_voting_player_id_season_year",
                     "player_id, season_year",
-                ),
-                (
-                    "idx_all_star_voting_player_name_season_year",
-                    "player_name, season_year",
                 ),
             ]
             for index_name, columns in index_specs:

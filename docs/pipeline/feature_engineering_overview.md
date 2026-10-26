@@ -56,10 +56,10 @@ section of `config.secrets.ini` (`src/nba_ou/postgre_db/config/db_config.py`):
 | All-Star voting | NBA voting results | `scripts/all_star_voting/manage_all_star_voting.py` | Supabase `nba_all_star_voting` | `load_all_star_voting_from_db` |
 | Schedule, tip-off times | NBA schedule (`ScheduleLeagueV2`, `ScoreboardV3`) | `fetch_data/nba_schedule`, `fetch_data/scheduled_game` | `lh_game.tipoff_utc`, Supabase `nba_game_time_index` | line-history games; injury-report game resolution |
 
-Supabase also has schemas that neither dataset builder reads: `nba_odds`,
-`nba_odds_mgm`, `sportsbook_matchup_history` and the per-market
-`odds_sportsbook_*_line_history` schemas. Line history for features comes from
-Aiven.
+The legacy Supabase schemas `nba_odds`, `nba_odds_mgm`,
+`sportsbook_matchup_history` and the per-market `odds_sportsbook_*_line_history`
+had no reader; their code was removed on 2026-10-26 and the schemas are dropped
+from Supabase. Line history for features comes from Aiven.
 
 The daily refresh is `scripts/update_databases/update_all_databases.py` (games,
 Sportsbook Review, Yahoo, refs and injuries) plus
