@@ -26,6 +26,7 @@ on:
 concurrency:
     group: daily-nba-predictor
     cancel-in-progress: false
+    queue: max
 
 permissions:
     contents: read

@@ -3,7 +3,7 @@
 
     python scripts/check_games_today.py [--game-date YYYY-MM-DD] [--always]
 
-The date defaults to today's Eastern date (the slate a 09:00 Madrid run
+The date defaults to today's Eastern date (the slate an 08:00 Madrid run
 precedes). Prints the answer and, inside GitHub Actions, writes
 ``refit=true|false`` to ``$GITHUB_OUTPUT``. ``--always`` answers true whatever
 the scoreboard says.

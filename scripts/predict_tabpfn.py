@@ -2,6 +2,8 @@
 
     python scripts/predict_tabpfn.py [--targets line_error total_points] [--no-persist]
     python scripts/predict_tabpfn.py --line intermediate [--horizon-minutes 360]
+    python scripts/predict_tabpfn.py --line intermediate --horizon-minutes 720 \
+        --game-date 2026-10-26 --game-ids 0022600001 --as-of 2026-10-26T11:00:00Z
 
 One or more targets and one line per run (``line_error`` and ``total_points``
 at the closing line by default; ``--line intermediate`` follows the slot of a fixed time before
@@ -34,8 +36,9 @@ from __future__ import annotations
 
 import argparse
 import os
-from collections.abc import Sequence
-from datetime import datetime
+import time
+from collections.abc import Callable, Sequence
+from datetime import date, datetime
 from zoneinfo import ZoneInfo
 
 import pandas as pd
@@ -63,6 +66,7 @@ from nba_ou.modeling.registry_paths import (
     format_horizon,
 )
 from nba_ou.modeling.registry_store import resolve_channel
+from nba_ou.postgre_db.line_history_aiven.ingest import TIPOFF_TOLERANCE_MINUTES
 from nba_ou.postgre_db.predictions_aiven.schema import WORKFLOW_TABPFN
 from nba_ou.postgre_db.update_all.update_all_databases import update_all_databases
 from nba_ou.prediction.intermediate_frame import (
@@ -131,11 +135,77 @@ def parse_targets(values: Sequence[str]) -> list[str]:
     return targets
 
 
+def parse_game_ids(values: Sequence[str]) -> list[str]:
+    """NBA game IDs, preserving leading zeroes and removing duplicates."""
+    ids = list(
+        dict.fromkeys(
+            item for value in values for item in value.replace(",", " ").split()
+        )
+    )
+    if not ids or any(
+        len(item) != 10 or not item.isascii() or not item.isdigit() for item in ids
+    ):
+        raise ValueError(
+            "Game IDs must be 10-digit NBA IDs, separated by spaces or commas."
+        )
+    return ids
+
+
+def _wait_until(moment: pd.Timestamp) -> None:
+    """Sleep until ``moment`` (UTC) has passed."""
+    seconds = (moment - pd.Timestamp.now(tz="UTC")).total_seconds()
+    if seconds > 0:
+        print_status(f"Waiting {seconds:.0f} s for the snapshot at {moment}")
+        time.sleep(seconds)
+
+
+def _rebuild_at_row_snapshot(
+    rows: pd.DataFrame,
+    cutoff: pd.Timestamp,
+    build_rows: Callable[[pd.Timestamp], pd.DataFrame],
+) -> pd.DataFrame:
+    """``rows`` cut at their own snapshot rather than at ``cutoff``.
+
+    The scheduler times ``--as-of`` from the NBA scoreboard's tip-off, the rows
+    from the line-history page's. A few minutes apart is rounding between the
+    two: the rows are rebuilt at their own snapshot, after waiting for it to
+    pass, so none is cut before the snapshot it is labelled with. More than
+    ``TIPOFF_TOLERANCE_MINUTES`` apart is a moved game, and fails.
+    """
+    snapshots = pd.to_datetime(rows["SNAPSHOT_TS_UTC"], utc=True)
+    if (snapshots - cutoff).abs().max() > pd.Timedelta(
+        minutes=TIPOFF_TOLERANCE_MINUTES
+    ):
+        raise ValueError(
+            "Built snapshot times differ from --as-of by more than "
+            f"{TIPOFF_TOLERANCE_MINUTES} min; the tip-off may have changed."
+        )
+    if snapshots.eq(cutoff).all():
+        return rows
+    # Rows of different snapshots share one cutoff: the latest, so every row
+    # has passed; the earlier ones read their ticks up to their own snapshot.
+    snapshot = snapshots.max()
+    print_status(
+        f"Line-history snapshot {snapshot} differs from --as-of {cutoff} "
+        "(scoreboard vs page tip-off); rebuilding at the snapshot"
+    )
+    _wait_until(snapshot)
+    rebuilt = build_rows(snapshot)
+    if not pd.to_datetime(rebuilt["SNAPSHOT_TS_UTC"], utc=True).le(snapshot).all():
+        raise ValueError(
+            "Rebuilt snapshot times moved again; the tip-off may have changed."
+        )
+    return rebuilt
+
+
 def predict_tabpfn(
     *,
     targets: Sequence[str] = DEFAULT_TARGETS,
     line: str = "closing",
     horizon_minutes: int | None = None,
+    game_date: str | None = None,
+    game_ids: Sequence[str] | None = None,
+    as_of: str | None = None,
     feature_slot: ModelSlot | None = None,
     model_version: str = DEFAULT_MODEL_VERSION,
     train_games: int | None = None,
@@ -151,8 +221,18 @@ def predict_tabpfn(
     ``DEFAULT_INTERMEDIATE_HORIZON``). ``feature_slot`` defaults to the enabled
     slot of each target at that line. An explicit ``feature_slot`` requires
     one target. ``persist=False`` stores nothing (the database update still writes).
+    ``game_date`` and ``game_ids`` pin a scheduled run to its slate and games;
+    ``as_of`` pins the intermediate input cutoff even when the runner is busy.
     """
     targets = parse_targets(targets)
+    wanted_games = None if game_ids is None else set(parse_game_ids(game_ids))
+    cutoff = None if as_of is None else pd.Timestamp(as_of)
+    if cutoff is not None and (
+        pd.isna(cutoff) or cutoff.tzinfo is None or line != "intermediate"
+    ):
+        raise ValueError(
+            "--as-of requires --line intermediate and a timestamp with timezone."
+        )
     if feature_slot is not None and len(targets) != 1:
         raise ValueError("--feature-slot requires exactly one target.")
     configure_tqdm_for_environment()
@@ -163,7 +243,11 @@ def predict_tabpfn(
         horizon = 0
     else:
         horizon = horizon_minutes or DEFAULT_INTERMEDIATE_HORIZON
-    date_to_predict = datetime.now(ZoneInfo("US/Pacific")).strftime("%Y-%m-%d")
+    date_to_predict = (
+        date.fromisoformat(game_date).isoformat()
+        if game_date is not None
+        else datetime.now(ZoneInfo("US/Pacific")).strftime("%Y-%m-%d")
+    )
     print(
         f"TabPFN {model_version}, {', '.join(targets)} at {format_horizon(horizon)}, "
         f"for {date_to_predict}"
@@ -280,7 +364,19 @@ def predict_tabpfn(
         nba_injury_reports_url=SETTINGS.nba_injury_reports_url,
         headless=SETTINGS.headless,
         line_source=lines,
+        dataset_type=dataset_type,
     )
+    if wanted_games is not None:
+        scheduled_data = dict(scheduled_data)
+        scheduled = scheduled_data["scheduled_games"]
+        missing = wanted_games - set(scheduled["GAME_ID"].astype(str))
+        if missing:
+            raise ValueError(
+                f"Requested game IDs are missing from the schedule: {sorted(missing)}"
+            )
+        scheduled_data["scheduled_games"] = scheduled.loc[
+            scheduled["GAME_ID"].astype(str).isin(wanted_games)
+        ].copy()
     if scheduled_data["scheduled_games"].empty:
         print_status("No scheduled games for this date; nothing to predict.")
         return
@@ -303,13 +399,29 @@ def predict_tabpfn(
         print_status(f"{len(df_to_predict)} game(s) to predict")
     else:
         print_step_header(2, f"Preparing Tonight's T-{horizon} Rows")
-        df_to_predict = rows_of_horizon(
-            tonight_intermediate_frame(scheduled_data, game_date=date_to_predict),
-            specs[0],
-        )
+        if cutoff is not None:
+            # Current reports were synchronized above. For a queued snapshot,
+            # read archived roster observations at its cutoff rather than
+            # passing the roster just observed when the runner became free.
+            scheduled_data = dict(scheduled_data, roster_snapshots=None)
+
+        def build_rows(as_of: pd.Timestamp | None) -> pd.DataFrame:
+            rows = rows_of_horizon(
+                tonight_intermediate_frame(
+                    scheduled_data, game_date=date_to_predict, as_of=as_of
+                ),
+                specs[0],
+            )
+            if wanted_games is not None:
+                rows = rows.loc[rows["GAME_ID"].astype(str).isin(wanted_games)].copy()
+            if rows.empty:
+                raise ValueError(f"No T-{horizon} rows were built for tonight's games.")
+            return rows
+
+        df_to_predict = build_rows(cutoff)
         frame_version = BASE_SCHEMA_VERSION
-        if df_to_predict.empty:
-            raise ValueError(f"No T-{horizon} rows were built for tonight's games.")
+        if cutoff is not None:
+            df_to_predict = _rebuild_at_row_snapshot(df_to_predict, cutoff, build_rows)
         passed = int(df_to_predict["SNAPSHOT_PASSED"].sum())
         print_status(
             f"{len(df_to_predict)} game(s) to predict; T-{horizon} passed for "
@@ -450,6 +562,20 @@ def main(argv: Sequence[str] | None = None) -> None:
         ),
     )
     parser.add_argument(
+        "--game-date",
+        type=date.fromisoformat,
+        help="Game date YYYY-MM-DD (default: today's Pacific date).",
+    )
+    parser.add_argument(
+        "--game-ids",
+        nargs="+",
+        help="Only these game IDs, separated by spaces or commas (default: all).",
+    )
+    parser.add_argument(
+        "--as-of",
+        help="Intermediate snapshot cutoff in ISO 8601 with timezone (default: live).",
+    )
+    parser.add_argument(
         "--feature-slot",
         type=_parse_slot,
         metavar="SCHEMA/TARGET/HORIZON/VARIANT",
@@ -492,6 +618,13 @@ def main(argv: Sequence[str] | None = None) -> None:
     args = parser.parse_args(argv)
     try:
         targets = parse_targets(args.targets)
+        game_ids = None if args.game_ids is None else parse_game_ids(args.game_ids)
+        if args.as_of is not None:
+            cutoff = pd.Timestamp(args.as_of)
+            if pd.isna(cutoff) or cutoff.tzinfo is None or args.line != "intermediate":
+                raise ValueError(
+                    "--as-of requires --line intermediate and a timestamp with timezone."
+                )
     except ValueError as exc:
         parser.error(str(exc))
     if args.feature_slot is not None and len(targets) != 1:
@@ -501,6 +634,9 @@ def main(argv: Sequence[str] | None = None) -> None:
         targets=targets,
         line=args.line,
         horizon_minutes=args.horizon_minutes,
+        game_date=None if args.game_date is None else args.game_date.isoformat(),
+        game_ids=game_ids,
+        as_of=args.as_of,
         feature_slot=args.feature_slot,
         model_version=args.model_version,
         train_games=args.train_games,

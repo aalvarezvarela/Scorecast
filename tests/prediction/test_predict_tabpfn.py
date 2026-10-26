@@ -432,11 +432,14 @@ def _run_dependencies(monkeypatch, *, horizon=0, total_schema="2_5"):
     history = _history()
     tonight = _tonight()
     if horizon:
-        history = _snapshots(history)
-        tonight = _snapshots(tonight.assign(TOTAL_POINTS=np.nan)).assign(
-            SNAPSHOT_TS_UTC=pd.Timestamp("2026-10-21 17:00", tz="UTC"),
-            SNAPSHOT_PASSED=True,
+        history = _snapshots(history, horizons=(horizon, 60))
+        tonight = _snapshots(
+            tonight.assign(TOTAL_POINTS=np.nan), horizons=(horizon, 60)
         )
+        tonight["SNAPSHOT_TS_UTC"] = pd.to_datetime(
+            tonight["GAME_TIME"], utc=True
+        ) - pd.to_timedelta(tonight["TIME_TO_MATCH_MIN"], unit="min")
+        tonight["SNAPSHOT_PASSED"] = True
 
     def fit(training_set, *, model_version):
         return FittedTabPFN(
@@ -569,3 +572,175 @@ def test_mixed_closing_schemas_use_one_frame_at_the_newest_version(monkeypatch):
     recorder = deps["persist_prediction_run"].call_args.args[0]
     tables = recorder.tables(status=store_schema.RUN_STATUS_OK)
     assert set(tables.model_builds["schema_version"]) == {"2_5", "2_6"}
+
+
+@pytest.mark.parametrize("horizon", [720, 480, 360, 240])
+def test_scheduled_tabpfn_uses_only_its_game_and_exact_snapshot_when_queued(
+    monkeypatch, horizon
+):
+    deps = _run_dependencies(monkeypatch, horizon=horizon)
+    # The runner is busy until 20:00 UTC. This must not change the selected
+    # snapshot, including T-720 several hours earlier.
+    monkeypatch.setattr(
+        job.datetime,
+        "now",
+        lambda tz: pd.Timestamp("2026-10-21 20:00", tz="UTC")
+        .to_pydatetime()
+        .astimezone(tz),
+    )
+    cutoff = pd.to_datetime(_tonight()["GAME_TIME"], utc=True).iloc[0] - pd.Timedelta(
+        minutes=horizon
+    )
+    job.predict_tabpfn(
+        line="intermediate",
+        horizon_minutes=horizon,
+        game_date="2026-10-21",
+        game_ids=["0022600001"],
+        as_of=cutoff.isoformat(),
+        update_db=False,
+    )
+    deps["update_all_databases"].assert_not_called()
+    builder = deps["tonight_intermediate_frame"].call_args
+    assert builder.kwargs["as_of"] == cutoff
+    assert builder.args[0]["scheduled_games"]["GAME_ID"].tolist() == ["0022600001"]
+    assert (
+        builder.args[0]["roster_snapshots"] is None
+    )  # load archived observations at the cutoff
+    assert (
+        deps["get_all_info_for_scheduled_games"].call_args.kwargs["dataset_type"]
+        == "intermediate_line"
+    )
+    tables = (
+        deps["persist_prediction_run"]
+        .call_args.args[0]
+        .tables(status=store_schema.RUN_STATUS_OK)
+    )
+    assert len(tables.predictions) == 2
+    assert set(tables.model_builds["target"]) == {1, 2}
+    assert set(tables.model_builds["horizon_minutes"]) == {horizon}
+    assert set(tables.predictions["snapshot_horizon_minutes"]) == {horizon}
+    assert set(tables.predictions["game_id"]) == {22600001}
+
+
+def test_explicit_game_date_survives_a_change_of_pacific_date(monkeypatch):
+    deps = _run_dependencies(monkeypatch, horizon=720)
+    monkeypatch.setattr(
+        job.datetime,
+        "now",
+        lambda tz: pd.Timestamp("2026-10-21 06:30", tz="UTC")
+        .to_pydatetime()
+        .astimezone(tz),
+    )
+    job.predict_tabpfn(
+        line="intermediate",
+        horizon_minutes=720,
+        game_date="2026-10-21",
+        update_db=False,
+    )
+    assert (
+        deps["get_all_info_for_scheduled_games"].call_args.kwargs["date_to_predict"]
+        == "2026-10-21"
+    )
+    assert (
+        deps["tonight_intermediate_frame"].call_args.kwargs["game_date"] == "2026-10-21"
+    )
+
+
+def test_unknown_requested_game_fails_instead_of_predicting_the_whole_slate(
+    monkeypatch,
+):
+    deps = _run_dependencies(monkeypatch, horizon=360)
+    with pytest.raises(ValueError, match="missing from the schedule"):
+        job.predict_tabpfn(line="intermediate", game_ids=["0022609999"])
+    deps["fit_tabpfn"].assert_not_called()
+
+
+def test_changed_tipoff_cannot_silently_use_a_different_snapshot(monkeypatch):
+    deps = _run_dependencies(monkeypatch, horizon=360)
+    with pytest.raises(ValueError, match="tip-off may have changed"):
+        job.predict_tabpfn(
+            line="intermediate", game_ids=["0022600001"], as_of="2026-10-21T17:00:00Z"
+        )
+    deps["fit_tabpfn"].assert_not_called()
+
+
+@pytest.mark.parametrize("as_of", ["2026-10-21T17:25:00Z", "2026-10-21T17:35:00Z"])
+def test_page_tipoff_a_few_minutes_off_rebuilds_at_the_rows_own_snapshot(
+    monkeypatch, as_of
+):
+    # The game's T-360 from the line-history page is 17:30 UTC; the
+    # scoreboard's tip-off puts --as-of 5 min before or after it.
+    deps = _run_dependencies(monkeypatch, horizon=360)
+    snapshot = pd.Timestamp("2026-10-21 17:30", tz="UTC")
+    waited = []
+    monkeypatch.setattr(job, "_wait_until", waited.append)
+    job.predict_tabpfn(
+        line="intermediate",
+        game_ids=["0022600001"],
+        as_of=as_of,
+        update_db=False,
+    )
+    cutoffs = [
+        call.kwargs["as_of"]
+        for call in deps["tonight_intermediate_frame"].call_args_list
+    ]
+    # Built at --as-of, then again at the snapshot the rows are labelled with.
+    assert cutoffs == [pd.Timestamp(as_of), snapshot]
+    assert waited == [snapshot]
+    assert deps["fit_tabpfn"].call_count == 2
+
+
+def test_wait_until_sleeps_only_for_a_snapshot_still_ahead(monkeypatch):
+    sleeps = []
+    monkeypatch.setattr(job.time, "sleep", sleeps.append)
+    now = pd.Timestamp.now(tz="UTC")
+    job._wait_until(now - pd.Timedelta(minutes=1))
+    assert sleeps == []
+    job._wait_until(now + pd.Timedelta(minutes=5))
+    assert len(sleeps) == 1 and 290 < sleeps[0] <= 300
+
+
+def test_cli_passes_scheduled_game_and_snapshot_inputs(monkeypatch):
+    predict = Mock()
+    monkeypatch.setattr(job, "predict_tabpfn", predict)
+    job.main(
+        [
+            "--line",
+            "intermediate",
+            "--horizon-minutes",
+            "720",
+            "--game-date",
+            "2026-10-21",
+            "--game-ids",
+            "0022600001,0022600002",
+            "--as-of",
+            "2026-10-21T11:30:00Z",
+            "--skip-db-update",
+        ]
+    )
+    options = predict.call_args.kwargs
+    assert options["game_date"] == "2026-10-21"
+    assert options["game_ids"] == ["0022600001", "0022600002"]
+    assert options["as_of"] == "2026-10-21T11:30:00Z"
+    assert options["horizon_minutes"] == 720
+    assert options["update_db"] is False
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        ["--game-date", "2026-99-21"],
+        ["--game-ids", "22600001"],
+        ["--game-ids", " , "],
+        ["--line", "intermediate", "--as-of", "2026-10-21 12:00"],
+        ["--line", "intermediate", "--as-of", "NaT"],
+        ["--as-of", "2026-10-21T12:00:00Z"],
+    ],
+)
+def test_invalid_schedule_inputs_fail_before_starting(monkeypatch, args):
+    predict = Mock()
+    monkeypatch.setattr(job, "predict_tabpfn", predict)
+    with pytest.raises(SystemExit) as exc:
+        job.main(args)
+    assert exc.value.code == 2
+    predict.assert_not_called()
