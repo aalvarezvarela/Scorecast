@@ -9,10 +9,14 @@ Two bug classes are pinned down here, both of which shipped:
 """
 
 import hashlib
+import io
 import json
 import os
 import sys
+import uuid
 
+import pandas as pd
+import psycopg
 import pytest
 from nba_ou.postgre_db import backup_core as bc
 
@@ -93,7 +97,9 @@ class _S3:
 
         return {"Body": _Body(self.objects[Key])}
 
-    def list_objects_v2(self, Bucket, Prefix, Delimiter=None, MaxKeys=None):  # noqa: N803
+    def list_objects_v2(
+        self, Bucket, Prefix, Delimiter=None, MaxKeys=None
+    ):  # noqa: N803
         keys = [k for k in self.objects if k.startswith(Prefix)]
         result = {"KeyCount": len(keys)}
         if Delimiter:
@@ -113,6 +119,124 @@ class _S3:
                 return [outer.list_objects_v2(**kwargs)]
 
         return _Paginator()
+
+
+class TestParquetExport:
+    @pytest.mark.parametrize(
+        "values",
+        [
+            ["{}", "{}", None],
+            ['{"nested": {}}', '{"a": 1}', '{"b": [1, "two"]}'],
+            ["null", '"text"', "false", "42", "[]"],
+            [],
+        ],
+    )
+    def test_json_is_exported_as_text_across_chunks(self, monkeypatch, values):
+        # Cast before psycopg decodes JSON into Python dicts. The real Parquet
+        # round trip covers empty objects and heterogeneous JSON values.
+        frame = pd.DataFrame(
+            {
+                "dropped_rows": pd.Series(values, dtype="object"),
+                "loaded_at": pd.date_range("2026-10-26", periods=len(values), tz="UTC"),
+            }
+        )
+
+        def read_sql(query, conn, chunksize):
+            assert query == (
+                'SELECT "dropped_rows"::text AS "dropped_rows", "loaded_at" '
+                'FROM "line_history_covers"."lh_load_meta"'
+            )
+            return [frame.iloc[:1], frame.iloc[1:]]
+
+        monkeypatch.setattr(bc.pd, "read_sql", read_sql)
+        data, rows = bc.export_table_to_parquet(
+            _Conn([("dropped_rows", True), ("loaded_at", False)]),
+            "line_history_covers",
+            "lh_load_meta",
+        )
+        assert rows == len(values)
+        pd.testing.assert_frame_equal(pd.read_parquet(io.BytesIO(data)), frame)
+
+    def test_uuid_is_exported_as_text(self, monkeypatch):
+        # psycopg returns uuid.UUID, which Arrow cannot write; the text form can.
+        frame = pd.DataFrame({"run_id": [1, 2], "run_uuid": [str(uuid.uuid4()), None]})
+
+        def read_sql(query, conn, chunksize):
+            assert query == (
+                'SELECT "run_id", "run_uuid"::text AS "run_uuid" '
+                'FROM "prediction"."runs"'
+            )
+            return [frame]
+
+        monkeypatch.setattr(bc.pd, "read_sql", read_sql)
+        data, rows = bc.export_table_to_parquet(
+            _Conn([("run_id", False), ("run_uuid", True)]), "prediction", "runs"
+        )
+        assert rows == 2
+        pd.testing.assert_frame_equal(pd.read_parquet(io.BytesIO(data)), frame)
+
+    @pytest.mark.postgres
+    def test_postgres_uuid_survives_backup(self):
+        dsn = os.getenv("NBA_OU_TEST_PG_DSN")
+        if not dsn:
+            pytest.skip("NBA_OU_TEST_PG_DSN is not set")
+        values = [uuid.uuid4(), None]
+        with psycopg.connect(dsn) as conn:
+            with conn.cursor() as cur:
+                cur.execute("CREATE TEMP TABLE runs (run_id integer, run_uuid uuid)")
+                cur.executemany(
+                    "INSERT INTO runs VALUES (%s, %s)", list(enumerate(values))
+                )
+                cur.execute(
+                    "SELECT nspname FROM pg_namespace WHERE oid = pg_my_temp_schema()"
+                )
+                schema = cur.fetchone()[0]
+            data, rows = bc.export_table_to_parquet(conn, schema, "runs")
+        restored = pd.read_parquet(io.BytesIO(data)).sort_values("run_id")
+        assert rows == 2
+        assert restored["run_uuid"].tolist() == [str(values[0]), None]
+
+    @pytest.mark.postgres
+    @pytest.mark.parametrize("json_type", ["json", "jsonb"])
+    def test_postgres_json_values_survive_backup(self, json_type):
+        dsn = os.getenv("NBA_OU_TEST_PG_DSN")
+        if not dsn:
+            pytest.skip("NBA_OU_TEST_PG_DSN is not set")
+        values = [
+            None,
+            "null",
+            "{}",
+            '{"nested": {}}',
+            '{"a": 1}',
+            '{"b": [1, "two"]}',
+            "[]",
+            '"text"',
+            "false",
+            "42",
+        ]
+        with psycopg.connect(dsn) as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"CREATE TEMP TABLE lh_load_meta "
+                    f"(id integer, dropped_rows {json_type}, loaded_at timestamptz)"
+                )
+                cur.executemany(
+                    "INSERT INTO lh_load_meta VALUES (%s, %s, '2026-10-26 00:00:00+00')",
+                    list(enumerate(values)),
+                )
+                cur.execute(
+                    "SELECT nspname FROM pg_namespace WHERE oid = pg_my_temp_schema()"
+                )
+                schema = cur.fetchone()[0]
+            data, rows = bc.export_table_to_parquet(conn, schema, "lh_load_meta")
+        restored = pd.read_parquet(io.BytesIO(data)).sort_values("id")
+        assert rows == len(values)
+        assert restored["dropped_rows"][0] is None
+        assert restored["dropped_rows"][1] == "null"
+        assert [json.loads(v) for v in restored["dropped_rows"][1:]] == [
+            json.loads(v) for v in values[1:]
+        ]
+        assert str(restored["loaded_at"].dtype) == "datetime64[ns, UTC]"
 
 
 class TestSchemaDiscovery:
