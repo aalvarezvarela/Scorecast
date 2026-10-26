@@ -2,6 +2,11 @@ name: Update Finished Matches Total Points (Local Runner)
 
 on:
     workflow_dispatch:
+        inputs:
+            force:
+                description: "Run even with DAILY_UPDATE_ENABLED set to false"
+                type: boolean
+                default: false
     # schedule:
     #     # Daily at 4:30am, 7am, 8am, and 10am UTC
     #     - cron: "30 4 * * *"
@@ -15,8 +20,9 @@ permissions:
 jobs:
     run:
         # Off switch: the repository variable DAILY_UPDATE_ENABLED set to false
-        # skips every run (docs/serving/snapshot_triggers.md).
-        if: ${{ vars.DAILY_UPDATE_ENABLED != 'false' }}
+        # skips every run; a manual run with force ticked still goes
+        # (docs/serving/snapshot_triggers.md).
+        if: ${{ vars.DAILY_UPDATE_ENABLED != 'false' || inputs.force }}
         # Target your local machine
         runs-on: self-hosted
 

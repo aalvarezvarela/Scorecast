@@ -117,8 +117,12 @@ Each workflow checks its variable in its job's `if:`, so a run that is off
 still starts (cron-job.org sees a successful dispatch and sends no failure
 mail) and shows its job as skipped, without taking the runner. The check reads
 the variable when the run starts: a switch flipped mid-day stops the runs
-already booked for the rest of the day, and a run already going finishes. The
-switch also skips manual dispatches; set it back to `true` to run one by hand.
+already booked for the rest of the day, and a run already going finishes.
+
+The switch skips manual dispatches too, unless **force** is ticked: every
+switched workflow has a boolean `force` input (default off) that runs it
+whatever the variable says. cron-job.org never sends it, so the booked runs
+stay off. The retrain passes its `force` on to the database update it calls.
 
 With `PREDICTIONS_ENABLED` off, the final-score run is not booked either; the
 next booked one catches up every tipped game without a score.

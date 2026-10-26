@@ -7,6 +7,10 @@ on:
                 description: "Store the predictions (off = dry run: no table rows, no S3 snapshots)"
                 type: boolean
                 default: true
+            force:
+                description: "Run even with PREDICTIONS_ENABLED set to false"
+                type: boolean
+                default: false
     # schedule:
     #     # Every day at 23:00 UTC (1 hour before midnight)
     #     - cron: "11 00 * * *"
@@ -30,8 +34,9 @@ permissions:
 jobs:
     run:
         # Off switch: the repository variable PREDICTIONS_ENABLED set to false
-        # skips every run, booked or manual (docs/serving/snapshot_triggers.md).
-        if: ${{ vars.PREDICTIONS_ENABLED != 'false' }}
+        # skips every run; a manual run with force ticked still goes
+        # (docs/serving/snapshot_triggers.md).
+        if: ${{ vars.PREDICTIONS_ENABLED != 'false' || inputs.force }}
         runs-on: self-hosted
         timeout-minutes: 120
         env:
