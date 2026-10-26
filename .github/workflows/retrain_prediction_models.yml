@@ -87,10 +87,10 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: "3.12"
 
@@ -134,7 +134,7 @@ jobs:
       # install, so the refit gets the whole hour.
       - name: Configure AWS credentials for the refit
         if: ${{ steps.games.outputs.refit == 'true' }}
-        uses: aws-actions/configure-aws-credentials@v4
+        uses: aws-actions/configure-aws-credentials@v6
         with:
           role-to-assume: ${{ secrets.AWS_ROLE_TO_ASSUME }}
           aws-region: eu-west-1
@@ -145,7 +145,7 @@ jobs:
 
       - name: Refresh AWS credentials for the smoke test and promotion
         if: ${{ steps.games.outputs.refit == 'true' }}
-        uses: aws-actions/configure-aws-credentials@v4
+        uses: aws-actions/configure-aws-credentials@v6
         with:
           role-to-assume: ${{ secrets.AWS_ROLE_TO_ASSUME }}
           aws-region: eu-west-1
