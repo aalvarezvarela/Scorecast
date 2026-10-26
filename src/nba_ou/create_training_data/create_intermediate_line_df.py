@@ -33,6 +33,7 @@ import gc
 import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 import numpy as np
 import pandas as pd
@@ -75,7 +76,6 @@ from nba_ou.create_training_data.intermediate_referees import (
     add_snapshot_referee_interactions,
     mask_referees_before_release,
 )
-from nba_ou.create_training_data.live_game_day import LiveGameDay
 from nba_ou.create_training_data.predict_data_utils import normalize_game_ids
 from nba_ou.create_training_data.select_intermediate_columns import (
     assert_no_bare_closing_odds,
@@ -123,6 +123,11 @@ from nba_ou.postgre_db.line_history_aiven.fetch import (
     pregame_tick_fingerprints,
 )
 from nba_ou.postgre_db.line_history_aiven.live import LiveLineHistory
+
+if TYPE_CHECKING:
+    # Tonight's inputs only: its import closure reaches the injury-report PDF
+    # parser (pymupdf), which the retrain environment does not install.
+    from nba_ou.create_training_data.live_game_day import LiveGameDay
 
 MARKET_SHORT = {MARKET_TOTALS: "TOT", MARKET_SPREAD: "SPR", MARKET_MONEYLINE: "ML"}
 
