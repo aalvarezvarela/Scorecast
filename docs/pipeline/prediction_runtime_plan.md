@@ -1,6 +1,6 @@
 # Prediction runtime plan: shorter daily runs on the self-hosted runner
 
-Status: **Partial** (A–E implemented, F deferred; 2026-10-24, branch `perf/prediction-runtime`)
+Status: **Partial** (A–E and G implemented, F deferred; G on 2026-10-26)
 
 ## Goal
 
@@ -412,6 +412,70 @@ shows dominates the 2–4 s per slot. Check: predictions identical.
   the checkout.
 - de2f5ef: the fork timeout (see A).
 - `OVERLAP_DAYS` is left as it is: an optional change, not taken.
+
+### G. One intermediate injury memo for the retrain and the predictor (2026-10-26)
+
+**Problem.** On 2026-10-26 the first predictor run took 48.8 min, and the next two
+took 16.3 and 13.9 min. In the first run, `intermediate_injury_player_rows` and
+`intermediate_injury_effects` reported "inputs changed" for every season
+(2017–2026). Rebuilding them took ~31 min of the 38 min intermediate stage.
+`intermediate_injury_effect_priors` 2025 missed on every predictor run.
+
+**Cause.** The retrain's season-partition update and the predictor write the
+same frozen memo keys, but their digests never matched. The predictor's
+frames (`_injury_history_memo`: `team_games`, `effects_history`) also hold
+tonight's games. Those rows change the schema, not the earlier values:
+- `IS_OVERTIME` and `MIN` become `float64` (tonight's rows are NaN), and
+  `SEASON_YEAR` becomes `Int64`;
+- `GAME_TIME` exists only in the predictor's frame, and it is NaN on every
+  earlier row.
+
+`_frame_digest` hashes column names and dtypes, so every season's digest
+differed between the two jobs. Whichever job wrote last won, and the other
+job's next run rebuilt the whole history: the first predictor run after the
+retrain, and the first retrain after a day of predictions. A read-only replay
+of 2026-10-25 confirmed this. The earlier rows' values were identical in both
+modes. Only the schema differed.
+
+This is option 2 of the closing-memo dtype problem in A: make the digest
+independent of the schema tonight's rows impose. Casting tonight's rows does
+not work here, because NaN outcomes cannot be integers.
+
+**Fix.** `history_memo.season_input_digests(..., values_only=True)` digests
+each season's rows through `_season_values`:
+- it leaves out the columns that are empty in that season;
+- it compares numeric columns (bool included) as `float64`.
+
+Only `_injury_history_memo` uses it. The closing memos keep their keys.
+`intermediate_injury_effect_priors` chains this digest, so it is fixed too.
+`intermediate_report_states` already matched across the two modes.
+
+**Checks** (replay of 2026-10-25 as of 20:00 UTC; memo in a local directory;
+S3 read-only, every put blocked):
+
+| Build | Time | Memo |
+|---|---:|---|
+| Partition update (as the retrain), 2026-10-24 targets, empty memo | 3515 s | writes every season, 17 horizons |
+| Live, latest snapshots, reading the partition's entries | 282 s (injuries 38 s) | 2017–2025 hit, `effect_priors` 2025 hit; 2026 misses |
+| Live, latest snapshots, empty memo | 2321 s (injuries 34.5 min) | every season misses |
+
+- Warm and cold live frames: `compare_builds --exact` is `EQUAL` for the dataset
+  (7 × 3,082) and the scoring sidecar (7 × 28).
+- On the saved frames of both modes, the digests of 2016–2025 now match.
+  Before the fix, none matched.
+
+**Deploy.** The digests change once, so after the merge the first run of each
+job misses the intermediate injury memo. The predictor fills only the horizons
+it uses, and the retrain then fills the rest. After that, both jobs share the
+entries.
+
+**Open (mid-season, ~Jan–Feb 2027).** The current season's digest still
+differs between the two modes. The predictor holds tonight's games, and the
+partition update holds finished targets with their per-row stages. So the
+2026 entries are still rebuilt after each switch of job: 1–2 min now, growing
+to ~3–4 min (predictor) and ~6 min (retrain) by March. One possible fix: leave
+the target games' rows out of the current season's digest. Before doing that,
+prove that no persisted row reads a target game's row.
 
 ## Not in this plan (they would change values)
 

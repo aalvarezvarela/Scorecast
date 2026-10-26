@@ -770,9 +770,13 @@ def _injury_history_memo(
         "injuries": injuries,
         "effects_history": base[history_columns],
     }
+    # Values only: the prediction build's frames also hold tonight's games,
+    # which change their schema but no earlier row, and the season-partition
+    # update shares these entries.
     digests = history_memo.season_input_digests(
         {name: (frame, game_id_column(frame)) for name, frame in inputs.items()},
         range(2000, max(seasons) + 1),
+        values_only=True,
     )
     votes = hashlib.sha256(history_memo._frame_digest(voting)).hexdigest()
     digests = {
