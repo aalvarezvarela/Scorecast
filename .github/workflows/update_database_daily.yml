@@ -14,6 +14,9 @@ permissions:
 
 jobs:
   update-database:
+    # Off switch: the repository variable DAILY_UPDATE_ENABLED set to false
+    # skips every run (docs/serving/snapshot_triggers.md).
+    if: ${{ vars.DAILY_UPDATE_ENABLED != 'false' }}
     # Target your local machine
     runs-on: self-hosted
 

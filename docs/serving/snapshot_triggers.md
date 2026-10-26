@@ -1,8 +1,9 @@
 # Snapshot triggers: running the predictor at each snapshot time
 
-Status: **Implemented** (2026-10-22). The daily jobs (09:00 and 10:00 Madrid,
-see "The day's schedule") are rows in `scripts/cronjobs/setup_cronjobs.py`, not
-applied yet.
+Status: **Implemented** (2026-10-22). The daily jobs (09:00 and 10:00 Madrid by
+default, see "The day's schedule") are built by `scripts/cronjobs/setup_cronjobs.py`
+from `[Schedule]` in `config.ini` (2026-10-26). Two repository variables switch
+the workflows off ("Switching it off").
 
 ## What it does
 
@@ -50,8 +51,23 @@ day, `schedule_snapshot_triggers.yml` runs
 
 ## The day's schedule
 
-All on the one self-hosted runner. The fixed jobs come from `setup_cronjobs.py`
-(Madrid time); the rest are booked by the 10:00 scheduler from the day's games.
+All on the one self-hosted runner. The two fixed jobs come from `setup_cronjobs.py`,
+at the times of `[Schedule]` in `src/nba_ou/config.ini` (Madrid time, defaults
+below); the rest are booked by the scheduler from the day's games.
+
+| `[Schedule]` key | Default | Job |
+|---|---|---|
+| `TIMEZONE` | `Europe/Madrid` | zone of the two times below |
+| `UPDATE_AND_RETRAIN_AT` | `09:00` | `retrain_prediction_models.yml` |
+| `SCHEDULE_PREDICTIONS_AT` | `10:00` | `schedule_snapshot_triggers.yml` |
+
+To change a time, edit it and run `python scripts/cronjobs/setup_cronjobs.py
+--apply`: cron-job.org holds the schedule, so the edit alone changes nothing.
+`setup_cronjobs.py` refuses a `SCHEDULE_PREDICTIONS_AT` that falls before
+US/Pacific midnight on any day of this year or the next (earlier than 09:00
+Madrid), because that run would book the previous night. Keep the booking after
+the retrain: both share the runner, and a booking that waits for the refit
+skips the snapshots that pass meanwhile.
 
 | When | Workflow | What |
 |---|---|---|
@@ -82,6 +98,30 @@ the 10:00 scheduler fails, no past-snapshot or final-score run is booked. The
 final-score update retries every tipped game without a score on its next run,
 so a day lost is caught up on the next game day. An overtime game still in
 progress at +2 h is left for that next run too.
+
+## Switching it off
+
+Two repository variables (GitHub → Settings → Secrets and variables → Actions →
+Variables) act as off switches. Unset, or any value other than `false`, means
+on.
+
+| Variable | `false` skips |
+|---|---|
+| `DAILY_UPDATE_ENABLED` | `retrain_prediction_models.yml` (DB update, refit, smoke test, promotion), `update_database_daily.yml`, `update_finished_matches_daily.yml` |
+| `PREDICTIONS_ENABLED` | `schedule_snapshot_triggers.yml` (no new bookings), `nba_predictor_daily.yml`, `nba_predictor_daily_tabpfn_client.yml`, `nba_predict_past_snapshots.yml` |
+
+    gh variable set PREDICTIONS_ENABLED --body false   # off
+    gh variable set PREDICTIONS_ENABLED --body true    # on again
+
+Each workflow checks its variable in its job's `if:`, so a run that is off
+still starts (cron-job.org sees a successful dispatch and sends no failure
+mail) and shows its job as skipped, without taking the runner. The check reads
+the variable when the run starts: a switch flipped mid-day stops the runs
+already booked for the rest of the day, and a run already going finishes. The
+switch also skips manual dispatches; set it back to `true` to run one by hand.
+
+With `PREDICTIONS_ENABLED` off, the final-score run is not booked either; the
+next booked one catches up every tipped game without a score.
 
 ## Which snapshot each run predicts from
 
@@ -149,7 +189,7 @@ Option: `--offset-minutes` (default 0; negative fires earlier).
 The workflow needs the repository secrets `CRONJOB_API_KEY` and
 `CRONJOB_GITHUB_DISPATCH_TOKEN`. The second is a fine-grained PAT on this repo
 with "Actions: Read and write"; see `nba_ou.scheduling.cronjob_org`. Run the
-scheduler once a day, e.g. at 10:00 Madrid. That is always after Pacific
+scheduler once a day, at `SCHEDULE_PREDICTIONS_AT` (10:00 Madrid). That is always after Pacific
 midnight: 01:00 PDT in summer, 01:00 PST in winter, and 02:00 PDT in the weeks
 when only Europe has changed its clocks. Snapshots before the run are past and
 are skipped, e.g. T-1080 and T-960 of a 19:00 ET game.
@@ -166,8 +206,8 @@ are skipped, e.g. T-1080 and T-960 of a 19:00 ET game.
   snapshots are computed in UTC and the jobs are scheduled in UTC. Madrid time
   appears only in the printout. The predictor's Pacific date (the window above)
   is computed with `zoneinfo` for that date, so it follows PDT/PST. The
-  scheduler's own daily job (`setup_cronjobs.py`) is in `Europe/Madrid`, so it
-  stays at 10:00 Spanish time all year.
+  scheduler's own daily job (`setup_cronjobs.py`) is in `[Schedule] TIMEZONE`
+  (`Europe/Madrid`), so it stays at the same Spanish time all year.
 
 ## Caveats
 

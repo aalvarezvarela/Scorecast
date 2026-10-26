@@ -36,8 +36,10 @@ jobs:
   # The same DB update the daily workflow runs, on the self-hosted runner: the
   # NBA/odds sources block GitHub-hosted IPs. Training on a partial update would
   # use last night's SBR closes before they are repaired from line history.
+  # Off switch: the repository variable DAILY_UPDATE_ENABLED set to false skips
+  # both jobs, booked or manual (docs/serving/snapshot_triggers.md).
   update-database:
-    if: ${{ inputs.update_database }}
+    if: ${{ inputs.update_database && vars.DAILY_UPDATE_ENABLED != 'false' }}
     uses: ./.github/workflows/update_database_daily.yml
     secrets: inherit
 
@@ -48,7 +50,7 @@ jobs:
   retrain:
     needs: update-database
     # Runs after a successful update, or straight away when it was switched off.
-    if: ${{ !cancelled() && (needs.update-database.result == 'success' || needs.update-database.result == 'skipped') }}
+    if: ${{ !cancelled() && vars.DAILY_UPDATE_ENABLED != 'false' && (needs.update-database.result == 'success' || needs.update-database.result == 'skipped') }}
     runs-on: self-hosted
     timeout-minutes: 120
     env:
