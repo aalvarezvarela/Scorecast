@@ -103,6 +103,18 @@ latest input only:
   `scripts/build_input_support_table.py`). The injury status itself is in
   ~95% of rows at every horizon and is not limited.
 
+**Missing injury reports** (`prediction.report_requirement`, 2026-10-26): a
+slot of horizon `REPORT_REQUIRED_MAX_HORIZON` (`[PredictionModels]`, 300) or
+shorter skips a game whose row lacks either team's report
+(`INJURY_REPORT_COVERED_BEFORE_TEAM_HOME/AWAY`, read at the row's own snapshot,
+so in both modes). Those horizons hardly ever trained on such a row: in the
+2_5 intermediate dataset (2021-22 on) both teams had filed in 99.6-100% of rows
+from T-240 in and 97.3% at T-300, against 81% at T-360 and ~73% from T-420 out.
+The longer horizons keep predicting such games, their injury features NaN as
+in training. The closing slots skip them too, since their frame leaves them
+out (`docs/injuries/live_reports.md`). A slot's skipped games are listed under
+`no_report_games` in the run manifest; a slot left with no game is `skipped`.
+
 Each prediction carries `INPUT_MODE` (`latest`/`own`), the input row's
 `TIME_TO_MATCH_MIN` and `INPUT_LIMITED_COUNT` in its S3 snapshot; the
 Postgres table keeps its columns until the prediction store is decided.

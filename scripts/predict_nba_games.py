@@ -209,64 +209,53 @@ def predict_nba_games(
 
     # Step 3: Build feature DataFrame for prediction
     print_step_header(3, "Preparing Feature DataFrame")
+    # The builder produces the base schema. Each slot reads its own
+    # feature_names, and newer versions only add columns, so one frame at
+    # the newest version any enabled slot needs serves every slot.
+    frame_version = newest_version(slot.schema_version for slot in configured_slots)
+    tonight_ids = scheduled_data["scheduled_games"]["GAME_ID"].astype(str).tolist()
+    # A closing row needs both teams' injury report (games_not_updated). With
+    # none filed yet there is no closing row to build: the closing slots and
+    # the baselines skip, and the intermediate slots still predict.
+    not_filed = {str(game) for game in scheduled_data.get("games_not_updated", [])}
+    closing_ids = [game for game in tonight_ids if game not in not_filed]
+    layer_inputs = None
     try:
-        # Tonight's games only, on the training build's full history: every
-        # row is exactly what a full build would give it, at a fraction of
-        # the work (create_df_to_predict's target_game_ids).
-        tonight_ids = scheduled_data["scheduled_games"]["GAME_ID"].astype(str).tolist()
-        df_to_predict_total, layer_inputs = create_df_to_predict(
-            todays_prediction=True,
-            scheduled_data=scheduled_data,
-            strict_mode=30,
-            normalize_total_lines=normalize_total_lines,
-            normalize_spread_lines=normalize_spread_lines,
-            null_extreme_spread_prices=null_extreme_spread_prices,
-            target_game_ids=tonight_ids,
-            return_layer_inputs=True,
-        )
-        # The builder produces the base schema. Each slot reads its own
-        # feature_names, and newer versions only add columns, so one frame at
-        # the newest version any enabled slot needs serves every slot.
-        frame_version = newest_version(slot.schema_version for slot in configured_slots)
-        if is_layered(frame_version):
-            print(f"Adding schema layers up to {frame_version} ...")
-            # Layers calibrate on earlier games, so they run over every built
-            # row's inputs; tonight's rows then take their columns.
-            added = compute_new_columns(
-                layer_inputs,
-                from_version=BASE_SCHEMA_VERSION,
-                to_version=frame_version,
-                dataset_type=CLOSING_LINE,
-                existing_columns=df_to_predict_total.columns,
+        if not closing_ids:
+            df_to_predict = pd.DataFrame()
+            print_status(
+                "No game has both injury reports filed yet: no closing rows, "
+                "the closing slots and the baselines skip"
             )
-            added = added.loc[df_to_predict_total.index]
-            df_to_predict_total = pd.concat([df_to_predict_total, added], axis=1)
-        df_to_predict = df_to_predict_total[
-            df_to_predict_total["GAME_DATE"] == date_to_predict
-        ].copy()
-        # Set here, not in the builder: no feature step may ever see it.
-        df_to_predict[LINE_SOURCE_COLUMN] = (
-            df_to_predict["GAME_ID"]
-            .astype(str)
-            .map(scheduled_data.get("line_sources", {}))
-        )
-        print_status("Feature DataFrame prepared")
+        else:
+            df_to_predict, layer_inputs = closing_rows(
+                scheduled_data,
+                tonight_ids=tonight_ids,
+                frame_version=frame_version,
+                date_to_predict=date_to_predict,
+                normalize_total_lines=normalize_total_lines,
+                normalize_spread_lines=normalize_spread_lines,
+                null_extreme_spread_prices=null_extreme_spread_prices,
+            )
+            print_status("Feature DataFrame prepared")
 
     except Exception as e:
         print_status(f"Failed to prepare features: {e}", ok=False)
         raise
 
-    if df_to_predict.empty:
+    if closing_ids and df_to_predict.empty:
         print("⚠️  Warning: No games found for the specified date.")
         raise ValueError("df to predict is empty")
 
-    print_status(f"Found {len(df_to_predict)} game(s) to predict")
+    if not df_to_predict.empty:
+        print_status(f"Found {len(df_to_predict)} game(s) to predict")
 
     # Everything this run predicts, stored at the end in one piece: the S3 run
     # archive and the Aiven prediction store (docs/serving/prediction_storage.md).
     recorder = PredictionRunRecorder(workflow=WORKFLOW_DAILY, game_date=date_to_predict)
     recorder.set_schedule(scheduled_data["scheduled_games"])
-    recorder.add_frame("closing_line", df_to_predict, version=frame_version)
+    if not df_to_predict.empty:
+        recorder.add_frame("closing_line", df_to_predict, version=frame_version)
 
     # Everything that failed without stopping the run; non-empty means the run
     # exits non-zero once every slot and the baselines have had their turn.
@@ -275,7 +264,9 @@ def predict_nba_games(
     # Intermediate slots predict a fixed time before tip-off: tonight's rows
     # for every horizon, built tonight-only from the live line history. A
     # failure here costs only those slots, never the closing ones.
-    frames = {"closing_line": df_to_predict}
+    # No closing frame when no closing row was built: the closing slots then
+    # skip ("not this model's turn"), as a slot of an unbuilt frame does.
+    frames = {} if df_to_predict.empty else {"closing_line": df_to_predict}
     # The intermediate builder has no schema-layer step yet, so its frame is
     # the base; a slot needing a newer version fails by name (see
     # load_registry_model_and_predict) instead of missing columns.
@@ -361,6 +352,7 @@ def predict_nba_games(
                 # Supabase write must not cost the prediction store its rows.
                 persist=False,
                 latest_input=slot in latest_slots,
+                report_required_max_horizon=SETTINGS.report_required_max_horizon,
             )
         except Exception as e:  # noqa: BLE001 -- the other slots still run
             traceback.print_exc()
@@ -389,34 +381,39 @@ def predict_nba_games(
 
     print_step_header(step_number, "Generating Predictions (Baselines)")
     step_number += 1
-    try:
-        # The frame holds tonight's games only; the history is every built
-        # game's layer inputs (GAME_DATE, TOTAL_POINTS among them).
-        baseline_predictions = load_baseline_predictions_for_nba_games(
-            df=df_to_predict,
-            df_history=baseline_history_window(layer_inputs, date_to_predict),
-            prediction_datetime=prediction_time,
-            upload_to_postgres=False,
-        )
-        print_status("Baseline predictions generated")
-        for baseline_name, baseline_predictions_df in baseline_predictions.items():
-            rejected = recorder.add_baseline(
-                baseline_name, baseline_predictions_df, schema_version=frame_version
+    if df_to_predict.empty:
+        # The baselines predict the closing rows; none was built.
+        print_status("No closing rows; baselines skipped")
+    else:
+        try:
+            # The frame holds tonight's games only; the history is every built
+            # game's layer inputs (GAME_DATE, TOTAL_POINTS among them).
+            baseline_predictions = load_baseline_predictions_for_nba_games(
+                df=df_to_predict,
+                df_history=baseline_history_window(layer_inputs, date_to_predict),
+                prediction_datetime=prediction_time,
+                upload_to_postgres=False,
             )
-            if rejected:
-                print_status(
-                    f"Prediction store rejected {baseline_name}: {rejected}", ok=False
+            print_status("Baseline predictions generated")
+            for baseline_name, baseline_predictions_df in baseline_predictions.items():
+                rejected = recorder.add_baseline(
+                    baseline_name, baseline_predictions_df, schema_version=frame_version
                 )
-                failures.append(f"{baseline_name} (prediction store): {rejected}")
-            if persist:
-                legacy_failures += legacy_supabase_upload(
-                    baseline_predictions_df, baseline_name
-                )
+                if rejected:
+                    print_status(
+                        f"Prediction store rejected {baseline_name}: {rejected}",
+                        ok=False,
+                    )
+                    failures.append(f"{baseline_name} (prediction store): {rejected}")
+                if persist:
+                    legacy_failures += legacy_supabase_upload(
+                        baseline_predictions_df, baseline_name
+                    )
 
-    except Exception as e:  # noqa: BLE001 -- reported with the slot failures
-        traceback.print_exc()
-        print_status(f"Failed to generate baseline predictions: {e}", ok=False)
-        failures.append(f"baselines: {e}")
+        except Exception as e:  # noqa: BLE001 -- reported with the slot failures
+            traceback.print_exc()
+            print_status(f"Failed to generate baseline predictions: {e}", ok=False)
+            failures.append(f"baselines: {e}")
 
     if persist:
         print_step_header(step_number, "Storing Predictions")
@@ -441,6 +438,54 @@ def predict_nba_games(
         raise SystemExit(1)
 
     print("\nPrediction pipeline completed successfully.")
+
+
+def closing_rows(
+    scheduled_data: dict,
+    *,
+    tonight_ids: list[str],
+    frame_version: str,
+    date_to_predict: str,
+    normalize_total_lines: bool,
+    normalize_spread_lines: bool,
+    null_extreme_spread_prices: bool,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Tonight's closing rows at ``frame_version``, and every built row's
+    layer inputs (the baselines' history)."""
+    # Tonight's games only, on the training build's full history: every
+    # row is exactly what a full build would give it, at a fraction of
+    # the work (create_df_to_predict's target_game_ids).
+    df_to_predict_total, layer_inputs = create_df_to_predict(
+        todays_prediction=True,
+        scheduled_data=scheduled_data,
+        strict_mode=30,
+        normalize_total_lines=normalize_total_lines,
+        normalize_spread_lines=normalize_spread_lines,
+        null_extreme_spread_prices=null_extreme_spread_prices,
+        target_game_ids=tonight_ids,
+        return_layer_inputs=True,
+    )
+    if is_layered(frame_version):
+        print(f"Adding schema layers up to {frame_version} ...")
+        # Layers calibrate on earlier games, so they run over every built
+        # row's inputs; tonight's rows then take their columns.
+        added = compute_new_columns(
+            layer_inputs,
+            from_version=BASE_SCHEMA_VERSION,
+            to_version=frame_version,
+            dataset_type=CLOSING_LINE,
+            existing_columns=df_to_predict_total.columns,
+        )
+        added = added.loc[df_to_predict_total.index]
+        df_to_predict_total = pd.concat([df_to_predict_total, added], axis=1)
+    df_to_predict = df_to_predict_total[
+        df_to_predict_total["GAME_DATE"] == date_to_predict
+    ].copy()
+    # Set here, not in the builder: no feature step may ever see it.
+    df_to_predict[LINE_SOURCE_COLUMN] = (
+        df_to_predict["GAME_ID"].astype(str).map(scheduled_data.get("line_sources", {}))
+    )
+    return df_to_predict, layer_inputs
 
 
 def legacy_supabase_upload(predictions: pd.DataFrame, label: str) -> list[str]:

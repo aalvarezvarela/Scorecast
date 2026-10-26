@@ -78,6 +78,7 @@ from nba_ou.postgre_db.predictions_aiven.schema import (
     TARGET_CODES,
 )
 from nba_ou.prediction.line_source import LINE_SOURCE_COLUMN
+from nba_ou.prediction.report_requirement import NO_REPORT_ATTR
 from nba_ou.utils.general_utils import get_season_year_from_date
 
 CLOSING_LINE = "closing_line"
@@ -365,6 +366,13 @@ def dropped_na_games(predictions: pd.DataFrame | None) -> list[str]:
     return [str(game) for game in predictions.attrs.get(DROPPED_NA_ATTR, [])]
 
 
+def no_report_games(predictions: pd.DataFrame | None) -> list[str]:
+    """The games a slot skipped for a missing injury report (``report_requirement``)."""
+    if predictions is None:
+        return []
+    return [str(game) for game in predictions.attrs.get(NO_REPORT_ATTR, [])]
+
+
 @dataclass
 class RunTables:
     """One run's rows for the Aiven store, keyed by natural keys, not ids."""
@@ -459,6 +467,7 @@ class PredictionRunRecorder:
         reason: str | None = None,
         rows: int = 0,
         dropped_na: list[str] | None = None,
+        no_report: list[str] | None = None,
     ) -> None:
         """A slot's outcome for the manifest: predicted, skipped or failed."""
         self.slots.append(
@@ -468,6 +477,7 @@ class PredictionRunRecorder:
                 "reason": reason,
                 "rows": int(rows),
                 "dropped_na_games": list(dropped_na or []),
+                "no_report_games": list(no_report or []),
             }
         )
 
@@ -518,9 +528,18 @@ class PredictionRunRecorder:
 
     def _add(self, predictions, *, label: str, kind: int) -> str | None:
         dropped = dropped_na_games(predictions)
+        no_report = no_report_games(predictions)
         if predictions is None or predictions.empty:
             self.record_slot(
-                label, "skipped", reason="no rows to predict", dropped_na=dropped
+                label,
+                "skipped",
+                reason=(
+                    "no game with both injury reports filed"
+                    if no_report and not dropped
+                    else "no rows to predict"
+                ),
+                dropped_na=dropped,
+                no_report=no_report,
             )
             return None
         try:
@@ -529,7 +548,13 @@ class PredictionRunRecorder:
             self.record_slot(label, "failed", reason=f"rejected: {exc}")
             return str(exc)
         self.outputs.append(rows)
-        self.record_slot(label, "predicted", rows=len(rows), dropped_na=dropped)
+        self.record_slot(
+            label,
+            "predicted",
+            rows=len(rows),
+            dropped_na=dropped,
+            no_report=no_report,
+        )
         return None
 
     def _normalize(self, out: pd.DataFrame, *, kind: int, label: str) -> pd.DataFrame:

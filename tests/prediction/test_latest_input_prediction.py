@@ -24,6 +24,12 @@ from nba_ou.prediction.input_limits import (
     unsupported_news_columns,
 )
 from nba_ou.prediction.intermediate_frame import latest_snapshot_minutes
+from nba_ou.prediction.report_requirement import (
+    COVERED_COLUMNS,
+    NO_REPORT_ATTR,
+    reports_filed,
+    requires_report,
+)
 
 #: 23:00 UTC is 19:00 ET (EDT) on this date.
 TIP = pd.Timestamp("2026-04-10 23:00", tz="UTC")
@@ -292,6 +298,78 @@ def test_latest_input_needs_a_frame_built_for_it(monkeypatch):
         _predict(60, frames={"intermediate_line": frame}, latest_input=True)
 
 
+# ---- the injury-report requirement ---------------------------------------------
+
+
+def test_only_horizons_up_to_the_limit_require_a_report():
+    assert requires_report(300, 300) and requires_report(30, 300)
+    assert requires_report(0, 300)
+    assert not requires_report(360, 300)
+    # A pooled model trained on filed and unfiled rows alike; no limit, no rule.
+    assert not requires_report(None, 300)
+    assert not requires_report(30, None)
+
+
+def test_a_report_counts_only_when_both_teams_filed():
+    rows = pd.DataFrame(
+        {COVERED_COLUMNS[0]: [1, 1, 0, np.nan], COVERED_COLUMNS[1]: [1, 0, 0, 1]}
+    )
+    assert reports_filed(rows).tolist() == [True, False, False, False]
+    with pytest.raises(ValueError, match="coverage"):
+        reports_filed(rows.drop(columns=COVERED_COLUMNS[1]))
+
+
+def _filed_frame():
+    """``_frame`` with g1 still unfiled by its away team."""
+    frame = _frame()
+    frame[COVERED_COLUMNS[0]] = 1
+    frame[COVERED_COLUMNS[1]] = frame["GAME_ID"].ne("g1").astype(int)
+    return frame
+
+
+def test_a_short_horizon_slot_skips_a_game_without_both_reports(monkeypatch):
+    seen = _serve(monkeypatch, horizon=60)
+    out = _predict(
+        60,
+        frames={"intermediate_line": _filed_frame()},
+        latest_input=True,
+        report_required_max_horizon=300,
+    )
+    assert seen["rows"]["GAME_ID"].tolist() == ["g2"]
+    assert out.attrs[NO_REPORT_ATTR] == ["g1"]
+
+
+def test_a_long_horizon_slot_still_predicts_it(monkeypatch):
+    seen = _serve(monkeypatch, horizon=720)
+    out = _predict(
+        720,
+        frames={"intermediate_line": _filed_frame()},
+        latest_input=True,
+        report_required_max_horizon=300,
+    )
+    assert seen["rows"]["GAME_ID"].tolist() == ["g1", "g2"]
+    assert out.attrs[NO_REPORT_ATTR] == []
+
+
+def test_a_slot_with_no_filed_game_predicts_nothing(monkeypatch):
+    seen = _serve(monkeypatch, horizon=60)
+    frame = _filed_frame()
+    frame[COVERED_COLUMNS[1]] = 0
+    out = _predict(
+        60, frames={"intermediate_line": frame}, report_required_max_horizon=300
+    )
+    assert out.empty and "rows" not in seen
+    # Own input: each game's own T-60 row.
+    assert out.attrs[NO_REPORT_ATTR] == ["g1", "g2"]
+
+
+def test_without_a_limit_no_game_is_skipped(monkeypatch):
+    seen = _serve(monkeypatch, horizon=60)
+    frame = _frame()  # no coverage columns at all: never read
+    _predict(60, frames={"intermediate_line": frame}, latest_input=True)
+    assert seen["rows"]["GAME_ID"].tolist() == ["g1", "g2"]
+
+
 # ---- configuration -------------------------------------------------------------
 
 
@@ -310,11 +388,34 @@ def _settings(tmp_path, body):
 def test_input_mode_defaults_to_own_and_is_validated(tmp_path):
     assert _settings(tmp_path, "").intermediate_input_mode == "own"
     assert (
-        _settings(tmp_path, "INTERMEDIATE_INPUT_MODE = Latest\n").intermediate_input_mode
+        _settings(
+            tmp_path, "INTERMEDIATE_INPUT_MODE = Latest\n"
+        ).intermediate_input_mode
         == "latest"
     )
     with pytest.raises(ValueError, match="INTERMEDIATE_INPUT_MODE"):
         _settings(tmp_path, "INTERMEDIATE_INPUT_MODE = soon\n").intermediate_input_mode
+
+
+def test_report_required_max_horizon_is_minutes_or_empty(tmp_path):
+    assert _settings(tmp_path, "").report_required_max_horizon is None
+    assert (
+        _settings(
+            tmp_path, "REPORT_REQUIRED_MAX_HORIZON =\n"
+        ).report_required_max_horizon
+        is None
+    )
+    assert (
+        _settings(
+            tmp_path, "REPORT_REQUIRED_MAX_HORIZON = 300\n"
+        ).report_required_max_horizon
+        == 300
+    )
+    for bad in ("5h", "-30"):
+        with pytest.raises(ValueError, match="REPORT_REQUIRED_MAX_HORIZON"):
+            _settings(
+                tmp_path, f"REPORT_REQUIRED_MAX_HORIZON = {bad}\n"
+            ).report_required_max_horizon
 
 
 def test_latest_input_slots_all_or_rows(tmp_path, monkeypatch):
@@ -361,8 +462,7 @@ def _tonight(monkeypatch, *, as_of):
         rows = (
             [(g, m) for g, m in wanted.items()]
             if wanted
-            else [(g, m) for g in ("g1", "g2") for m in (30, 240)]
-            + list(extra.items())
+            else [(g, m) for g in ("g1", "g2") for m in (30, 240)] + list(extra.items())
         )
         frame = pd.DataFrame(rows, columns=["GAME_ID", "TIME_TO_MATCH_MIN"])
         tips = frame["GAME_ID"].map({"g1": TIP, "g2": TIP + pd.Timedelta(hours=3)})
@@ -372,7 +472,9 @@ def _tonight(monkeypatch, *, as_of):
         return frame, scoring
 
     monkeypatch.setattr(module, "create_intermediate_line_df", builder)
-    scheduled = {"scheduled_games": pd.DataFrame({"GAME_ID": ["g1", "g2"], "GAME_TIME": [1, 2]})}
+    scheduled = {
+        "scheduled_games": pd.DataFrame({"GAME_ID": ["g1", "g2"], "GAME_TIME": [1, 2]})
+    }
     return module, scheduled, calls
 
 

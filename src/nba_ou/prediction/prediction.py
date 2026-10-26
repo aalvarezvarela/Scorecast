@@ -21,6 +21,11 @@ from nba_ou.prediction.input_limits import (
     LIMITED_COUNT_COLUMN,
     limit_to_training_support,
 )
+from nba_ou.prediction.report_requirement import (
+    NO_REPORT_ATTR,
+    reports_filed,
+    requires_report,
+)
 from xgboost import XGBRegressor
 
 PredictionTarget = Literal["PRED_LINE_ERROR", "TOTAL_POINTS", "PRED_SPREAD_ERROR"]
@@ -625,6 +630,7 @@ def load_registry_model_and_predict(
     passthrough_columns: Sequence[str] = (),
     persist: bool = True,
     latest_input: bool = False,
+    report_required_max_horizon: int | None = None,
 ) -> pd.DataFrame:
     """Predict with whatever a slot's channel currently points at.
 
@@ -641,6 +647,11 @@ def load_registry_model_and_predict(
     default, predicts every row whatever the time to tip: the daily job runs
     every slot on every run, and the stored ``TIME_TO_MATCH_MINUTES`` and
     ``MODEL_HORIZON_MINUTES`` let the analysis filter afterwards.
+
+    ``report_required_max_horizon``: an intermediate model of this horizon or
+    shorter skips the games whose row lacks either team's injury report
+    (``report_requirement``), listed in the output's ``NO_REPORT_ATTR``. None,
+    the default, skips none.
 
     ``frame_versions`` maps a dataset type to the schema version its frame was
     built at. A slot whose schema is newer than its frame raises, naming both,
@@ -732,6 +743,22 @@ def load_registry_model_and_predict(
             f"model's horizon (T-{spec.identity.horizon_minutes})."
         )
     rows = df.loc[eligible]
+    no_report_games: list[str] = []
+    if snapshot_input and requires_report(
+        spec.identity.horizon_minutes, report_required_max_horizon
+    ):
+        filed = reports_filed(rows)
+        no_report_games = rows.loc[~filed, "GAME_ID"].astype(str).tolist()
+        if no_report_games:
+            print(
+                f"  {slot.describe()}: skipping {len(no_report_games)} game(s) "
+                "without both injury reports filed: " + ", ".join(no_report_games)
+            )
+            rows = rows.loc[filed]
+        if rows.empty:
+            empty = pd.DataFrame()
+            empty.attrs[NO_REPORT_ATTR] = no_report_games
+            return empty
     extra_columns = {}
     if latest_input:
         rows = limit_to_training_support(
@@ -783,4 +810,5 @@ def load_registry_model_and_predict(
             **extra_columns,
         },
     )
+    predictions.attrs[NO_REPORT_ATTR] = no_report_games
     return predictions
