@@ -7,7 +7,6 @@ from types import SimpleNamespace
 import numpy as np
 import pandas as pd
 import pytest
-import scripts.predict_nba_games as job
 from nba_ou.config.settings import Settings
 from nba_ou.create_training_data.create_intermediate_line_df import (
     _keep_extra_snapshots,
@@ -30,6 +29,8 @@ from nba_ou.prediction.report_requirement import (
     reports_filed,
     requires_report,
 )
+
+import scripts.predict_nba_games as job
 
 #: 23:00 UTC is 19:00 ET (EDT) on this date.
 TIP = pd.Timestamp("2026-04-10 23:00", tz="UTC")

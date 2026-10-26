@@ -766,6 +766,9 @@ REQUEST_RETRIES = 3
 JSON_SLEEP_MIN_S = 0.2
 JSON_SLEEP_MAX_S = 0.5
 JSON_MAX_WORKERS = 4
+# Retries of a spread or moneyline page that comes back without games while
+# the day's totals page listed some.
+EMPTY_MARKET_RETRIES = 2
 # The table header renders the first seven sportsbooks of the payload's list;
 # the eighth (Hard Rock Bet) is carried in the JSON but never drawn.
 RENDERED_SPORTSBOOKS = 7
@@ -1034,13 +1037,34 @@ def scrape_day_json(session: requests.Session, d: date) -> pd.DataFrame | None:
         ("spread", build_sbr_spread_url(d), parse_sbr_spread_rows),
         ("ml", build_sbr_moneyline_url(d), parse_sbr_moneyline_rows),
     ):
-        time.sleep(random.uniform(JSON_SLEEP_MIN_S, JSON_SLEEP_MAX_S))
-        model = parse_sbr_odds_table(fetch_sbr_page(session, url))
-        raw[name] = None if model is None else _with_season(parse(model, d), d)
+        raw[name] = _market_rows(session, url, parse, d)
 
     return attach_scrape_metadata(
         _merge_day(totals_raw, raw["spread"], raw["ml"]), totals_model, scraped_at
     )
+
+
+def _market_rows(
+    session: requests.Session, url: str, parse, d: date
+) -> pd.DataFrame | None:
+    """A spread or moneyline page's rows; None when it stays without games.
+
+    Only called once the totals page listed games, so an empty page here is SBR
+    serving it without its table (2026-10-26: the spread page, mid-evening),
+    not a day without games: it is asked again before giving up.
+    """
+    for attempt in range(EMPTY_MARKET_RETRIES + 1):
+        time.sleep(
+            2**attempt
+            if attempt
+            else random.uniform(JSON_SLEEP_MIN_S, JSON_SLEEP_MAX_S)
+        )
+        model = parse_sbr_odds_table(fetch_sbr_page(session, url))
+        rows = None if model is None else _with_season(parse(model, d), d)
+        if rows is not None:
+            return rows
+    print(f"SBR page without games after {EMPTY_MARKET_RETRIES} retries: {url}")
+    return None
 
 
 def scrape_sportsbook_days_json(
