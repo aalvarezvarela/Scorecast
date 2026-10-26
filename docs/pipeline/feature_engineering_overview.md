@@ -54,7 +54,7 @@ section of `config.secrets.ini` (`src/nba_ou/postgre_db/config/db_config.py`):
 | Official injury reports, time-stamped | NBA injury-report PDFs (`ak-static.cms.nba.com`) | Game-day: `fetch_data/injury_reports/sync.py`; backfills: `scripts/injury_reports/` | Original PDFs in S3; Aiven `injury_report` (document receipts, reports, status spans, filing spans), refreshed before prediction | `postgre_db/injury_report_aiven/fetch.py`; see `docs/injuries/live_reports.md` |
 | Same-day referee assignments | `official.nba.com/referee-assignments` | `fetch_data/referees/load_assignments.py` | S3 `train_data/live_inputs/v1/referees/game_date=YYYY-MM-DD/`, timestamped Parquet plus `latest.json`; save changed crews, fallback on live failure; no PostgreSQL write | same-day prediction path only |
 | All-Star voting | NBA voting results | `scripts/all_star_voting/manage_all_star_voting.py` | Supabase `nba_all_star_voting` | `load_all_star_voting_from_db` |
-| Schedule, tip-off times | NBA schedule (`ScoreboardV2`) | `fetch_data/nba_schedule`, `fetch_data/scheduled_game` | `lh_game.tipoff_utc`, Supabase `nba_game_time_index` | line-history games; injury-report game resolution |
+| Schedule, tip-off times | NBA schedule (`ScheduleLeagueV2`, `ScoreboardV3`) | `fetch_data/nba_schedule`, `fetch_data/scheduled_game` | `lh_game.tipoff_utc`, Supabase `nba_game_time_index` | line-history games; injury-report game resolution |
 
 Supabase also has schemas that neither dataset builder reads: `nba_odds`,
 `nba_odds_mgm`, `sportsbook_matchup_history` and the per-market

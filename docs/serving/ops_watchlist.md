@@ -91,8 +91,8 @@ value` in `update_database_daily` (a non-JSON body, consistent with a 403 page).
 It may be an IP- or bot-level block rather than a removed feed.
 
 **Consumers:**
-- `fetch_data/live_games/live_games.py` falls back to `ScoreboardV2` and then
-  `ScoreboardV3` (stats.nba.com), so it degrades gracefully.
+- `fetch_data/live_games/live_games.py` falls back to `ScoreboardV3`
+  (stats.nba.com), so it degrades gracefully (item 8).
 - `postgre_db/game_time_index/sync_game_time_index.py` reads box scores from
   the CDN with no fallback. It is run by hand
   (`scripts/create_databases/sync_nba_game_index_for_season.py`), and the
@@ -175,6 +175,20 @@ stored before the fix are moved by
 - If the NBA fills the summary's list again, both sources write the same
   `(player_id, game_id)`, and `ON CONFLICT DO NOTHING` keeps one row.
 
+### 8. ScoreboardV2 frozen for 2026-27 (seen 2026-10-26) — fixed in code
+
+`ScoreboardV2` still answers, but every 2026-27 game stays at
+`GAME_STATUS_ID` 1 with no line-score points, even once final, and some
+requests return a non-JSON body. With the CDN scoreboard at 403 (item 3), the
+live-game lookup took V2's answer as "no game in progress" and never asked
+`ScoreboardV3`, so the final-score update, booked while later games are on,
+lost its live-game exclusion. V2 is removed: the live lookup and the day's
+schedule (`fetch_data/scheduled_game/get_schedule_games.py`, now keyed on the
+payload's `homeTeam`/`awayTeam`) read `ScoreboardV3` only, and started games
+are dropped by status rather than by a parsed tip-off.
+
+**Check:** on a game night, `get_live_game_ids()` lists the games in progress.
+
 ## Season-rollover sources to keep an eye on
 
 External sources the daily jobs depend on. A new season is when URLs, IDs and
@@ -182,7 +196,7 @@ formats change.
 
 | Source | Used for | Code | Watch for |
 |---|---|---|---|
-| stats.nba.com (`nba_api`): `LeagueGameFinder`, `BoxScoreSummaryV3`, `CommonTeamRoster`, `ScoreboardV2/V3` | games, players, refs/injuries, live rosters, live games | `fetch_data/fetch_nba_data`, `postgre_db/injuries_refs`, `fetch_data/live_rosters.py`, `fetch_data/live_games` | rate-limit blocks (back off ≥90 s); `ScoreboardV2` deprecation |
+| stats.nba.com (`nba_api`): `LeagueGameFinder`, `BoxScoreSummaryV3`, `CommonTeamRoster`, `ScoreboardV3` | games, players, refs/injuries, live rosters, live games, the day's schedule | `fetch_data/fetch_nba_data`, `postgre_db/injuries_refs`, `fetch_data/live_rosters.py`, `fetch_data/live_games`, `fetch_data/scheduled_game` | rate-limit blocks (back off ≥90 s); item 8 |
 | data.nba.com legacy schedule | tip-off cross-check | `fetch_data/nba_schedule` | item 2 |
 | cdn.nba.com live data | live scoreboard, game time index | `fetch_data/live_games`, `postgre_db/game_time_index` | item 3 |
 | official.nba.com/referee-assignments | tonight's referees | `fetch_data/referees/fetch_refs_data.py` | page layout (parsed with `pd.read_html`, needs `lxml`) |
