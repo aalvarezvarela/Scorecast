@@ -273,6 +273,8 @@ game read the same row.
 | `spread_price_home`, `spread_price_away` | `SMALLINT`, nullable | American odds at `spread_bet_line_x2`, same quote. |
 | `total_line_age_minutes`, `spread_line_age_minutes` | `REAL`, nullable | Minutes since that quote was last observed, at the row's time. |
 | `line_source` | `SMALLINT`, nullable | Where the row's lines came from: `1 = SBR`, `2 = Covers` (the fallback when SBR is frozen or empty, `docs/odds/covers_line_history.md`). Null on rows stored before 2026-10-24. Added to existing stores by `create_schema` (`ALTER TABLE ... ADD COLUMN IF NOT EXISTS`). |
+| `total_books_mean_line`, `total_books_median_line`, `spread_books_mean_line`, `spread_books_median_line` | `REAL`, nullable | Mean and median of every book's raw line at the same snapshot as the bet line (main book included). Spread as implied home margin. Null when no book quoted, and on rows stored before 2026-10-26. |
+| `total_books_count`, `spread_books_count` | `SMALLINT`, nullable | Books in that mean and median. Added with them (2026-10-26), like `line_source`. |
 
 Unique `NULLS NOT DISTINCT (run_id, game_id, input_mode,
 snapshot_horizon_minutes)`.
@@ -329,6 +331,7 @@ today, `get_main_book()`):
 | `total_bet_line_x2` / `spread_bet_line_x2` | `ODDS_SNAP_TOT_BET365_RAW_LINE` / `ODDS_SNAP_SPR_BET365_RAW_LINE` × 2 |
 | prices | `ODDS_SNAP_{TOT,SPR}_BET365_PRICE_LEFT` / `_PRICE_RIGHT` |
 | `*_line_age_minutes` | `ODDS_SNAP_{TOT,SPR}_BET365_LINE_AGE_MINUTES` |
+| `*_books_{mean,median}_line`, `*_books_count` | `ODDS_SNAP_{TOT,SPR}_<BOOK>_RAW_LINE` where `_HAS_QUOTE`, over every book the frame carries except the `CONSENSUS` aggregate |
 
 - The input limits only touch referee and news columns, so every model that
   reads a `latest` row sees the same lines and prices.
@@ -338,10 +341,10 @@ today, `get_main_book()`):
   dataset: it equals `ODDS_SPREAD_LINE_HOME_bet365 − NORM_MINUS_RAW`).
 - The closing frame normalizes the line **and** prices in place and rounds
   the line back to a half-point, so it keeps no raw quote. A closing row's
-  bet line, prices and age come from the game's latest intermediate row of
-  the same run (`LATEST_INPUT`, the run's own moment): the quote that could
-  be bet when the run predicted. A run without intermediate rows stores a
-  null bet line for its closing rows.
+  bet line, prices, age and cross-book lines come from the game's latest
+  intermediate row of the same run (`LATEST_INPUT`, the run's own moment):
+  the quote that could be bet when the run predicted. A run without
+  intermediate rows stores a null bet line for its closing rows.
 - Line, prices and age describe the same observation. Never fill a missing
   price with a later one or an assumed −110.
 - Today's intermediate pick is taken against the normalized line (the model
@@ -390,6 +393,12 @@ WITH base AS (
                 ELSE i.total_price_under END         AS bet_price_under_away,
            CASE WHEN m.target = 3 THEN i.spread_line_age_minutes
                 ELSE i.total_line_age_minutes END    AS bet_line_age_minutes,
+           CASE WHEN m.target = 3 THEN i.spread_books_mean_line
+                ELSE i.total_books_mean_line END     AS books_mean_line,
+           CASE WHEN m.target = 3 THEN i.spread_books_median_line
+                ELSE i.total_books_median_line END   AS books_median_line,
+           CASE WHEN m.target = 3 THEN i.spread_books_count
+                ELSE i.total_books_count END         AS books_count,
            CASE WHEN m.target = 3 THEN g.home_points - g.away_points
                 ELSE g.home_points + g.away_points END AS actual_value
     FROM prediction.predictions p

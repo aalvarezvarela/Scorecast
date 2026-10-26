@@ -88,6 +88,17 @@ def intermediate_frame() -> pd.DataFrame:
                     "ODDS_SNAP_SPR_BET365_PRICE_LEFT": -120.0,
                     "ODDS_SNAP_SPR_BET365_PRICE_RIGHT": 100.0,
                     "ODDS_SNAP_SPR_BET365_LINE_AGE_MINUTES": 9.0,
+                    # Other books, and the cross-book aggregate (not a book).
+                    "ODDS_SNAP_TOT_FANDUEL_HAS_QUOTE": 1.0,
+                    "ODDS_SNAP_TOT_FANDUEL_RAW_LINE": 226.5,
+                    "ODDS_SNAP_TOT_DRAFTKINGS_HAS_QUOTE": 1.0,
+                    "ODDS_SNAP_TOT_DRAFTKINGS_RAW_LINE": 228.5,
+                    "ODDS_SNAP_TOT_BETMGM_HAS_QUOTE": 0.0,
+                    "ODDS_SNAP_TOT_BETMGM_RAW_LINE": 240.5,
+                    "ODDS_SNAP_TOT_CONSENSUS_HAS_QUOTE": 3.0,
+                    "ODDS_SNAP_TOT_CONSENSUS_RAW_LINE": 226.5,
+                    "ODDS_SNAP_SPR_FANDUEL_HAS_QUOTE": 1.0,
+                    "ODDS_SNAP_SPR_FANDUEL_RAW_LINE": -4.0,
                     "LATEST_INPUT": minutes != 360,
                     "LINE_SOURCE": "sbr" if game == GAME_1 else "covers",
                 }
@@ -270,6 +281,8 @@ def test_line_source_column_is_added_to_existing_stores():
     ddl = store_schema.ddl_script()
     assert "line_source              SMALLINT" in ddl
     assert "ADD COLUMN IF NOT EXISTS line_source SMALLINT" in ddl
+    assert "ADD COLUMN IF NOT EXISTS total_books_median_line  REAL" in ddl
+    assert "ADD COLUMN IF NOT EXISTS spread_books_count       SMALLINT" in ddl
     assert ddl.index("DROP VIEW IF EXISTS") < ddl.index("CREATE VIEW")
     assert store_schema.LINE_SOURCE_CODES == {"sbr": 1, "covers": 2}
 
@@ -293,6 +306,27 @@ def test_bet_lines_follow_the_line_history_sides():
     assert lines["spread_line_age_minutes"] == 9.0
 
 
+def test_cross_book_lines_cover_every_quoting_book():
+    lines = bet_line_columns(intermediate_frame(), "intermediate_line", BOOK).iloc[0]
+    # bet365 225.5, FanDuel 226.5, DraftKings 228.5; BetMGM has no quote and
+    # the CONSENSUS aggregate is not a book.
+    assert lines["total_books_count"] == 3
+    assert lines["total_books_mean_line"] == pytest.approx(226.8333, abs=1e-4)
+    assert lines["total_books_median_line"] == 226.5
+    assert lines["spread_books_count"] == 2
+    assert lines["spread_books_mean_line"] == -3.75
+    assert lines["spread_books_median_line"] == -3.75
+
+
+def test_snapshot_without_quotes_has_no_cross_book_line():
+    frame = intermediate_frame()
+    frame[[c for c in frame.columns if c.endswith("_HAS_QUOTE")]] = 0.0
+    lines = bet_line_columns(frame, "intermediate_line", BOOK)
+    assert (lines["total_books_count"] == 0).all()
+    assert lines["total_books_mean_line"].isna().all()
+    assert lines["spread_books_median_line"].isna().all()
+
+
 def test_closing_rows_bet_the_latest_snapshot_quote():
     """The closing frame is normalized in place, so a closing row's quote is
     its game's latest intermediate row's, the quote at the run's moment."""
@@ -302,6 +336,8 @@ def test_closing_rows_bet_the_latest_snapshot_quote():
     assert closing.loc[22600001, "total_price_over"] == -115
     assert closing.loc[22600002, "spread_price_home"] == 100
     assert closing.loc[22600001, "total_model_line"] == 224.5
+    assert closing.loc[22600001, "total_books_median_line"] == 226.5
+    assert closing.loc[22600002, "spread_books_count"] == 2
 
 
 def test_closing_rows_without_a_latest_snapshot_have_no_bet_line():
@@ -313,6 +349,8 @@ def test_closing_rows_without_a_latest_snapshot_have_no_bet_line():
     closing = inputs[inputs["input_mode"].eq(0)]
     assert closing["total_bet_line_x2"].isna().all()
     assert closing["spread_price_home"].isna().all()
+    assert closing["total_books_mean_line"].isna().all()
+    assert closing["total_books_count"].isna().all()
 
 
 def test_unquoted_snapshot_has_no_bet_line():
@@ -746,6 +784,8 @@ def test_view_grades_against_the_bet_line(conn):
     # Bet line 225.5 (the latest snapshot's quote), actual 230: the OVER pick
     # wins; the baseline's UNDER loses.
     assert model["bet_line_x2"] == 451
+    assert model["books_median_line"] == 226.5
+    assert model["books_count"] == 3
     assert model["pick_result"] == 1
     assert model["predicted_value"] == pytest.approx(226.0)
     assert model["model_edge"] == pytest.approx(1.5)

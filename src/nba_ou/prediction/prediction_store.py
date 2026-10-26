@@ -38,11 +38,19 @@ home margin. The closing frame normalizes lines and prices in place, rounded
 back to half-points, so it keeps no raw quote. A closing row takes its quote
 from the game's latest intermediate row instead (``LATEST_INPUT``: the run's
 own moment), when the run built one; otherwise its bet line stays null.
+
+Cross-book lines. Next to the main book's quote, each row keeps the mean and
+median of every book's raw line at the same moment and how many books quoted
+(main book included, the ``CONSENSUS`` aggregate excluded): the books the
+frame carries, so whichever books the dataset builders admit. They come from
+the same snapshot as the bet line, so a closing row takes them from its
+latest intermediate row too.
 """
 
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 import uuid
 from dataclasses import dataclass, field
@@ -132,11 +140,19 @@ BET_COLUMNS = [
     "total_price_over",
     "total_price_under",
     "total_line_age_minutes",
+    "total_books_mean_line",
+    "total_books_median_line",
+    "total_books_count",
     "spread_bet_line_x2",
     "spread_price_home",
     "spread_price_away",
     "spread_line_age_minutes",
+    "spread_books_mean_line",
+    "spread_books_median_line",
+    "spread_books_count",
 ]
+#: The per-snapshot cross-book aggregate, not a book (``line_history.cross_book``).
+CONSENSUS_SNAPSHOT_BOOK = "CONSENSUS"
 INPUT_COLUMNS = [
     *INPUT_KEY,
     "tipoff_at",
@@ -219,6 +235,23 @@ def line_source_codes(frame: pd.DataFrame) -> pd.Series:
     return frame[LINE_SOURCE_COLUMN].map(LINE_SOURCE_CODES).astype("Int16")
 
 
+def snapshot_book_lines(frame: pd.DataFrame, prefix: str) -> pd.DataFrame:
+    """Every book's raw snapshot line in one market (``TOT``/``SPR``), null
+    where the book has no quote; one column per book the frame carries."""
+    pattern = re.compile(rf"ODDS_SNAP_{prefix}_(.+)_HAS_QUOTE")
+    books = [
+        match.group(1)
+        for match in map(pattern.fullmatch, frame.columns)
+        if match and match.group(1) != CONSENSUS_SNAPSHOT_BOOK
+    ]
+    lines = {}
+    for book in books:
+        stem = f"ODDS_SNAP_{prefix}_{book}"
+        quoted = _column(frame, f"{stem}_HAS_QUOTE").fillna(0).gt(0)
+        lines[book] = _column(frame, f"{stem}_RAW_LINE").where(quoted)
+    return pd.DataFrame(lines, index=frame.index, dtype="float64")
+
+
 def bet_line_columns(
     frame: pd.DataFrame, dataset_type: str, book: str | None = None
 ) -> pd.DataFrame:
@@ -248,10 +281,14 @@ def bet_line_columns(
             out[f"{market}_line_age_minutes"] = _column(
                 frame, f"{stem}_LINE_AGE_MINUTES"
             ).where(quoted)
+            books = snapshot_book_lines(frame, prefix)
+            out[f"{market}_books_mean_line"] = books.mean(axis=1)
+            out[f"{market}_books_median_line"] = books.median(axis=1)
+            out[f"{market}_books_count"] = books.notna().sum(axis=1).astype("Int64")
     elif dataset_type == CLOSING_LINE:
         # Normalized in place: no raw quote survives (see the module docstring).
         for name in BET_COLUMNS:
-            if name.endswith("_age_minutes"):
+            if name.endswith(("_age_minutes", "_mean_line", "_median_line")):
                 out[name] = np.nan
             else:
                 out[name] = pd.Series(pd.NA, index=frame.index, dtype="Int64")
