@@ -215,6 +215,41 @@ class TestMoneyline:
         assert (away["betmgm_price"], home["betmgm_price"]) == (105, -125)
 
 
+SPREAD = {"awaySpread": 1.5, "homeSpread": -1.5, "awayOdds": -110, "homeOdds": -110}
+
+
+class TestEmptyMarketPage:
+    def _day(self, monkeypatch, spread_pages):
+        game = _game(1, "A", "B", [_view("betmgm", {"total": 220, **SPREAD})])
+        pages = {
+            s.build_sbr_totals_url(DAY): [_html([game])],
+            s.build_sbr_spread_url(DAY): [_html(g) for g in spread_pages],
+            s.build_sbr_moneyline_url(DAY): [_html([game])],
+        }
+        fetched = []
+
+        def fetch(session, url):
+            fetched.append(url)
+            return pages[url].pop(0) if len(pages[url]) > 1 else pages[url][0]
+
+        monkeypatch.setattr(s, "fetch_sbr_page", fetch)
+        monkeypatch.setattr(s.time, "sleep", lambda _: None)
+        day = s.scrape_day_json(None, DAY)
+        return day, fetched.count(s.build_sbr_spread_url(DAY))
+
+    def test_an_empty_spread_page_is_asked_again(self, monkeypatch):
+        game = _game(1, "A", "B", [_view("betmgm", SPREAD)])
+        day, asked = self._day(monkeypatch, [[], [game]])
+        assert asked == 2
+        assert day["spread_betmgm_line_home"].notna().all()
+
+    def test_a_spread_page_that_stays_empty_leaves_the_market_out(self, monkeypatch):
+        day, asked = self._day(monkeypatch, [[]])
+        assert asked == s.EMPTY_MARKET_RETRIES + 1
+        assert not any(c.startswith("spread_") for c in day.columns)
+        assert day["total_betmgm_line_over"].notna().all()
+
+
 class TestNoOddsGame:
     def test_keeps_its_own_teams(self):
         views = [None] * 8

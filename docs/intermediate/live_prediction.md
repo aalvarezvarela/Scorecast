@@ -47,7 +47,12 @@ only needs one run after each horizon, not a run at each exact minute.
 **Policy since 2026-10-20:** every enabled slot predicts on every run, whatever
 the time to tip. A slot whose snapshot is still ahead predicts from the row
 built from the ticks so far, marked `SNAPSHOT_PASSED = False`; the list above
-describes the rows that are exact.
+describes the rows that are exact. Such a row reads everything as of the run's
+cutoff (`LiveGameDay.as_of`): the ticks, and the injury reports, news timeline
+and referee release published before it, the report age counted to the
+snapshot. A run with an explicit past `as_of` (a queued TabPFN run) thus
+builds the row a live run at that moment would have, even though the store
+already holds the reports published since.
 
 **Parity test.** Replay a past date "as of" chosen times (live readers with
 `as_of`, builder with the replayed data substituted for the stored rows) and

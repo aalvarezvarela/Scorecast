@@ -226,7 +226,7 @@ results. In short:
   serves no odds, tonight's lines (closing day-page odds and live line history)
   come from Covers, with SBR's exact columns and books (consensus pick % from
   the Covers Consensus page, SBR's own source). A game SBR does not
-  serve is filled from Covers. Each stored input row records its source in
+  serve, or serves without spread or moneyline, is filled from Covers. Each stored input row records its source in
   `prediction.inputs.line_source` (1 SBR, 2 Covers); frames carry
   `LINE_SOURCE`. Only both feeds frozen stops the run.
 - Intermediate input mode (`INTERMEDIATE_INPUT_MODE` under

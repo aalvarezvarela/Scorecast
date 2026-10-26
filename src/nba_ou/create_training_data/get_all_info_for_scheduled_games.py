@@ -29,9 +29,11 @@ from nba_ou.prediction.line_source import (
     COVERS,
     SBR,
     LineSource,
+    complete_game_ids,
     fill_ids,
     priced_game_ids,
 )
+from nba_ou.utils.ci import annotate
 
 
 def _normalize_team_series(series: pd.Series) -> pd.Series:
@@ -243,11 +245,12 @@ def get_sportsbook_prediction_data(
 
     Fetches odds (totals, spread, moneyline) for date of prediction, merges with scheduled games to get game_id.
 
-    With a ``line_source``, a game SBR does not price (or every game, when the
-    run reads Covers) gets the same columns rebuilt from Covers
-    (``odds_covers.day_odds``), and ``line_source.closing_sources`` records
-    each game's source. An SBR day page with no odds at all switches the run
-    to Covers.
+    With a ``line_source``, a game SBR does not price in every market (or
+    every game, when the run reads Covers) gets the same columns rebuilt from
+    Covers (``odds_covers.day_odds``), and ``line_source.closing_sources``
+    records each game's source. An SBR day page with no totals at all switches
+    the run to Covers; one missing only its spread or moneyline page sends the
+    games without them to Covers and keeps the run on SBR.
 
     Args:
         date_to_predict (str): Date in format 'YYYY-MM-DD'
@@ -276,9 +279,17 @@ def get_sportsbook_prediction_data(
             )
 
     if line_source is not None:
-        served = set() if line_source.uses_covers else priced_game_ids(df_sportsbook)
+        served = set() if line_source.uses_covers else complete_game_ids(df_sportsbook)
+        incomplete = priced_game_ids(df_sportsbook) - served
+        if incomplete:
+            annotate(
+                "warning",
+                f"SBR day page lacks spread or moneyline for {len(incomplete)} "
+                f"game(s) on {date_to_predict}; reading them from Covers.",
+            )
+        df_sbr = df_sportsbook
         df_sportsbook = (
-            df_sportsbook[df_sportsbook["game_id"].astype(str).isin(served)]
+            df_sbr[df_sbr["game_id"].astype(str).isin(served)]
             if served
             else pd.DataFrame()
         )
@@ -301,6 +312,16 @@ def get_sportsbook_prediction_data(
                 if df_sportsbook.empty
                 else pd.concat([df_sportsbook, df_covers], ignore_index=True)
             )
+        # A game SBR prices only in part keeps that row when Covers lacks it.
+        partial = sorted(incomplete - set(map(str, sources)))
+        if partial:
+            df_partial = df_sbr[df_sbr["game_id"].astype(str).isin(partial)]
+            df_sportsbook = (
+                df_partial
+                if df_sportsbook.empty
+                else pd.concat([df_sportsbook, df_partial], ignore_index=True)
+            )
+            sources.update(dict.fromkeys(partial, SBR))
         line_source.closing_sources = {str(k): v for k, v in sources.items()}
 
     # Check if we got any data

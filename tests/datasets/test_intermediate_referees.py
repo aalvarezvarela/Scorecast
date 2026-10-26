@@ -65,6 +65,25 @@ def test_nine_eastern_uses_winter_utc_offset():
     assert masked.loc[1, "REF_CREW_PF_TENDENCY_BEFORE"] == 0.3
 
 
+def test_a_snapshot_ahead_of_the_cutoff_shows_crews_only_past_the_release():
+    # 09:00 ET is 14:00 UTC in January; both snapshots fall after it.
+    frame = pd.DataFrame(
+        {
+            "TIPOFF_UTC": ["2026-01-12 23:00:00+00:00"] * 2,
+            "SNAPSHOT_TS_UTC": ["2026-01-12 15:00:00+00:00"] * 2,
+            "REF_CREW_PF_TENDENCY_BEFORE": [0.3, 0.3],
+        }
+    )
+    early = mask_referees_before_release(
+        frame, visible_until=pd.Timestamp("2026-01-12 13:00", tz="UTC")
+    )
+    assert early["REF_CREW_PF_TENDENCY_BEFORE"].isna().all()
+    late = mask_referees_before_release(
+        frame, visible_until=pd.Timestamp("2026-01-12 14:30", tz="UTC")
+    )
+    assert late["REF_CREW_PF_TENDENCY_BEFORE"].eq(0.3).all()
+
+
 def test_legacy_referee_history_excludes_the_current_game_result():
     games = pd.DataFrame(
         {

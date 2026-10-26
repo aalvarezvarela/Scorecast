@@ -189,13 +189,23 @@ def add_intermediate_referee_features(
     )
 
 
-def mask_referees_before_release(df: pd.DataFrame) -> pd.DataFrame:
-    """Expose assignments only at/after 09:00 ET on the tipoff date."""
+def mask_referees_before_release(
+    df: pd.DataFrame, visible_until: pd.Timestamp | None = None
+) -> pd.DataFrame:
+    """Expose assignments only at/after 09:00 ET on the tipoff date.
+
+    ``visible_until`` (tonight's rows) is the run's cutoff: a snapshot still
+    ahead shows the crews only if the cutoff too is past the release, as a run
+    at the cutoff would not have read them yet.
+    """
     referee_columns = [column for column in df if column.startswith("REF_")]
     if not referee_columns:
         return df
     tipoff = pd.to_datetime(df["TIPOFF_UTC"], utc=True).dt.tz_convert(EASTERN)
-    snapshot = pd.to_datetime(df["SNAPSHOT_TS_UTC"], utc=True).dt.tz_convert(EASTERN)
+    snapshot = pd.to_datetime(df["SNAPSHOT_TS_UTC"], utc=True)
+    if visible_until is not None:
+        snapshot = snapshot.clip(upper=pd.Timestamp(visible_until).tz_convert("UTC"))
+    snapshot = snapshot.dt.tz_convert(EASTERN)
     # Localize the wall-clock time itself. Adding nine elapsed hours to Eastern
     # midnight is wrong on the spring daylight-saving transition day.
     release = pd.to_datetime(

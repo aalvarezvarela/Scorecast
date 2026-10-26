@@ -16,10 +16,14 @@ Also TabPFN runs for each game's T-720, T-480, T-360 and T-240 snapshots,
 predicting line_error and total_points with the corresponding production
 slots, fired ``TABPFN_DELAY_MINUTES`` after the predictor run that covers the
 snapshot (a grouped run can fire up to ``GROUP_MINUTES`` after it), so that
-run is queued first. Games sharing a tip-off share each
-horizon's run. Each dispatch carries its game IDs, game date and snapshot
-cutoff, so queuing cannot change which games or timepoint it predicts. Snapshots before the daily booking are
-left out. ``--no-tabpfn`` leaves these out.
+run is queued first. Coinciding TabPFN dispatches are spaced at least one
+minute apart, preserving their snapshot cutoffs. Games sharing a tip-off share each
+horizon's run. Each run predicts every game of the slate not yet started, at
+that horizon: the triggering games at their snapshot, the later ones from the
+lines so far, as the daily predictor does. Each dispatch carries its game date
+and snapshot cutoff, so queuing cannot change which slate or timepoint it
+predicts. Snapshots before the daily booking are left out. ``--no-tabpfn``
+leaves these out.
 
 And, after the last game, whose end is estimated as its tip-off plus
 ``GAME_LENGTH_MINUTES``: the past-snapshot predictions of the date
@@ -79,6 +83,8 @@ class Dispatch:
 
     workflow_file: str
     inputs: tuple[tuple[str, str], ...] = ()
+    # Display only; it never becomes a workflow input.
+    label: str = ""
 
 
 # Every enabled slot.
@@ -89,6 +95,8 @@ TABPFN_HORIZONS = (720, 480, 360, 240)
 # after the predictor run that covers it, so that run enters the runner's queue
 # first. ``as_of`` keeps the snapshot.
 TABPFN_DELAY_MINUTES = 2
+# Keep coinciding TabPFN dispatches at least one minute apart.
+TABPFN_SPACING_MINUTES = 1
 FINISHED_MATCHES = Dispatch("update_finished_matches_daily.yml")
 PAST_SNAPSHOTS_WORKFLOW = "nba_predict_past_snapshots.yml"
 # Tip-off to final buzzer: about 2 h 15 min, more with overtime.
@@ -155,19 +163,41 @@ class ScheduleGroup:
 
 @dataclass(frozen=True)
 class PoolPlan:
-    """One (title, jobId or None to create) per group, and the jobs to disable."""
+    """One (pool index, jobId or None to create) per group, and the (pool index,
+    jobId) of the jobs to disable."""
 
-    assign: list[tuple[str, int | None]]
-    disable: list[int]
+    assign: list[tuple[int, int | None]]
+    disable: list[tuple[int, int]]
 
 
-def pool_title(index: int) -> str:
-    return f"{POOL_PREFIX}{index:02d}"
+def pool_title(index: int, group: ScheduleGroup | None = None) -> str:
+    title = f"{POOL_PREFIX}{index:02d}"
+    if group is None:
+        return title
+    dispatch = group.dispatch
+    inputs = dict(dispatch.inputs)
+    if dispatch.workflow_file == TABPFN_WORKFLOW:
+        snapshot = datetime.fromisoformat(inputs["as_of"]).astimezone(MADRID)
+        purpose = (
+            f"TabPFN T-{inputs['horizon_minutes']} {dispatch.label} | "
+            f"snapshot {snapshot:%d/%m %H:%M} Madrid"
+        )
+    elif dispatch == PREDICTOR:
+        times = ", ".join(f"{at.astimezone(MADRID):%H:%M}" for at in group.fire_times())
+        purpose = f"Predictor {times} Madrid"
+    elif dispatch.workflow_file == PAST_SNAPSHOTS_WORKFLOW:
+        purpose = f"Past snapshots {inputs['game_date']}"
+    elif dispatch == FINISHED_MATCHES:
+        purpose = "Final scores"
+    else:
+        purpose = dispatch.workflow_file
+    return f"{title} | {purpose}"
 
 
 def pool_index(title: str) -> int | None:
     rest = title[len(POOL_PREFIX) :] if title.startswith(POOL_PREFIX) else ""
-    return int(rest) if rest.isdigit() else None
+    index = rest.partition(" | ")[0]
+    return int(index) if index.isdigit() else None
 
 
 def snapshot_horizons(slots: Iterable) -> list[int]:
@@ -255,14 +285,17 @@ def tabpfn_runs(
     now: datetime,
     predictor_runs: Mapping[datetime, tuple[str, ...]] | None = None,
 ) -> list[tuple[datetime, Dispatch]]:
-    """Runs per (snapshot minute, horizon), restricted to their game IDs, fired
-    ``TABPFN_DELAY_MINUTES`` after the predictor run that covers the snapshot.
+    """Runs per (snapshot minute, horizon), fired ``TABPFN_DELAY_MINUTES``
+    after the predictor run that covers the snapshot. Each predicts every game
+    not started when it runs; ``snapshot_game_ids`` (metadata, not a filter)
+    and the label name the games whose snapshot it is.
 
     ``predictor_runs`` is ``trigger_times``' plan: it groups snapshots and fires
     each group at its last one, so a snapshot's predictor run can be up to
     ``GROUP_MINUTES`` after it. A snapshot no predictor run covers fires after
-    the snapshot itself. Runs already past are skipped. An explicit game date
-    keeps a queued dispatch tied to its original slate even if the runner
+    the snapshot itself. Coinciding dispatches are spaced at least one minute
+    apart without changing their snapshot cutoffs. Runs already past are
+    skipped. An explicit game date keeps a queued dispatch tied to its original slate even if the runner
     starts it after midnight.
     """
     delay = timedelta(minutes=TABPFN_DELAY_MINUTES)
@@ -273,6 +306,7 @@ def tabpfn_runs(
     }
     snapshots: dict[tuple[datetime, int], set[str]] = defaultdict(set)
     fire_at: dict[tuple[datetime, int], datetime] = {}
+    game_labels: dict[str, str] = {}
     for game in games.itertuples(index=False):
         status = str(game.game_status or "").upper()
         if any(skip in status for skip in SKIP_STATUSES):
@@ -281,6 +315,7 @@ def tabpfn_runs(
         if pd.isna(tipoff):
             continue
         label = f"{game.team_away}@{game.team_home}"
+        game_labels[str(game.game_id)] = label
         for horizon in TABPFN_HORIZONS:
             at = (tipoff - timedelta(minutes=horizon)).to_pydatetime()
             at = at.astimezone(UTC).replace(second=0, microsecond=0)
@@ -298,17 +333,30 @@ def tabpfn_runs(
                     ("horizon_minutes", str(horizon)),
                     ("update_db", "false"),
                     ("game_date", game_date),
-                    ("game_ids", " ".join(sorted(game_ids))),
                     ("as_of", at.isoformat()),
+                    ("snapshot_game_ids", " ".join(sorted(game_ids))),
                 ),
+                label=", ".join(game_labels[game] for game in sorted(game_ids)[:2])
+                + (f" +{len(game_ids) - 2}" if len(game_ids) > 2 else ""),
             ),
         )
         for (at, horizon), game_ids in snapshots.items()
     ]
-    return sorted(
+    ordered = sorted(
         ((fire, dispatch) for fire, dispatch in runs if fire > now + MIN_LEAD),
-        key=lambda run: (run[0], dict(run[1].inputs)["as_of"]),
+        key=lambda run: (
+            run[0],
+            dict(run[1].inputs)["as_of"],
+            -int(dict(run[1].inputs)["horizon_minutes"]),
+            run[1].label,
+        ),
     )
+    spaced: list[tuple[datetime, Dispatch]] = []
+    for fire, dispatch in ordered:
+        if spaced:
+            fire = max(fire, spaced[-1][0] + timedelta(minutes=TABPFN_SPACING_MINUTES))
+        spaced.append((fire, dispatch))
+    return spaced
 
 
 def post_game_runs(
@@ -363,11 +411,10 @@ def plan_pool(existing_jobs: list[dict], n_groups: int) -> PoolPlan:
         if (index := pool_index(job.get("title", ""))) is not None
     }
     assign = [
-        (pool_title(i), pool[i]["jobId"] if i in pool else None)
-        for i in range(1, n_groups + 1)
+        (i, pool[i]["jobId"] if i in pool else None) for i in range(1, n_groups + 1)
     ]
     disable = [
-        job["jobId"]
+        (index, job["jobId"])
         for index, job in sorted(pool.items())
         if index > n_groups and job.get("enabled", True)
     ]
@@ -402,7 +449,8 @@ def apply_pool(
     """Book ``groups`` on the pool; the job id of each group, in order."""
     job_ids = []
     created = 0
-    for (title, job_id), group in zip(plan.assign, groups, strict=True):
+    for (index, job_id), group in zip(plan.assign, groups, strict=True):
+        title = pool_title(index, group)
         payload = {"job": job_payload(title, group, github_token)}
         if job_id is not None:
             cronjob_request("PATCH", f"/jobs/{job_id}", api_key, payload)
@@ -414,9 +462,13 @@ def apply_pool(
             created += 1
             print(f"Created job {job_id}: {title}")
         job_ids.append(job_id)
-    for job_id in plan.disable:
+    # A disabled job loses its day's purpose: back to the bare pool title.
+    for index, job_id in plan.disable:
         cronjob_request(
-            "PATCH", f"/jobs/{job_id}", api_key, {"job": {"enabled": False}}
+            "PATCH",
+            f"/jobs/{job_id}",
+            api_key,
+            {"job": {"enabled": False, "title": pool_title(index)}},
         )
         print(f"Disabled job {job_id}")
     return job_ids
@@ -498,8 +550,9 @@ def main() -> None:
         print(
             f"  {_clock(at)}  TabPFN line_error + total_points "
             f"T-{inputs['horizon_minutes']} (snapshot "
-            f"{_clock(datetime.fromisoformat(inputs['as_of']))}): "
-            f"{inputs['game_ids']} (game date {inputs['game_date']})"
+            f"{_clock(datetime.fromisoformat(inputs['as_of']))} of "
+            f"{dispatch.label}): every game not started "
+            f"(game date {inputs['game_date']})"
         )
     for at, dispatch in after_games:
         print(f"After the last game: {dispatch.workflow_file} at {_clock(at)}")
@@ -510,7 +563,7 @@ def main() -> None:
     if not args.apply:
         for i, group in enumerate(groups, start=1):
             print(
-                f"  {pool_title(i)} -> {group.dispatch.workflow_file}: "
+                f"  {pool_title(i, group)} -> {group.dispatch.workflow_file}: "
                 f"{json.dumps(group.schedule())}"
             )
         print("\nDry run. Re-run with --apply to book these jobs.")

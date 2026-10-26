@@ -21,6 +21,10 @@ already tipped has its T-0 row as latest.
 With ``latest_only`` as well, only those latest rows are built: when every
 intermediate slot reads them, the other horizons' rows would be built for no
 prediction. Each row kept is the row the full frame holds.
+
+With ``horizon`` only each game's row of that horizon is built, for a job that
+predicts one horizon (TabPFN): every other horizon would cost the injury stage
+a full pass over the history for no prediction.
 """
 
 from __future__ import annotations
@@ -106,17 +110,21 @@ def tonight_intermediate_frame(
     as_of: pd.Timestamp | None = None,
     latest_input: bool = False,
     latest_only: bool = False,
+    horizon: int | None = None,
     verbose: bool = True,
 ) -> pd.DataFrame:
     """Tonight's (game, snapshot) rows for every horizon, with the schedule's
     display columns and the snapshot marks (``SNAPSHOT_COLUMNS``); with
     ``latest_input``, also each game's latest snapshot (``LATEST_INPUT``), and
-    with ``latest_only`` that snapshot alone.
+    with ``latest_only`` that snapshot alone; with ``horizon``, only each
+    game's row of that horizon.
 
     The run's ``line_source`` (``scheduled_data["line_source"]``) decides
     where the line history comes from; each row's is in ``LINE_SOURCE``."""
     if latest_only and not latest_input:
         raise ValueError("latest_only needs latest_input")
+    if horizon is not None and latest_input:
+        raise ValueError("horizon and latest_input are exclusive")
     scheduled = scheduled_data["scheduled_games"]
     line_source = scheduled_data.get("line_source")
     live = fetch_live_game_day(
@@ -133,17 +141,18 @@ def tonight_intermediate_frame(
         tipoffs = games.set_index(games["game_id"].astype(str))["tipoff_utc"]
         tipoffs = tipoffs[tipoffs.index.isin(live.game_ids)]
         latest = latest_snapshot_minutes(tipoffs, live.as_of)
-    snapshots = (
-        {"target_snapshots": latest}
-        if latest_only and latest
-        else {
+    if horizon is not None:
+        snapshots = {"target_snapshots": dict.fromkeys(live.game_ids, int(horizon))}
+    elif latest_only and latest:
+        snapshots = {"target_snapshots": latest}
+    else:
+        snapshots = {
             "extra_target_snapshots": {
                 game: minutes
                 for game, minutes in latest.items()
                 if minutes not in DEFAULT_SNAPSHOT_GRID
             }
         }
-    )
     frame, scoring = create_intermediate_line_df(
         live=live,
         target_game_ids=live.game_ids,

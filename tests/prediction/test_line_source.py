@@ -59,17 +59,24 @@ def _scheduled() -> pd.DataFrame:
 
 def _covers_game(game_id: str, minutes: int = -150) -> ScrapedGame:
     away, home = TEAMS[game_id]
-    tick = LineTick(
-        market="totals",
-        book_slug="bet365",
-        book_name="bet365",
-        line_ts=TIPOFF + timedelta(minutes=minutes),
-        minutes_to_tip=minutes,
-        is_opener=False,
-        left_line=228.5,
-        left_price=-110,
-        right_line=228.5,
-        right_price=-110,
+    ticks = tuple(
+        LineTick(
+            market=market,
+            book_slug="bet365",
+            book_name="bet365",
+            line_ts=TIPOFF + timedelta(minutes=minutes),
+            minutes_to_tip=minutes,
+            is_opener=False,
+            left_line=left_line,
+            left_price=left_price,
+            right_line=right_line,
+            right_price=right_price,
+        )
+        for market, left_line, left_price, right_line, right_price in (
+            ("totals", 228.5, -110, 228.5, -110),
+            ("point_spread", 4.5, -110, -4.5, -110),
+            ("money_line", None, 160, None, -190),
+        )
     )
     return ScrapedGame(
         event_id=int(game_id[-3:]),
@@ -81,7 +88,7 @@ def _covers_game(game_id: str, minutes: int = -150) -> ScrapedGame:
         status_text="Scheduled",
         away_score=None,
         home_score=None,
-        ticks=(tick,),
+        ticks=ticks,
     )
 
 
@@ -226,6 +233,20 @@ def test_a_listed_game_without_lines_is_not_priced():
     assert ls.priced_game_ids(pd.DataFrame()) == set()
 
 
+def test_a_game_is_complete_only_with_every_market_quoted():
+    frame = pd.DataFrame(
+        {
+            "game_id": [GAME_A, GAME_B],
+            "total_bet365_line_over": [228.5, 230.5],
+            "spread_bet365_line_home": [-4.5, None],
+            "spread_consensus_opener_line_home": [-4.5, -3.5],
+            "ml_bet365_price_home": [-190, -150],
+        }
+    )
+    assert ls.complete_game_ids(frame) == {GAME_A}
+    assert ls.complete_game_ids(frame.drop(columns="ml_bet365_price_home")) == set()
+
+
 # --- the closing reader -----------------------------------------------------------
 
 
@@ -270,6 +291,39 @@ def test_closing_odds_fill_the_games_sbr_does_not_price(monkeypatch):
     assert source.closing_sources == {GAME_A: ls.SBR, GAME_B: ls.COVERS}
     assert covers.calls == [[GAME_B]]
     assert source.source == ls.SBR
+
+
+def _without_spread(frame: pd.DataFrame) -> pd.DataFrame:
+    """SBR's day frame when its spread page came back without games."""
+    spread = [c for c in frame.columns if c.startswith("spread_")]
+    return frame.drop(columns=spread)
+
+
+def test_closing_odds_missing_a_market_are_read_from_covers(monkeypatch):
+    # 2026-10-26: totals for every game, the spread page empty.
+    _patch_sbr(monkeypatch, _without_spread(_sbr_day(priced=True)))
+    covers = FakeCovers()
+    source = ls.LineSource(GAME_DATE, fetch_covers=covers)
+    odds = info.get_sportsbook_prediction_data(
+        "2026-10-24", _scheduled_for_merge(), headless=True, line_source=source
+    )
+    assert source.source == ls.SBR
+    assert covers.calls == [[GAME_A, GAME_B]]
+    assert source.closing_sources == {GAME_A: ls.COVERS, GAME_B: ls.COVERS}
+    assert odds["spread_bet365_line_home"].notna().all()
+
+
+def test_a_partial_sbr_game_covers_lacks_keeps_its_sbr_row(monkeypatch):
+    _patch_sbr(monkeypatch, _without_spread(_sbr_day(priced=True)))
+    source = ls.LineSource(GAME_DATE, fetch_covers=FakeCovers([GAME_B]))
+    odds = info.get_sportsbook_prediction_data(
+        "2026-10-24", _scheduled_for_merge(), headless=True, line_source=source
+    )
+    assert source.closing_sources == {GAME_A: ls.SBR, GAME_B: ls.COVERS}
+    by_game = odds.set_index("game_id")
+    assert by_game.loc[GAME_A, "total_bet365_line_over"] == 228.5
+    assert pd.isna(by_game.loc[GAME_A, "spread_bet365_line_home"])
+    assert by_game.loc[GAME_B, "spread_bet365_line_home"] == -4.5
 
 
 def test_closing_odds_without_any_sbr_line_switch_the_run(monkeypatch):

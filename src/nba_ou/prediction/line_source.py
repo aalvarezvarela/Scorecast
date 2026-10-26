@@ -236,22 +236,44 @@ def fill_ids(scheduled_ids: Iterable[str], served_ids: Iterable[str]) -> list[st
     return sorted(set(map(str, scheduled_ids)) - served)
 
 
+#: Day-page markets and the cell that shows a book quotes them.
+_MARKET_CELLS = {"total": "_line_", "spread": "_line_", "ml": "_price_"}
+
+
+def _quoted_game_ids(day_odds: pd.DataFrame, market: str) -> set[str]:
+    """Games of a day-page frame with at least one book quoting ``market``."""
+    if day_odds is None or day_odds.empty or "game_id" not in day_odds.columns:
+        return set()
+    cells = [
+        column
+        for column in day_odds.columns
+        if column.startswith(f"{market}_")
+        and _MARKET_CELLS[market] in column
+        and "consensus" not in column
+    ]
+    if not cells:
+        return set()
+    quoted = day_odds[cells].apply(pd.to_numeric, errors="coerce").notna().any(axis=1)
+    return set(day_odds.loc[quoted, "game_id"].astype(str))
+
+
 def priced_game_ids(day_odds: pd.DataFrame) -> set[str]:
     """Games of a day-page frame with at least one book's totals line.
 
     SBR can list a day's games with every odds cell empty (2026-10-24): such a
     game is not served, whatever its row says.
     """
-    if day_odds is None or day_odds.empty or "game_id" not in day_odds.columns:
-        return set()
-    lines = [
-        column
-        for column in day_odds.columns
-        if column.startswith("total_")
-        and "_line_" in column
-        and "consensus" not in column
-    ]
-    if not lines:
-        return set()
-    priced = day_odds[lines].apply(pd.to_numeric, errors="coerce").notna().any(axis=1)
-    return set(day_odds.loc[priced, "game_id"].astype(str))
+    return _quoted_game_ids(day_odds, "total")
+
+
+def complete_game_ids(day_odds: pd.DataFrame) -> set[str]:
+    """Priced games that also carry a spread line and a moneyline price.
+
+    SBR serves each market on its own page, and one can come back empty while
+    the totals page is fine (2026-10-26: no spread for any game). Such a game
+    is read whole from Covers rather than built with a market missing.
+    """
+    complete = priced_game_ids(day_odds)
+    for market in ("spread", "ml"):
+        complete &= _quoted_game_ids(day_odds, market)
+    return complete

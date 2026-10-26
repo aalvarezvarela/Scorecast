@@ -195,6 +195,13 @@ Each stored prediction records the source of its input row
     switches to Covers.
   - SBR chosen and serving most games → a game it does not price, or gives no
     tick, is filled from Covers.
+  - SBR's day page prices a game's totals but not its spread or moneyline →
+    that game's closing odds are read whole from Covers, the run stays on
+    SBR, and a warning is annotated (2026-10-26: the spread page came back
+    without games for the whole day, and the run failed on the missing
+    columns). The scraper first asks an empty spread or moneyline page again
+    (`EMPTY_MARKET_RETRIES`). A game Covers does not serve either keeps SBR's
+    partial row.
   - The end-of-day past-snapshot run has no game left to tip, so the check
     cannot tell. A game whose SBR history stops more than
     `TRUNCATED_HISTORY_MINUTES` before tip moves to Covers, if Covers goes

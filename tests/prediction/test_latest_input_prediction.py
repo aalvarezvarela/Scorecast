@@ -7,7 +7,6 @@ from types import SimpleNamespace
 import numpy as np
 import pandas as pd
 import pytest
-import scripts.predict_nba_games as job
 from nba_ou.config.settings import Settings
 from nba_ou.create_training_data.create_intermediate_line_df import (
     _keep_extra_snapshots,
@@ -30,6 +29,8 @@ from nba_ou.prediction.report_requirement import (
     reports_filed,
     requires_report,
 )
+
+import scripts.predict_nba_games as job
 
 #: 23:00 UTC is 19:00 ET (EDT) on this date.
 TIP = pd.Timestamp("2026-04-10 23:00", tz="UTC")
@@ -503,6 +504,40 @@ def test_latest_only_needs_latest_input(monkeypatch):
         module.tonight_intermediate_frame(
             scheduled, game_date="2026-04-10", latest_only=True
         )
+
+
+def test_a_horizon_builds_every_games_row_of_that_horizon_alone(monkeypatch):
+    # g1's T-240 has passed, g2's is still ahead: both get their T-240 row,
+    # and the full frame holds the same rows.
+    as_of = TIP - pd.Timedelta(minutes=200)
+    module, scheduled, calls = _tonight(monkeypatch, as_of=as_of)
+    frame = module.tonight_intermediate_frame(
+        scheduled, game_date="2026-04-10", as_of=as_of, horizon=240
+    )
+    assert calls[-1]["target_snapshots"] == {"g1": 240, "g2": 240}
+    assert frame["TIME_TO_MATCH_MIN"].tolist() == [240, 240]
+    assert frame.set_index("GAME_ID")["SNAPSHOT_PASSED"].to_dict() == {
+        "g1": True,
+        "g2": False,
+    }
+
+    full = module.tonight_intermediate_frame(
+        scheduled, game_date="2026-04-10", as_of=as_of
+    )
+    assert "target_snapshots" not in calls[-1]
+    pd.testing.assert_frame_equal(
+        full[full["TIME_TO_MATCH_MIN"].eq(240)].reset_index(drop=True),
+        frame.reset_index(drop=True),
+    )
+
+
+def test_a_horizon_excludes_the_latest_input(monkeypatch):
+    module, scheduled, calls = _tonight(monkeypatch, as_of=TIP)
+    with pytest.raises(ValueError, match="exclusive"):
+        module.tonight_intermediate_frame(
+            scheduled, game_date="2026-04-10", latest_input=True, horizon=240
+        )
+    assert calls == []
 
 
 def test_target_snapshots_are_validated_before_any_io():
