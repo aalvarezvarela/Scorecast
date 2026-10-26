@@ -4,7 +4,8 @@ name: Predictions - Schedule Game Day Runs
 # times of every game (tip-off minus each enabled horizon), snapshots at most
 # 30 min apart sharing one run and T-30 always at its own time, leaving out
 # times already past or outside the predictor's US/Pacific date. Each run
-# predicts every enabled slot. Meant to be dispatched once a day by
+# predicts every enabled slot. Also books TabPFN at each game's T-720/480/360/240.
+# Meant to be dispatched once a day by
 # cron-job.org itself (a row in scripts/cronjobs/setup_cronjobs.py).
 # scripts/cronjobs/schedule_snapshot_triggers.py, docs/serving/snapshot_triggers.md.
 on:
@@ -38,7 +39,8 @@ jobs:
         if: ${{ vars.PREDICTIONS_ENABLED != 'false' || inputs.force }}
         # stats.nba.com often refuses GitHub-hosted runners' IPs.
         runs-on: self-hosted
-        timeout-minutes: 15
+        # Growing the pool can create many TabPFN jobs, spaced 13 s apart.
+        timeout-minutes: 30
         env:
             PYTHONWARNINGS: "ignore::UserWarning,ignore::DeprecationWarning,ignore::FutureW\
                 arning"

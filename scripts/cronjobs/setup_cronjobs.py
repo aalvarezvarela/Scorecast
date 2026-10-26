@@ -16,15 +16,15 @@ patched, a missing one is created. Add a workflow to the jobs of
 disables (a job left on cron-job.org would keep firing).
 
 The day, on the one self-hosted runner, at the times of ``[Schedule]`` in
-``config.ini`` (09:00 and 10:00 Madrid by default):
+``config.ini`` (08:00 and 09:30 Madrid by default):
 
     UPDATE_AND_RETRAIN_AT    database update, then -- on a game day -- refit,
                              smoke test and promotion
     SCHEDULE_PREDICTIONS_AT  booking of the day's runs
                              (schedule_snapshot_triggers.py): the predictor at
-                             every snapshot time, TabPFN line_error between
-                             6 h 30 and 5 h before the first tip-off, away from
-                             the predictor runs, and after the last game's
+                             every snapshot time, TabPFN line_error and
+                             total_points at each game's T-720/480/360/240,
+                             and after the last game's
                              estimated end the past-snapshot predictions
                              (+30 min) and final scores (+2 h)
 

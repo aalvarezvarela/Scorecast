@@ -12,12 +12,14 @@ apart share one run, fired at the last of them, so every snapshot of the group
 has passed. The T-30 snapshot (``EXACT_HORIZONS``) always gets a run at its own
 time.
 
-Also one TabPFN run (``nba_predictor_daily_tabpfn_client.yml``, ``TABPFN``:
-line_error and total_points on their T-360 intermediate slots, every game) between 6 h 30 and 5 h
-before the first tip-off (``TABPFN_WINDOW_MINUTES``), at the minute of that
-window farthest from every predictor run, so neither waits long for the other
-on the one runner; on a tie, the minute nearest the first game's T-360. The
-later games read their ticks so far. ``--no-tabpfn`` leaves it out.
+Also TabPFN runs for each game's T-720, T-480, T-360 and T-240 snapshots,
+predicting line_error and total_points with the corresponding production
+slots, fired ``TABPFN_DELAY_MINUTES`` after the predictor run that covers the
+snapshot (a grouped run can fire up to ``GROUP_MINUTES`` after it), so that
+run is queued first. Games sharing a tip-off share each
+horizon's run. Each dispatch carries its game IDs, game date and snapshot
+cutoff, so queuing cannot change which games or timepoint it predicts. Snapshots before the daily booking are
+left out. ``--no-tabpfn`` leaves these out.
 
 And, after the last game, whose end is estimated as its tip-off plus
 ``GAME_LENGTH_MINUTES``: the past-snapshot predictions of the date
@@ -35,8 +37,9 @@ to 2026-10-22.
 
 cron-job.org allows 100 API requests a day and five job creations a minute, so
 the times are booked on a fixed pool of jobs (``Scorecast - snapshot trigger
-NN``), one per UTC date and minute of the hour, each firing at that minute of
-several hours. The pool is patched every day; jobs not needed that day are
+NN``). Predictor jobs share a UTC date and minute of the hour; TabPFN jobs
+have a separate payload per snapshot time and horizon. The pool is patched
+every day; jobs not needed that day are
 disabled. Schedules are in UTC (no daylight-saving gaps) and expire at the end
 of their date, so a job left over from a failed day never fires again. After
 booking, each job's ``nextExecution`` is read back and checked against the plan.
@@ -52,7 +55,7 @@ import json
 import sys
 import time
 from collections import defaultdict
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from zoneinfo import ZoneInfo
@@ -80,21 +83,12 @@ class Dispatch:
 
 # Every enabled slot.
 PREDICTOR = Dispatch("nba_predictor_daily.yml")
-# TabPFN line_error and total_points on the T-360 slots; the predictor runs keep the databases
-# current, so no update of its own.
-TABPFN = Dispatch(
-    "nba_predictor_daily_tabpfn_client.yml",
-    (
-        ("target", "line_error total_points"),
-        ("line", "intermediate"),
-        ("horizon_minutes", "360"),
-        ("update_db", "false"),
-    ),
-)
-# Minutes before the first tip-off the TabPFN run may fall in (earliest, latest).
-TABPFN_WINDOW_MINUTES = (390, 300)
-# Its slot's horizon: ties go to the minute nearest the first game's snapshot.
-TABPFN_HORIZON_MINUTES = 360
+TABPFN_WORKFLOW = "nba_predictor_daily_tabpfn_client.yml"
+TABPFN_HORIZONS = (720, 480, 360, 240)
+# Every TabPFN snapshot is also a predictor snapshot: TabPFN fires this long
+# after the predictor run that covers it, so that run enters the runner's queue
+# first. ``as_of`` keeps the snapshot.
+TABPFN_DELAY_MINUTES = 2
 FINISHED_MATCHES = Dispatch("update_finished_matches_daily.yml")
 PAST_SNAPSHOTS_WORKFLOW = "nba_predict_past_snapshots.yml"
 # Tip-off to final buzzer: about 2 h 15 min, more with overtime.
@@ -103,8 +97,9 @@ GAME_LENGTH_MINUTES = 150
 PAST_SNAPSHOTS_AFTER_END_MINUTES = 30
 FINISHED_MATCHES_AFTER_END_MINUTES = 120
 POOL_PREFIX = "Scorecast - snapshot trigger "
-# A busy night needs about 10 jobs; more than this means something is off.
-MAX_POOL = 30
+# TabPFN payloads differ by tip-off and horizon and cannot share a pool job.
+# Leave room for both GETs under cron-job.org's 100-request daily allowance.
+MAX_POOL = 90
 EASTERN = ZoneInfo("America/New_York")
 # The zone of the predictor's game date (scripts/predict_nba_games.py).
 PACIFIC = ZoneInfo("US/Pacific")
@@ -254,41 +249,66 @@ def trigger_times(
     return dict(sorted(runs.items()))
 
 
-def tabpfn_time(
-    tipoffs: Iterable[tuple[str, datetime]],
+def tabpfn_runs(
+    games: pd.DataFrame,
+    game_date: str,
     now: datetime,
-    predictor_runs: Iterable[datetime] = (),
-    window: tuple[datetime, datetime] | None = None,
-) -> datetime | None:
-    """The TabPFN run: the minute of ``TABPFN_WINDOW_MINUTES`` before the first
-    tip-off farthest from every predictor run, on a tie the one nearest the
-    first game's T-360. Minutes already past or outside ``window`` are left
-    out; None when there is no game or no minute is left."""
-    tips = [tipoff for _, tipoff in tipoffs]
-    if not tips:
-        return None
-    first = min(tips).astimezone(UTC).replace(second=0, microsecond=0)
-    earliest, latest = (first - timedelta(minutes=m) for m in TABPFN_WINDOW_MINUTES)
-    minutes = int((latest - earliest) / timedelta(minutes=1))
-    candidates = [
-        at
-        for at in (earliest + timedelta(minutes=i) for i in range(minutes + 1))
-        if at > now + MIN_LEAD and (window is None or window[0] <= at < window[1])
-    ]
-    if not candidates:
-        print(
-            f"! TabPFN between {_clock(earliest)} and {_clock(latest)} skipped: "
-            "already past or outside the predictor's date"
+    predictor_runs: Mapping[datetime, tuple[str, ...]] | None = None,
+) -> list[tuple[datetime, Dispatch]]:
+    """Runs per (snapshot minute, horizon), restricted to their game IDs, fired
+    ``TABPFN_DELAY_MINUTES`` after the predictor run that covers the snapshot.
+
+    ``predictor_runs`` is ``trigger_times``' plan: it groups snapshots and fires
+    each group at its last one, so a snapshot's predictor run can be up to
+    ``GROUP_MINUTES`` after it. A snapshot no predictor run covers fires after
+    the snapshot itself. Runs already past are skipped. An explicit game date
+    keeps a queued dispatch tied to its original slate even if the runner
+    starts it after midnight.
+    """
+    delay = timedelta(minutes=TABPFN_DELAY_MINUTES)
+    covering = {
+        reason: run
+        for run, reasons in (predictor_runs or {}).items()
+        for reason in reasons
+    }
+    snapshots: dict[tuple[datetime, int], set[str]] = defaultdict(set)
+    fire_at: dict[tuple[datetime, int], datetime] = {}
+    for game in games.itertuples(index=False):
+        status = str(game.game_status or "").upper()
+        if any(skip in status for skip in SKIP_STATUSES):
+            continue
+        tipoff = pd.Timestamp(game.tipoff_utc)
+        if pd.isna(tipoff):
+            continue
+        label = f"{game.team_away}@{game.team_home}"
+        for horizon in TABPFN_HORIZONS:
+            at = (tipoff - timedelta(minutes=horizon)).to_pydatetime()
+            at = at.astimezone(UTC).replace(second=0, microsecond=0)
+            after = max(at, covering.get(f"{label} T-{horizon}", at))
+            snapshots[(at, horizon)].add(str(game.game_id))
+            fire_at[(at, horizon)] = max(fire_at.get((at, horizon), after), after)
+    runs = [
+        (
+            fire_at[(at, horizon)] + delay,
+            Dispatch(
+                TABPFN_WORKFLOW,
+                (
+                    ("target", "line_error total_points"),
+                    ("line", "intermediate"),
+                    ("horizon_minutes", str(horizon)),
+                    ("update_db", "false"),
+                    ("game_date", game_date),
+                    ("game_ids", " ".join(sorted(game_ids))),
+                    ("as_of", at.isoformat()),
+                ),
+            ),
         )
-        return None
-    runs = list(predictor_runs)
-    snapshot = first - timedelta(minutes=TABPFN_HORIZON_MINUTES)
-
-    def clearance(at: datetime) -> timedelta:
-        return min((abs(at - run) for run in runs), default=timedelta.max)
-
-    # Equally far from the runs and the snapshot: the later minute, past it.
-    return max(candidates, key=lambda at: (clearance(at), -abs(at - snapshot), at))
+        for (at, horizon), game_ids in snapshots.items()
+    ]
+    return sorted(
+        ((fire, dispatch) for fire, dispatch in runs if fire > now + MIN_LEAD),
+        key=lambda run: (run[0], dict(run[1].inputs)["as_of"]),
+    )
 
 
 def post_game_runs(
@@ -442,7 +462,7 @@ def main() -> None:
         default=DEFAULT_OFFSET_MINUTES,
         help="fire this long after each snapshot",
     )
-    parser.add_argument("--no-tabpfn", action="store_true", help="book no TabPFN run")
+    parser.add_argument("--no-tabpfn", action="store_true", help="book no TabPFN runs")
     args = parser.parse_args()
 
     now = datetime.now(UTC)
@@ -459,26 +479,27 @@ def main() -> None:
 
     window = predictor_window(game_date)
     triggers = trigger_times(tipoffs, horizons, now, args.offset_minutes, window)
-    tabpfn_at = None if args.no_tabpfn else tabpfn_time(tipoffs, now, triggers, window)
+    tabpfn = []
+    if not args.no_tabpfn:
+        tabpfn = tabpfn_runs(games, game_date, now, triggers)
     after_games = post_game_runs(tipoffs, game_date, now)
     groups = group_schedules(triggers)
-    if tabpfn_at is not None:
-        groups += group_schedules([tabpfn_at], TABPFN)
+    for at, dispatch in tabpfn:
+        groups += group_schedules([at], dispatch)
     for at, dispatch in after_games:
         groups += group_schedules([at], dispatch)
     groups.sort(key=lambda group: group.fire_times()[0])
     print(f"\n{len(triggers)} predictor run(s) still ahead:")
     for at, reasons in triggers.items():
         print(f"  {_clock(at)}  {', '.join(reasons)}")
-    if tabpfn_at is not None:
-        gap = min((abs(tabpfn_at - at) for at in triggers), default=None)
+    print(f"{len(tabpfn)} TabPFN run(s) still ahead:")
+    for at, dispatch in tabpfn:
+        inputs = dict(dispatch.inputs)
         print(
-            f"TabPFN line_error + total_points T-360: {_clock(tabpfn_at)}"
-            + (
-                f" ({gap // timedelta(minutes=1)} min from a predictor run)"
-                if gap
-                else ""
-            )
+            f"  {_clock(at)}  TabPFN line_error + total_points "
+            f"T-{inputs['horizon_minutes']} (snapshot "
+            f"{_clock(datetime.fromisoformat(inputs['as_of']))}): "
+            f"{inputs['game_ids']} (game date {inputs['game_date']})"
         )
     for at, dispatch in after_games:
         print(f"After the last game: {dispatch.workflow_file} at {_clock(at)}")

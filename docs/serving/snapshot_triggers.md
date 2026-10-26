@@ -1,6 +1,6 @@
 # Snapshot triggers: running the predictor at each snapshot time
 
-Status: **Implemented** (2026-10-22). The daily jobs (09:00 and 10:00 Madrid by
+Status: **Implemented** (2026-10-22). The daily jobs (08:00 and 09:30 Madrid by
 default, see "The day's schedule") are built by `scripts/cronjobs/setup_cronjobs.py`
 from `[Schedule]` in `config.ini` (2026-10-26). Two repository variables switch
 the workflows off ("Switching it off").
@@ -31,17 +31,26 @@ day, `schedule_snapshot_triggers.yml` runs
      slate of its run's Pacific date (`predict_nba_games.py`), so a trigger
      before Pacific midnight (03:00 ET) would predict the previous day's games.
      Examples: an early tip's T-1080, a noon game's T-720.
-3. adds one **TabPFN** run (`nba_predictor_daily_tabpfn_client.yml`:
-   `line_error total_points`, `line=intermediate`, `horizon_minutes=360`,
-   `update_db=false`)
-   between 6 h 30 and 5 h before the first tip-off of the day
-   (`TABPFN_WINDOW_MINUTES`; `--no-tabpfn` = none), predicting every game. It
-   takes the minute of that window farthest from every predictor run, so on
-   the one runner neither waits long for the other; on a tie, the minute
-   nearest the first game's T-360. Predictor runs fall on :00/:30 (tips on
-   the half hour, horizons in multiples of 30 min), so TabPFN usually lands
-   15 min from the nearest one. Before the first game's T-360 its row is built
-   from the ticks so far, like the later games' rows.
+3. adds **TabPFN** runs (`nba_predictor_daily_tabpfn_client.yml`) at each
+   game's **T-720, T-480, T-360 and T-240** (12 h, 8 h, 6 h and 4 h before
+   tip-off). Each run predicts `line_error total_points` with the production
+   specs and rows of that exact horizon (`line=intermediate`, `update_db=false`).
+   Games sharing a tip-off share a horizon's run; different tip-offs are never
+   moved or grouped. Each fires 2 min (`TABPFN_DELAY_MINUTES`) after the
+   predictor run that covers its snapshot, which can be up to 30 min after the
+   snapshot when the predictor groups it, so that run enters the runner's
+   queue first. The payload pins `game_date`, `game_ids` and
+   `as_of` (the snapshot itself) to that snapshot, so it does not predict
+   unrelated games and a queue delay cannot switch it to the latest input. The
+   intermediate builder reads line history and archived roster observations at
+   this cutoff. The cutoff comes from the NBA scoreboard's tip-off, the rows
+   from the line-history page's. When they differ by up to 15 min
+   (`TIPOFF_TOLERANCE_MINUTES`), the run waits for the rows' own snapshot to
+   pass and rebuilds them at it, so no row is cut before the snapshot it is
+   labelled with; more (a moved game) fails before paid inference.
+   `--no-tabpfn` books none of these runs. Snapshots already past when the
+   scheduler runs (normally 09:30 Madrid) are lost, including early T-720s;
+   there is no catch-up or previous-day booking.
 4. after the last game, whose end is estimated as its tip-off + 150 min
    (`GAME_LENGTH_MINUTES`), adds:
    - the date's past-snapshot predictions (`nba_predict_past_snapshots.yml`,
@@ -69,8 +78,8 @@ below); the rest are booked by the scheduler from the day's games.
 | `[Schedule]` key | Default | Job |
 |---|---|---|
 | `TIMEZONE` | `Europe/Madrid` | zone of the two times below |
-| `UPDATE_AND_RETRAIN_AT` | `09:00` | `retrain_prediction_models.yml` |
-| `SCHEDULE_PREDICTIONS_AT` | `10:00` | `schedule_snapshot_triggers.yml` |
+| `UPDATE_AND_RETRAIN_AT` | `08:00` | `retrain_prediction_models.yml` |
+| `SCHEDULE_PREDICTIONS_AT` | `09:30` | `schedule_snapshot_triggers.yml` |
 
 To change a time, edit it and run `python scripts/cronjobs/setup_cronjobs.py
 --apply`: cron-job.org holds the schedule, so the edit alone changes nothing.
@@ -82,10 +91,10 @@ skips the snapshots that pass meanwhile.
 
 | When | Workflow | What |
 |---|---|---|
-| 09:00 | `retrain_prediction_models.yml` (`update_database`, `promote`) | database update; on a game day, then refit, smoke test, promotion |
-| 10:00 | `schedule_snapshot_triggers.yml` | books everything below |
+| 08:00 | `retrain_prediction_models.yml` (`update_database`, `promote`) | database update; on a game day, then refit, smoke test, promotion |
+| 09:30 | `schedule_snapshot_triggers.yml` | books everything below |
 | each snapshot | `nba_predictor_daily.yml` | every enabled slot |
-| first tip − 6 h 30 … − 5 h, away from the predictor runs | `nba_predictor_daily_tabpfn_client.yml` | TabPFN line_error + total_points, T-360 slots |
+| each game at tip − 12 h, − 8 h, − 6 h, − 4 h; 2 min after the predictor run covering it | `nba_predictor_daily_tabpfn_client.yml` | TabPFN line_error + total_points, matching snapshot slots, only that tip-off group |
 | last end + 30 min | `nba_predict_past_snapshots.yml` | the date's intermediate slots on their own snapshots |
 | last end + 2 h | `update_finished_matches_daily.yml` | final scores (prediction store), finished matches, lineups |
 
@@ -101,11 +110,11 @@ refit on a manual run.
 The standalone 09:00 `update_database_daily.yml` job is retired: the retrain
 workflow runs the same update as its first job, and refits only after it
 succeeds. `--apply` disables the old job (`RETIRED_TITLES`). If the refit
-outlasts 10:00, the scheduler waits for the runner and skips the times that
+outlasts 09:30, the scheduler waits for the runner and skips the times that
 pass meanwhile.
 
 **Post-game runs depend on the scheduler.** On a day without games, or when
-the 10:00 scheduler fails, no past-snapshot or final-score run is booked. The
+the 09:30 scheduler fails, no past-snapshot or final-score run is booked. The
 final-score update retries every tipped game without a score on its next run,
 so a day lost is caught up on the next game day. An overtime game still in
 progress at +2 h is left for that next run too.
@@ -170,22 +179,28 @@ the current `INTERMEDIATE_INPUT_MODE = latest` and `LATEST_INPUT_SLOTS = all`:
   from `GET /jobs` and exits 1 if one is not the planned next time or the job
   is disabled.
 
-## Why a pool of jobs, one per minute of the hour
+## Why a pool of jobs
 
 The cron-job.org API allows 100 requests a day, and job creation at most once a
 second and five times a minute. One job per game × horizon would need about 170
 jobs on a 10-game night. Instead:
 
-- **One job per (UTC date, minute of the hour)**, firing at that
+- For the normal predictor, **one job per (UTC date, minute of the hour)**, firing at that
   minute of several hours (`minutes=[m]`, `hours=[…]`, `mdays=[d]`,
   `months=[mo]`). It fires at exactly the planned times and no others. Runs
   mostly fall on :00 and :30, so a night needs about 4–8 jobs.
+- TabPFN needs **one job per (snapshot time, horizon)** because its game IDs
+  and cutoff change per run. Two targets share that job; games with the same
+  tip-off share it too. Different horizons at the same minute remain separate.
 - **A fixed pool**, titled `Scorecast - snapshot trigger NN`. Each day the
   script makes one `GET /jobs`, then patches jobs 01..n with the day's
   schedules. It creates a job only when the pool is too small, waiting 13 s
-  between creates, and disables pool jobs it does not need. That is about
-  10–15 requests a day, plus one `GET /jobs` to check the booking. It never
-  touches jobs with other titles.
+  between creates, and disables pool jobs it does not need. Each active job
+  needs one write, plus writes for jobs being disabled and two GETs. It never
+  touches jobs with other titles. TabPFN increases the pool size: at most
+  `MAX_POOL=90` jobs, leaving room for both GETs under the 100-request allowance.
+  The scheduler has a 30-minute timeout to allow the initial pool growth at
+  one creation per 13 s; later days reuse the jobs.
 - Schedules are in **UTC**, so a daylight-saving change cannot skip or repeat
   a trigger. Each schedule expires at the end of its UTC date, so a job left
   over from a day when the scheduler failed never fires again.
@@ -199,15 +214,28 @@ is. On a day with no games, it disables the whole pool.
     python scripts/cronjobs/schedule_snapshot_triggers.py --apply                # book today
     python scripts/cronjobs/schedule_snapshot_triggers.py --game-date 2026-10-23 # another date
 
-Option: `--offset-minutes` (default 0; negative fires earlier).
+Options: `--offset-minutes` (default 0; normal predictor only, negative fires
+earlier) and `--no-tabpfn` (leave all four TabPFN horizons out).
+
+A scheduled TabPFN run is equivalent to:
+
+```bash
+python scripts/predict_tabpfn.py --targets line_error total_points \
+  --line intermediate --horizon-minutes 720 --skip-db-update \
+  --game-date 2026-10-26 --game-ids 0022600001 \
+  --as-of 2026-10-26T11:00:00Z
+```
+
+Manual runs can omit `game_ids` (all games), `game_date` (current Pacific date)
+and `as_of` (live). A cutoff requires an explicit timezone and intermediate mode.
 
 The workflow needs the repository secrets `CRONJOB_API_KEY` and
 `CRONJOB_GITHUB_DISPATCH_TOKEN`. The second is a fine-grained PAT on this repo
 with "Actions: Read and write"; see `nba_ou.scheduling.cronjob_org`. Run the
-scheduler once a day, at `SCHEDULE_PREDICTIONS_AT` (10:00 Madrid). That is always after Pacific
-midnight: 01:00 PDT in summer, 01:00 PST in winter, and 02:00 PDT in the weeks
-when only Europe has changed its clocks. Snapshots before the run are past and
-are skipped, e.g. T-1080 and T-960 of a 19:00 ET game.
+scheduler once a day, at `SCHEDULE_PREDICTIONS_AT` (09:30 Madrid). That is always
+after Pacific midnight: normally 00:30 Pacific, 01:30 when only one side has
+changed its clocks. Snapshots before the run are past and are skipped, e.g.
+T-1080 and T-960 of a 19:00 ET game.
 
 ## One firing per run, and daylight saving
 
@@ -226,9 +254,15 @@ are skipped, e.g. T-1080 and T-960 of a 19:00 ET game.
 
 ## Caveats
 
-- A predictor run takes about 13 min or more. GitHub's concurrency group
-  `daily-nba-predictor` keeps one run going and **one** pending: when triggers
-  bunch up, a newer queued run replaces the older pending one. Since every run
-  predicts every slot, only that run's time point is lost.
+- Both prediction workflows use `cancel-in-progress: false` and `queue: max`:
+  an active run finishes and up to 100 pending runs per concurrency group are
+  retained in FIFO order (by entry into the group). Only a full queue cancels
+  new arrivals. The normal predictor and TabPFN have separate groups; their
+  jobs wait for the same self-hosted runner when they coincide. TabPFN fires
+  2 min after the predictor run covering its snapshot so that one is queued first,
+  but cross-workflow execution order is not guaranteed. See [GitHub's concurrency reference](https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax#concurrency).
+- More TabPFN runs increase runner time and inference usage: every tip-off
+  group needs two independent fits at each of its four horizons. Queuing
+  preserves work but does not guarantee execution at the trigger's minute.
 - The T−30 run can finish close to tip-off. The predictor never
   stores a game that is in progress.

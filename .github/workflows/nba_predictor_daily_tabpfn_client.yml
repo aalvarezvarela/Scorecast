@@ -28,6 +28,18 @@ on:
                 description: "With line=intermediate: minutes before tip-off (an enabled slot's horizon)"
                 type: string
                 default: "360"
+            game_date:
+                description: "Game date YYYY-MM-DD (empty = today's Pacific date)"
+                type: string
+                default: ""
+            game_ids:
+                description: "Only these game IDs, separated by spaces or commas (empty = all)"
+                type: string
+                default: ""
+            as_of:
+                description: "Intermediate snapshot cutoff in ISO 8601 with timezone (empty = live)"
+                type: string
+                default: ""
             update_db:
                 description: "Update the databases first (off when another job just did)"
                 type: boolean
@@ -45,6 +57,7 @@ on:
 concurrency:
     group: nba-predictor-tabpfn
     cancel-in-progress: false
+    queue: max
 
 permissions:
     contents: read
@@ -120,9 +133,20 @@ jobs:
             - name: Run TabPFN predictor
               env:
                   TABPFN_TARGETS: ${{ inputs.target }}
+                  TABPFN_LINE: ${{ inputs.line }}
+                  TABPFN_HORIZON: ${{ inputs.horizon_minutes }}
+                  TABPFN_GAME_DATE: ${{ inputs.game_date }}
+                  TABPFN_GAME_IDS: ${{ inputs.game_ids }}
+                  TABPFN_AS_OF: ${{ inputs.as_of }}
               run: |
+                  args=()
+                  if [[ "$TABPFN_LINE" == intermediate ]]; then
+                      args+=(--horizon-minutes "$TABPFN_HORIZON")
+                  fi
+                  if [[ -n "$TABPFN_GAME_DATE" ]]; then args+=(--game-date "$TABPFN_GAME_DATE"); fi
+                  if [[ -n "$TABPFN_GAME_IDS" ]]; then args+=(--game-ids "$TABPFN_GAME_IDS"); fi
+                  if [[ -n "$TABPFN_AS_OF" ]]; then args+=(--as-of "$TABPFN_AS_OF"); fi
                   python scripts/predict_tabpfn.py --targets "$TABPFN_TARGETS" \
-                      --line ${{ inputs.line }} \
-                      ${{ inputs.line == 'intermediate' && format('--horizon-minutes {0}', inputs.horizon_minutes) || '' }} \
+                      --line "$TABPFN_LINE" "${args[@]}" \
                       ${{ !inputs.update_db && '--skip-db-update' || '' }} \
                       ${{ !inputs.persist && '--no-persist' || '' }}
