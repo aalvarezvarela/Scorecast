@@ -2,92 +2,79 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 
 import pandas as pd
-from nba_api.stats.endpoints import ScoreboardV2
+from nba_api.stats.endpoints import ScoreboardV3
 
 EASTERN_TZ = ZoneInfo("America/New_York")
 UNKNOWN_GAME_TIME_STATUS_TEXT = frozenset({"TBD", "TBA", "TBP"})
 DEFAULT_UNKNOWN_GAME_TIME_TEXT = "11:59 PM"
 GAME_TIME_PATTERN = r"\b(\d{1,2}:\d{2}\s*[AP]M)\b"
+#: ScoreboardV3 ``gameStatus``: 1 scheduled, 2 in progress, 3 final.
+SCHEDULED_GAME_STATUS = 1
+
+#: The old ScoreboardV2 ``GameHeader`` columns, which every consumer reads.
+SCOREBOARD_COLUMNS = [
+    "GAME_DATE_EST",
+    "GAME_SEQUENCE",
+    "GAME_ID",
+    "GAME_STATUS_ID",
+    "GAME_STATUS_TEXT",
+    "GAMECODE",
+    "HOME_TEAM_ID",
+    "VISITOR_TEAM_ID",
+    "SEASON",
+    "LIVE_PERIOD",
+    "LIVE_PC_TIME",
+    "NATL_TV_BROADCASTER_ABBREVIATION",
+    "HOME_TV_BROADCASTER_ABBREVIATION",
+    "AWAY_TV_BROADCASTER_ABBREVIATION",
+    "LIVE_PERIOD_TIME_BCAST",
+    "ARENA_NAME",
+    "WH_STATUS",
+]
 
 
 def nba_api_schedule_games(date):
     """
-    Fetches NBA scheduled games for a given date.
+    Fetches NBA scheduled games for a given date from ``ScoreboardV3``.
+
+    ScoreboardV2 is not used: for 2026-27 it keeps every game at status 1 with
+    no points, even once final, and at times answers with a non-JSON body.
 
     Parameters:
     date (str): The date in 'YYYY-MM-DD' format.
 
     Returns:
-    DataFrame: A DataFrame containing scheduled games for the given date.
+    DataFrame: One row per game, in ``SCOREBOARD_COLUMNS``.
     """
     # Validate date format
     try:
-        datetime.strptime(date, "%Y-%m-%d")
+        game_date = datetime.strptime(date, "%Y-%m-%d")
 
     except ValueError as err:
         raise ValueError("Invalid date format. Please use YYYY-MM-DD.") from err
 
-    # Fetch games. ScoreboardV2 can also fail outright rather than come back
-    # empty: on 2026-10-20 (opening night) it answered today's date with a
-    # non-JSON body while V3 listed all three games.
-    try:
-        games = ScoreboardV2(game_date=date).get_data_frames()[0]
-    except Exception as exc:  # noqa: BLE001 -- V3 below is the fallback
-        print(f"ScoreboardV2 failed for {date} ({type(exc).__name__}: {exc}).")
-        games = pd.DataFrame()
-    if not games.empty:
-        # V2's GameHeader can list a game once per national broadcaster: on
-        # 2026-10-20 every game came twice, the rows differing only in
-        # NATL_TV_BROADCASTER_ABBREVIATION and LIVE_PERIOD_TIME_BCAST. Every
-        # consumer expects one row per game.
-        return games.drop_duplicates(subset=["GAME_ID"], keep="first").reset_index(
-            drop=True
+    payload = ScoreboardV3(game_date=date).get_dict()
+    season = game_date.year if game_date.month >= 10 else game_date.year - 1
+    rows = [
+        {
+            "GAME_DATE_EST": f"{date}T00:00:00",
+            "GAME_SEQUENCE": sequence,
+            "GAME_ID": str(game["gameId"]),
+            "GAME_STATUS_ID": game.get("gameStatus"),
+            "GAME_STATUS_TEXT": game.get("gameStatusText"),
+            "GAMECODE": game.get("gameCode"),
+            "HOME_TEAM_ID": (game.get("homeTeam") or {}).get("teamId"),
+            "VISITOR_TEAM_ID": (game.get("awayTeam") or {}).get("teamId"),
+            "SEASON": season,
+            "LIVE_PERIOD": game.get("period"),
+            "LIVE_PC_TIME": game.get("gameClock"),
+        }
+        for sequence, game in enumerate(
+            payload.get("scoreboard", {}).get("games", []), start=1
         )
-
-    from nba_api.stats.endpoints import ScoreboardV3
-
-    scoreboard_v3 = ScoreboardV3(game_date=date)
-    game_header = scoreboard_v3.game_header.get_data_frame()
-    if game_header.empty:
-        return games
-
-    print("ScoreboardV2 gave no games; using ScoreboardV3 fallback.")
-
-    line_score = scoreboard_v3.line_score.get_data_frame()
-    team_ids_by_game = pd.DataFrame(
-        columns=["gameId", "HOME_TEAM_ID", "VISITOR_TEAM_ID"]
-    )
-    if not line_score.empty:
-        line_score = line_score.copy()
-        line_score["_team_position"] = line_score.groupby("gameId").cumcount()
-        team_ids_by_game = (
-            line_score[line_score["_team_position"].isin([0, 1])]
-            .pivot(index="gameId", columns="_team_position", values="teamId")
-            .rename(columns={0: "HOME_TEAM_ID", 1: "VISITOR_TEAM_ID"})
-            .reset_index()
-        )
-
-    fallback_games = game_header.merge(team_ids_by_game, on="gameId", how="left")
-    fallback_games["GAME_DATE_EST"] = f"{date}T00:00:00"
-    fallback_games["GAME_SEQUENCE"] = range(1, len(fallback_games) + 1)
-    fallback_games["GAME_ID"] = fallback_games["gameId"].astype("string")
-    fallback_games["GAME_STATUS_ID"] = fallback_games["gameStatus"]
-    fallback_games["GAME_STATUS_TEXT"] = fallback_games["gameStatusText"]
-    fallback_games["GAMECODE"] = fallback_games["gameCode"]
-    game_date = datetime.strptime(date, "%Y-%m-%d")
-    fallback_games["SEASON"] = (
-        game_date.year if game_date.month >= 10 else game_date.year - 1
-    )
-    fallback_games["LIVE_PERIOD"] = fallback_games["period"]
-    fallback_games["LIVE_PC_TIME"] = fallback_games["gameClock"]
-    fallback_games["NATL_TV_BROADCASTER_ABBREVIATION"] = pd.NA
-    fallback_games["HOME_TV_BROADCASTER_ABBREVIATION"] = pd.NA
-    fallback_games["AWAY_TV_BROADCASTER_ABBREVIATION"] = pd.NA
-    fallback_games["LIVE_PERIOD_TIME_BCAST"] = pd.NA
-    fallback_games["ARENA_NAME"] = pd.NA
-    fallback_games["WH_STATUS"] = pd.NA
-
-    return fallback_games[ScoreboardV2.expected_data["GameHeader"]]
+        if game.get("gameId")
+    ]
+    return pd.DataFrame(rows, columns=SCOREBOARD_COLUMNS)
 
 
 def filter_started_games(
@@ -95,7 +82,7 @@ def filter_started_games(
 ) -> pd.DataFrame:
     """
     Keep only games that have not started yet based on GAME_TIME in Eastern Time.
-    Games with unknown start times are retained because ScoreboardV2 can report
+    Games with unknown start times are retained because the scoreboard can report
     future playoff games as TBD/TBA until the league assigns tip-off times.
     """
     if games.empty or "GAME_TIME" not in games.columns:
@@ -125,7 +112,7 @@ def filter_started_games(
 
 
 def _parse_scoreboard_game_times(games: pd.DataFrame) -> pd.Series:
-    """Parse tip-off times from ScoreboardV2 GAME_STATUS_TEXT values."""
+    """Parse tip-off times from the scoreboard's GAME_STATUS_TEXT values."""
     game_dates = pd.to_datetime(games["GAME_DATE_EST"], errors="coerce").dt.strftime(
         "%Y-%m-%d"
     )
@@ -170,6 +157,16 @@ def get_schedule_games(date_to_predict: str) -> pd.DataFrame:
     if games.empty:
         print("No games found for the specified date.")
         return games
+
+    # A started game's status text is its clock or "Final", not a tip-off.
+    if "GAME_STATUS_ID" in games.columns:
+        status = pd.to_numeric(games["GAME_STATUS_ID"], errors="coerce")
+        started = status.notna() & status.ne(SCHEDULED_GAME_STATUS)
+        if started.any():
+            print(f"Excluded {started.sum()} game(s) already started or final.")
+            games = games.loc[~started].copy()
+            if games.empty:
+                return games
 
     games["GAME_TIME"] = _parse_scoreboard_game_times(games)
 

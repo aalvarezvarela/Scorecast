@@ -1,5 +1,6 @@
 import pandas as pd
 import psycopg
+from nba_ou.fetch_data.fetch_nba_data.inactive_rows import is_inactive_comment
 from nba_ou.postgre_db.config.db_config import (
     connect_nba_db,
     get_schema_name_players,
@@ -119,6 +120,16 @@ def upload_players_data_to_db(
         df = df[~df["GAME_ID"].isin(exclude_game_ids)].copy()
         excluded_count = initial_count - len(df)
         print(f"Excluded {excluded_count} rows with {len(exclude_game_ids)} game IDs")
+
+    # From 2026-27 the box score lists inactive players as rows; they belong in
+    # nba_injuries (fetch_data.fetch_nba_data.inactive_rows), never here.
+    if "COMMENT" in df.columns:
+        inactive = is_inactive_comment(df["COMMENT"])
+        if inactive.any():
+            raise ValueError(
+                f"{int(inactive.sum())} inactive-player rows reached the nba_players "
+                "upload; split them out with split_inactive_rows first."
+            )
 
     if conn is None:
         conn = connect_nba_db()

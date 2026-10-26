@@ -9,6 +9,7 @@ from nba_api.stats.endpoints import (
     LeagueGameFinder,
 )
 from nba_ou.config.constants import SEASON_TYPE_MAP as SEASON_TYPE_MAPPING
+from nba_ou.fetch_data.fetch_nba_data.inactive_rows import split_inactive_rows
 from nba_ou.fetch_data.nba_api_session import reset_nba_http_session
 from nba_ou.postgre_db.games.update_games.mapping_v3_v2 import (
     V3_TO_V2_ADVANCED_PLAYER_MAP,
@@ -117,7 +118,7 @@ def fetch_nba_data(
     season_nullable: str,
     existing_game_ids: set = None,
     n_tries: int = 3,
-) -> tuple[pd.DataFrame, pd.DataFrame, bool]:
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, bool]:
     """
     Fetches and processes NBA game data for a specified season.
 
@@ -141,7 +142,10 @@ def fetch_nba_data(
     Returns:
         tuple:
             - pd.DataFrame: Updated game data including team statistics.
-            - pd.DataFrame: Updated player statistics.
+            - pd.DataFrame: Updated player statistics, without inactive players.
+            - pd.DataFrame: The inactive players, in ``nba_injuries``' layout. From
+              2026-27 the box score carries them as ``Inactive - ...`` rows
+              (``inactive_rows``); for older games it is empty.
             - bool: Flag indicating if the rate limit was reached during data fetching.
 
     Raises:
@@ -200,7 +204,7 @@ def fetch_nba_data(
         print(
             f"No new games found for season {season_nullable}. Skipping data fetch..."
         )
-        return None, None, limit_reached
+        return None, None, None, limit_reached
 
     all_player_stats, all_team_stats = [], []
     fetched_counter = 0
@@ -258,7 +262,7 @@ def fetch_nba_data(
     season_year = season_nullable[:4]
     if team_stats_df.empty:
         print(f"No team stats fetched for season {season_nullable}.")
-        return None, None, limit_reached
+        return None, None, None, limit_reached
     merged_games = pd.merge(
         games, team_stats_df, on=["GAME_ID", "TEAM_ID"], suffixes=("", "_drop")
     )
@@ -276,8 +280,10 @@ def fetch_nba_data(
             subset=["GAME_ID", "PLAYER_ID", "TEAM_ID"], keep="last"
         )
 
+    player_stats_df, inactives_df = split_inactive_rows(player_stats_df, games)
+
     # Add season_year to player_stats_df if it's not empty
     if not player_stats_df.empty:
         player_stats_df["SEASON_YEAR"] = season_year
 
-    return merged_games, player_stats_df, limit_reached
+    return merged_games, player_stats_df, inactives_df, limit_reached

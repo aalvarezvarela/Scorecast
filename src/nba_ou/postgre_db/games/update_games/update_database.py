@@ -17,7 +17,13 @@ from nba_ou.postgre_db.games.update_games.upload_games_data_to_db import (
     filter_before_upload,
     upload_games_data_to_db,
 )
-from nba_ou.postgre_db.players.upload_data_players import upload_players_data_to_db
+from nba_ou.postgre_db.injuries_refs.creation.create_injuries_db import (
+    upload_injuries_data_to_db,
+)
+from nba_ou.postgre_db.players.upload_data_players import (
+    filter_players_by_team_minutes,
+    upload_players_data_to_db,
+)
 from nba_ou.utils.general_utils import (
     get_nba_season_nullable_from_date,
     get_season_nullable_from_year,
@@ -85,6 +91,49 @@ def upload_players_to_postgresql(
     return success
 
 
+def upload_inactives_to_postgresql(
+    inactives_df: pd.DataFrame,
+    players_df: pd.DataFrame,
+    players_game_ids_to_exclude=None,
+):
+    """Uploads the inactive list split out of the box score to ``nba_injuries``.
+
+    Only games whose player rows are about to be uploaded: the same exclusions
+    and the same team-minutes check as :func:`upload_players_data_to_db`, so a
+    game rejected there leaves no inactives behind.
+
+    Args:
+        inactives_df: Inactive players in ``nba_injuries``' layout
+        players_df: The player frame the inactives were split from
+        players_game_ids_to_exclude: Game IDs left out of the player upload
+
+    Returns:
+        bool: True once those games' inactives are stored (also when there are
+        none), False if the upload failed
+    """
+    if inactives_df is None or inactives_df.empty:
+        print("No inactive players to upload to PostgreSQL.")
+        return True
+
+    excluded = {str(game_id) for game_id in players_game_ids_to_exclude or []}
+    uploaded = players_df[~players_df["GAME_ID"].astype(str).isin(excluded)]
+    uploaded_ids = set(
+        filter_players_by_team_minutes(uploaded.copy())["GAME_ID"].astype(str)
+    )
+    inactives_df = inactives_df[inactives_df["GAME_ID"].isin(uploaded_ids)]
+    if inactives_df.empty:
+        print("No inactive players for the uploaded games.")
+        return True
+
+    print("\nUploading inactive players to PostgreSQL database...")
+    success = upload_injuries_data_to_db(inactives_df, if_exists="append")
+    if success:
+        print("✅ Successfully uploaded inactive players to PostgreSQL!")
+    else:
+        print("❌ Failed to upload inactive players to PostgreSQL.")
+    return success
+
+
 def update_team_players_database(
     season_year: str = None, games_id_to_exclude: list = None
 ) -> tuple:
@@ -125,7 +174,7 @@ def update_team_players_database(
     print(f"Total existing game IDs in both databases: {len(all_existing_game_ids)}")
 
     # Fetch new data using existing game IDs from database
-    team_df, players_df, limit_reached = fetch_nba_data(
+    team_df, players_df, inactives_df, limit_reached = fetch_nba_data(
         season_nullable,
         existing_game_ids=all_existing_game_ids,
         n_tries=3,
@@ -142,6 +191,20 @@ def update_team_players_database(
             new_data_found = True
 
     if players_df is not None:
+        # Inactives first: a game counts as stored once its player rows are
+        # (``existing_player_game_ids`` above), and nothing else holds its
+        # inactive list. If that upload fails the players are not written, so
+        # the next run fetches the games again; ON CONFLICT makes the repeat
+        # harmless.
+        if not upload_inactives_to_postgresql(
+            inactives_df,
+            players_df,
+            players_game_ids_to_exclude=list(exclude_game_ids),
+        ):
+            raise RuntimeError(
+                "Inactive-player upload to nba_injuries failed; player rows not "
+                "uploaded, so the next run fetches these games again."
+            )
         # Upload player data to PostgreSQL
         if upload_players_to_postgresql(
             players_df, players_game_ids_to_exclude=list(exclude_game_ids)
