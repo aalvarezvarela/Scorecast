@@ -63,6 +63,12 @@ INPUT_COLUMNS = (
     "spread_price_away",
     "spread_line_age_minutes",
     "line_source",
+    "total_books_mean_line",
+    "total_books_median_line",
+    "total_books_count",
+    "spread_books_mean_line",
+    "spread_books_median_line",
+    "spread_books_count",
 )
 INPUT_KEY = INPUT_COLUMNS[:3]
 PREDICTION_COLUMNS = (

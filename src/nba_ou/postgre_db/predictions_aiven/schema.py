@@ -22,6 +22,10 @@ Codes (``SMALLINT``):
 * ``inputs.line_source``: where the row's lines came from -- 1 SBR, 2 Covers
   (the fallback when SBR is down or frozen, ``prediction.line_source``);
   NULL on rows stored before the column existed.
+
+``inputs.{total,spread}_books_{mean,median}_line`` and ``_books_count``: every
+book's raw line at the row's snapshot (main book included), as the bet line
+is taken; NULL on rows stored before 2026-10-26.
 """
 
 from __future__ import annotations
@@ -134,6 +138,12 @@ DDL_STATEMENTS: tuple[str, ...] = (
         spread_price_home        SMALLINT,
         spread_price_away        SMALLINT,
         line_source              SMALLINT,
+        total_books_mean_line    REAL,
+        total_books_median_line  REAL,
+        total_books_count        SMALLINT,
+        spread_books_mean_line   REAL,
+        spread_books_median_line REAL,
+        spread_books_count       SMALLINT,
         UNIQUE NULLS NOT DISTINCT
             (run_id, game_id, input_mode, snapshot_horizon_minutes)
     )
@@ -141,6 +151,16 @@ DDL_STATEMENTS: tuple[str, ...] = (
     # Added 2026-10-24 to a table created without it.
     """
     ALTER TABLE {schema}.inputs ADD COLUMN IF NOT EXISTS line_source SMALLINT
+    """,
+    # Added 2026-10-26 to a table created without them.
+    """
+    ALTER TABLE {schema}.inputs
+        ADD COLUMN IF NOT EXISTS total_books_mean_line    REAL,
+        ADD COLUMN IF NOT EXISTS total_books_median_line  REAL,
+        ADD COLUMN IF NOT EXISTS total_books_count        SMALLINT,
+        ADD COLUMN IF NOT EXISTS spread_books_mean_line   REAL,
+        ADD COLUMN IF NOT EXISTS spread_books_median_line REAL,
+        ADD COLUMN IF NOT EXISTS spread_books_count       SMALLINT
     """,
     # No key: a B-tree on (input_id, model_build_id) would weigh about as much
     # as the table. The run transaction prevents duplicates, and rows arrive in
@@ -192,6 +212,12 @@ DDL_STATEMENTS: tuple[str, ...] = (
                     ELSE i.total_price_under END         AS bet_price_under_away,
                CASE WHEN m.target = 3 THEN i.spread_line_age_minutes
                     ELSE i.total_line_age_minutes END    AS bet_line_age_minutes,
+               CASE WHEN m.target = 3 THEN i.spread_books_mean_line
+                    ELSE i.total_books_mean_line END     AS books_mean_line,
+               CASE WHEN m.target = 3 THEN i.spread_books_median_line
+                    ELSE i.total_books_median_line END   AS books_median_line,
+               CASE WHEN m.target = 3 THEN i.spread_books_count
+                    ELSE i.total_books_count END         AS books_count,
                CASE WHEN m.target = 3 THEN g.home_points - g.away_points
                     ELSE g.home_points + g.away_points END AS actual_value
         FROM {schema}.predictions p
