@@ -1,4 +1,4 @@
-name: Schedule Snapshot Predictions (Local Runner)
+name: Predictions - Schedule Game Day Runs
 
 # Books today's runs of the daily predictor on cron-job.org at the snapshot
 # times of every game (tip-off minus each enabled horizon), snapshots at most

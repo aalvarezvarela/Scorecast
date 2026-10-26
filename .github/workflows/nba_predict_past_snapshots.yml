@@ -1,4 +1,4 @@
-name: NBA Past-Snapshot Predictions (Local Runner)
+name: Predictions - Past Game Snapshots
 
 # The day's last run: once every game of the date has tipped (after they
 # finish is fine), every snapshot is in the past, so each intermediate slot

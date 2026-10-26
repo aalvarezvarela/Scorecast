@@ -1,4 +1,4 @@
-name: Retrain Prediction Models
+name: Models - Retrain and Validate
 
 on:
   workflow_dispatch:

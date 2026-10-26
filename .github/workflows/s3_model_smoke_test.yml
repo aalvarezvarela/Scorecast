@@ -1,4 +1,4 @@
-name: S3 Model Smoke Test
+name: Models - Verify S3 Model Loading
 
 on:
     workflow_dispatch:

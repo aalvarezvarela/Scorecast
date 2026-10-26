@@ -1,4 +1,4 @@
-name: Update PostgreSQL DB - Games, Players, Refs & Injuries (Local Runner)
+name: Data - Update NBA Stats, Odds and Injuries
 
 on:
   workflow_dispatch:

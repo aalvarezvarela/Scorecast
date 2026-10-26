@@ -1,4 +1,4 @@
-name: Close Idle DB Connections Weekly
+name: Database - Close Idle Connections
 
 on:
     workflow_dispatch:

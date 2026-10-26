@@ -1,4 +1,4 @@
-name: Update Finished Matches Total Points (Local Runner)
+name: Data - Update Final Scores and Lineups
 
 on:
     workflow_dispatch:

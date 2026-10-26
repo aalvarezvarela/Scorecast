@@ -1,4 +1,4 @@
-name: Daily NBA Predictor (Local Runner)
+name: Predictions - Upcoming NBA Games
 
 on:
     workflow_dispatch:

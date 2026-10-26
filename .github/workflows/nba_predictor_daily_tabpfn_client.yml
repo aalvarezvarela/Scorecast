@@ -1,4 +1,4 @@
-name: NBA Predictor TabPFN (Local Runner)
+name: Predictions - Upcoming Games with TabPFN
 
 # TabPFN on its own: one target and one line per run, fitted on the rows and
 # features of that slot's production build (closing: the frame the daily refit
