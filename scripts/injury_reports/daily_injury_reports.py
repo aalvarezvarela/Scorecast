@@ -16,6 +16,10 @@ Run it after the night's games are final (the daily database job). Two steps:
    played from the day after the last game the store holds to yesterday --
    never fewer than the last ``--days`` days -- replacing what it held for them.
 
+Both steps share a local PDF cache (``--cache-dir``), so newly archived reports
+are parsed from disk instead of downloaded again from S3. Older reports are
+cached on their first S3 read. Ephemeral CI runners keep it only for this job.
+
 Only finished games are written -- the store holds a game once it is played,
 the rule the line history and closing odds follow. Today's reports already list
 tonight's games (most spans start the day before the game), so they are
@@ -50,6 +54,7 @@ from nba_ou.postgre_db.injury_report_aiven.ingest import ingest_season  # noqa: 
 
 ET = ZoneInfo("America/New_York")
 DEFAULT_MANIFEST_ROOT = "data/injury_reports/manifest"
+DEFAULT_CACHE_DIR = "data/injury_reports/cache"
 
 
 def last_stored_game_date(aiven: psycopg.Connection, season_year: int) -> date | None:
@@ -80,6 +85,7 @@ def main() -> int:
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--skip-download", action="store_true")
     parser.add_argument("--manifest-root", default=DEFAULT_MANIFEST_ROOT)
+    parser.add_argument("--cache-dir", default=DEFAULT_CACHE_DIR)
     # Same resolution as the download step (backfill_injury_reports.py), so
     # both steps of one run use the same S3 identity.
     parser.add_argument("--bucket", default=SETTINGS.s3_bucket)
@@ -127,6 +133,8 @@ def main() -> int:
                 str(today),
                 "--manifest-root",
                 args.manifest_root,
+                "--cache-dir",
+                args.cache_dir,
             ] + (["--dry-run"] if args.dry_run else [])
             if subprocess.run(command, check=False).returncode not in (0, 2):
                 print("report download failed; nothing ingested")
@@ -134,7 +142,10 @@ def main() -> int:
 
         store = ManifestStore(Path(args.manifest_root))
         storage = S3Storage(
-            bucket=args.bucket, profile=args.profile, region=args.region
+            bucket=args.bucket,
+            profile=args.profile,
+            region=args.region,
+            cache_dir=Path(args.cache_dir),
         )
         seasons = sorted({U.season_label(d) for d in U.date_range(first, last)})
         for season in seasons:
