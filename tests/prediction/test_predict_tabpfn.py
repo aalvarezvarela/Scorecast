@@ -8,6 +8,8 @@ is handed, and that its output goes through the store as a TabPFN build.
 from __future__ import annotations
 
 from datetime import datetime
+from types import SimpleNamespace
+from unittest.mock import Mock
 from zoneinfo import ZoneInfo
 
 import numpy as np
@@ -33,6 +35,8 @@ from nba_ou.prediction.prediction_tabpfn_client import (
     rows_of_horizon,
     tabpfn_training_set,
 )
+
+from scripts import predict_tabpfn as job
 
 BUCKET = "b"
 FEATURES = ["FEAT_A", "FEAT_B"]
@@ -76,16 +80,24 @@ def test_the_variant_names_the_model_version():
     assert model_variant("v3.5-fast") == "tabpfn_v3_5_fast"
 
 
-def _spec(*, train_games=4, max_na_per_row=0, horizon=0):
+def _spec(
+    *,
+    train_games=4,
+    max_na_per_row=0,
+    horizon=0,
+    target="line_error",
+    features=FEATURES,
+    schema_version="2_5",
+):
     return finalize_spec(
         identity=SpecIdentity(
-            schema_version="2_5",
-            target=ModelTarget.LINE_ERROR,
-            prediction_strategy="line_error_regressor",
+            schema_version=schema_version,
+            target=ModelTarget(target),
+            prediction_strategy=f"{target}_regressor",
             horizon_minutes=horizon,
             dataset_type="intermediate_line" if horizon else "closing_line",
         ),
-        features=SpecFeatures(feature_names=FEATURES, n_features=len(FEATURES)),
+        features=SpecFeatures(feature_names=features, n_features=len(features)),
         cleaning=SpecCleaning(nan_threshold=5.0, max_na_per_row=max_na_per_row),
         training=SpecTraining(
             params={"max_depth": 4}, n_estimators=10, train_games=train_games
@@ -343,3 +355,217 @@ def test_an_intermediate_output_is_stored_at_its_horizon(monkeypatch):
     assert build["horizon_minutes"] == 360
     assert build["s3_build_prefix"] == "train_data/2_5/k.parquet"
     assert tables.predictions["snapshot_horizon_minutes"].tolist() == [360, 360]
+
+
+@pytest.mark.parametrize(
+    "args, expected",
+    [
+        ([], ["line_error", "total_points"]),
+        (["--targets", "line_error", "total_points"], ["line_error", "total_points"]),
+        (["--targets", "line_error,total_points"], ["line_error", "total_points"]),
+        (
+            ["--target", "line_error total_points line_error"],
+            ["line_error", "total_points"],
+        ),
+        (["--target", "spread_error"], ["spread_error"]),
+    ],
+)
+def test_cli_accepts_target_lists_and_legacy_target(monkeypatch, args, expected):
+    predict = Mock()
+    monkeypatch.setattr(job, "predict_tabpfn", predict)
+    job.main(args)
+    assert predict.call_args.kwargs["targets"] == expected
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        ["--targets", "totals"],
+        ["--targets", "line_error", "typo"],
+        ["--targets", " , "],
+        ["--targets"],
+        [
+            "--targets",
+            "line_error",
+            "total_points",
+            "--feature-slot",
+            "2_5/line_error/t0000/main",
+        ],
+    ],
+)
+def test_invalid_target_lists_fail_before_starting(monkeypatch, args):
+    predict = Mock()
+    monkeypatch.setattr(job, "predict_tabpfn", predict)
+    with pytest.raises(SystemExit) as exc:
+        job.main(args)
+    assert exc.value.code == 2
+    predict.assert_not_called()
+
+
+def _run_dependencies(monkeypatch, *, horizon=0, total_schema="2_5"):
+    """Fake I/O and paid inference; keep target preparation, serving and storage real."""
+    specs = {
+        "line_error": _spec(horizon=horizon),
+        "total_points": _spec(
+            target="total_points",
+            train_games=6,
+            features=["FEAT_B"],
+            horizon=horizon,
+            schema_version=total_schema,
+        ),
+    }
+    clock = Mock(wraps=datetime)
+    clock.now.side_effect = lambda tz: PREDICTION_AT.astimezone(tz)
+    monkeypatch.setattr(job, "datetime", clock)
+    monkeypatch.setattr(
+        job,
+        "SETTINGS",
+        SimpleNamespace(
+            prediction_model_slots=[spec.identity.slot() for spec in specs.values()],
+            s3_aws_profile=None,
+            s3_aws_region="eu-west-1",
+            s3_bucket=BUCKET,
+            headless=True,
+            nba_injury_reports_url="unused",
+        ),
+    )
+    history = _history()
+    tonight = _tonight()
+    if horizon:
+        history = _snapshots(history)
+        tonight = _snapshots(tonight.assign(TOTAL_POINTS=np.nan)).assign(
+            SNAPSHOT_TS_UTC=pd.Timestamp("2026-10-21 17:00", tz="UTC"),
+            SNAPSHOT_PASSED=True,
+        )
+
+    def fit(training_set, *, model_version):
+        return FittedTabPFN(
+            _MeanRegressor().fit(training_set.X, training_set.y),
+            model_version=model_version,
+            client_version="0.6.1",
+        )
+
+    dependencies = {
+        "make_s3_client": Mock(return_value=object()),
+        "resolve_channel": Mock(
+            side_effect=lambda **kw: SimpleNamespace(
+                spec=specs[kw["slot"].target.value]
+            )
+        ),
+        "SeasonPartitions": Mock(
+            return_value=SimpleNamespace(
+                prefix="train_data/partitions",
+                limit_date=lambda: PREDICTION_AT.date(),
+            )
+        ),
+        "resolve_training_frame": Mock(
+            return_value=SimpleNamespace(
+                df=history,
+                build_id="frame",
+                checksum="sha256:test",
+            )
+        ),
+        "update_all_databases": Mock(),
+        "check_line_feed": Mock(return_value=object()),
+        "get_all_info_for_scheduled_games": Mock(
+            return_value={
+                "scheduled_games": _schedule(),
+                "games_not_updated": [],
+            }
+        ),
+        "tonight_closing_rows": Mock(return_value=tonight),
+        "tonight_intermediate_frame": Mock(return_value=tonight),
+        "fit_tabpfn": Mock(side_effect=fit),
+        "persist_prediction_run": Mock(return_value=[]),
+    }
+    for name, dependency in dependencies.items():
+        monkeypatch.setattr(job, name, dependency)
+    return dependencies
+
+
+@pytest.mark.parametrize("horizon", [0, 360])
+@pytest.mark.parametrize("persist", [True, False])
+def test_multiple_targets_share_preparation_and_keep_their_specs(
+    monkeypatch, horizon, persist
+):
+    deps = _run_dependencies(monkeypatch, horizon=horizon)
+    job.predict_tabpfn(
+        targets=["line_error", "total_points", "line_error"],
+        line="intermediate" if horizon else "closing",
+        persist=persist,
+    )
+    for name in (
+        "update_all_databases",
+        "check_line_feed",
+        "get_all_info_for_scheduled_games",
+        "SeasonPartitions",
+        "resolve_training_frame",
+    ):
+        deps[name].assert_called_once()
+    builder = "tonight_intermediate_frame" if horizon else "tonight_closing_rows"
+    deps[builder].assert_called_once()
+    fits = deps["fit_tabpfn"].call_args_list
+    assert len(fits) == 2
+    assert fits[0].args[0].X.columns.tolist() == FEATURES
+    assert fits[1].args[0].X.columns.tolist() == ["FEAT_B"]
+    assert fits[0].args[0].n_games == 4
+    assert fits[1].args[0].n_games == 6
+    assert fits[0].args[0].y.abs().max() < 10
+    assert fits[1].args[0].y.min() > 200
+    if not persist:
+        deps["persist_prediction_run"].assert_not_called()
+        return
+    deps["persist_prediction_run"].assert_called_once()
+    call = deps["persist_prediction_run"].call_args
+    assert call.kwargs["partial"] is False
+    recorder = call.args[0]
+    tables = recorder.tables(status=store_schema.RUN_STATUS_OK)
+    assert set(tables.model_builds["target"]) == {1, 2}
+    assert set(tables.model_builds["kind"]) == {store_schema.KIND_TABPFN}
+    assert len(tables.inputs) == 2
+    assert len(tables.predictions) == 4
+    assert [slot["status"] for slot in recorder.slots] == ["predicted", "predicted"]
+
+
+@pytest.mark.parametrize("failed_index", [0, 1])
+def test_target_failure_preserves_other_predictions_and_fails_run(
+    monkeypatch, failed_index
+):
+    deps = _run_dependencies(monkeypatch)
+    fit = deps["fit_tabpfn"].side_effect
+    calls = 0
+
+    def failing_fit(*args, **kwargs):
+        nonlocal calls
+        index = calls
+        calls += 1
+        if index == failed_index:
+            raise RuntimeError("inference failed")
+        return fit(*args, **kwargs)
+
+    deps["fit_tabpfn"].side_effect = failing_fit
+    with pytest.raises(SystemExit) as exc:
+        job.predict_tabpfn(targets=["line_error", "total_points"])
+    assert exc.value.code == 1
+    assert calls == 2
+    call = deps["persist_prediction_run"].call_args
+    assert call.kwargs["partial"] is True
+    recorder = call.args[0]
+    tables = recorder.tables(status=store_schema.RUN_STATUS_PARTIAL)
+    assert len(tables.predictions) == 2
+    assert recorder.slots[failed_index]["status"] == "failed"
+    assert recorder.slots[1 - failed_index]["status"] == "predicted"
+
+
+def test_mixed_closing_schemas_use_one_frame_at_the_newest_version(monkeypatch):
+    deps = _run_dependencies(monkeypatch, total_schema="2_6")
+    job.predict_tabpfn(targets=["line_error", "total_points"])
+    assert deps["resolve_training_frame"].call_count == 2
+    first, second = deps["resolve_training_frame"].call_args_list
+    assert first.kwargs["base_frames"] is second.kwargs["base_frames"]
+    assert first.kwargs["layer_context"] is second.kwargs["layer_context"]
+    deps["tonight_closing_rows"].assert_called_once()
+    assert deps["tonight_closing_rows"].call_args.kwargs["schema_version"] == "2_6"
+    recorder = deps["persist_prediction_run"].call_args.args[0]
+    tables = recorder.tables(status=store_schema.RUN_STATUS_OK)
+    assert set(tables.model_builds["schema_version"]) == {"2_5", "2_6"}

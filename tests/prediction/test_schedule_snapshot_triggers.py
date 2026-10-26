@@ -427,7 +427,7 @@ def test_tabpfn_takes_the_window_minute_farthest_from_the_predictor():
     )
 
 
-def test_tabpfn_payload_dispatches_line_error_t360_without_db_update():
+def test_tabpfn_payload_dispatches_both_totals_targets_t360_without_db_update():
     group = job.ScheduleGroup(
         day=pd.Timestamp("2026-10-22").date(),
         minute=0,
@@ -441,7 +441,7 @@ def test_tabpfn_payload_dispatches_line_error_t360_without_db_update():
     assert json.loads(payload["extendedData"]["body"]) == {
         "ref": "main",
         "inputs": {
-            "target": "line_error",
+            "target": "line_error total_points",
             "line": "intermediate",
             "horizon_minutes": "360",
             "update_db": "false",

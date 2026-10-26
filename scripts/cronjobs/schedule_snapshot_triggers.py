@@ -13,7 +13,7 @@ has passed. The T-30 snapshot (``EXACT_HORIZONS``) always gets a run at its own
 time.
 
 Also one TabPFN run (``nba_predictor_daily_tabpfn_client.yml``, ``TABPFN``:
-line_error on its T-360 intermediate slot, every game) between 6 h 30 and 5 h
+line_error and total_points on their T-360 intermediate slots, every game) between 6 h 30 and 5 h
 before the first tip-off (``TABPFN_WINDOW_MINUTES``), at the minute of that
 window farthest from every predictor run, so neither waits long for the other
 on the one runner; on a tie, the minute nearest the first game's T-360. The
@@ -80,12 +80,12 @@ class Dispatch:
 
 # Every enabled slot.
 PREDICTOR = Dispatch("nba_predictor_daily.yml")
-# TabPFN line_error on the T-360 slot; the predictor runs keep the databases
+# TabPFN line_error and total_points on the T-360 slots; the predictor runs keep the databases
 # current, so no update of its own.
 TABPFN = Dispatch(
     "nba_predictor_daily_tabpfn_client.yml",
     (
-        ("target", "line_error"),
+        ("target", "line_error total_points"),
         ("line", "intermediate"),
         ("horizon_minutes", "360"),
         ("update_db", "false"),
@@ -473,7 +473,7 @@ def main() -> None:
     if tabpfn_at is not None:
         gap = min((abs(tabpfn_at - at) for at in triggers), default=None)
         print(
-            f"TabPFN line_error T-360: {_clock(tabpfn_at)}"
+            f"TabPFN line_error + total_points T-360: {_clock(tabpfn_at)}"
             + (
                 f" ({gap // timedelta(minutes=1)} min from a predictor run)"
                 if gap
