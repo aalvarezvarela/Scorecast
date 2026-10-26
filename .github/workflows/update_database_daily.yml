@@ -1,4 +1,4 @@
-name: Update PostgreSQL DB - Games, Players, Refs & Injuries (Local Runner)
+name: Data - Update NBA Stats, Odds and Injuries
 
 on:
   workflow_dispatch:
@@ -51,16 +51,16 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       # Optional but recommended on self-hosted runners
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: "3.12"
 
       - name: Configure AWS credentials (OIDC)
-        uses: aws-actions/configure-aws-credentials@v4
+        uses: aws-actions/configure-aws-credentials@v6
         with:
           role-to-assume: ${{ secrets.AWS_ROLE_TO_ASSUME }}
           aws-region: eu-west-1
@@ -146,7 +146,7 @@ jobs:
       # steps above can take longer than that, so the S3 steps below take a
       # fresh session each.
       - name: Refresh AWS credentials for the injury archive
-        uses: aws-actions/configure-aws-credentials@v4
+        uses: aws-actions/configure-aws-credentials@v6
         with:
           role-to-assume: ${{ secrets.AWS_ROLE_TO_ASSUME }}
           aws-region: eu-west-1
@@ -161,7 +161,7 @@ jobs:
           python scripts/injury_reports/daily_injury_reports.py
 
       - name: Refresh AWS credentials for the input cache
-        uses: aws-actions/configure-aws-credentials@v4
+        uses: aws-actions/configure-aws-credentials@v6
         with:
           role-to-assume: ${{ secrets.AWS_ROLE_TO_ASSUME }}
           aws-region: eu-west-1

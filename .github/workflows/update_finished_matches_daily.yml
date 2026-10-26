@@ -1,4 +1,4 @@
-name: Update Finished Matches Total Points (Local Runner)
+name: Data - Update Final Scores and Lineups
 
 on:
     workflow_dispatch:
@@ -43,11 +43,11 @@ jobs:
 
         steps:
             - name: Checkout
-              uses: actions/checkout@v4
+              uses: actions/checkout@v6
 
             # Optional but recommended on self-hosted runners
             - name: Set up Python
-              uses: actions/setup-python@v5
+              uses: actions/setup-python@v6
               with:
                   python-version: "3.12"
 
@@ -92,7 +92,7 @@ jobs:
             # so the 1 h OIDC session covers this step whatever the ones above
             # took.
             - name: Configure AWS credentials (OIDC)
-              uses: aws-actions/configure-aws-credentials@v4
+              uses: aws-actions/configure-aws-credentials@v6
               with:
                   role-to-assume: ${{ secrets.AWS_ROLE_TO_ASSUME }}
                   aws-region: eu-west-1

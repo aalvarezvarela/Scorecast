@@ -1,4 +1,4 @@
-name: DB Backup to S3
+name: Database - Back Up to S3
 
 # Both databases in one job, under one date tag. They used to run on separate
 # days (the 1st and the 15th), which meant no single date ever held a backup of
