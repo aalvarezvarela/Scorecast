@@ -101,6 +101,8 @@ def test_each_slot_reads_its_own_snapshot(monkeypatch):
     )
     monkeypatch.setattr(job, "tonight_intermediate_frame", lambda *a, **k: frame)
     monkeypatch.setattr(job, "make_s3_client", lambda **_: object())
+    # Every build is read in the slot's turn, by the stubbed predictor.
+    monkeypatch.setattr(job, "read_slot_builds", lambda **_: {})
     calls = []
 
     def predict(*, slot, frames, latest_input, **_):

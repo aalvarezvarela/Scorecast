@@ -117,6 +117,8 @@ def test_baselines_read_history_from_the_layer_inputs(monkeypatch):
 
     monkeypatch.setattr(job, "create_df_to_predict", build)
     monkeypatch.setattr(job, "make_s3_client", lambda **_: object())
+    # Every build is read in the slot's turn, by the stubbed predictor.
+    monkeypatch.setattr(job, "read_slot_builds", lambda **_: {})
     monkeypatch.setattr(job, "PredictionRunRecorder", _NullRecorder)
     stored = {}
 
@@ -186,6 +188,8 @@ def test_a_failing_slot_does_not_stop_the_others(monkeypatch, capsys):
         job, "create_df_to_predict", lambda **_: (tonight.copy(), _history())
     )
     monkeypatch.setattr(job, "make_s3_client", lambda **_: object())
+    # Every build is read in the slot's turn, by the stubbed predictor.
+    monkeypatch.setattr(job, "read_slot_builds", lambda **_: {})
     monkeypatch.setattr(job, "PredictionRunRecorder", _NullRecorder)
     monkeypatch.setattr(
         job,
@@ -265,6 +269,8 @@ def test_a_run_stores_every_slot_and_baseline_in_the_prediction_store(monkeypatc
         job, "create_df_to_predict", lambda **_: (tonight.copy(), _history())
     )
     monkeypatch.setattr(job, "make_s3_client", lambda **_: object())
+    # Every build is read in the slot's turn, by the stubbed predictor.
+    monkeypatch.setattr(job, "read_slot_builds", lambda **_: {})
     monkeypatch.setattr(
         job,
         "load_registry_model_and_predict",
@@ -342,6 +348,8 @@ def test_no_filed_report_skips_the_closing_rows_not_the_run(monkeypatch, capsys)
         job, "tonight_intermediate_frame", lambda *_, **__: intermediate
     )
     monkeypatch.setattr(job, "make_s3_client", lambda **_: object())
+    # Every build is read in the slot's turn, by the stubbed predictor.
+    monkeypatch.setattr(job, "read_slot_builds", lambda **_: {})
     monkeypatch.setattr(job, "PredictionRunRecorder", _NullRecorder)
     monkeypatch.setattr(
         job,

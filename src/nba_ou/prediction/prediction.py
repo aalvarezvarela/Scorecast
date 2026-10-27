@@ -1,5 +1,6 @@
 import time
 from collections.abc import Mapping, Sequence
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
 from typing import Literal
 from zoneinfo import ZoneInfo
@@ -670,6 +671,34 @@ def select_rows_for_horizon(
     return within | minutes.isna()
 
 
+def read_slot_builds(
+    *, s3_client, bucket: str, slots: Sequence, channel=None, max_workers: int = 8
+) -> dict:
+    """Each slot's served build (``resolve_channel``), read side by side.
+
+    A read is mostly waiting on S3 -- the channel pointer always, the spec, fit
+    and model only on a cold model cache -- ~0.2-0.4 s a slot, which the slots
+    used to wait in turn. A slot whose read fails maps to the exception, for
+    its own turn to raise, so it fails alone as it did.
+    """
+    from nba_ou.modeling.registry_paths import Channel
+    from nba_ou.modeling.registry_store import resolve_channel
+
+    def read(slot):
+        try:
+            return resolve_channel(
+                s3_client=s3_client,
+                bucket=bucket,
+                slot=slot,
+                channel=channel or Channel.PRODUCTION,
+            )
+        except Exception as exc:  # noqa: BLE001 -- raised in the slot's turn
+            return exc
+
+    with ThreadPoolExecutor(max_workers=max_workers) as pool:
+        return dict(zip(slots, pool.map(read, slots), strict=True))
+
+
 def load_registry_model_and_predict(
     *,
     s3_client,
@@ -688,6 +717,7 @@ def load_registry_model_and_predict(
     latest_input: bool = False,
     report_required_max_horizon: int | None = None,
     clean_frames: Mapping[str, pd.DataFrame] | None = None,
+    resolved=None,
 ) -> pd.DataFrame:
     """Predict with whatever a slot's channel currently points at.
 
@@ -719,6 +749,9 @@ def load_registry_model_and_predict(
     frame, as without it, then read from the clean one. A type it lacks is
     cleaned per slot.
 
+    ``resolved``: the slot's build already read (``read_slot_builds``); None
+    reads it here.
+
     Resolution is ``channels/production.json -> fit -> spec -> model``: the
     served model is interpreted by the spec ITS OWN FIT names, never by the
     slot's current configuration. That is what lets a new configuration be
@@ -732,17 +765,18 @@ def load_registry_model_and_predict(
     from nba_ou.modeling.registry_paths import Channel
     from nba_ou.modeling.registry_store import resolve_channel
 
-    started = time.perf_counter()
-    resolved = resolve_channel(
-        s3_client=s3_client,
-        bucket=bucket,
-        slot=slot,
-        channel=channel or Channel.PRODUCTION,
-    )
-    print(
-        f"  {slot.describe()}: model read from S3 in "
-        f"{time.perf_counter() - started:.1f} s"
-    )
+    if resolved is None:
+        started = time.perf_counter()
+        resolved = resolve_channel(
+            s3_client=s3_client,
+            bucket=bucket,
+            slot=slot,
+            channel=channel or Channel.PRODUCTION,
+        )
+        print(
+            f"  {slot.describe()}: model read from S3 in "
+            f"{time.perf_counter() - started:.1f} s"
+        )
     spec = resolved.spec
     fit = resolved.fit
 

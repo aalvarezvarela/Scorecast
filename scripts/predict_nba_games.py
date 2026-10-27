@@ -37,6 +37,7 @@ from nba_ou.prediction.line_source import LINE_SOURCE_COLUMN, check_line_feed
 from nba_ou.prediction.prediction import (
     clean_prediction_frames,
     load_registry_model_and_predict,
+    read_slot_builds,
 )
 from nba_ou.prediction.prediction_store import (
     PredictionRunRecorder,
@@ -343,6 +344,11 @@ def predict_nba_games(
             frames, passthrough_columns=PASSTHROUGH_COLUMNS
         )
 
+    with timer.phase("model reads"):
+        builds = read_slot_builds(
+            s3_client=s3, bucket=SETTINGS.s3_bucket, slots=configured_slots
+        )
+
     predicted: list[str] = []
     skipped: list[str] = []
     step_number = 4
@@ -353,6 +359,9 @@ def predict_nba_games(
         step_number += 1
         slot_started = time.perf_counter()
         try:
+            build = builds.get(slot)
+            if isinstance(build, Exception):
+                raise build
             predictions_df = load_registry_model_and_predict(
                 s3_client=s3,
                 bucket=SETTINGS.s3_bucket,
@@ -365,6 +374,7 @@ def predict_nba_games(
                 latest_input=slot in latest_slots,
                 report_required_max_horizon=SETTINGS.report_required_max_horizon,
                 clean_frames=clean_frames,
+                resolved=build,
             )
         except Exception as e:  # noqa: BLE001 -- the other slots still run
             traceback.print_exc()

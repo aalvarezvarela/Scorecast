@@ -1,8 +1,8 @@
 # Faster prediction runs on the self-hosted runner
 
-Status: **Partial** (updated 2026-10-27) — P0 and P3 are done (PR #84); P2a
-and P2b are done on branch `perf/prediction-loop`. The progress log at the end
-records each step.
+Status: **Partial** (updated 2026-10-27) — P0 and P3 are done (PR #84); P2
+(a, b and c) is done on branch `perf/prediction-loop`, to be confirmed on the
+runner. The progress log at the end records each step.
 
 Where the time of the prediction workflows goes and what to change to cut it,
 ordered by saving. The measurements behind it are in
@@ -133,7 +133,7 @@ Ordered by saving.
 |---|---|---|---|---|
 | P0 · Measure before optimizing | — | low | low | **done** (PR #84) |
 | P1 · TabPFN inside the predictor | ≈6.2 min per TabPFN run | medium | low, if the fits go last | open |
-| P2 · Prediction loop | ≈2.7 min per run (from measured parts) | low–medium | low | **in progress** (P2a, P2b done) |
+| P2 · Prediction loop | ≈3 min per run (from measured parts) | low–medium | low | **done** (`perf/prediction-loop`), to confirm on the runner |
 | P3 · Persistent venv | ≈0.7 min per run | low | low | **done** (PR #84) |
 | P4 · False cache misses | 1.5–5 min when they happen; 24 min in the morning | low | one cold run on deploy | open |
 | P5 · Closing and intermediate in parallel | ≈3 min per run | medium | memory | open |
@@ -173,7 +173,7 @@ starts 2 min after that predictor run today, so nothing is delayed.
 **Check.** Compare its rows with those of the standalone TabPFN run at the
 same cutoff.
 
-### P2 · Prediction loop — in progress
+### P2 · Prediction loop — done (to confirm on the runner)
 
 Reordered on 2026-10-27 after the per-slot timings (D4): the Supabase write
 is two thirds of the loop.
@@ -232,9 +232,19 @@ On the runner (~2.5x slower) that is ~55 s → ~9 s for the compute part; the
 S3 reads (~15 s) are what is left of the loop. TabPFN saves one cleaning per
 extra target (~1 s on the runner).
 
-**P2c · Read models and specs from S3 in parallel.** Threads at the start of
-the loop. After P2b the reads are most of the loop's remaining ~25 s on the
-runner; parallel reads would save ~10–15 s per run.
+**P2c · Read the builds from S3 side by side — done** (`perf/prediction-loop`).
+The spec, fit and model of a build are immutable and already come from the
+local model cache (`~/.cache/nba_ou/models`); what each slot still waited for
+was its channel pointer, one S3 read of 0.2–0.4 s, in turn.
+`read_slot_builds` reads every slot's build with 8 threads before the loop
+(the predictor's `model reads` phase; the past-snapshot run too), and each
+slot is handed its build (`resolved=`). A failed read is kept for its slot,
+which raises it in its own turn, so it fails alone as before. Locally, warm
+cache, 51 slots: 6.5 s in turn → ~2 s, the same builds (fit, spec, model
+bytes). Expected on the runner: ~15 s → ~5 s.
+
+With P2a–c, the loop is expected to go from 3:16 (`51 slots`) to roughly 0:15
+plus ~5 s of `model reads` and well under 1 s of `cleaning`.
 
 ### P3 · Persistent venv — done
 
@@ -310,8 +320,9 @@ caches miss.
 ## Order of work
 
 1. ~~P0 and P3: phase timings and persistent venv.~~ Done (PR #84).
-2. P2a: stop the Supabase write. Then P2b, checked with identical
-   predictions; P2c if it is worth it.
+2. ~~P2a: stop the Supabase write. Then P2b, checked with identical
+   predictions; P2c if it is worth it.~~ Done on `perf/prediction-loop`;
+   confirm the phase times on the first runs after merge.
 3. P1: TabPFN inside the predictor, checked against the standalone run's rows
    at the same cutoff.
 4. P4: memo fixes, with a cold run planned outside game hours.
@@ -330,6 +341,8 @@ caches miss.
   an array into XGBoost take the slot loop from 21.9 s to 3.4 s locally, with
   identical predictions in `latest` and `own` mode; applied to TabPFN too.
   To confirm on the runner after merge (expected `51 slots` ~3:16 → ~0:25).
+- 2026-10-27 — P2c done on `perf/prediction-loop`: the 51 builds are read
+  with 8 threads before the loop (locally 6.5 s → ~2 s, same builds).
 
 ## Sources
 

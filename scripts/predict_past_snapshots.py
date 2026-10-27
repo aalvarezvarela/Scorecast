@@ -44,6 +44,7 @@ from nba_ou.prediction.line_source import LineSource
 from nba_ou.prediction.prediction import (
     clean_prediction_frames,
     load_registry_model_and_predict,
+    read_slot_builds,
 )
 from nba_ou.prediction.prediction_store import (
     PredictionRunRecorder,
@@ -172,12 +173,16 @@ def predict_past_snapshots(
     clean_frames = clean_prediction_frames(
         {"intermediate_line": frame}, passthrough_columns=PASSTHROUGH_COLUMNS
     )
+    builds = read_slot_builds(s3_client=s3, bucket=SETTINGS.s3_bucket, slots=slots)
     predicted = 0
     for slot in slots:
         label = slot.describe()
         print_step_header(step, f"Generating Predictions ({label})")
         step += 1
         try:
+            build = builds.get(slot)
+            if isinstance(build, Exception):
+                raise build
             predictions = load_registry_model_and_predict(
                 s3_client=s3,
                 bucket=SETTINGS.s3_bucket,
@@ -190,6 +195,7 @@ def predict_past_snapshots(
                 latest_input=False,
                 report_required_max_horizon=SETTINGS.report_required_max_horizon,
                 clean_frames=clean_frames,
+                resolved=build,
             )
         except Exception as exc:  # noqa: BLE001 -- the other slots still run
             traceback.print_exc()
