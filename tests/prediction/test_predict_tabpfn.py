@@ -577,6 +577,49 @@ def test_mixed_closing_schemas_use_one_frame_at_the_newest_version(monkeypatch):
     assert set(tables.model_builds["schema_version"]) == {"2_5", "2_6"}
 
 
+def _latest_quotes() -> pd.DataFrame:
+    """Tonight's latest snapshot rows, with bet365's raw quotes."""
+    return _tonight().assign(
+        TIME_TO_MATCH_MIN=[47, 197],
+        LATEST_INPUT=True,
+        ODDS_SNAP_TOT_BET365_HAS_QUOTE=1.0,
+        ODDS_SNAP_TOT_BET365_RAW_LINE=[225.0, 231.5],
+        ODDS_SNAP_TOT_BET365_PRICE_LEFT=[-115.0, -110.0],
+        ODDS_SNAP_TOT_BET365_PRICE_RIGHT=[-105.0, -110.0],
+        ODDS_SNAP_TOT_BET365_LINE_AGE_MINUTES=[4.0, 12.0],
+    )
+
+
+def test_a_closing_run_stores_the_bet_line_of_the_latest_snapshot(monkeypatch):
+    deps = _run_dependencies(monkeypatch)
+    deps["tonight_intermediate_frame"].return_value = _latest_quotes()
+    job.predict_tabpfn(targets=["line_error"])
+    builder = deps["tonight_intermediate_frame"].call_args
+    assert builder.kwargs["latest_input"] and builder.kwargs["latest_only"]
+    call = deps["persist_prediction_run"].call_args
+    assert call.kwargs["partial"] is False
+    recorder = call.args[0]
+    inputs = recorder.tables(status=store_schema.RUN_STATUS_OK).inputs
+    assert inputs["input_mode"].tolist() == [store_schema.INPUT_MODE_CLOSING] * 2
+    assert inputs["total_model_line"].tolist() == [224.5, 230.5]
+    assert inputs["total_bet_line_x2"].tolist() == [450, 463]
+    assert inputs["total_price_over"].tolist() == [-115, -110]
+    assert inputs["total_line_age_minutes"].tolist() == [4.0, 12.0]
+    # Only the closing rows were read: no intermediate input is stored.
+    assert set(recorder.input_frames()) == {"closing_line"}
+
+
+def test_a_failed_latest_snapshot_build_only_loses_the_bet_line(monkeypatch):
+    deps = _run_dependencies(monkeypatch)
+    deps["tonight_intermediate_frame"].side_effect = RuntimeError("no ticks")
+    job.predict_tabpfn(targets=["line_error"])
+    call = deps["persist_prediction_run"].call_args
+    assert call.kwargs["partial"] is False
+    tables = call.args[0].tables(status=store_schema.RUN_STATUS_OK)
+    assert len(tables.predictions) == 2
+    assert tables.inputs["total_bet_line_x2"].isna().all()
+
+
 @pytest.mark.parametrize("horizon", [720, 480, 360, 240])
 def test_scheduled_tabpfn_predicts_every_game_at_its_exact_snapshot_when_queued(
     monkeypatch, horizon
