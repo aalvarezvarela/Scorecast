@@ -1,7 +1,7 @@
 # Alternate-line ticks in the SBR/Covers line history
 
-Status: **Implemented** (2026-10-27). Reader-side filter for the 2026-27 season
-on: `src/nba_ou/postgre_db/line_history_aiven/alt_lines.py`.
+Status: **Implemented** (2026-10-27). Reader-side filter for every season,
+in `src/nba_ou/postgre_db/line_history_aiven/alt_lines.py`.
 
 ## What is wrong
 
@@ -60,37 +60,51 @@ with valid prices (|American| >= 100) is dropped when it is:
 
 The filter runs at the end of `fetch_pregame_ticks`, after the Covers
 fallback, and on tonight's live line history (`fetch_live_game_day`).
-`fetch_closing_ticks` normally keeps only the last ticks of each book
-(`last_n`, cut in SQL). For the filtered seasons it reads each book's whole
-history instead, filters it, and cuts the tail afterwards. Cutting first lost
-the close of 113 (game, market, book) cells of 2026-27, whose last five ticks
-were all alternates. Reading the 2026-27 season whole takes ~10 s. Training and prediction therefore read the same
-ticks, and so do the closing-line repair and the intermediate builder.
+`fetch_closing_ticks` keeps only the last ticks of each book (`last_n`).
+Cutting before filtering lost the close of 113 (game, market, book) cells of
+2026-27, whose last five ticks were all alternates. So each SBR read takes
+the whole history, drops the alternates and only then cuts the tail
+(`_closing_tail`). Covers' games go through the same steps after the
+fallback. Training and prediction therefore read the same ticks, and so do
+the closing-line repair and the intermediate builder.
 
 Measured on the stored ticks:
 
 | | Dropped |
 | --- | --- |
-| 2025-26 regular season (not filtered; what the rule would drop) | 0.08% |
-| 2025-26 playoffs (not filtered) | 4.2% |
+| 2019-20 to 2024-25 | 0.01-0.6% |
+| 2025-26 regular season | 0.08% |
+| 2025-26 playoffs | 4.3% |
 | 2026-10-21 / 2026-10-22 | 80% / 56% |
 | Other days of 2026-27 | 1-3% |
 
 The mean prior-game `ABS_MOVE_OPEN_TO_CLOSE` per game goes from 113 points
-(raw 2026-27) to 9-12, against 8-12 in 2025-26.
+to 9-12 in 2026-27, and from 19.5-20.4 to 8.1-8.9 in the 2025-26 playoffs
+(36-38 of their 85 games change by more than 10 points). In 2019-20 to
+2024-25 no game changes by more than 10 points. Playoff games are not
+training rows, but the cross-season windows read them: the first 2026-27
+games of the playoff teams and the league windows at the season's start.
+The closing lines of those playoffs were already right: `closing_line_repair`
+had replaced the alternates.
 
 ## Scope and caches
 
-- Only seasons from `FIRST_FILTERED_SEASON` (2026) are filtered. Earlier
-  seasons feed the frozen 2_5 base. The 2025-26 playoffs are left as they are
-  until a base rebuild decides otherwise.
+- Every season is filtered (`FIRST_FILTERED_SEASON`, 2018: the first season
+  either store holds). It was 2026-27 only at first. The change was rebuilt
+  in place under the 2_5 label (`config/dataset_versions.py`), starting with
+  the S3 season partitions. The frozen 2_5 Parquet files built before it
+  still carry the alternates.
 - The filtered seasons' fingerprints carry `FILTER_VERSION`
   (`pregame_tick_fingerprints`, and the closing ticks'
   `attrs["season_fingerprints"]`). The intermediate snapshot-history memo
-  is keyed on these fingerprints, so the 2026 entry is rebuilt rather than
-  served unfiltered. Change `FILTER_VERSION` whenever the rule changes.
-- The raw-tick input caches hold the store's rows as stored. The filter runs
-  after them.
+  and the closing-line repair memo are keyed on these fingerprints, so their
+  entries are rebuilt rather than served unfiltered. Change `FILTER_VERSION`
+  whenever the rule changes.
+- The pre-game tick caches hold the store's rows as stored, and the filter
+  runs after them. The closing tick caches hold the filtered tails: their key
+  carries the filter's code and `FILTER_VERSION`. After a change, refresh
+  them (`scripts/refresh_input_cache.py --tables
+  line_history_aiven.closing_ticks`) before the next builds.
 - After a change to the filter, rebuild the filtered seasons' partitions
   (`scripts/create_train_data/build_season_partitions.py rebuild`).
 

@@ -234,6 +234,17 @@ History
     built before this change are not comparable with later ones.
     ``docs/pipeline/exhibition_games.md``.
 
+    Both datasets, rebuilt in place under the 2_5 label (the same bug-fix
+    precedent), first in the S3 season partitions (2026-10-27): **every
+    line-history read drops the alternate-line quotes the SBR/Covers feed files
+    as the main line** (``line_history_aiven.alt_lines``). They were <=0.1% of
+    the totals/spread ticks until March 2026, 4.3% in the 2025-26 playoffs
+    and up to 84% on 2026-10-21/22. Line-movement, prior-game dynamics and
+    snapshot-line values move, mostly in 2025-26's playoffs and in the
+    windows that read them; columns and names are unchanged. The frozen 2_5
+    Parquet files under ``data/train_data`` built before this change still
+    carry those quotes. ``docs/odds/alternate_line_ticks.md``.
+
 ``2_6``
     First layered version, over ``2_5`` (``schema_layers/v2_6.py``).
 

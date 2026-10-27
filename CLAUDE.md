@@ -72,7 +72,7 @@ survived the evaluation discipline in the `experiments` skill.
     reads and in tonight's prediction —
     `docs/odds/covers_line_history.md`). Every tick read, stored or live,
     drops the alternate-line quotes the SBR/Covers feed files as the main
-    line, for 2026-27 on (`line_history_aiven/alt_lines.py`,
+    line, in every season (`line_history_aiven/alt_lines.py`,
     `docs/odds/alternate_line_ticks.md`).
     OddsLogic and MoviOdds automatic updates are disabled as of 2026-10-24:
     too slow and unstable for the value they add. Keep their implementations

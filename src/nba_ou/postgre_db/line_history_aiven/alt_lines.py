@@ -33,9 +33,11 @@ The rule needs each book's whole history: a reader that keeps only the last
 ticks must drop alternates before cutting (``fetch_closing_ticks``), or a tail
 of alternates would hide the main line before it.
 
-Only seasons from ``FIRST_FILTERED_SEASON`` on are filtered: earlier seasons
-feed the frozen 2_5 base, whose columns must not change, and carry ~0.1% of
-such ticks (2025-26 playoffs 3.8%). ``filtered_fingerprints`` marks the
+Every season the stores hold is filtered (``FIRST_FILTERED_SEASON``, 2018
+on). Until 2025-26's playoffs such ticks were ~0.1% or less, so the earlier
+seasons barely move; the 2025-26 playoffs (4.3%) do. This changes the 2_5
+season partitions from the frozen 2_5 files the campaigns read
+(``docs/odds/alternate_line_ticks.md``). ``filtered_fingerprints`` marks the
 filtered seasons' fingerprints, so memos keyed on them are rebuilt.
 """
 
@@ -46,8 +48,9 @@ import pandas as pd
 
 from nba_ou.data_processing.line_history.normalization import devig_two_way
 
-#: First season whose ticks are filtered.
-FIRST_FILTERED_SEASON = 2026
+#: First season whose ticks are filtered: every season either store holds
+#: (Covers' backfill reaches 2018-19, SBR's 2019-20).
+FIRST_FILTERED_SEASON = 2018
 
 #: Changes whenever the rule below changes: it is part of the filtered
 #: seasons' fingerprints, so memos built from the earlier rule are not reused.
@@ -197,6 +200,16 @@ def drop_alternate_lines(ticks: pd.DataFrame) -> pd.DataFrame:
         f"(seasons {FIRST_FILTERED_SEASON}+)"
     )
     return out
+
+
+#: The functions that decide which ticks go: part of the closing-ticks cache
+#: key (``fetch._closing_season_reader``), with ``FILTER_VERSION``.
+ALT_LINE_FILTER_CODE = (
+    _level,
+    _other_books_median,
+    alternate_line_mask,
+    drop_alternate_lines,
+)
 
 
 def filtered_fingerprints(fingerprints: dict[int, list]) -> dict[int, list]:
