@@ -33,6 +33,11 @@ from nba_ou.config.odds_columns import HISTORY_ONLY_BOOKS
 from nba_ou.postgre_db.config.db_config import connect_line_history_db
 from nba_ou.postgre_db.input_cache import SeasonCache, code_key
 
+from .alt_lines import (
+    FIRST_FILTERED_SEASON,
+    drop_alternate_lines,
+    filtered_fingerprints,
+)
 from .schema import SCHEMA
 
 #: Market codes as stored in ``lh_market``.
@@ -197,7 +202,8 @@ def fetch_pregame_ticks(
 
     ``covers_fallback`` takes from the Covers store the games SBR's history
     lacks or cuts short (``line_history_covers.fallback``), after the caches:
-    those hold SBR's reads only.
+    those hold SBR's reads only. Alternate-line quotes of the filtered seasons
+    are dropped last (``alt_lines``), whichever store they came from.
 
     One query per season, each on a fresh connection and retried if Aiven drops
     it: all seasons at once is ~2.5M rows, and on 2026-09-17 that single
@@ -229,13 +235,13 @@ def fetch_pregame_ticks(
             _chunk_label,
         )
     ticks = _alias_books(ticks, exclude_books)
-    if not covers_fallback:
-        return ticks
-    from nba_ou.postgre_db.line_history_covers import fallback
+    if covers_fallback:
+        from nba_ou.postgre_db.line_history_covers import fallback
 
-    return fallback.pregame_ticks(
-        ticks, [int(s) for s in season_years], conn=conn, **kwargs
-    )
+        ticks = fallback.pregame_ticks(
+            ticks, [int(s) for s in season_years], conn=conn, **kwargs
+        )
+    return drop_alternate_lines(ticks)
 
 
 def _fetch_pregame_ticks_once(
@@ -341,6 +347,12 @@ def fetch_closing_ticks(
     and appends the Covers season's fingerprint to
     ``attrs["season_fingerprints"]`` where Covers holds games of it.
 
+    Alternate-line quotes of the filtered seasons (``alt_lines``) are dropped
+    before the ``last_n`` tail is cut: those seasons are read whole, filtered,
+    and then cut, so a run of alternates at the end of a book's history cannot
+    hide the main line before it. Their fingerprints carry the filter's
+    version.
+
     ``use_cache`` reuses a season's ticks from the local input cache while its
     server-side fingerprint (``line_history_season_fingerprint``) is unchanged; see
     ``nba_ou.postgre_db.input_cache``. It applies to season fetches without an
@@ -352,13 +364,108 @@ def fetch_closing_ticks(
     the query runs once, as given. See ``_fetch_closing_ticks_once`` for what is
     returned.
     """
+    if season_years is None and game_ids is None:
+        raise ValueError("Pass season_years or game_ids.")
+    read = dict(
+        markets=markets,
+        min_minutes_before_tip=min_minutes_before_tip,
+        conn=conn,
+        use_cache=use_cache,
+        covers_fallback=covers_fallback,
+    )
+    parts = []
+    for filtered in (False, True):
+        seasons, ids = _filter_scope(season_years, game_ids, filtered=filtered)
+        if seasons is None and ids is None:
+            continue
+        if not filtered:
+            parts.append(_read_closing_ticks(seasons, ids, last_n=last_n, **read))
+            continue
+        ticks = drop_alternate_lines(_read_closing_ticks(seasons, ids, None, **read))
+        parts.append(_last_ticks(ticks, last_n))
+    if not parts:  # empty lists of seasons and ids: nothing to read
+        return _read_closing_ticks(season_years, game_ids, last_n, **read)
+    ticks = parts[0] if len(parts) == 1 else _concat_parts(parts)
+    if "season_fingerprints" in ticks.attrs:
+        ticks.attrs["season_fingerprints"] = filtered_fingerprints(
+            ticks.attrs["season_fingerprints"]
+        )
+    return ticks
+
+
+def _filter_scope(
+    season_years: list[int] | None,
+    game_ids: list[str] | None,
+    *,
+    filtered: bool,
+) -> tuple[list[int] | None, list[str] | None]:
+    """The seasons and game ids of a request the alternate-line filter does
+    (``filtered``) or does not apply to; None where the request has none."""
+
+    def wanted(season: int) -> bool:
+        return (season >= FIRST_FILTERED_SEASON) == filtered
+
+    seasons = (
+        None
+        if season_years is None
+        else [int(s) for s in season_years if wanted(int(s))] or None
+    )
+    ids = (
+        None
+        if game_ids is None
+        else [str(g) for g in game_ids if wanted(2000 + int(str(g).zfill(10)[3:5]))]
+        or None
+    )
+    return seasons, ids
+
+
+def _last_ticks(ticks: pd.DataFrame, last_n: int | None) -> pd.DataFrame:
+    """The ``last_n`` latest ticks per (game, market, book), in the order
+    ``_fetch_closing_ticks_once`` returns them."""
+    if last_n is None or ticks.empty:
+        return ticks
+    attrs = dict(ticks.attrs)
+    key = ["game_id", "market", "book", "line_ts"]
+    out = ticks.sort_values(key, kind="stable")
+    out = out.groupby(key[:-1], sort=False).tail(last_n).reset_index(drop=True)
+    out.attrs = attrs
+    return out
+
+
+def _concat_parts(parts: list[pd.DataFrame]) -> pd.DataFrame:
+    """Unfiltered and filtered reads as one frame, in the readers' order."""
+    fingerprints = {}
+    for part in parts:
+        fingerprints.update(part.attrs.get("season_fingerprints") or {})
+    key = ["game_id", "market", "book", "line_ts"]
+    out = (
+        pd.concat([part for part in parts if not part.empty], ignore_index=True)
+        if any(not part.empty for part in parts)
+        else parts[0]
+    )
+    out = out.sort_values(key, kind="stable").reset_index(drop=True)
+    if fingerprints:
+        out.attrs["season_fingerprints"] = fingerprints
+    return out
+
+
+def _read_closing_ticks(
+    season_years: list[int] | None,
+    game_ids: list[str] | None,
+    last_n: int | None,
+    *,
+    markets: tuple[str, ...],
+    min_minutes_before_tip: int,
+    conn: psycopg.Connection | None,
+    use_cache: bool,
+    covers_fallback: bool,
+) -> pd.DataFrame:
+    """``fetch_closing_ticks`` before the alternate-line filter."""
     kwargs = {
         "last_n": last_n,
         "markets": markets,
         "min_minutes_before_tip": min_minutes_before_tip,
     }
-    if season_years is None and game_ids is None:
-        raise ValueError("Pass season_years or game_ids.")
     ticks = _fetch_sbr_closing_ticks(
         season_years=season_years,
         game_ids=game_ids,
@@ -600,7 +707,9 @@ def pregame_tick_fingerprints(
 
     A finished season the S3 input cache validated recently gives its stored
     fingerprint -- the refresher re-checks it against the server daily --
-    and any other the server's (``line_history_season_fingerprint``).
+    and any other the server's (``line_history_season_fingerprint``). The
+    seasons ``fetch_pregame_ticks`` filters carry the filter's version
+    (``alt_lines.filtered_fingerprints``).
     """
     kwargs = {
         "markets": markets,
@@ -637,17 +746,17 @@ def pregame_tick_fingerprints(
             for season in missing:
                 out[season] = line_history_season_fingerprint(conn, season)
     out = {season: out[int(season)] for season in season_years}
-    if not covers_fallback:
-        return out
-    # fetch_pregame_ticks adds Covers' games, so its fingerprint is an input too.
-    from nba_ou.postgre_db.line_history_covers import fallback
+    if covers_fallback:
+        # fetch_pregame_ticks adds Covers' games, so its fingerprint is an
+        # input too.
+        from nba_ou.postgre_db.line_history_covers import fallback
 
-    try:
-        with connect_line_history_db() as conn:
-            return fallback.extend_fingerprints(out, conn)
-    except Exception as exc:  # noqa: BLE001 -- as the tick read's own fallback
-        print(f"! pregame ticks: Covers fingerprints unavailable ({exc})")
-        return out
+        try:
+            with connect_line_history_db() as conn:
+                out = fallback.extend_fingerprints(out, conn)
+        except Exception as exc:  # noqa: BLE001 -- as the tick read's own fallback
+            print(f"! pregame ticks: Covers fingerprints unavailable ({exc})")
+    return filtered_fingerprints(out)
 
 
 def _closing_ticks_spec() -> tuple:

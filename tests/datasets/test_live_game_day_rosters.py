@@ -1,10 +1,9 @@
 """Current intermediate runs fetch rosters before ingesting injury names."""
 
-from types import SimpleNamespace
-
 import pandas as pd
 import pytest
 from nba_ou.create_training_data import live_game_day as live
+from nba_ou.postgre_db.line_history_aiven.live import LiveLineHistory
 
 
 @pytest.mark.parametrize("replay", [False, True])
@@ -34,7 +33,9 @@ def test_intermediate_bundle_shares_rosters_and_replay_never_refreshes_injuries(
         assert (
             kwargs["as_of"] == as_of if replay else kwargs["as_of"].tzinfo is not None
         )
-        return SimpleNamespace(as_of=kwargs["as_of"])
+        return LiveLineHistory(
+            ticks=pd.DataFrame(), games=pd.DataFrame(), as_of=kwargs["as_of"]
+        )
 
     monkeypatch.setattr(live, "load_live_rosters", fetch_rosters)
     monkeypatch.setattr(live, "synchronize_injury_reports", sync)

@@ -49,6 +49,7 @@ the folder of its topic, with a status line, and gets a row here.
 | [oddslogic_line_history.md](odds/oddslogic_line_history.md) | Unmaintained | OddsLogic (WagerTalk) ingestion implemented but unused; automatic updates disabled due to slowness, instability and limited value; retained for possible reuse | `fetch_data/odds_oddslogic/`, `postgre_db/line_history_oddslogic/` |
 | [moviodds_line_history.md](odds/moviodds_line_history.md) | Unmaintained | MoviOdds bet365 ingestion implemented but unused; automatic updates disabled due to slowness, instability and limited value; retained for possible reuse | `fetch_data/odds_moviodds/`, `postgre_db/line_history_moviodds/` |
 | [covers_line_history.md](odds/covers_line_history.md) | Implemented | Covers line history (SBR's feed, nine US books incl. bet365): endpoints, parsing rules, `consensus_opener` = BetMGM's opener, the `line_history_covers` store (incl. the Covers Consensus pick counts, `lh_consensus`), its daily update, parity with SBR, the past-gap audit and backfill, and its use as SBR's per-game fallback (stored training reads and the live prediction) | `fetch_data/odds_covers/`, `postgre_db/line_history_covers/` |
+| [alternate_line_ticks.md](odds/alternate_line_ticks.md) | Implemented | Alternate-line quotes the SBR/Covers feed files as the main line (burst 2026-10-21/22, low level since April 2026): the audit and the reader-side filter for 2026-27 on | `postgre_db/line_history_aiven/alt_lines.py` |
 
 ## intermediate/ — snapshot (pre-close) datasets and serving
 
