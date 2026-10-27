@@ -29,8 +29,12 @@ rows and columns of that slot's production build
    The run goes to the prediction store (S3 run archive + Aiven) with
    ``runs.workflow`` 3 and ``model_builds.kind`` 3.
 
-The closing rows keep no raw quote, so the stored bet line is null; the model
-line (``inputs.total_model_line``) is the line of this moment.
+The closing rows keep no raw quote. As in the daily predictor, a closing run
+also builds each game's latest snapshot row, only for the store: the bet line,
+prices and cross-book lines of this moment come from it
+(``PredictionRunRecorder``). If that build fails the run goes on and the bet
+line stays null; the model line (``inputs.total_model_line``) is the line of
+this moment either way.
 """
 
 from __future__ import annotations
@@ -391,6 +395,7 @@ def predict_tabpfn(
         print_status("No scheduled games for this date; nothing to predict.")
         return
 
+    latest_quotes = None
     if dataset_type == CLOSING_LINE:
         not_filed = {str(game) for game in scheduled_data["games_not_updated"]}
         if not_filed >= set(scheduled_data["scheduled_games"]["GAME_ID"].astype(str)):
@@ -407,6 +412,22 @@ def predict_tabpfn(
             scheduled_data, schema_version=frame_version, game_date=date_to_predict
         )
         print_status(f"{len(df_to_predict)} game(s) to predict")
+        # The closing rows keep no raw quote: the store takes the bet line,
+        # prices and cross-book lines from each game's latest snapshot, as
+        # in the daily predictor. No model reads these rows.
+        try:
+            latest_quotes = tonight_intermediate_frame(
+                scheduled_data,
+                game_date=date_to_predict,
+                latest_input=True,
+                latest_only=True,
+            )
+        except Exception as exc:  # noqa: BLE001 -- only the bet line is lost
+            print_status(
+                f"Latest snapshot rows failed ({type(exc).__name__}: {exc}); "
+                "the stored bet line stays null",
+                ok=False,
+            )
     else:
         print_step_header(2, f"Preparing Tonight's T-{horizon} Rows")
         if cutoff is not None:
@@ -449,6 +470,10 @@ def predict_tabpfn(
     )
     recorder.set_schedule(scheduled_data["scheduled_games"])
     recorder.add_frame(dataset_type, df_to_predict, version=frame_version)
+    if latest_quotes is not None:
+        recorder.add_frame(
+            INTERMEDIATE_LINE, latest_quotes, version=BASE_SCHEMA_VERSION
+        )
     for target, spec, training_set in zip(targets, specs, training_sets, strict=True):
         label = (
             f"{spec.identity.schema_version}/{target}/{format_horizon(horizon)}/"
