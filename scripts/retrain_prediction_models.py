@@ -24,7 +24,6 @@ reads the same partitions.
 import argparse
 import getpass
 import os
-import resource
 import sys
 import time
 from collections import defaultdict
@@ -57,6 +56,7 @@ from nba_ou.modeling.registry_store import (
     write_build,
 )
 from nba_ou.utils.ci import annotate
+from nba_ou.utils.phase_timer import duration, peak_rss
 from nba_ou.utils.s3_models import make_s3_client
 
 TODAY_TIMEZONE = ZoneInfo("Europe/Madrid")
@@ -72,19 +72,6 @@ def configure_tqdm_for_environment() -> None:
     mode = os.getenv("NBA_OU_GITHUB_ACTIONS_TQDM", "disable").strip().lower()
     if os.getenv("GITHUB_ACTIONS", "").lower() == "true" and mode != "keep":
         os.environ.setdefault("TQDM_DISABLE", "1")
-
-
-def _duration(seconds: float) -> str:
-    minutes, seconds = divmod(int(round(seconds)), 60)
-    return f"{minutes}m {seconds:02d}s"
-
-
-def _peak_rss() -> str:
-    """This process's memory peak so far, and the largest finished child's
-    (the intermediate builder forks its horizons). Linux reports KiB."""
-    own = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024**2
-    child = resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss / 1024**2
-    return f"{own:.1f} GB" + (f" (largest child {child:.1f} GB)" if child else "")
 
 
 class PhaseTimings:
@@ -116,8 +103,8 @@ class PhaseTimings:
             entry[0].append(seconds)
             entry[1] += failed
             print(
-                f"[time] {label}: {_duration(seconds)}"
-                f"{' (did not finish)' if failed else ''}; peak RSS {_peak_rss()}",
+                f"[time] {label}: {duration(seconds)}"
+                f"{' (did not finish)' if failed else ''}; peak RSS {peak_rss()}",
                 flush=True,
             )
 
@@ -131,15 +118,15 @@ class PhaseTimings:
                     continue
                 total += sum(runs)
                 parts.append(
-                    f"{phase} {len(runs)}x {_duration(sum(runs))}"
+                    f"{phase} {len(runs)}x {duration(sum(runs))}"
                     + (f" ({failed} did not finish)" if failed else "")
                 )
             lines.append(
-                f"  {dataset_type:<18} {' | '.join(parts)} | total {_duration(total)}"
+                f"  {dataset_type:<18} {' | '.join(parts)} | total {duration(total)}"
             )
         lines.append(
-            f"  whole run {_duration(time.perf_counter() - self.started)}; "
-            f"peak RSS {_peak_rss()}"
+            f"  whole run {duration(time.perf_counter() - self.started)}; "
+            f"peak RSS {peak_rss()}"
         )
         return "\n".join(lines)
 

@@ -152,8 +152,10 @@ them yet.
 
 **Check:** the first run of each self-hosted job (predict, past snapshots,
 TabPFN, retrain, both DB updates): the install step's duration, and that the
-job gets past its imports. The venv is rebuilt every run from the runner's pip
-cache; if that is slow, keep one venv per job under the runner's work dir.
+job gets past its imports. Since 2026-10-27 each job's venv is reused across
+runs (`.github/actions/job-venv`, under `~/.cache/nba_ou/venvs/<runner>/`):
+the first run after a requirements change builds it (~1 min), later runs log
+`Reusing <name>` and take a few seconds.
 
 ### 7. Inactive list moved into the box score (seen 2026-10-26) — fixed in code
 

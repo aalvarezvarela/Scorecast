@@ -1,7 +1,8 @@
 # Runner timings: prediction and retrain on the self-hosted runner
 
 Status: **Research** (measured 2026-10-22, code at `feat/daily-cronjobs`
-80e10f0, on top of dev 451b3ee)
+80e10f0, on top of dev 451b3ee; production runs re-read 2026-10-27, see
+"2026-10-27: warm runs in production")
 
 How long the two heavy daily workflows take on the self-hosted runner, cold
 and warm, so the daily schedule (`docs/serving/snapshot_triggers.md`) can be
@@ -26,6 +27,37 @@ the 09:00 database update from the runner's own logs.
   injury-report step repeats its 55-min run of 2026-10-20 (see below).
 - Five findings below cost time, or block the schedule outright. Three are cheap
   to fix.
+
+## 2026-10-27: warm runs in production
+
+Read from the workflow logs of 2026-10-26/27 (commits 1bcfe35 and 0f35ef6),
+not a separate measurement. A warm predictor run takes **~13.9 min**, with 1
+game or with 9: the cost is the history each run rebuilds and the 51 slots,
+not tonight's games.
+
+| Phase (run of 2026-10-27 00:01 UTC) | Time |
+|---|---:|
+| Job setup (checkout, venv, pip) | 0:51 |
+| Database update, SBR feed, schedule and reports | 1:22 |
+| Closing rows | 3:24 |
+| Intermediate rows (base 1:46, join 0:39, report states 0:54, market dynamics 0:23, injuries 0:25) | 4:35 |
+| 51 slots (~3.7 s each) | 3:26 |
+| Storing | 0:13 |
+
+A warm TabPFN run at one horizon is ~8 min, of which ~1.3 min is its own
+(spec, the two fits, storing); the rest repeats what the covering predictor
+run built two minutes earlier. Validating the history memo costs seconds
+(digests ~0.7 s, the injury-report fingerprint ~1.1 s, measured locally); a
+memo miss costs minutes.
+
+Since the same date every self-hosted job logs unbuffered
+(`PYTHONUNBUFFERED`), so each log line carries the time it was printed, and
+the predictor and TabPFN print a `[time] <phase>: <duration>; peak RSS ...`
+line as each phase ends (`nba_ou.utils.phase_timer`), one per slot with its
+model read and Supabase upload, and a `Timings (wall clock)` summary before
+their own summary. The job venv is reused across runs
+(`.github/actions/job-venv`): setup drops from ~50–60 s to a few seconds
+except after a requirements change.
 
 ## Machine and slate
 
@@ -185,7 +217,11 @@ so the slow install happens only when the requirements change.
    already does for partitions) keeps it. That saves ~3 min per run while the S3
    cache is expired (P3 → P4), and little once it is valid.
 
-5. **Every code change makes the next prediction cold (~70 min, less with
+5. **Superseded: the memo key is now frozen.** Since the frozen code key
+   (`history_memo.frozen_code_key`: base schema, root modules and main book),
+   a deploy keeps every memo entry; only a change to the inputs refuses one.
+   What follows describes the source-keyed memo of 2026-10-22.
+   **Every code change made the next prediction cold (~70 min, less with
    finding 3 fixed).** The memo keys include the source of the modules that
    build each entry (`history_memo.code_key`). A merge to `main` that touches
    the builders therefore invalidates the memo, and the first booked run after

@@ -77,6 +77,7 @@ jobs:
         timeout-minutes: 60
         env:
             PYTHONWARNINGS: "ignore::UserWarning,ignore::DeprecationWarning,ignore::FutureWarning"
+            PYTHONUNBUFFERED: "1"
             TQDM_DISABLE: "1"
 
             # Critical for resolving imports that live under src/
@@ -111,19 +112,12 @@ jobs:
               with:
                   python-version: "3.12"
 
-            # A fresh venv per run: the runner's tool-cache Python is shared by
-            # every job, so packages another job left there would hide a missing
-            # dependency here.
-            - name: Create job venv
-              run: |
-                  python -m venv "$RUNNER_TEMP/venv"
-                  echo "$RUNNER_TEMP/venv/bin" >> "$GITHUB_PATH"
-
-            - name: Install dependencies
-              run: |
-                  python -m pip install --upgrade pip
-                  pip install -r requirements/predict-tabpfn-cuda.txt
-                  pip install --no-deps -e .
+            # The job's own venv, reused across runs while its requirements and
+            # Python stay the same (.github/actions/job-venv).
+            - name: Job venv
+              uses: ./.github/actions/job-venv
+              with:
+                  requirements: requirements/predict-tabpfn-cuda.txt
 
             # Taken right before the run, not at the start: the 1 h OIDC
             # session then outlasts the job's 60 min timeout, so the S3 writes
