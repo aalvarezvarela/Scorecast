@@ -1,8 +1,9 @@
 # Faster prediction runs on the self-hosted runner
 
-Status: **Partial** (updated 2026-10-27) — P0 and P3 are done (PR #84); P2
-(a, b and c) is done on branch `perf/prediction-loop`, to be confirmed on the
-runner. The progress log at the end records each step.
+Status: **Partial** (updated 2026-10-28) — P0 and P3 are done (PR #84); P2
+(a, b and c) and P4 are done on branch `perf/prediction-loop`, to be confirmed
+on the runner. P1, P5, P6 and P7 are open. The progress log at the end records
+each step.
 
 Where the time of the prediction workflows goes and what to change to cut it,
 ordered by saving. The measurements behind it are in
@@ -105,18 +106,21 @@ report fingerprint 1.1 s (twice per intermediate build), 5–15 s per run in
 all. The misses that should not happen are what cost:
 
 - Report states rebuilt for every season: +1:25. The chained fingerprint
-  starts with the dimension tables, so a new row in them (probably a new
-  injury reason) invalidates every season.
-- Shrinkage priors: +0:29.
+  starts with the dimension tables, so a new row in them (a new injury
+  reason) invalidates every season. Seen in 6 runs over 2026-10-26/27.
+  Fixed (P4).
+- Shrinkage priors: +0:29. Their key holds the same report fingerprint, so
+  they missed with the report states. Fixed with them (P4).
 - Closing rows of the first retrain of the day: +24 min (27:40 instead of
-  3:40), on both days observed. The past seasons' input tables did not
-  change; the cause is unknown.
-- New on 2026-10-27, from the 18:30 UTC run on: `intermediate_snapshot_history`
-  reports "inputs changed" for 2019–2025 on every run and is rebuilt
-  ("1 season(s) stored, built [2019 … 2025]"), so the intermediate rows take
-  10–11 min instead of ~5–7. The same run (18:30) spent 27:08 on the closing
-  rows. Cause not identified; the line-history partitions were rebuilt for the
-  alternate-line filter that day (PR #85, PR #86 merged 21:42 UTC).
+  3:40), on both days observed. Cause found (P4): the merged odds frame was
+  sorted with an unstable sort, so each night's new games reshuffled the rows
+  of earlier seasons and their memo entries missed. Fixed.
+- 2026-10-27 15:30–20:30 UTC: `closing_line_repair`,
+  `intermediate_snapshot_history` and other memos missed for 2018–2025 on
+  several runs. Not a key fault: the line history of every past season was
+  rewritten that afternoon (closing ticks re-uploaded to the input cache at
+  14:39–14:44 for the alternate-line filter, PR #85/#86), and the memos
+  rebuilt as they should. From the 21:30 run on they hit again.
 
 ### D7 The runner is 2.5–3x slower than the development laptop
 
@@ -135,7 +139,7 @@ Ordered by saving.
 | P1 · TabPFN inside the predictor | ≈6.2 min per TabPFN run | medium | low, if the fits go last | open |
 | P2 · Prediction loop | ≈3 min per run (from measured parts) | low–medium | low | **done** (`perf/prediction-loop`), to confirm on the runner |
 | P3 · Persistent venv | ≈0.7 min per run | low | low | **done** (PR #84) |
-| P4 · False cache misses | 1.5–5 min when they happen; 24 min in the morning | low | one cold run on deploy | open |
+| P4 · False cache misses | ~24 min each morning retrain; ~1:54 per new injury reason | low | one cold run on deploy | **done** (`perf/prediction-loop`), to confirm on the runner |
 | P5 · Closing and intermediate in parallel | ≈3 min per run | medium | memory | open |
 | P6 · Runner hardware | depends on the result | low to measure | — | open |
 | P7 · Streamlit on Aiven | — (unblocks the Supabase clean-up) | medium | dashboard history | open |
@@ -253,19 +257,65 @@ runner, requirements file and Python, under `~/.cache/nba_ou/venvs`, reused
 while its packages match and rebuilt otherwise. Merged in PR #84 (f97e28b).
 Setup went from 50–60 s to ~10 s.
 
-### P4 · False cache misses
+### P4 · False cache misses — done (to confirm on the runner)
 
-- **Reports.** Each season's fingerprint includes only the dimension rows that
-  season uses, not the whole table.
-- **Closing.** Digest the closing memo with `values_only`, as was done for the
-  injuries in #79.
-- **Retrain.** Diagnose the miss of the first retrain of the day by comparing
-  each input's and season's digest between the first and the second retrain.
-- **Snapshot history (new, D6).** Find why `intermediate_snapshot_history`
-  rebuilds 2019–2025 on every run since 2026-10-27 18:30 UTC and stores only
-  one season; check it again after PR #86.
-- **Cost.** Changing a digest invalidates those entries once: deploy it and
-  dispatch a cold run outside game hours.
+Read from the memo reports of every predictor and retrain run of 2026-10-26/27
+(31 runs). Three kinds of miss, beyond the current season's expected one:
+
+**Morning retrain (+24 min) — fixed.** On both days the first retrain missed
+`closing_line_repair`, `player_history_rows` and `availability_effects` from
+one season on (2022–2025 on 2026-10-26, 2020–2025 on 2026-10-27), and later
+runs hit again. No past-season input had changed: the 07:00 refresh found
+every input-cache season unchanged, and no job ran in between that writes
+those memos. The cause was `merge_yahoo_sportsbook_odds` sorting the merged
+odds frame by `game_date` with pandas' default quicksort, which is not stable:
+a date's games came out in an order that depended on every other row, so the
+games each night added reshuffled earlier seasons' rows. The memo digests rows
+in order, so each season from the first reshuffled one missed — the repair
+memo directly, the chained closing memos (`odds` is one of their inputs) from
+there on. Measured on the real frame: leaving out the games from 2026-10-24,
+-25 or -26 on changed the row digest of 2020–2025 with quicksort and of no
+season with the stable sort. The sort is now `kind="stable"`, as
+`merge_scheduled_odds` already was for the same reason: a date's games keep
+the merge's game-id order. `game_id` is unique in the merged frame (9,003
+rows, 2011–2026) and every consumer merges on it, so only the row order
+changes, never a value. `test_merge_odds_row_order.py` fails on the old sort.
+Checked end to end: the closing rows of 2026-10-26's nine games, built in
+target mode (as the retrain builds them) on an empty local memo, are equal
+bit for bit (`compare_builds.py --exact`, 1,670 columns) with the old sort
+patched back in; built again on that memo, every season hits (8 repair, 17
+player-history tables) and the rows are equal again, in 90 s.
+
+**New injury reason (report states +1:25, priors +0:29) — fixed.**
+`report_season_fingerprints` started its chain with the whole dimension tables
+(`ir_team`, `ir_reason`, `ir_reason_category`, `ir_status`); `ir_reason`
+(5,364 free-text rows) gains rows with new reports, so every season's report
+states and the effect priors missed. Each season's fingerprint now holds only
+the dimension rows its spans, filings and games join. Checked on Aiven by
+taking the last 20 reasons out: the old fingerprint changes for 2018–2026, the
+new one for 2026 only (the one season using them). The query takes ~1.6 s
+instead of ~1.05 s.
+
+**Misses now name their cause.** Every memo stores what its digest is made of
+(`HistoryMemo(parts=...)`: each input table for the chained memos, odds rows
+and closing ticks for the repair, settings and ticks for the snapshot history,
+reports and cutoffs for the report states and priors). A miss reports
+`inputs changed (odds)` or `(an earlier season)` instead of a bare `inputs
+changed`; the digests themselves are unchanged. Entries written before this
+report as before until rewritten.
+
+**Not done: `values_only` for the closing memo.** The plan proposed it (as #79
+did for the intermediate injuries). The logs show no disagreement between the
+retrain and the predictor — the 12:55 retrain hits the predictor's entries —
+so it would cost a cold rebuild for nothing. Revisit if a miss report names a
+dtype or column change.
+
+**Deploy.** The stable sort reorders the odds frame once and the report
+fingerprints change once, so the first runs after merge rebuild the closing
+memos (~24 min on the runner) and the report states and priors (~2 min).
+Merge outside game hours and dispatch one predictor run with `persist` off.
+Then check the next morning's retrain: the closing memos should hit, and any
+miss should name its part.
 
 ### P5 · Closing and intermediate in parallel
 
@@ -325,7 +375,9 @@ caches miss.
    confirm the phase times on the first runs after merge.
 3. P1: TabPFN inside the predictor, checked against the standalone run's rows
    at the same cutoff.
-4. P4: memo fixes, with a cold run planned outside game hours.
+4. ~~P4: memo fixes, with a cold run planned outside game hours.~~ Done on
+   `perf/prediction-loop`; deploy with a warm-up run, then check the next
+   morning retrain's memo report.
 5. P6, then P5 only if the runner's memory allows it.
 6. P7: Streamlit on Aiven, then the Supabase clean-up.
 
@@ -343,6 +395,12 @@ caches miss.
   To confirm on the runner after merge (expected `51 slots` ~3:16 → ~0:25).
 - 2026-10-27 — P2c done on `perf/prediction-loop`: the 51 builds are read
   with 8 threads before the loop (locally 6.5 s → ~2 s, same builds).
+- 2026-10-28 — P4 done on `perf/prediction-loop`. Morning retrain miss
+  (+24 min): unstable sort of the merged odds frame, now stable; closing rows
+  identical bit for bit. Report-state and prior misses on each new injury
+  reason: fingerprint now per-season dimension rows. Every memo miss names the
+  inputs that changed. The 2026-10-27 afternoon misses were the line-history
+  rebuild, not a key fault. `values_only` for the closing memo not needed.
 
 ## Sources
 
@@ -356,3 +414,7 @@ caches miss.
 - Cache timings measured locally on real Supabase, Aiven and S3 data.
 - Store ranges: read-only queries of `prediction.runs` (Aiven) and the
   Supabase predictions table, 2026-10-27.
+- P4 memo reports: every predictor and retrain run of 2026-10-26/27 (31 runs),
+  the 2026-10-27 07:00 database update (input-cache refresh: every past season
+  unchanged) and the past-snapshot run 40452911022; input-cache upload times
+  from S3; report fingerprints and dimension tables read-only on Aiven.

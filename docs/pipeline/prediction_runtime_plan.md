@@ -147,6 +147,11 @@ taped run needs, so the database reads are the uncached ones.
   removes the problem for finished seasons. F needs an order-insensitive
   digest of the current season (rows sorted by a stable key before hashing),
   which changes no value.
+  2026-10-28: with the input cache serving every finished season, the morning
+  retrain still missed from 2020 or 2022 on. The rows were reordered after the
+  read, by `merge_yahoo_sportsbook_odds`' unstable `game_date` sort, which
+  each night's new games reshuffled; it is now stable
+  (`docs/serving/predictor_speedup_plan.md`, P4).
 
 ## Changes, in order
 

@@ -338,3 +338,60 @@ def test_rebuild_reads_nothing_and_rewrites(tmp_path, monkeypatch):
     assert memo.HistoryMemo(backend, digests, 2021, code="c").table("rows", 2021) == {
         "k": "new"
     }
+
+
+def test_parts_are_each_season_s_own_input_digests():
+    parts = {}
+    digests = memo.season_input_digests(_inputs(), [2021, 2022], parts=parts)
+    assert digests == memo.season_input_digests(_inputs(), [2021, 2022])
+    assert sorted(parts) == [2021, 2022]
+    assert sorted(parts[2021]) == ["games", "odds"]
+    # Not chained: a season's parts depend on its own rows only.
+    assert parts[2021]["games"] != parts[2022]["games"]
+
+
+def _written(backend, inputs, seasons):
+    parts = {}
+    digests = memo.season_input_digests(inputs, seasons, parts=parts)
+    writer = memo.HistoryMemo(backend, digests, max(seasons), code="c", parts=parts)
+    for season in seasons:
+        writer.table("rows", season)["k"] = season
+    writer.flush()
+
+
+def _read(backend, inputs, seasons):
+    parts = {}
+    digests = memo.season_input_digests(inputs, seasons, parts=parts)
+    reader = memo.HistoryMemo(backend, digests, max(seasons), code="c", parts=parts)
+    tables = {season: reader.table("rows", season) for season in seasons}
+    return tables, reader.report
+
+
+def test_a_miss_names_the_inputs_that_changed(tmp_path):
+    backend = memo._LocalBackend(tmp_path)
+    _written(backend, _inputs(), [2021, 2022, 2023])
+    games, _ = _inputs()["games"]
+    changed = games.copy()
+    changed.loc[changed["GAME_ID"].str[3:5] == "22", "PTS"] += 1
+
+    tables, report = _read(
+        backend, {**_inputs(), "games": (changed, "GAME_ID")}, [2021, 2022, 2023]
+    )
+    assert tables[2021] == {"k": 2021}
+    assert tables[2022] == {} and tables[2023] == {}
+    assert sorted(report) == [
+        "rows 2022: inputs changed (games)",
+        "rows 2023: inputs changed (an earlier season)",
+    ]
+
+
+def test_an_entry_stored_without_parts_misses_as_before(tmp_path):
+    backend = memo._LocalBackend(tmp_path)
+    digests = memo.season_input_digests(_inputs(), [2021])
+    writer = memo.HistoryMemo(backend, digests, 2021, code="c")
+    writer.table("rows", 2021)["k"] = 1
+    writer.flush()
+
+    games, _ = _inputs()["games"]
+    _, report = _read(backend, {**_inputs(), "games": (games.iloc[1:], "GAME_ID")}, [2021])
+    assert report == ["rows 2021: inputs changed"]

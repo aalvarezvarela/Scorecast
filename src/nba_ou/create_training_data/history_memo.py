@@ -316,6 +316,7 @@ def season_input_digests(
     seasons: Iterable[int],
     *,
     values_only: bool = False,
+    parts: dict[int, dict[str, str]] | None = None,
 ) -> dict[int, str]:
     """Chained digest per season of every input frame's rows up to it.
 
@@ -326,6 +327,9 @@ def season_input_digests(
     ``values_only`` digests each season's rows through ``_season_values``, so
     a build that also holds tonight's games and one that does not agree on
     every earlier season.
+
+    ``parts``, when given, is filled with each season's own digest of each
+    input (not chained): what ``HistoryMemo`` names when a season misses.
     """
     per_frame = {}
     for name, (frame, game_id_column) in sorted(inputs.items()):
@@ -338,15 +342,20 @@ def season_input_digests(
     for season in sorted(set(seasons)):
         digest = hashlib.sha256(chain)
         digest.update(str(season).encode())
+        season_parts = {}
         for name, (frame, frame_seasons) in sorted(per_frame.items()):
             digest.update(name.encode())
             if frame is not None and len(frame_seasons):
                 rows = frame[frame_seasons == season]
                 if values_only:
                     rows = _season_values(rows)
-                digest.update(_frame_digest(rows))
+                rows_digest = _frame_digest(rows)
+                digest.update(rows_digest)
+                season_parts[name] = rows_digest.hex()
         chain = digest.digest()
         out[season] = digest.hexdigest()
+        if parts is not None:
+            parts[season] = season_parts
     return out
 
 
@@ -397,15 +406,27 @@ class HistoryMemo:
     ``code`` is the memo's ``code_key``. Any failure to read or write is
     reported and treated as a miss: the caller computes the season itself, so
     a broken store costs time, never a value.
+
+    ``parts`` names what each season's digest is made of, as
+    ``{season: {part: digest}}``. It is stored with the entry and only read
+    to say which parts changed when the digest does ("inputs changed (odds)");
+    the digest alone decides whether an entry is used.
     """
 
     def __init__(
-        self, backend, digests: dict[int, str], max_season: int, *, code: str
+        self,
+        backend,
+        digests: dict[int, str],
+        max_season: int,
+        *,
+        code: str,
+        parts: dict[int, dict[str, str]] | None = None,
     ) -> None:
         self.backend = backend
         self.digests = digests
         self.max_season = max_season
         self.code = code
+        self.parts = parts or {}
         self.report: list[str] = []
         self._tables: dict[tuple[str, int], dict] = {}
         self._sizes: dict[tuple[str, int], int] = {}
@@ -489,7 +510,10 @@ class HistoryMemo:
                 return None
             meta = json.loads(raw)
             if meta.get("digest") != self.digests[season]:
-                self.report.append(f"{name} {season}: inputs changed")
+                self.report.append(
+                    f"{name} {season}: inputs changed"
+                    + self._changed_parts(meta.get("parts"), season)
+                )
                 return None
             payload = self.backend.get(self._key(name, season, "pkl"))
             if payload is None or hashlib.sha256(payload).hexdigest() != meta["sha256"]:
@@ -501,6 +525,20 @@ class HistoryMemo:
         except Exception as exc:  # noqa: BLE001 -- a broken store is a miss
             self.report.append(f"{name} {season}: read failed ({exc})")
             return None
+
+    def _changed_parts(self, stored: dict | None, season: int) -> str:
+        """`` (odds, players)``: the parts whose digest differs from the
+        entry's; `` (an earlier season)`` when none does, as a chained digest
+        moves with any earlier season's input."""
+        current = self.parts.get(season)
+        if current is None or not isinstance(stored, dict):
+            return ""
+        changed = sorted(
+            part
+            for part in set(current) | set(stored)
+            if current.get(part) != stored.get(part)
+        )
+        return f" ({', '.join(changed) if changed else 'an earlier season'})"
 
     def save(self, name: str, season: int, value) -> None:
         if not self.usable(season):
@@ -515,6 +553,8 @@ class HistoryMemo:
                 "sha256": hashlib.sha256(payload).hexdigest(),
                 "compression": "zlib",
             }
+            if season in self.parts:
+                meta["parts"] = self.parts[season]
             self.backend.put(self._key(name, season, "pkl"), payload)
             self.backend.put(self._key(name, season, "json"), json.dumps(meta).encode())
         except Exception as exc:  # noqa: BLE001
