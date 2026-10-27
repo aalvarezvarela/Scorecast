@@ -70,7 +70,10 @@ survived the evaluation discipline in the `experiments` skill.
     the source of SBR's `*_consensus_pct_*`; 2026-27 on plus backfilled past
     SBR gaps. SBR's per-game fallback in the stored (training) line-history
     reads and in tonight's prediction —
-    `docs/odds/covers_line_history.md`).
+    `docs/odds/covers_line_history.md`). Every tick read, stored or live,
+    drops the alternate-line quotes the SBR/Covers feed files as the main
+    line, for 2026-27 on (`line_history_aiven/alt_lines.py`,
+    `docs/odds/alternate_line_ticks.md`).
     OddsLogic and MoviOdds automatic updates are disabled as of 2026-10-24:
     too slow and unstable for the value they add. Keep their implementations
     and existing data for possible future reuse; no maintenance or integration

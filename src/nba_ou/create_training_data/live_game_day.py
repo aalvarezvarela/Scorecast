@@ -17,7 +17,7 @@ Covers either way, and the source of each game is left in
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 import pandas as pd
@@ -26,6 +26,7 @@ from nba_ou.fetch_data.injury_reports.sync import synchronize_injury_reports
 from nba_ou.fetch_data.live_rosters import load_live_rosters
 from nba_ou.fetch_data.nba_schedule.fetch_nba_schedule import fetch_schedules
 from nba_ou.postgre_db.injury_report_aiven.live import LiveInjuryReports
+from nba_ou.postgre_db.line_history_aiven.alt_lines import drop_alternate_lines
 from nba_ou.postgre_db.line_history_aiven.live import (
     LiveLineHistory,
     fetch_live_line_history,
@@ -175,6 +176,9 @@ def fetch_live_game_day(
             # frame's read belong to this moment.
             refresh=refresh,
         )
+    # As the stored reads drop them (fetch_pregame_ticks), so tonight's rows
+    # are built from the same kind of ticks as the training rows.
+    line_history = replace(line_history, ticks=drop_alternate_lines(line_history.ticks))
     return LiveGameDay(
         game_date=game_date,
         as_of=line_history.as_of,
