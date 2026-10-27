@@ -150,9 +150,10 @@ recorded `failed` with a reason:
   prototyped on 2025-26: 89% of games self-validate, and of those, 1,164 of
   1,172 match the API. It was **never committed** (scratchpad only). So today
   a corrupt or unavailable rotation in a new season has no fallback.
-- **Daily refresh is not scheduled.** `update_lineups.py` is a step in
-  `.github/workflows/update_finished_matches_daily.yml` (self-hosted runner),
-  but that workflow's cron is commented out, so it runs only on manual dispatch.
+- **No daily refresh.** `update_lineups.py` was a step in
+  `.github/workflows/update_finished_matches_daily.yml`; it was removed on
+  2026-10-27 while 2_6 and 2_7 are research only. New games are archived by
+  running `update_lineups.py` or `backfill_lineup_raw.py` by hand.
 - **No roster feed.** Who is on a team tonight is not in this data. Box scores
   show only who has already played, so summer departures are invisible at a
   season opener.

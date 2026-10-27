@@ -1,4 +1,4 @@
-name: Data - Update Final Scores and Lineups
+name: Data - Update Final Scores
 
 on:
     workflow_dispatch:
@@ -15,7 +15,6 @@ on:
 
 permissions:
     contents: read
-    id-token: write
 
 jobs:
     run:
@@ -36,10 +35,6 @@ jobs:
             # Aiven: the prediction store's games (final scores).
             AIVEN_DB_URL: ${{ secrets.AIVEN_DB_URL }}
             AIVEN_DB_PASSWORD: ${{ secrets.AIVEN_DB_PASSWORD }}
-
-            # S3 (lineup raw archive): empty means "use the ambient OIDC
-            # credentials" rather than the named profile in config.ini.
-            S3_AWS_PROFILE: ""
 
         steps:
             - name: Checkout
@@ -88,14 +83,10 @@ jobs:
             - name: Update prediction store results
               run: python scripts/prediction_store/update_game_results.py
 
-            # Only the lineup update reads S3. Taken here, not at the start,
-            # so the 1 h OIDC session covers this step whatever the ones above
-            # took.
-            - name: Configure AWS credentials (OIDC)
-              uses: aws-actions/configure-aws-credentials@v6
-              with:
-                  role-to-assume: ${{ secrets.AWS_ROLE_TO_ASSUME }}
-                  aws-region: eu-west-1
-
-            - name: Update validated lineup stints
-              run: python scripts/lineups/update_lineups.py --local-root data --s3
+            # The lineup stint update (scripts/lineups/update_lineups.py --s3)
+            # is off while the lineup schemas (2_6, 2_7) are research only.
+            # To bring it back, grant the OIDC role s3:ListBucket on the
+            # nba_api_raw/ prefix (without it a missing key is a 403, not a
+            # 404) and restore the OIDC step, the id-token permission and
+            # S3_AWS_PROFILE="" next to it. backfill_lineup_raw.py fills the
+            # games missed meanwhile.
