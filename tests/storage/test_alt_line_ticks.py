@@ -106,7 +106,7 @@ def test_moneyline_earlier_seasons_and_unreadable_prices_are_left_alone():
     ticks = pd.concat(
         [
             _market(
-                [_tick(1, "bet365", season_year=2025, **alternate)], season_year=2025
+                [_tick(1, "bet365", season_year=2017, **alternate)], season_year=2017
             ),
             _market(
                 [
@@ -152,8 +152,8 @@ def test_the_frame_keeps_its_attributes():
 
 
 def test_only_the_filtered_seasons_fingerprints_carry_the_version():
-    marked = alt_lines.filtered_fingerprints({2025: [1, 2], 2026: [3]})
-    assert marked == {2025: [1, 2], 2026: [3, alt_lines.FILTER_VERSION]}
+    marked = alt_lines.filtered_fingerprints({2017: [1, 2], 2026: [3]})
+    assert marked == {2017: [1, 2], 2026: [3, alt_lines.FILTER_VERSION]}
 
 
 class _FakeConn:
@@ -201,8 +201,8 @@ def test_both_store_reads_drop_alternate_lines(fake_store):
 
 
 def test_the_pregame_fingerprints_mark_the_filtered_seasons(fake_store):
-    fingerprints = fetch.pregame_tick_fingerprints([2025, 2026], covers_fallback=False)
-    assert fingerprints == {2025: [2025], 2026: [2026, alt_lines.FILTER_VERSION]}
+    fingerprints = fetch.pregame_tick_fingerprints([2017, 2026], covers_fallback=False)
+    assert fingerprints == {2017: [2017], 2026: [2026, alt_lines.FILTER_VERSION]}
 
 
 def test_the_close_keeps_the_main_line_before_a_tail_of_alternates(monkeypatch):
@@ -217,16 +217,39 @@ def test_the_close_keeps_the_main_line_before_a_tail_of_alternates(monkeypatch):
     assert len(closing[closing["book"].ne("bet365")]) == 3
 
 
-def test_seasons_before_the_filter_keep_the_tail_cut_in_sql(fake_store, monkeypatch):
-    calls = []
+def test_the_closing_cache_holds_what_the_readers_return(fake_store, monkeypatch):
+    asked = []
     real = fetch._fetch_closing_ticks_once
 
     def spy(**kw):
-        calls.append((kw.get("season_years"), kw.get("game_ids"), kw.get("last_n")))
+        asked.append(kw.get("last_n"))
         return real(**kw)
 
     monkeypatch.setattr(fetch, "_fetch_closing_ticks_once", spy)
-    fetch.fetch_closing_ticks(
-        game_ids=["0022500001", GAME], last_n=5, covers_fallback=False
-    )
-    assert calls == [(None, ["0022500001"], 5), (None, [GAME], None)]
+    name, loaders, key_kwargs, fetch_one = fetch._closing_ticks_spec()
+    cached = fetch_one(season_years=[2026])
+    read = fetch.fetch_closing_ticks(season_years=[2026], covers_fallback=False)
+    # Whole histories are read; the filter runs before the tail is cut.
+    assert asked == [None, None]
+    pd.testing.assert_frame_equal(cached, read)
+    key = fetch._season_ticks_key(loaders, key_kwargs)
+    monkeypatch.setattr(fetch, "FILTER_VERSION", "alt-lines-test")
+    assert fetch._season_ticks_key(*fetch._closing_ticks_spec()[1:3]) != key
+
+
+def test_covers_games_are_filtered_before_their_tail_is_cut():
+    alternates = [
+        _tick(minute, "bet365", line=231.5, left_price=-245, right_price=172)
+        for minute in range(6, 12)
+    ]
+    covers = _market([_tick(1, "bet365", line=238.5), *alternates])
+    sbr = covers.assign(game_id="0022600001").iloc[:3]
+    ticks = pd.concat([sbr, covers], ignore_index=True)
+    ticks.attrs["covers_game_ids"] = [GAME]
+    cut = fetch._cut_covers_games(ticks, last_n=5)
+    from_covers = cut[cut["game_id"].eq(GAME)]
+    assert from_covers.loc[from_covers["book"].eq("bet365"), "left_line"].tolist() == [
+        238.5
+    ]
+    assert len(cut[cut["game_id"].eq("0022600001")]) == 3
+    assert cut.attrs["covers_game_ids"] == [GAME]

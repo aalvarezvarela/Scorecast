@@ -35,9 +35,11 @@ def _ticks(season: int, version: int) -> pd.DataFrame:
             "minutes_before_tip": rng.uniform(5, 300, n),
             "is_opener": rng.random(n) < 0.2,
             "left_line": np.where(rng.random(n) < 0.1, np.nan, rng.normal(220, 5, n)),
-            "left_price": rng.integers(-130, -100, n),
+            # A real two-way price (the reads drop zero-vig or lopsided pairs
+            # as alternate lines, ``alt_lines``).
+            "left_price": rng.integers(-115, -105, n),
             "right_line": rng.normal(220, 5, n),
-            "right_price": rng.integers(-130, -100, n),
+            "right_price": rng.integers(-115, -105, n),
         }
     )[fetch.TICK_COLUMNS]
 
