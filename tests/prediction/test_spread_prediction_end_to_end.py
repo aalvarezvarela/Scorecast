@@ -5,9 +5,6 @@ places in this function assumed the totals market: the mandatory-line check,
 the summary column list, the SHAP confidence margin and the final dropna. Each
 would have raised on the first spread model to reach production, and none was
 visible from the target-resolution unit tests.
-
-The Postgres upload is monkeypatched out -- what is under test is the frame
-handed to it.
 """
 
 from datetime import datetime
@@ -16,11 +13,13 @@ from zoneinfo import ZoneInfo
 import numpy as np
 import pandas as pd
 import pytest
+from nba_ou.prediction import prediction as prediction_module
 from nba_ou.prediction.prediction import (
     PREDICTION_TARGET_LINE_ERROR,
     PREDICTION_TARGET_SPREAD_ERROR,
     PREDICTION_TARGET_TOTAL_POINTS,
     _prepare_required_features_for_prediction,
+    clean_prediction_frame,
     load_and_predict_model_for_nba_games,
 )
 from xgboost import XGBRegressor
@@ -232,3 +231,57 @@ def test_a_row_over_the_training_nan_limit_is_not_predicted():
         df=frame.iloc[:1], max_na_per_row=0, **kwargs
     )
     assert nothing_left.empty
+
+
+def test_rows_of_the_frame_cleaned_once_predict_as_when_cleaned_alone():
+    """What lets the daily job clean each frame once for its 51 slots."""
+    frame = _frame()
+    # One row cleaning drops (no totals line), one display column it drops.
+    frame.loc[frame.index[2], ODDS_TOTAL_COL] = np.nan
+    frame["DISPLAY_NOTE"] = "text"
+    rows = frame.index[1:5]
+    kwargs = dict(
+        regressor=_model(),
+        model_name="line_error_t0000_main_2_5_21_09_26",
+        model_type="line_error_t0000",
+        model_version="21_09_26",
+        required_features=FEATURES,
+        prediction_target=PREDICTION_TARGET_LINE_ERROR,
+        prediction_datetime=PREDICTION_AT,
+    )
+
+    alone = load_and_predict_model_for_nba_games(df=frame.loc[rows], **kwargs)
+    clean = clean_prediction_frame(frame)
+    once = load_and_predict_model_for_nba_games(
+        df=clean.loc[rows[rows.isin(clean.index)]], cleaned=True, **kwargs
+    )
+
+    assert len(once) == 3
+    pd.testing.assert_frame_equal(
+        once.drop(columns="PREDICTED_AT_UTC"), alone.drop(columns="PREDICTED_AT_UTC")
+    )
+
+
+def test_an_xgboost_model_reads_an_array_with_the_dataframe_s_predictions():
+    rng = np.random.default_rng(3)
+    X = pd.DataFrame(
+        {
+            "FEAT_A": rng.normal(size=40),
+            "FEAT_COUNT": rng.integers(0, 9, size=40),
+            "FEAT_FLAG": rng.integers(0, 2, size=40).astype(bool),
+        }
+    )
+    X.loc[::5, "FEAT_A"] = np.nan
+    model = XGBRegressor(n_estimators=8, max_depth=3, verbosity=0)
+    model.fit(X, X["FEAT_A"].fillna(0) + X["FEAT_COUNT"] - X["FEAT_FLAG"])
+
+    np.testing.assert_array_equal(
+        prediction_module._predict(model, X), model.predict(X)
+    )
+
+
+def test_features_in_another_order_than_the_booster_s_raise():
+    """An array carries no names: the order is checked before it is built."""
+    frame = _frame()
+    with pytest.raises(ValueError, match="feature_names mismatch"):
+        prediction_module._predict(_model(), frame[FEATURES[::-1]])

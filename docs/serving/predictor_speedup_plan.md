@@ -1,8 +1,8 @@
 # Faster prediction runs on the self-hosted runner
 
 Status: **Partial** (updated 2026-10-27) — P0 and P3 are done (PR #84); P2a
-is done on branch `perf/prediction-loop`; P2b is next. The progress log at the end records
-each step.
+and P2b are done on branch `perf/prediction-loop`. The progress log at the end
+records each step.
 
 Where the time of the prediction workflows goes and what to change to cut it,
 ordered by saving. The measurements behind it are in
@@ -133,7 +133,7 @@ Ordered by saving.
 |---|---|---|---|---|
 | P0 · Measure before optimizing | — | low | low | **done** (PR #84) |
 | P1 · TabPFN inside the predictor | ≈6.2 min per TabPFN run | medium | low, if the fits go last | open |
-| P2 · Prediction loop | ≈3 min per run (2 min measured) | low–medium | low | **in progress** (P2a done) |
+| P2 · Prediction loop | ≈2.7 min per run (from measured parts) | low–medium | low | **in progress** (P2a, P2b done) |
 | P3 · Persistent venv | ≈0.7 min per run | low | low | **done** (PR #84) |
 | P4 · False cache misses | 1.5–5 min when they happen; 24 min in the morning | low | one cold run on deploy | open |
 | P5 · Closing and intermediate in parallel | ≈3 min per run | medium | memory | open |
@@ -201,13 +201,40 @@ are gone: they only return their output.
 - Saving: ~2 min per run, from the measured write times; to confirm on the
   first runs after merge. Changes no prediction.
 
-**P2b · Clean each frame once.** Clean the closing and intermediate frames
-once and let each slot select its columns from the clean frame. Profile the
-~1.1 s per slot locally first. Estimated 30–45 s per run. Check: the same
-predictions, value for value, in a `--no-persist` run before and after.
+**P2b · Clean each frame once, predict from an array — done**
+(`perf/prediction-loop`). The profile of the ~1.1 s per slot left after P2a
+(locally 0.43 s a slot, 21.9 s for the 51 slots, on the archived frames of the
+2026-10-27 21:54 UTC run) put it in two places, neither the model itself:
+
+- **Cleaning** (~45 %): every slot cleaned the same frame again.
+  `clean_prediction_frame` is now that cleaning on its own; the predictor, the
+  past-snapshot run and TabPFN clean each frame once
+  (`clean_prediction_frames`), and each slot chooses its rows on the frame as
+  before, then reads them from the clean one (`clean_frames=`). Cleaning keeps
+  or drops each row on its own values and keeps every non-text column, so the
+  rows are the ones per-slot cleaning kept; the `latest` limits are applied to
+  the clean rows. A frame that fails to clean, or has a repeated index label,
+  falls back to per-slot cleaning.
+- **XGBoost reading a DataFrame** (~55 %): its pandas path inspects each of
+  the 1,100–2,300 columns' dtype on every call. An all-numeric `X` now goes in
+  as one float64 array (`prediction._predict`), after checking the booster's
+  feature names and order, which the DataFrame path checked.
+
+Measured locally with pinned builds (scratch harness replaying the archived
+input frames through `load_registry_model_and_predict`):
+
+| Frames | Before | After | Predictions |
+|---|---:|---:|---|
+| `latest` run, 51 slots (204 rows) | 21.9 s | 3.4 s (0.3 s of it cleaning) | identical, all 44 columns |
+| `own` rows T-240/360/480/720, 51 slots (60 rows) | 6.5 s | 0.9 s | identical, all 43 columns |
+
+On the runner (~2.5x slower) that is ~55 s → ~9 s for the compute part; the
+S3 reads (~15 s) are what is left of the loop. TabPFN saves one cleaning per
+extra target (~1 s on the runner).
 
 **P2c · Read models and specs from S3 in parallel.** Threads at the start of
-the loop. At most ~10 s per run; optional.
+the loop. After P2b the reads are most of the loop's remaining ~25 s on the
+runner; parallel reads would save ~10–15 s per run.
 
 ### P3 · Persistent venv — done
 
@@ -299,6 +326,10 @@ caches miss.
 - 2026-10-27 — P2a done on `perf/prediction-loop`: no Supabase write left in
   the predictor, the past-snapshot run, the baselines or TabPFN; full test
   suite passes (3359). Streamlit still reads the frozen Supabase table (P7).
+- 2026-10-27 — P2b done on `perf/prediction-loop`: cleaning once per frame and
+  an array into XGBoost take the slot loop from 21.9 s to 3.4 s locally, with
+  identical predictions in `latest` and `own` mode; applied to TabPFN too.
+  To confirm on the runner after merge (expected `51 slots` ~3:16 → ~0:25).
 
 ## Sources
 

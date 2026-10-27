@@ -197,3 +197,40 @@ def test_a_slot_newer_than_its_frame_fails_by_name(monkeypatch):
             frames={"closing_line": pd.DataFrame(), "intermediate_line": frame},
             frame_versions={"closing_line": "2_6", "intermediate_line": "2_5"},
         )
+
+
+def test_clean_frames_rows_are_chosen_on_the_frame_and_read_from_the_clean_one(
+    monkeypatch,
+):
+    """The slot picks its rows on the frame, then reads them from the frame
+    cleaned once; a row cleaning dropped is not predicted."""
+    seen = _serve(monkeypatch, dataset_type="intermediate_line", horizon=30)
+    frame, scoring = _rows()
+    marked = mark_snapshots(frame, scoring, TIP - pd.Timedelta(minutes=120))
+    clean = marked.assign(CLEANED=True).drop(index=marked.index[4])
+    prediction.load_registry_model_and_predict(
+        s3_client=None,
+        bucket="b",
+        slot=_slot(30),
+        df=None,
+        frames={"intermediate_line": marked},
+        clean_frames={"intermediate_line": clean},
+    )
+    assert seen["rows"]["GAME_ID"].tolist() == ["g1"]
+    assert seen["rows"]["CLEANED"].all()
+    assert seen["cleaned"] is True
+
+
+def test_without_clean_frames_the_slot_cleans_its_own_rows(monkeypatch):
+    seen = _serve(monkeypatch, dataset_type="intermediate_line", horizon=30)
+    frame, scoring = _rows()
+    marked = mark_snapshots(frame, scoring, TIP - pd.Timedelta(minutes=120))
+    prediction.load_registry_model_and_predict(
+        s3_client=None,
+        bucket="b",
+        slot=_slot(30),
+        df=None,
+        frames={"intermediate_line": marked},
+    )
+    assert seen["rows"]["GAME_ID"].tolist() == ["g1", "g2"]
+    assert seen["cleaned"] is False

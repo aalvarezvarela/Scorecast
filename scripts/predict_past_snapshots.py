@@ -41,7 +41,10 @@ from nba_ou.prediction.intermediate_frame import (
     tonight_intermediate_frame,
 )
 from nba_ou.prediction.line_source import LineSource
-from nba_ou.prediction.prediction import load_registry_model_and_predict
+from nba_ou.prediction.prediction import (
+    clean_prediction_frames,
+    load_registry_model_and_predict,
+)
 from nba_ou.prediction.prediction_store import (
     PredictionRunRecorder,
     persist_prediction_run,
@@ -165,6 +168,10 @@ def predict_past_snapshots(
     s3 = make_s3_client(profile=SETTINGS.s3_aws_profile, region=SETTINGS.s3_aws_region)
     started = datetime.now(ZoneInfo("Europe/Madrid"))
     failures: list[str] = []
+    # Cleaned once here, not once per slot: each slot reads its rows from it.
+    clean_frames = clean_prediction_frames(
+        {"intermediate_line": frame}, passthrough_columns=PASSTHROUGH_COLUMNS
+    )
     predicted = 0
     for slot in slots:
         label = slot.describe()
@@ -182,6 +189,7 @@ def predict_past_snapshots(
                 passthrough_columns=PASSTHROUGH_COLUMNS,
                 latest_input=False,
                 report_required_max_horizon=SETTINGS.report_required_max_horizon,
+                clean_frames=clean_frames,
             )
         except Exception as exc:  # noqa: BLE001 -- the other slots still run
             traceback.print_exc()

@@ -35,6 +35,7 @@ from nba_ou.prediction.intermediate_frame import (
 )
 from nba_ou.prediction.line_source import LINE_SOURCE_COLUMN, check_line_feed
 from nba_ou.prediction.prediction import (
+    clean_prediction_frames,
     load_registry_model_and_predict,
 )
 from nba_ou.prediction.prediction_store import (
@@ -336,6 +337,12 @@ def predict_nba_games(
     if not persist:
         print_status("Dry run (--no-persist): no predictions are stored")
 
+    # Cleaned once here, not once per slot: each slot reads its rows from it.
+    with timer.phase("cleaning"):
+        clean_frames = clean_prediction_frames(
+            frames, passthrough_columns=PASSTHROUGH_COLUMNS
+        )
+
     predicted: list[str] = []
     skipped: list[str] = []
     step_number = 4
@@ -357,6 +364,7 @@ def predict_nba_games(
                 passthrough_columns=PASSTHROUGH_COLUMNS,
                 latest_input=slot in latest_slots,
                 report_required_max_horizon=SETTINGS.report_required_max_horizon,
+                clean_frames=clean_frames,
             )
         except Exception as e:  # noqa: BLE001 -- the other slots still run
             traceback.print_exc()

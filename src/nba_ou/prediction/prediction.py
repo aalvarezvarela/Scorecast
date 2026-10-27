@@ -181,6 +181,89 @@ def _resolve_feature_names_from_metadata(metadata: dict) -> list[str] | None:
     return None
 
 
+def clean_prediction_frame(
+    df: pd.DataFrame, *, passthrough_columns: Sequence[str] = ()
+) -> pd.DataFrame:
+    """``df`` cleaned as a model's prediction reads it.
+
+    Cleaning keeps or drops each row on its own values (``basic_cleaning``)
+    and keeps every column that is not text (``keep_all_cols``), so a model's
+    rows can be read from the frame cleaned once rather than cleaned again for
+    each slot (~0.4 s a slot locally, ``docs/serving/predictor_speedup_plan.md``
+    P2b).
+    The one judgement over several rows is the text check: a column holding
+    text in any row is dropped, even where a model's own rows leave it empty.
+    """
+    return clean_dataframe_for_training(
+        df,
+        nan_threshold=100,
+        keep_columns=[
+            "GAME_ID",
+            "SEASON_TYPE",
+            "GAME_DATE",
+            "GAME_TIME",
+            "TEAM_NAME_TEAM_HOME",
+            "TEAM_NAME_TEAM_AWAY",
+            "MATCHUP_TEAM_HOME",
+            *passthrough_columns,
+        ],
+        keep_all_cols=True,
+        # The same-day frame carries display columns (GAME_TIME and the like)
+        # beyond the declared non-feature ones; the model's own feature list
+        # decides its inputs, so dropping them here is safe.
+        unexpected_text="drop",
+        verbose=1,
+        # Rows are limited by each model's own training limit (max_na_per_row)
+        # over its features. A fixed 30 columns over the whole frame rejected
+        # every game of the 2026-10-20 opener (71), while the closing models
+        # were fitted with up to 300 NaN per row.
+        strict_mode=-1,
+    )
+
+
+def clean_prediction_frames(
+    frames: Mapping[str, pd.DataFrame], *, passthrough_columns: Sequence[str] = ()
+) -> dict[str, pd.DataFrame]:
+    """``clean_prediction_frame`` of each frame, for every slot to read.
+
+    A frame that fails to clean, or whose index repeats a label (its rows
+    could not be found again), is left out: its slots then clean their own
+    rows, and fail one by one as they did before.
+    """
+    clean_frames = {}
+    for dataset_type, frame in frames.items():
+        if not frame.index.is_unique:
+            print(f"  {dataset_type}: the frame's index repeats; cleaned per slot.")
+            continue
+        try:
+            clean_frames[dataset_type] = clean_prediction_frame(
+                frame, passthrough_columns=passthrough_columns
+            )
+        except Exception as exc:  # noqa: BLE001 -- each slot reports it
+            print(f"  {dataset_type}: cleaning failed ({exc}); cleaned per slot.")
+    return clean_frames
+
+
+def _predict(model, X: pd.DataFrame):
+    """``model.predict(X)``; an XGBoost model reads ``X`` as one array.
+
+    XGBoost's DataFrame path inspects every column's dtype on every call,
+    ~0.5 s for 2,000 features; a numeric array gives the same predictions.
+    An array carries no names, so the booster's names and order are checked
+    here, as the DataFrame path checks them.
+    """
+    numeric = X.dtypes.map(lambda dtype: dtype.kind in "biuf").all()
+    if not isinstance(model, XGBRegressor) or X.empty or not numeric:
+        return model.predict(X)
+    expected = model.get_booster().feature_names
+    if expected is not None and list(X.columns) != list(expected):
+        raise ValueError(
+            "feature_names mismatch: the model's features differ from the "
+            f"input's ({len(expected)} expected, {X.shape[1]} given)."
+        )
+    return model.predict(X.to_numpy(dtype=np.float64))
+
+
 def load_and_predict_model_for_nba_games(
     df: pd.DataFrame,
     regressor,
@@ -200,6 +283,7 @@ def load_and_predict_model_for_nba_games(
     extra_summary_columns: dict | None = None,
     passthrough_columns: Sequence[str] = (),
     max_na_per_row: int | None = None,
+    cleaned: bool = False,
 ) -> pd.DataFrame:
     """
     Predict NBA games using a trained regressor for one of three targets:
@@ -231,6 +315,8 @@ def load_and_predict_model_for_nba_games(
             not predicted, as training would not have kept it. Counted as
             training counts it, the compact Yahoo block excluded. None or
             negative disables it.
+        cleaned: ``df`` is already rows of ``clean_prediction_frame`` (built
+            with the same ``passthrough_columns``), so it is not cleaned again.
 
     Returns:
         DataFrame containing predictions with key information
@@ -240,30 +326,10 @@ def load_and_predict_model_for_nba_games(
         total_points_pick_line_col = total_line_over_col_raw()
 
     # Step 1: Clean the DataFrame for prediction
-    df_predictable = clean_dataframe_for_training(
-        df,
-        nan_threshold=100,
-        keep_columns=[
-            "GAME_ID",
-            "SEASON_TYPE",
-            "GAME_DATE",
-            "GAME_TIME",
-            "TEAM_NAME_TEAM_HOME",
-            "TEAM_NAME_TEAM_AWAY",
-            "MATCHUP_TEAM_HOME",
-            *passthrough_columns,
-        ],
-        keep_all_cols=True,
-        # The same-day frame carries display columns (GAME_TIME and the like)
-        # beyond the declared non-feature ones; the model's own feature list
-        # decides its inputs, so dropping them here is safe.
-        unexpected_text="drop",
-        verbose=1,
-        # Rows are limited below, by the model's own training limit
-        # (max_na_per_row) over its features. A fixed 30 columns over the
-        # whole frame rejected every game of the 2026-10-20 opener (71), while
-        # the closing models were fitted with up to 300 NaN per row.
-        strict_mode=-1,
+    df_predictable = (
+        df.copy()
+        if cleaned
+        else clean_prediction_frame(df, passthrough_columns=passthrough_columns)
     )
 
     # Load the model using joblib
@@ -335,7 +401,7 @@ def load_and_predict_model_for_nba_games(
             return empty
 
     # Make predictions
-    raw_predictions = model.predict(X)
+    raw_predictions = _predict(model, X)
     # When this model's output exists: the prediction store's time to tip.
     predicted_at_utc = datetime.now(UTC)
     prediction_values = pd.to_numeric(
@@ -621,6 +687,7 @@ def load_registry_model_and_predict(
     passthrough_columns: Sequence[str] = (),
     latest_input: bool = False,
     report_required_max_horizon: int | None = None,
+    clean_frames: Mapping[str, pd.DataFrame] | None = None,
 ) -> pd.DataFrame:
     """Predict with whatever a slot's channel currently points at.
 
@@ -646,6 +713,11 @@ def load_registry_model_and_predict(
     ``frame_versions`` maps a dataset type to the schema version its frame was
     built at. A slot whose schema is newer than its frame raises, naming both,
     rather than failing on missing columns -- or, worse, finding them.
+
+    ``clean_frames`` maps a dataset type to ``clean_prediction_frame`` of its
+    frame, cleaned once for every slot: the slot's rows are chosen on the
+    frame, as without it, then read from the clean one. A type it lacks is
+    cleaned per slot.
 
     Resolution is ``channels/production.json -> fit -> spec -> model``: the
     served model is interpreted by the spec ITS OWN FIT names, never by the
@@ -754,6 +826,11 @@ def load_registry_model_and_predict(
             empty = pd.DataFrame()
             empty.attrs[NO_REPORT_ATTR] = no_report_games
             return empty
+    clean = (clean_frames or {}).get(dataset_type)
+    if clean is not None:
+        # Cleaning keeps or drops each row on its own values, so these are the
+        # rows cleaning the selection would have kept.
+        rows = clean.loc[rows.index[rows.index.isin(clean.index)]]
     extra_columns = {}
     if latest_input:
         rows = limit_to_training_support(
@@ -789,6 +866,7 @@ def load_registry_model_and_predict(
         spread_pick_line_col=spread_pick_line_col,
         passthrough_columns=passthrough_columns,
         max_na_per_row=spec.cleaning.max_na_per_row,
+        cleaned=clean is not None,
         extra_summary_columns={
             "MODEL_TARGET": str(spec.identity.target),
             "MODEL_HORIZON_MINUTES": spec.identity.horizon_minutes,
