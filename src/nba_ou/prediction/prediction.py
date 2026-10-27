@@ -1,3 +1,4 @@
+import time
 from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
 from typing import Literal
@@ -670,11 +671,16 @@ def load_registry_model_and_predict(
     from nba_ou.modeling.registry_paths import Channel
     from nba_ou.modeling.registry_store import resolve_channel
 
+    started = time.perf_counter()
     resolved = resolve_channel(
         s3_client=s3_client,
         bucket=bucket,
         slot=slot,
         channel=channel or Channel.PRODUCTION,
+    )
+    print(
+        f"  {slot.describe()}: model read from S3 in "
+        f"{time.perf_counter() - started:.1f} s"
     )
     spec = resolved.spec
     fit = resolved.fit

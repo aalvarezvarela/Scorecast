@@ -33,6 +33,7 @@ jobs:
 
     env:
       PYTHONWARNINGS: "ignore::UserWarning,ignore::DeprecationWarning,ignore::FutureWarning"
+      PYTHONUNBUFFERED: "1"
 
       # Supabase
       DB_ENV: supabase
@@ -65,22 +66,15 @@ jobs:
           role-to-assume: ${{ secrets.AWS_ROLE_TO_ASSUME }}
           aws-region: eu-west-1
 
-      # A fresh venv per run: the runner's tool-cache Python is shared by
-      # every job, so packages another job left there would hide a missing
-      # dependency here.
-      - name: Create job venv
-        run: |
-            python -m venv "$RUNNER_TEMP/venv"
-            echo "$RUNNER_TEMP/venv/bin" >> "$GITHUB_PATH"
-
+      # The job's own venv, reused across runs while its requirements and
+      # Python stay the same (.github/actions/job-venv).
       # Core plus the scrapers (generated from poetry.lock, see
       # requirements/README.md), then the repo itself WITHOUT its Poetry
       # dependencies, which would pull in the training and lab stacks.
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements/db-update.txt
-          pip install --no-deps -e .
+      - name: Job venv
+        uses: ./.github/actions/job-venv
+        with:
+          requirements: requirements/db-update.txt
 
       - name: DB sanity check
         run: |
@@ -130,8 +124,6 @@ jobs:
       - name: Update Covers line history
         continue-on-error: true
         timeout-minutes: 30
-        env:
-          PYTHONUNBUFFERED: "1"
         run: |
           python scripts/update_databases/update_covers_line_history.py
 

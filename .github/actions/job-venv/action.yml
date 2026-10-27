@@ -1,0 +1,22 @@
+name: Job venv
+description: >
+    The job's own venv on a self-hosted runner, built once per requirements file
+    and Python and reused by later runs, then the repo installed into it
+    without its Poetry dependencies. Its bin is put first on PATH.
+
+# A venv per job rather than the runner's tool-cache Python, which every job
+# shares: packages another job left there would hide a missing dependency. A
+# reused venv keeps that guarantee because it is keyed on the requirements file
+# and checked against the packages it was built with (job_venv.sh).
+inputs:
+    requirements:
+        description: "The job's requirements file (requirements/<job>.txt)"
+        required: true
+runs:
+    using: composite
+    steps:
+        - name: Create or reuse the job venv
+          shell: bash
+          env:
+              REQUIREMENTS: ${{ inputs.requirements }}
+          run: bash "$GITHUB_ACTION_PATH/job_venv.sh"

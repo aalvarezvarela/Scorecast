@@ -95,6 +95,7 @@ from nba_ou.prediction.prediction_tabpfn_client import (
     tabpfn_training_set,
 )
 from nba_ou.utils.general_utils import get_season_year_from_date
+from nba_ou.utils.phase_timer import PhaseTimer
 from nba_ou.utils.s3_models import make_s3_client
 
 #: Partitions older than this many days mean the daily refit has stopped.
@@ -267,8 +268,12 @@ def predict_tabpfn(
         f"for {date_to_predict}"
     )
 
+    # Each phase prints a [time] line as it ends, the summary their list.
+    timer = PhaseTimer()
+
     # Step 1: everything the fit needs from S3, before any other work.
     print_step_header(1, "Loading the Feature Spec and Training Frame")
+    started = time.perf_counter()
     s3 = make_s3_client(profile=SETTINGS.s3_aws_profile, region=SETTINGS.s3_aws_region)
     bucket = SETTINGS.s3_bucket
     specs = []
@@ -349,37 +354,41 @@ def predict_tabpfn(
         )
     # The training sets hold what the fits need; free the full frames.
     del training_frames, base_frames, layer_context, frame
+    timer.record("spec and training rows", time.perf_counter() - started)
 
     # Step 2: tonight's rows, with the lines of this moment.
     if update_db:
         print_step_header(2, "Updating All Databases")
         season_to_update = int(get_season_year_from_date(date_to_predict))
-        update_all_databases(
-            start_season_year=season_to_update,
-            end_season_year=season_to_update,
-            only_new_games=True,
-            headless=SETTINGS.headless,
-            exclude_game_date=date_to_predict,
-        )
+        with timer.phase("database update"):
+            update_all_databases(
+                start_season_year=season_to_update,
+                end_season_year=season_to_update,
+                only_new_games=True,
+                headless=SETTINGS.headless,
+                exclude_game_date=date_to_predict,
+            )
         print_status("Databases updated")
 
     print_step_header(2, "Checking SBR Line Feed")
     # Covers stands in when SBR is frozen or empty (prediction.line_source).
-    lines = check_line_feed(
-        pd.Timestamp(date_to_predict).date(),
-        allow_stale_lines=allow_stale_lines,
-        load_scheduled_games=lambda: get_schedule_games(date_to_predict),
-        report=print_status,
-    )
+    with timer.phase("SBR line feed"):
+        lines = check_line_feed(
+            pd.Timestamp(date_to_predict).date(),
+            allow_stale_lines=allow_stale_lines,
+            load_scheduled_games=lambda: get_schedule_games(date_to_predict),
+            report=print_status,
+        )
 
     print_step_header(2, "Fetching Scheduled Games & Reports")
-    scheduled_data = get_all_info_for_scheduled_games(
-        date_to_predict=date_to_predict,
-        nba_injury_reports_url=SETTINGS.nba_injury_reports_url,
-        headless=SETTINGS.headless,
-        line_source=lines,
-        dataset_type=dataset_type,
-    )
+    with timer.phase("scheduled games and reports"):
+        scheduled_data = get_all_info_for_scheduled_games(
+            date_to_predict=date_to_predict,
+            nba_injury_reports_url=SETTINGS.nba_injury_reports_url,
+            headless=SETTINGS.headless,
+            line_source=lines,
+            dataset_type=dataset_type,
+        )
     if wanted_games is not None:
         scheduled_data = dict(scheduled_data)
         scheduled = scheduled_data["scheduled_games"]
@@ -396,6 +405,7 @@ def predict_tabpfn(
         return
 
     latest_quotes = None
+    started = time.perf_counter()
     if dataset_type == CLOSING_LINE:
         not_filed = {str(game) for game in scheduled_data["games_not_updated"]}
         if not_filed >= set(scheduled_data["scheduled_games"]["GAME_ID"].astype(str)):
@@ -464,6 +474,8 @@ def predict_tabpfn(
             f"{passed}, the rest from the lines so far"
         )
 
+    timer.record("tonight's rows", time.perf_counter() - started)
+
     failures: list[str] = []
     recorder = PredictionRunRecorder(
         workflow=WORKFLOW_TABPFN, game_date=date_to_predict
@@ -481,17 +493,19 @@ def predict_tabpfn(
         )
         print_step_header(3, f"Fitting and Predicting ({label})")
         try:
-            model = fit_tabpfn(training_set, model_version=model_version)
-            predictions = predict_with_tabpfn(
-                df=df_to_predict,
-                spec=spec,
-                model=model,
-                training_set=training_set,
-                prediction_datetime=datetime.now(ZoneInfo("Europe/Madrid")),
-                passthrough_columns=(
-                    () if dataset_type == CLOSING_LINE else PASSTHROUGH_COLUMNS
-                ),
-            )
+            with timer.phase(f"{target} fit"):
+                model = fit_tabpfn(training_set, model_version=model_version)
+            with timer.phase(f"{target} predict"):
+                predictions = predict_with_tabpfn(
+                    df=df_to_predict,
+                    spec=spec,
+                    model=model,
+                    training_set=training_set,
+                    prediction_datetime=datetime.now(ZoneInfo("Europe/Madrid")),
+                    passthrough_columns=(
+                        () if dataset_type == CLOSING_LINE else PASSTHROUGH_COLUMNS
+                    ),
+                )
             if predictions.empty:
                 print_status(f"{target}: no game survived the spec's NaN budget.")
             else:
@@ -524,9 +538,11 @@ def predict_tabpfn(
         print_status("Dry run (--no-persist): nothing stored")
     else:
         print_step_header(4, "Storing Predictions")
-        failures += persist_prediction_run(
-            recorder, s3_client=s3, bucket=bucket, partial=bool(failures)
-        )
+        with timer.phase("storing"):
+            failures += persist_prediction_run(
+                recorder, s3_client=s3, bucket=bucket, partial=bool(failures)
+            )
+    print(timer.summary())
     for failure in failures:
         print_status(failure, ok=False)
     if failures:

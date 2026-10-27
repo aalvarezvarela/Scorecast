@@ -1,5 +1,6 @@
 import argparse
 import os
+import time
 import traceback
 from datetime import datetime
 from pathlib import Path
@@ -44,6 +45,7 @@ from nba_ou.prediction.prediction_store import (
     persist_prediction_run,
 )
 from nba_ou.utils.general_utils import get_season_year_from_date
+from nba_ou.utils.phase_timer import PhaseTimer
 from nba_ou.utils.s3_models import (
     make_s3_client,
 )
@@ -158,54 +160,61 @@ def predict_nba_games(
         "snapshot, the others their own"
     )
 
+    # Each phase prints a [time] line as it ends, the summary their list.
+    timer = PhaseTimer()
+
     # Step 1: Update the database
     print_step_header(1, "Updating All Databases")
-    season_to_update = get_season_year_from_date(date_to_predict)
-    try:
-        update_all_databases(
-            start_season_year=int(season_to_update),
-            end_season_year=int(season_to_update),
-            only_new_games=True,
-            headless=SETTINGS.headless,
-            exclude_game_date=date_to_predict,
-        )
-        print_status("Databases updated")
+    with timer.phase("database update"):
+        season_to_update = get_season_year_from_date(date_to_predict)
+        try:
+            update_all_databases(
+                start_season_year=int(season_to_update),
+                end_season_year=int(season_to_update),
+                only_new_games=True,
+                headless=SETTINGS.headless,
+                exclude_game_date=date_to_predict,
+            )
+            print_status("Databases updated")
 
-    except Exception as e:
-        print_status(f"Failed to update databases: {e}", ok=False)
-        raise
+        except Exception as e:
+            print_status(f"Failed to update databases: {e}", ok=False)
+            raise
 
     # Step 1b: SBR's lines must still be moving, or every prediction below is
     # made on lines frozen hours ago; Covers stands in when it is not. The
     # database update above stands either way.
     print_step_header(1, "Checking SBR Line Feed")
-    lines = check_line_feed(
-        pd.Timestamp(date_to_predict).date(),
-        allow_stale_lines=allow_stale_lines,
-        load_scheduled_games=lambda: get_schedule_games(date_to_predict),
-        report=print_status,
-        force=line_source,
-    )
+    with timer.phase("SBR line feed"):
+        lines = check_line_feed(
+            pd.Timestamp(date_to_predict).date(),
+            allow_stale_lines=allow_stale_lines,
+            load_scheduled_games=lambda: get_schedule_games(date_to_predict),
+            report=print_status,
+            force=line_source,
+        )
 
     # Step 2: Fetch scheduled games, referees, injuries and odds
     print_step_header(2, "Fetching Scheduled Games & Reports")
-    try:
-        scheduled_data = get_all_info_for_scheduled_games(
-            date_to_predict=date_to_predict,
-            nba_injury_reports_url=SETTINGS.nba_injury_reports_url,
-            headless=SETTINGS.headless,
-            line_source=lines,
-        )
-        print_status("Fetched scheduled games, refs, injuries and odds")
-        if scheduled_data["scheduled_games"].empty:
-            print_status(
-                "⚠️ WARNING: No scheduled games found for the specified date.", ok=False
+    with timer.phase("scheduled games and reports"):
+        try:
+            scheduled_data = get_all_info_for_scheduled_games(
+                date_to_predict=date_to_predict,
+                nba_injury_reports_url=SETTINGS.nba_injury_reports_url,
+                headless=SETTINGS.headless,
+                line_source=lines,
             )
-            return 0
+            print_status("Fetched scheduled games, refs, injuries and odds")
+            if scheduled_data["scheduled_games"].empty:
+                print_status(
+                    "⚠️ WARNING: No scheduled games found for the specified date.",
+                    ok=False,
+                )
+                return 0
 
-    except Exception as e:
-        print_status(f"Failed to fetch scheduled data: {e}", ok=False)
-        raise
+        except Exception as e:
+            print_status(f"Failed to fetch scheduled data: {e}", ok=False)
+            raise
 
     # Step 3: Build feature DataFrame for prediction
     print_step_header(3, "Preparing Feature DataFrame")
@@ -219,29 +228,30 @@ def predict_nba_games(
     # the baselines skip, and the intermediate slots still predict.
     not_filed = {str(game) for game in scheduled_data.get("games_not_updated", [])}
     closing_ids = [game for game in tonight_ids if game not in not_filed]
-    layer_inputs = None
-    try:
-        if not closing_ids:
-            df_to_predict = pd.DataFrame()
-            print_status(
-                "No game has both injury reports filed yet: no closing rows, "
-                "the closing slots and the baselines skip"
-            )
-        else:
-            df_to_predict, layer_inputs = closing_rows(
-                scheduled_data,
-                tonight_ids=tonight_ids,
-                frame_version=frame_version,
-                date_to_predict=date_to_predict,
-                normalize_total_lines=normalize_total_lines,
-                normalize_spread_lines=normalize_spread_lines,
-                null_extreme_spread_prices=null_extreme_spread_prices,
-            )
-            print_status("Feature DataFrame prepared")
+    with timer.phase("closing rows"):
+        layer_inputs = None
+        try:
+            if not closing_ids:
+                df_to_predict = pd.DataFrame()
+                print_status(
+                    "No game has both injury reports filed yet: no closing rows, "
+                    "the closing slots and the baselines skip"
+                )
+            else:
+                df_to_predict, layer_inputs = closing_rows(
+                    scheduled_data,
+                    tonight_ids=tonight_ids,
+                    frame_version=frame_version,
+                    date_to_predict=date_to_predict,
+                    normalize_total_lines=normalize_total_lines,
+                    normalize_spread_lines=normalize_spread_lines,
+                    null_extreme_spread_prices=null_extreme_spread_prices,
+                )
+                print_status("Feature DataFrame prepared")
 
-    except Exception as e:
-        print_status(f"Failed to prepare features: {e}", ok=False)
-        raise
+        except Exception as e:
+            print_status(f"Failed to prepare features: {e}", ok=False)
+            raise
 
     if closing_ids and df_to_predict.empty:
         print("⚠️  Warning: No games found for the specified date.")
@@ -276,42 +286,43 @@ def predict_nba_games(
     }
     if any(slot.horizon_minutes for slot in configured_slots):
         print_step_header(3, "Preparing Intermediate Snapshot Rows")
-        try:
-            intermediate_df = tonight_intermediate_frame(
-                scheduled_data,
-                game_date=date_to_predict,
-                latest_input=bool(latest_slots),
-                # Every intermediate slot reads the latest row: build it alone.
-                latest_only=all(
-                    slot in latest_slots
-                    for slot in configured_slots
-                    if slot.horizon_minutes
-                ),
-            )
-            frames["intermediate_line"] = intermediate_df
-            recorder.add_frame(
-                "intermediate_line", intermediate_df, version=BASE_SCHEMA_VERSION
-            )
-            print_status(
-                f"{len(intermediate_df)} snapshot row(s) over "
-                f"{intermediate_df['GAME_ID'].nunique()} game(s), "
-                f"{int(intermediate_df['SNAPSHOT_PASSED'].sum())} already passed"
-            )
-            if latest_slots:
-                latest_rows = intermediate_df[intermediate_df[LATEST_INPUT_COLUMN]]
-                print_status(
-                    "Latest snapshots: "
-                    + ", ".join(
-                        f"{game} T-{minutes}"
-                        for game, minutes in latest_rows[
-                            ["GAME_ID", "TIME_TO_MATCH_MIN"]
-                        ].itertuples(index=False)
-                    )
+        with timer.phase("intermediate rows"):
+            try:
+                intermediate_df = tonight_intermediate_frame(
+                    scheduled_data,
+                    game_date=date_to_predict,
+                    latest_input=bool(latest_slots),
+                    # Every intermediate slot reads the latest row: build it alone.
+                    latest_only=all(
+                        slot in latest_slots
+                        for slot in configured_slots
+                        if slot.horizon_minutes
+                    ),
                 )
-        except Exception as e:  # noqa: BLE001 -- the closing slots still run
-            traceback.print_exc()
-            print_status(f"Intermediate rows unavailable: {e}", ok=False)
-            failures.append(f"intermediate frame: {e}")
+                frames["intermediate_line"] = intermediate_df
+                recorder.add_frame(
+                    "intermediate_line", intermediate_df, version=BASE_SCHEMA_VERSION
+                )
+                print_status(
+                    f"{len(intermediate_df)} snapshot row(s) over "
+                    f"{intermediate_df['GAME_ID'].nunique()} game(s), "
+                    f"{int(intermediate_df['SNAPSHOT_PASSED'].sum())} already passed"
+                )
+                if latest_slots:
+                    latest_rows = intermediate_df[intermediate_df[LATEST_INPUT_COLUMN]]
+                    print_status(
+                        "Latest snapshots: "
+                        + ", ".join(
+                            f"{game} T-{minutes}"
+                            for game, minutes in latest_rows[
+                                ["GAME_ID", "TIME_TO_MATCH_MIN"]
+                            ].itertuples(index=False)
+                        )
+                    )
+            except Exception as e:  # noqa: BLE001 -- the closing slots still run
+                traceback.print_exc()
+                print_status(f"Intermediate rows unavailable: {e}", ok=False)
+                failures.append(f"intermediate frame: {e}")
 
     if dump_frames is not None:
         dump_dir = Path(dump_frames)
@@ -334,10 +345,12 @@ def predict_nba_games(
     # prediction store's run partial.
     legacy_failures: list[str] = []
     step_number = 4
+    slots_started = time.perf_counter()
     for slot in configured_slots:
         label = slot.describe()
         print_step_header(step_number, f"Generating Predictions ({label})")
         step_number += 1
+        slot_started = time.perf_counter()
         try:
             predictions_df = load_registry_model_and_predict(
                 s3_client=s3,
@@ -376,8 +389,16 @@ def predict_nba_games(
         if rejected:
             print_status(f"Prediction store rejected {label}: {rejected}", ok=False)
             failures.append(f"{label} (prediction store): {rejected}")
+        upload_seconds = 0.0
         if persist:
+            upload_started = time.perf_counter()
             legacy_failures += legacy_supabase_upload(predictions_df, label)
+            upload_seconds = time.perf_counter() - upload_started
+        print(
+            f"[time] {label}: {time.perf_counter() - slot_started:.1f} s"
+            + (f" (Supabase upload {upload_seconds:.1f} s)" if persist else "")
+        )
+    timer.record(f"{len(configured_slots)} slots", time.perf_counter() - slots_started)
 
     print_step_header(step_number, "Generating Predictions (Baselines)")
     step_number += 1
@@ -385,48 +406,58 @@ def predict_nba_games(
         # The baselines predict the closing rows; none was built.
         print_status("No closing rows; baselines skipped")
     else:
-        try:
-            # The frame holds tonight's games only; the history is every built
-            # game's layer inputs (GAME_DATE, TOTAL_POINTS among them).
-            baseline_predictions = load_baseline_predictions_for_nba_games(
-                df=df_to_predict,
-                df_history=baseline_history_window(layer_inputs, date_to_predict),
-                prediction_datetime=prediction_time,
-                upload_to_postgres=False,
-            )
-            print_status("Baseline predictions generated")
-            for baseline_name, baseline_predictions_df in baseline_predictions.items():
-                rejected = recorder.add_baseline(
-                    baseline_name, baseline_predictions_df, schema_version=frame_version
+        with timer.phase("baselines"):
+            try:
+                # The frame holds tonight's games only; the history is every built
+                # game's layer inputs (GAME_DATE, TOTAL_POINTS among them).
+                baseline_predictions = load_baseline_predictions_for_nba_games(
+                    df=df_to_predict,
+                    df_history=baseline_history_window(layer_inputs, date_to_predict),
+                    prediction_datetime=prediction_time,
+                    upload_to_postgres=False,
                 )
-                if rejected:
-                    print_status(
-                        f"Prediction store rejected {baseline_name}: {rejected}",
-                        ok=False,
+                print_status("Baseline predictions generated")
+                for (
+                    baseline_name,
+                    baseline_predictions_df,
+                ) in baseline_predictions.items():
+                    rejected = recorder.add_baseline(
+                        baseline_name,
+                        baseline_predictions_df,
+                        schema_version=frame_version,
                     )
-                    failures.append(f"{baseline_name} (prediction store): {rejected}")
-                if persist:
-                    legacy_failures += legacy_supabase_upload(
-                        baseline_predictions_df, baseline_name
-                    )
+                    if rejected:
+                        print_status(
+                            f"Prediction store rejected {baseline_name}: {rejected}",
+                            ok=False,
+                        )
+                        failures.append(
+                            f"{baseline_name} (prediction store): {rejected}"
+                        )
+                    if persist:
+                        legacy_failures += legacy_supabase_upload(
+                            baseline_predictions_df, baseline_name
+                        )
 
-        except Exception as e:  # noqa: BLE001 -- reported with the slot failures
-            traceback.print_exc()
-            print_status(f"Failed to generate baseline predictions: {e}", ok=False)
-            failures.append(f"baselines: {e}")
+            except Exception as e:  # noqa: BLE001 -- reported with the slot failures
+                traceback.print_exc()
+                print_status(f"Failed to generate baseline predictions: {e}", ok=False)
+                failures.append(f"baselines: {e}")
 
     if persist:
         print_step_header(step_number, "Storing Predictions")
         step_number += 1
-        failures += persist_prediction_run(
-            recorder,
-            s3_client=s3,
-            bucket=SETTINGS.s3_bucket,
-            partial=bool(failures),
-        )
+        with timer.phase("storing"):
+            failures += persist_prediction_run(
+                recorder,
+                s3_client=s3,
+                bucket=SETTINGS.s3_bucket,
+                partial=bool(failures),
+            )
     failures += legacy_failures
 
     print_step_header(step_number, "Summary")
+    print(timer.summary())
     print_status(f"{len(predicted)} slot(s) predicted")
     print_status(f"{len(skipped)} slot(s) skipped", ok=not skipped)
     for label in skipped:
