@@ -371,7 +371,6 @@ def test_prediction_hands_observed_and_missing_raw_inputs_to_the_model(monkeypat
         return original_predict(X, **kwargs)
 
     monkeypatch.setattr(model, "predict", record_inputs)
-    monkeypatch.setattr(prediction, "upload_predictions_to_postgre", lambda df: None)
     result = prediction.load_and_predict_model_for_nba_games(
         frame,
         model,

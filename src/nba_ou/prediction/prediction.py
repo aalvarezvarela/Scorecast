@@ -14,9 +14,6 @@ from nba_ou.config.yahoo_features import compact_yahoo_columns
 from nba_ou.data_processing.missing_data.clean_df_for_training import (
     clean_dataframe_for_training,
 )
-from nba_ou.postgre_db.predictions.create.create_ou_predictions_db import (
-    upload_predictions_to_postgre,
-)
 from nba_ou.prediction.input_limits import (
     LATEST_INPUT_COLUMN,
     LIMITED_COUNT_COLUMN,
@@ -202,7 +199,6 @@ def load_and_predict_model_for_nba_games(
     spread_pick_line_col: str | None = None,
     extra_summary_columns: dict | None = None,
     passthrough_columns: Sequence[str] = (),
-    persist: bool = True,
     max_na_per_row: int | None = None,
 ) -> pd.DataFrame:
     """
@@ -230,8 +226,6 @@ def load_and_predict_model_for_nba_games(
             prediction_target is TOTAL_POINTS. Defaults to main sportsbook from config.
         passthrough_columns: Per-row input columns copied unchanged into the
             output when present (e.g. an intermediate row's snapshot time).
-        persist: Upload the output to the predictions table. False only
-            returns it (a dry run).
         max_na_per_row: The model's own training limit (its spec's
             ``cleaning.max_na_per_row``): a row with more NaN model features is
             not predicted, as training would not have kept it. Counted as
@@ -571,14 +565,10 @@ def load_and_predict_model_for_nba_games(
     }.get(prediction_target, "PRED_LINE_ERROR")
     df_summary_clean = df_summary.dropna(subset=[target_column])
 
-    # Applied BEFORE the upload: these identify which slot, spec and build
-    # produced the row, and the upload happens here rather than in the caller.
+    # These identify which slot, spec and build produced the row.
     if extra_summary_columns:
         for column, value in extra_summary_columns.items():
             df_summary_clean[column] = value
-
-    if persist:
-        upload_predictions_to_postgre(df_summary_clean)
 
     df_summary_clean.attrs["dropped_na_games"] = dropped_na_games
     return df_summary_clean
@@ -629,7 +619,6 @@ def load_registry_model_and_predict(
     frames: Mapping[str, pd.DataFrame] | None = None,
     frame_versions: Mapping[str, str] | None = None,
     passthrough_columns: Sequence[str] = (),
-    persist: bool = True,
     latest_input: bool = False,
     report_required_max_horizon: int | None = None,
 ) -> pd.DataFrame:
@@ -798,11 +787,7 @@ def load_registry_model_and_predict(
         prediction_target=prediction_target,
         total_points_pick_line_col=total_points_pick_line_col,
         spread_pick_line_col=spread_pick_line_col,
-        # Passed in rather than attached to the returned frame: the upload to
-        # Postgres happens INSIDE load_and_predict_model_for_nba_games, so
-        # anything added here afterwards would never be stored.
         passthrough_columns=passthrough_columns,
-        persist=persist,
         max_na_per_row=spec.cleaning.max_na_per_row,
         extra_summary_columns={
             "MODEL_TARGET": str(spec.identity.target),

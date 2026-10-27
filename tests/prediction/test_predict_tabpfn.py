@@ -25,7 +25,6 @@ from nba_ou.modeling.registry_models import (
 )
 from nba_ou.modeling.registry_paths import ModelSlot, ModelTarget
 from nba_ou.postgre_db.predictions_aiven import schema as store_schema
-from nba_ou.prediction import prediction as prediction_module
 from nba_ou.prediction.prediction_store import PredictionRunRecorder
 from nba_ou.prediction.prediction_tabpfn_client import (
     FittedTabPFN,
@@ -258,11 +257,6 @@ def _schedule() -> pd.DataFrame:
 
 
 def test_a_tabpfn_output_is_stored_as_a_tabpfn_build(monkeypatch):
-    monkeypatch.setattr(
-        prediction_module,
-        "upload_predictions_to_postgre",
-        lambda df: pytest.fail("TabPFN wrote to Supabase"),
-    )
     spec = _spec()
     training_set = tabpfn_training_set(_history(), spec, frame_key="train_data/k")
     model = FittedTabPFN(
@@ -306,11 +300,6 @@ def test_a_tabpfn_output_is_stored_as_a_tabpfn_build(monkeypatch):
 
 
 def test_an_intermediate_output_is_stored_at_its_horizon(monkeypatch):
-    monkeypatch.setattr(
-        prediction_module,
-        "upload_predictions_to_postgre",
-        lambda df: pytest.fail("TabPFN wrote to Supabase"),
-    )
     spec = _spec(horizon=360)
     training_set = tabpfn_training_set(
         _snapshots(_history()), spec, frame_key="train_data/2_5/k.parquet"

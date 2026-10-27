@@ -34,9 +34,6 @@ from nba_ou.data_processing.referees.process_refs_scheduled_game import (
     process_scheduled_referee_assignments,
 )
 from nba_ou.fetch_data.live_rosters import load_live_rosters
-from nba_ou.postgre_db.predictions.create.create_ou_predictions_db import (
-    upload_predictions_to_postgre,
-)
 from nba_ou.postgre_db.predictions_aiven.schema import WORKFLOW_PAST_SNAPSHOTS
 from nba_ou.postgre_db.update_all.update_all_databases import update_all_databases
 from nba_ou.prediction.intermediate_frame import (
@@ -168,9 +165,6 @@ def predict_past_snapshots(
     s3 = make_s3_client(profile=SETTINGS.s3_aws_profile, region=SETTINGS.s3_aws_region)
     started = datetime.now(ZoneInfo("Europe/Madrid"))
     failures: list[str] = []
-    # The old Supabase table's failures: reported, but they do not make the
-    # prediction store's run partial.
-    legacy_failures: list[str] = []
     predicted = 0
     for slot in slots:
         label = slot.describe()
@@ -186,8 +180,6 @@ def predict_past_snapshots(
                 frames={"intermediate_line": frame},
                 frame_versions={"intermediate_line": BASE_SCHEMA_VERSION},
                 passthrough_columns=PASSTHROUGH_COLUMNS,
-                # Stored below, each destination on its own.
-                persist=False,
                 latest_input=False,
                 report_required_max_horizon=SETTINGS.report_required_max_horizon,
             )
@@ -206,12 +198,6 @@ def predict_past_snapshots(
         if rejected:
             print_status(f"Prediction store rejected {label}: {rejected}", ok=False)
             failures.append(f"{label} (prediction store): {rejected}")
-        if persist:
-            try:
-                upload_predictions_to_postgre(predictions)
-            except Exception as exc:  # noqa: BLE001 -- reported below
-                print_status(f"Supabase write failed for {label}: {exc}", ok=False)
-                legacy_failures.append(f"{label} (Supabase): {exc}")
 
     if persist:
         print_step_header(step, "Storing Predictions")
@@ -222,7 +208,6 @@ def predict_past_snapshots(
             bucket=SETTINGS.s3_bucket,
             partial=bool(failures),
         )
-    failures += legacy_failures
 
     print_step_header(step, "Summary")
     print_status(f"{predicted}/{len(slots)} slot(s) predicted")
@@ -242,7 +227,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--no-persist",
         action="store_true",
-        help="Predict without storing: no predictions table rows, no S3 snapshots",
+        help="Predict without storing: no prediction-store rows, no S3 run archive",
     )
     parser.add_argument(
         "--skip-db-update",

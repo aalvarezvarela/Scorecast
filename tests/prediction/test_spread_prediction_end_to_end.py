@@ -16,7 +16,6 @@ from zoneinfo import ZoneInfo
 import numpy as np
 import pandas as pd
 import pytest
-from nba_ou.prediction import prediction as prediction_module
 from nba_ou.prediction.prediction import (
     PREDICTION_TARGET_LINE_ERROR,
     PREDICTION_TARGET_SPREAD_ERROR,
@@ -34,15 +33,6 @@ ODDS_TOTAL_COL = "ODDS_TOTAL_LINE_bet365"
 # Timezone-aware, as every real caller passes: the time-to-tip subtraction is
 # against a tz-aware game time.
 PREDICTION_AT = datetime(2026, 9, 21, 18, 0, tzinfo=ZoneInfo("Europe/Madrid"))
-
-
-@pytest.fixture
-def captured_uploads(monkeypatch):
-    uploads = []
-    monkeypatch.setattr(
-        prediction_module, "upload_predictions_to_postgre", uploads.append
-    )
-    return uploads
 
 
 def _model(seed: int = 0) -> XGBRegressor:
@@ -87,7 +77,7 @@ def _predict(target, **kwargs):
     )
 
 
-def test_a_spread_model_produces_a_spread_residual_and_a_side(captured_uploads):
+def test_a_spread_model_produces_a_spread_residual_and_a_side():
     result = _predict(PREDICTION_TARGET_SPREAD_ERROR)
 
     assert not result.empty
@@ -98,7 +88,7 @@ def test_a_spread_model_produces_a_spread_residual_and_a_side(captured_uploads):
     assert (result["PREDICTION_VALUE_TYPE"] == "SPREAD_ERROR").all()
 
 
-def test_the_predicted_margin_is_the_line_plus_the_residual(captured_uploads):
+def test_the_predicted_margin_is_the_line_plus_the_residual():
     result = _predict(PREDICTION_TARGET_SPREAD_ERROR)
     expected = result["SPREAD_LINE_AT_PREDICTION"] + result["PRED_SPREAD_ERROR"]
     pd.testing.assert_series_equal(
@@ -131,9 +121,9 @@ def test_the_mandatory_line_check_still_fires_when_one_is_named():
         )
 
 
-def test_slot_identity_reaches_the_database_row(captured_uploads):
-    """The upload happens inside this function, so columns attached to the
-    RETURNED frame afterwards would never be stored."""
+def test_slot_identity_reaches_the_output_rows():
+    """Which slot, spec and build produced each row: what the prediction
+    store's recorder reads."""
     identity = {
         "MODEL_TARGET": "spread_error",
         "MODEL_HORIZON_MINUTES": 0,
@@ -142,16 +132,14 @@ def test_slot_identity_reaches_the_database_row(captured_uploads):
         "SPEC_ID": "a3f9c21d4b0e",
         "FIT_ID": "20260921T154203Z-a3f9c21d",
     }
-    _predict(PREDICTION_TARGET_SPREAD_ERROR, extra_summary_columns=identity)
+    result = _predict(PREDICTION_TARGET_SPREAD_ERROR, extra_summary_columns=identity)
 
-    assert len(captured_uploads) == 1
-    uploaded = captured_uploads[0]
     for column, value in identity.items():
-        assert column in uploaded.columns, column
-        assert (uploaded[column] == value).all(), column
+        assert column in result.columns, column
+        assert (result[column] == value).all(), column
 
 
-def test_a_line_error_model_is_unaffected_by_the_spread_branches(captured_uploads):
+def test_a_line_error_model_is_unaffected_by_the_spread_branches():
     result = _predict(PREDICTION_TARGET_LINE_ERROR)
     assert set(result["PRED_PICK"]).issubset({"OVER", "UNDER", "PUSH"})
     assert (result["PREDICTION_VALUE_TYPE"] == "DIFF_FROM_LINE").all()
@@ -170,9 +158,7 @@ def test_a_line_error_model_is_unaffected_by_the_spread_branches(captured_upload
     "missing_feature",
     ["REF_CREW_FTA_TENDENCY_BEFORE", "N_REPORT_OUT_PLAYERS_BEFORE_TEAM_HOME"],
 )
-def test_predictions_continue_with_nan_live_features(
-    captured_uploads, target, missing_feature
-):
+def test_predictions_continue_with_nan_live_features(target, missing_feature):
     features = [missing_feature, "FEAT_B"]
     training = _frame(32).rename(columns={"FEAT_A": missing_feature})
     model = XGBRegressor(n_estimators=6, max_depth=2, verbosity=0)
@@ -194,14 +180,11 @@ def test_predictions_continue_with_nan_live_features(
     assert len(result) == len(frame)
     assert result.NA_COLUMNS_COUNT.eq(1).all()
     assert result.NA_COLUMNS_NAMES.eq(missing_feature).all()
-    assert len(captured_uploads[0]) == len(frame)
 
 
-def test_snapshot_marks_reach_the_output_and_a_dry_run_stores_nothing(
-    captured_uploads,
-):
+def test_snapshot_marks_reach_the_output():
     """An intermediate row's snapshot time and passed flag survive cleaning
-    into the summary; ``persist=False`` returns it without uploading."""
+    into the summary."""
     frame = _frame()
     snapshot_ts = pd.Timestamp("2026-09-21 22:30", tz="UTC")
     frame["SNAPSHOT_TS_UTC"] = snapshot_ts
@@ -216,16 +199,14 @@ def test_snapshot_marks_reach_the_output_and_a_dry_run_stores_nothing(
         prediction_target=PREDICTION_TARGET_LINE_ERROR,
         prediction_datetime=PREDICTION_AT,
         passthrough_columns=("SNAPSHOT_TS_UTC", "SNAPSHOT_PASSED", "NOT_THERE"),
-        persist=False,
     )
 
-    assert captured_uploads == []
     assert (result["SNAPSHOT_TS_UTC"] == snapshot_ts).all()
     assert result["SNAPSHOT_PASSED"].tolist() == [True, False] * 3
     assert "NOT_THERE" not in result.columns
 
 
-def test_a_row_over_the_training_nan_limit_is_not_predicted(captured_uploads):
+def test_a_row_over_the_training_nan_limit_is_not_predicted():
     """The spec's max_na_per_row, counted over the model's features."""
     frame = _frame()
     frame.loc[frame.index[0], FEATURES] = np.nan
@@ -237,7 +218,6 @@ def test_a_row_over_the_training_nan_limit_is_not_predicted(captured_uploads):
         required_features=FEATURES,
         prediction_target=PREDICTION_TARGET_LINE_ERROR,
         prediction_datetime=PREDICTION_AT,
-        persist=False,
     )
 
     limited = load_and_predict_model_for_nba_games(df=frame, max_na_per_row=1, **kwargs)

@@ -151,12 +151,10 @@ def test_a_snapshot_still_ahead_is_predicted_and_marked(monkeypatch):
         df=None,
         frames={"intermediate_line": marked},
         passthrough_columns=("SNAPSHOT_TS_UTC", "SNAPSHOT_PASSED"),
-        persist=False,
     )
     assert seen["rows"]["TIME_TO_MATCH_MIN"].tolist() == [30, 30]
     assert not seen["rows"]["SNAPSHOT_PASSED"].any()
     assert seen["passthrough_columns"] == ("SNAPSHOT_TS_UTC", "SNAPSHOT_PASSED")
-    assert seen["persist"] is False
     # The model's own training limit, from its spec.
     assert seen["max_na_per_row"] == 800
 

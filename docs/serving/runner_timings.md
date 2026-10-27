@@ -53,8 +53,9 @@ memo miss costs minutes.
 Since the same date every self-hosted job logs unbuffered
 (`PYTHONUNBUFFERED`), so each log line carries the time it was printed, and
 the predictor and TabPFN print a `[time] <phase>: <duration>; peak RSS ...`
-line as each phase ends (`nba_ou.utils.phase_timer`), one per slot with its
-model read and Supabase upload, and a `Timings (wall clock)` summary before
+line as each phase ends (`nba_ou.utils.phase_timer`), one per slot (with its
+model read; until 2026-10-27 also its Supabase write, ~2.5 s, since removed),
+and a `Timings (wall clock)` summary before
 their own summary. The job venv is reused across runs
 (`.github/actions/job-venv`): setup drops from ~50–60 s to a few seconds
 except after a requirements change.

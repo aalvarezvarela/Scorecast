@@ -251,7 +251,6 @@ def predict_with_tabpfn(
         prediction_datetime=prediction_datetime,
         prediction_target=resolve_prediction_target(target),
         passthrough_columns=passthrough_columns,
-        persist=False,
         max_na_per_row=spec.cleaning.max_na_per_row,
         extra_summary_columns={
             "MODEL_TARGET": target,

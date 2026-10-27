@@ -22,9 +22,6 @@ from nba_ou.create_training_data.schema_layers import (
     newest_version,
 )
 from nba_ou.fetch_data.scheduled_game.get_schedule_games import get_schedule_games
-from nba_ou.postgre_db.predictions.create.create_ou_predictions_db import (
-    upload_predictions_to_postgre,
-)
 from nba_ou.postgre_db.predictions_aiven.schema import WORKFLOW_DAILY
 from nba_ou.postgre_db.update_all.update_all_databases import update_all_databases
 from nba_ou.prediction.baseline_predictions import (
@@ -127,7 +124,7 @@ def predict_nba_games(
 
     A slot that fails does not stop the others; the run exits non-zero at the
     end if anything failed. ``persist=False`` stores no predictions: no
-    predictions-table rows and no S3 snapshots. The database update and the
+    prediction-store rows and no S3 run archive. The database update and the
     injury-report sync in steps 1-3 still write. ``dump_frames`` writes the
     feature frames to that local directory, for inspection.
 
@@ -341,9 +338,6 @@ def predict_nba_games(
 
     predicted: list[str] = []
     skipped: list[str] = []
-    # The old Supabase table's failures: reported, but they do not make the
-    # prediction store's run partial.
-    legacy_failures: list[str] = []
     step_number = 4
     slots_started = time.perf_counter()
     for slot in configured_slots:
@@ -361,9 +355,6 @@ def predict_nba_games(
                 frames=frames,
                 frame_versions=frame_versions,
                 passthrough_columns=PASSTHROUGH_COLUMNS,
-                # Stored below, each destination on its own: a failing
-                # Supabase write must not cost the prediction store its rows.
-                persist=False,
                 latest_input=slot in latest_slots,
                 report_required_max_horizon=SETTINGS.report_required_max_horizon,
             )
@@ -389,15 +380,7 @@ def predict_nba_games(
         if rejected:
             print_status(f"Prediction store rejected {label}: {rejected}", ok=False)
             failures.append(f"{label} (prediction store): {rejected}")
-        upload_seconds = 0.0
-        if persist:
-            upload_started = time.perf_counter()
-            legacy_failures += legacy_supabase_upload(predictions_df, label)
-            upload_seconds = time.perf_counter() - upload_started
-        print(
-            f"[time] {label}: {time.perf_counter() - slot_started:.1f} s"
-            + (f" (Supabase upload {upload_seconds:.1f} s)" if persist else "")
-        )
+        print(f"[time] {label}: {time.perf_counter() - slot_started:.1f} s")
     timer.record(f"{len(configured_slots)} slots", time.perf_counter() - slots_started)
 
     print_step_header(step_number, "Generating Predictions (Baselines)")
@@ -414,7 +397,6 @@ def predict_nba_games(
                     df=df_to_predict,
                     df_history=baseline_history_window(layer_inputs, date_to_predict),
                     prediction_datetime=prediction_time,
-                    upload_to_postgres=False,
                 )
                 print_status("Baseline predictions generated")
                 for (
@@ -434,10 +416,6 @@ def predict_nba_games(
                         failures.append(
                             f"{baseline_name} (prediction store): {rejected}"
                         )
-                    if persist:
-                        legacy_failures += legacy_supabase_upload(
-                            baseline_predictions_df, baseline_name
-                        )
 
             except Exception as e:  # noqa: BLE001 -- reported with the slot failures
                 traceback.print_exc()
@@ -454,7 +432,6 @@ def predict_nba_games(
                 bucket=SETTINGS.s3_bucket,
                 partial=bool(failures),
             )
-    failures += legacy_failures
 
     print_step_header(step_number, "Summary")
     print(timer.summary())
@@ -519,20 +496,6 @@ def closing_rows(
     return df_to_predict, layer_inputs
 
 
-def legacy_supabase_upload(predictions: pd.DataFrame, label: str) -> list[str]:
-    """Write ``predictions`` to the old Supabase table; the failure, if any.
-
-    Runs in parallel with the prediction store during the transition
-    (docs/serving/prediction_storage.md, rollout 3), and independently of it.
-    """
-    try:
-        upload_predictions_to_postgre(predictions)
-    except Exception as e:  # noqa: BLE001 -- reported with the run's failures
-        print_status(f"Supabase write failed for {label}: {e}", ok=False)
-        return [f"{label} (Supabase): {e}"]
-    return []
-
-
 def latest_input_slots(configured_slots: list, mode: str | None = None) -> list:
     """The enabled slots that read the latest snapshot on this run.
 
@@ -566,7 +529,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--no-persist",
         action="store_true",
-        help="Predict without storing: no predictions table rows, no S3 snapshots",
+        help="Predict without storing: no prediction-store rows, no S3 run archive",
     )
     parser.add_argument(
         "--dump-frames",

@@ -12,7 +12,6 @@ from types import SimpleNamespace
 import numpy as np
 import pandas as pd
 import pytest
-from nba_ou.prediction import baseline_predictions
 from nba_ou.prediction.baseline_predictions import (
     HISTORICAL_AVERAGE_LINE_ERROR_BASELINE_MODEL_NAME,
     baseline_history_window,
@@ -119,18 +118,14 @@ def test_baselines_read_history_from_the_layer_inputs(monkeypatch):
     monkeypatch.setattr(job, "create_df_to_predict", build)
     monkeypatch.setattr(job, "make_s3_client", lambda **_: object())
     monkeypatch.setattr(job, "PredictionRunRecorder", _NullRecorder)
-    monkeypatch.setattr(job, "persist_prediction_run", lambda *_, **__: [])
-    uploaded = {}
+    stored = {}
 
-    def upload(predictions):
-        uploaded[predictions["MODEL_NAME"].iloc[0]] = predictions
+    def persist(recorder, **_):
+        for predictions in recorder.outputs:
+            stored[predictions["MODEL_NAME"].iloc[0]] = predictions
+        return []
 
-    monkeypatch.setattr(job, "upload_predictions_to_postgre", upload)
-    monkeypatch.setattr(
-        baseline_predictions,
-        "upload_predictions_to_postgre",
-        lambda df: pytest.fail("baselines stored from inside the predictor"),
-    )
+    monkeypatch.setattr(job, "persist_prediction_run", persist)
 
     class _Now:
         @staticmethod
@@ -141,7 +136,7 @@ def test_baselines_read_history_from_the_layer_inputs(monkeypatch):
     job.predict_nba_games()
 
     assert built["target_game_ids"] == ["g5"]
-    average = uploaded[HISTORICAL_AVERAGE_LINE_ERROR_BASELINE_MODEL_NAME]
+    average = stored[HISTORICAL_AVERAGE_LINE_ERROR_BASELINE_MODEL_NAME]
     assert average["PRED_TOTAL_POINTS"].tolist() == [
         np.mean([210.0, 220.0, 230.0, 240.0])
     ]
@@ -197,20 +192,9 @@ def test_a_failing_slot_does_not_stop_the_others(monkeypatch, capsys):
         "persist_prediction_run",
         lambda *_, **__: pytest.fail("a dry run stored predictions"),
     )
-    monkeypatch.setattr(
-        job,
-        "upload_predictions_to_postgre",
-        lambda df: pytest.fail("a dry run stored predictions in Supabase"),
-    )
-    monkeypatch.setattr(
-        baseline_predictions,
-        "upload_predictions_to_postgre",
-        lambda df: pytest.fail("a dry run stored baselines"),
-    )
     served = []
 
-    def serve(*, slot, persist, **_):
-        assert persist is False
+    def serve(*, slot, **_):
         served.append(slot.target)
         if slot.target == "line_error":
             raise RuntimeError("booster unreadable")
@@ -235,11 +219,9 @@ def test_a_failing_slot_does_not_stop_the_others(monkeypatch, capsys):
     assert "Baseline predictions generated" in out
 
 
-def test_a_failing_supabase_write_does_not_cost_the_prediction_store(
-    monkeypatch, capsys
-):
-    """The old table and the store are written independently: a Supabase
-    failure is reported, and the store still gets every slot's output."""
+def test_a_run_stores_every_slot_and_baseline_in_the_prediction_store(monkeypatch):
+    """The prediction store (Aiven and its S3 archive) is the only place a run
+    writes predictions: it gets the slot and both baselines, in one run."""
     from nba_ou.modeling.registry_paths import ModelSlot
 
     tonight = pd.DataFrame(
@@ -286,16 +268,9 @@ def test_a_failing_supabase_write_does_not_cost_the_prediction_store(
     monkeypatch.setattr(
         job,
         "load_registry_model_and_predict",
-        lambda *, persist, **_: pd.DataFrame(
-            {"GAME_ID": ["g5"], "MODEL_NAME": ["m"], "persisted_inside": [persist]}
-        ),
+        lambda **_: pd.DataFrame({"GAME_ID": ["g5"], "MODEL_NAME": ["m"]}),
     )
     monkeypatch.setattr(job, "PredictionRunRecorder", _NullRecorder)
-
-    def supabase_down(predictions):
-        raise ConnectionError("supabase down")
-
-    monkeypatch.setattr(job, "upload_predictions_to_postgre", supabase_down)
     stored = {}
 
     def persist(recorder, *, partial, **_):
@@ -311,17 +286,10 @@ def test_a_failing_supabase_write_does_not_cost_the_prediction_store(
             return pd.Timestamp("2025-11-03 12:00", tz=tz).to_pydatetime()
 
     monkeypatch.setattr(job, "datetime", _Now)
-    with pytest.raises(SystemExit) as exit_info:
-        job.predict_nba_games()
+    job.predict_nba_games()
 
-    assert exit_info.value.code == 1
-    # The slot and both baselines reached the store, the slot without having
-    # been written to Supabase from inside the predictor.
     assert len(stored["outputs"]) == 3
-    assert stored["outputs"][0]["persisted_inside"].tolist() == [False]
-    # Supabase is not the store: its failure does not make the run partial.
     assert stored["partial"] is False
-    assert "supabase down" in capsys.readouterr().out
 
 
 def test_no_filed_report_skips_the_closing_rows_not_the_run(monkeypatch, capsys):
