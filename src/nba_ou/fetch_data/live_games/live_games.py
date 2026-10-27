@@ -1,3 +1,4 @@
+import time
 from datetime import datetime
 from typing import Optional
 from zoneinfo import ZoneInfo
@@ -7,6 +8,11 @@ from nba_api.live.nba.endpoints import scoreboard
 from nba_api.stats.endpoints import ScoreboardV3
 
 NBA_DATE_TZ = ZoneInfo("America/New_York")
+# Rounds over both scoreboards before giving up, and the pause (seconds,
+# doubled each round) between them. 2026-10-26: one round failed on a
+# ScoreboardV3 read timeout that the next run did not see.
+LOOKUP_ROUNDS = 3
+RETRY_PAUSE_S = 10
 
 
 def _current_nba_date() -> str:
@@ -47,16 +53,21 @@ def get_live_game_ids():
     ]
 
     last_error: Optional[Exception] = None
-    for source_name, fetcher in fallback_fetchers:
-        try:
-            return fetcher()
-        except Exception as exc:
-            last_error = exc
-            print(f"{source_name} live-game lookup failed: {exc}")
+    for attempt in range(1, LOOKUP_ROUNDS + 1):
+        for source_name, fetcher in fallback_fetchers:
+            try:
+                return fetcher()
+            except Exception as exc:
+                last_error = exc
+                print(f"{source_name} live-game lookup failed: {exc}")
+        if attempt < LOOKUP_ROUNDS:
+            pause = RETRY_PAUSE_S * 2 ** (attempt - 1)
+            print(f"Retrying the live-game lookup in {pause} s.")
+            time.sleep(pause)
 
     raise RuntimeError(
         f"Unable to fetch live NBA game IDs for {game_date} from ScoreBoard "
-        "or ScoreboardV3."
+        f"or ScoreboardV3 after {LOOKUP_ROUNDS} rounds."
     ) from last_error
 
 
