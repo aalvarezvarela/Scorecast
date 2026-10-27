@@ -560,7 +560,7 @@ A vs R is the first end-to-end test of the graph. C vs C0 is the end-to-end test
 
 To be defined. Constraints already known:
 
-- Daily prediction needs the latest stage 1 checkpoint, the graph builder with the same weight-provider versions as training, and the stints and matchups up to yesterday. Stints are updated daily; matchups are not yet (phase 0); RAPM ratings still lack an automatic daily refresh (lineup plan §10).
+- Daily prediction needs the latest stage 1 checkpoint, the graph builder with the same weight-provider versions as training, and the stints and matchups up to yesterday. Neither stints (daily update removed 2026-10-27) nor matchups (phase 0) are updated daily; RAPM ratings still lack an automatic daily refresh (lineup plan §10).
 - Checkpoints belong in S3 under their own prefix, not in git-tracked `models/`.
 - Inference must run in the GitHub Actions environment, likely on CPU.
 - Serving and training must compute the same columns at the same cutoff (feature parity check, as for 2_6).
