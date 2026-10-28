@@ -31,6 +31,7 @@ import pandas as pd
 import psycopg
 
 from nba_ou.postgre_db.row_order import read_sql_canonical
+from nba_ou.utils.history_cache import cached
 from nba_ou.utils.seasons import drop_exhibition_games
 
 from .schema import SCHEMA
@@ -321,6 +322,7 @@ def _season_params(season_years: list[int] | None) -> dict:
     }
 
 
+@cached(ignore=("conn",))
 def last_status_before_tip(
     conn: psycopg.Connection, season_years: list[int] | None = None
 ) -> pd.DataFrame:
@@ -335,6 +337,7 @@ def last_status_before_tip(
     return drop_exhibition_games(stored, "game_id")
 
 
+@cached(ignore=("conn",))
 def filing_at_tip(
     conn: psycopg.Connection, season_years: list[int] | None = None
 ) -> pd.DataFrame:
@@ -350,6 +353,7 @@ def filing_at_tip(
     return drop_exhibition_games(stored, "game_id")
 
 
+@cached(ignore=("conn",))
 def report_age_at_tip(
     conn: psycopg.Connection, season_years: list[int] | None = None
 ) -> pd.DataFrame:
@@ -362,6 +366,7 @@ def report_age_at_tip(
     return drop_exhibition_games(stored, "game_id")
 
 
+@cached(ignore=("conn",))
 def listed_status_events(
     conn: psycopg.Connection,
     season_years: list[int] | None = None,
@@ -381,6 +386,7 @@ def listed_status_events(
     return drop_exhibition_games(stored, "game_id")
 
 
+@cached(ignore=("conn",))
 def listed_pairs(
     conn: psycopg.Connection, season_years: list[int] | None = None
 ) -> pd.DataFrame:
@@ -458,6 +464,7 @@ _TEAM_GAME_SCHEDULE = f"""
 """
 
 
+@cached(ignore=("conn",))
 def status_spans(
     conn: psycopg.Connection, season_years: list[int] | None = None
 ) -> pd.DataFrame:
@@ -472,6 +479,7 @@ def status_spans(
     )
 
 
+@cached(ignore=("conn",))
 def filing_spans(
     conn: psycopg.Connection, season_years: list[int] | None = None
 ) -> pd.DataFrame:
@@ -482,6 +490,7 @@ def filing_spans(
     )
 
 
+@cached(ignore=("conn",))
 def team_game_schedule(
     conn: psycopg.Connection, season_years: list[int] | None = None
 ) -> pd.DataFrame:
@@ -552,6 +561,7 @@ _SEASON_FINGERPRINTS = f"""
 """
 
 
+@cached(ignore=("conn",))
 def report_season_fingerprints(conn: psycopg.Connection) -> dict[int, str]:
     """A digest per season of every stored row a snapshot read of that season,
     or of any earlier one, can see -- chained, so a season's digest changes

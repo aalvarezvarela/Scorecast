@@ -48,6 +48,7 @@ import numpy as np
 import pandas as pd
 
 from nba_ou.postgre_db.row_order import read_sql_canonical
+from nba_ou.utils.history_cache import cached
 
 from .report_state import UNCOUNTED_REASON_CATEGORIES, InjuryReportState
 
@@ -213,6 +214,7 @@ def _box_history_query():
     )
 
 
+@cached()
 def load_player_box_history(season_years: list[int] | None = None) -> pd.DataFrame:
     """Box-score rows for regular season, play-in and playoffs, from Supabase.
 
@@ -270,6 +272,7 @@ class PreparedBoxHistory:
     form: pd.DataFrame
 
 
+@cached(shared=True)
 def prepare_box_and_form(box: pd.DataFrame) -> PreparedBoxHistory:
     prepared = prepare_box_history(box)
     return PreparedBoxHistory(box=prepared, form=build_player_form(prepared))

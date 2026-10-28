@@ -7,6 +7,7 @@ from nba_ou.postgre_db.config.db_config import (
 from psycopg import sql
 from nba_ou.postgre_db.row_order import read_sql_canonical
 from nba_ou.postgre_db.season_tables import read_through
+from nba_ou.utils.history_cache import cached
 
 
 def _normalize_game_ids(game_ids) -> list[str]:
@@ -27,6 +28,7 @@ def _normalize_game_ids(game_ids) -> list[str]:
     return normalized
 
 
+@cached()
 def load_games_from_db(seasons=None, extra_game_ids=None) -> pd.DataFrame | None:
     """Load NBA game rows from Postgres.
 

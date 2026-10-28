@@ -3,6 +3,7 @@ from nba_ou.postgre_db.config.db_config import connect_nba_db, get_schema_name_r
 from psycopg import sql
 from nba_ou.postgre_db.row_order import read_sql_canonical
 from nba_ou.postgre_db.season_tables import read_through
+from nba_ou.utils.history_cache import cached
 
 
 def _normalize_game_ids(game_ids) -> list[str]:
@@ -23,6 +24,7 @@ def _normalize_game_ids(game_ids) -> list[str]:
     return normalized
 
 
+@cached()
 def get_refs_data_from_db(seasons=None, extra_game_ids=None):
     """Load referee data from database for the specified seasons.
 

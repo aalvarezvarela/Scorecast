@@ -147,6 +147,7 @@ from nba_ou.postgre_db.odds.merge_odds_data import (
     load_and_merge_odds_yahoo_sportsbookreview,
 )
 from nba_ou.utils.general_utils import get_season_year_from_date
+from nba_ou.utils.history_cache import cached
 from nba_ou.utils.seasons import drop_exhibition_games, get_seasons_between_dates
 
 warnings.simplefilter(action="ignore", category=FutureWarning)
@@ -330,6 +331,7 @@ def _history_memo_for(targets, *, games, players, odds, injuries, report_state):
     return history_memo
 
 
+@cached()
 def process_team_statistics_for_training(
     df,
     df_odds,

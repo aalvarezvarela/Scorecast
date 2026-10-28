@@ -34,6 +34,7 @@ from nba_ou.postgre_db.odds_sportsbook.fetch_data_from_db.fetch_data_from_odds_s
 from nba_ou.postgre_db.odds_yahoo.fetch_data_from_db.fetch_data_from_odds_yahoo_db import (
     load_odds_yahoo_from_db,
 )
+from nba_ou.utils.history_cache import cached
 
 
 def merge_yahoo_sportsbook_odds(
@@ -283,6 +284,13 @@ def _convert_prices_and_normalize_markets(
     return df_odds
 
 
+#: The first season the odds tables store (SBR; Yahoo starts in 2020). An
+#: earlier season reads empty, so a load leaves it out: the referee history's
+#: span from 2011 then loads what the base features' span from 2017 does,
+#: and shares it in ``history_cache``.
+FIRST_SEASON_WITH_STORED_ODDS = 2018
+
+
 def load_and_merge_odds_yahoo_sportsbookreview(
     season_years: list[str] | None = None,
     extra_game_ids=None,
@@ -331,6 +339,42 @@ def load_and_merge_odds_yahoo_sportsbookreview(
     Returns:
         pd.DataFrame: Complete merged odds dataframe with game_id, all odds columns
     """
+    return _load_and_merge_odds(
+        _seasons_with_stored_odds(season_years),
+        extra_game_ids,
+        normalize_total_lines=normalize_total_lines,
+        normalize_spread_lines=normalize_spread_lines,
+        null_extreme_spread_prices=null_extreme_spread_prices,
+        exclude_caesars=exclude_caesars,
+        combine_fanatics_and_caesars=combine_fanatics_and_caesars,
+        repair_closing_lines_from_history=repair_closing_lines_from_history,
+    )
+
+
+def _seasons_with_stored_odds(season_years):
+    """``season_years`` without the seasons before the odds tables begin;
+    as given when none is left (an empty list means every season)."""
+    if not season_years:
+        return season_years
+    kept = [
+        season
+        for season in season_years
+        if int(str(season).split("-")[0]) >= FIRST_SEASON_WITH_STORED_ODDS
+    ]
+    return kept or season_years
+
+
+@cached()
+def _load_and_merge_odds(
+    season_years: list[str] | None = None,
+    extra_game_ids=None,
+    normalize_total_lines: bool = True,
+    normalize_spread_lines: bool = True,
+    null_extreme_spread_prices: bool = True,
+    exclude_caesars: bool = False,
+    combine_fanatics_and_caesars: bool | None = None,
+    repair_closing_lines_from_history: bool = True,
+) -> pd.DataFrame:
     print(f"Loading odds data for seasons: {season_years}")
 
     # Load data from databases

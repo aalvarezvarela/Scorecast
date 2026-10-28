@@ -32,6 +32,7 @@ from psycopg import sql
 from nba_ou.config.odds_columns import HISTORY_ONLY_BOOKS
 from nba_ou.postgre_db.config.db_config import connect_line_history_db
 from nba_ou.postgre_db.input_cache import SeasonCache, code_key
+from nba_ou.utils.history_cache import cached
 
 from .alt_lines import (
     ALT_LINE_FILTER_CODE,
@@ -670,6 +671,7 @@ def _cached_season_ticks(
     return ticks
 
 
+@cached()
 def pregame_tick_fingerprints(
     season_years: list[int],
     *,

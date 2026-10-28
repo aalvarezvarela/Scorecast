@@ -34,6 +34,7 @@ from nba_ou.data_processing.players.players_statistics import (
     rank_player_states,
 )
 from nba_ou.utils.general_utils import _with_before_suffix
+from nba_ou.utils.history_cache import cached
 from nba_ou.utils.row_cache import RowCache
 
 #: The top-N player columns come in three flavours per statistic: the value
@@ -452,6 +453,7 @@ class PreparedPlayerHistory:
     prior_roster_lookup: Callable
 
 
+@cached(shared=True)
 def prepare_player_history(
     df_players, stat_cols, *, stat_players: pd.DataFrame | None = None
 ) -> PreparedPlayerHistory:
