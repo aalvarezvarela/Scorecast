@@ -1,8 +1,8 @@
 # Faster prediction runs on the self-hosted runner
 
 Status: **Partial** (updated 2026-10-28) — P0 and P3 are done (PR #84); P2
-(a, b and c) and P4 are done on branch `perf/prediction-loop`, to be confirmed
-on the runner. P1, P5, P6 and P7 are open. The progress log at the end records
+(a, b and c), P4 and P5 are done on branch `perf/prediction-loop`, to be
+confirmed on the runner. P1, P6 and P7 are open. The progress log at the end records
 each step.
 
 Where the time of the prediction workflows goes and what to change to cut it,
@@ -140,7 +140,7 @@ Ordered by saving.
 | P2 · Prediction loop | ≈3 min per run (from measured parts) | low–medium | low | **done** (`perf/prediction-loop`), to confirm on the runner |
 | P3 · Persistent venv | ≈0.7 min per run | low | low | **done** (PR #84) |
 | P4 · False cache misses | ~24 min each morning retrain; ~1:54 per new injury reason | low | one cold run on deploy | **done** (`perf/prediction-loop`), to confirm on the runner |
-| P5 · Closing and intermediate in parallel | ≈3 min per run | medium | memory | open |
+| P5 · Closing and intermediate in parallel | ≈3 min per run | medium | memory, only warm builds overlap | **done** (`perf/prediction-loop`), to confirm on the runner |
 | P6 · Runner hardware | depends on the result | low to measure | — | open |
 | P7 · Streamlit on Aiven | — (unblocks the Supabase clean-up) | medium | dashboard history | open |
 
@@ -317,7 +317,7 @@ Merge outside game hours and dispatch one predictor run with `persist` off.
 Then check the next morning's retrain: the closing memos should hit, and any
 miss should name its part.
 
-### P5 · Closing and intermediate in parallel
+### P5 · Closing and intermediate in parallel — done (to confirm on the runner)
 
 **What.** The two builds are independent until the prediction phase and most
 of their work is single-threaded. Build the closing rows in a separate
@@ -327,12 +327,61 @@ process while the intermediate rows build.
 
 **Risk.** In the retrain the closing build peaks at 3.1 GB and the
 intermediate at 5.1 GB; together ~8 GB on a 15 GB runner. A cold build has
-already run out of memory on pc1641 with 8 workers. Decide after P6.
+already run out of memory on pc1641 with 8 workers. So only warm builds may
+overlap. Warm predictor runs on the runner peak at 3.0 GB (closing) and
+5.0 GB (intermediate).
+
+**Done.** `predict_nba_games.py` spawns the closing build
+(`nba_ou.prediction.side_build`) and builds the intermediate rows meanwhile.
+Whether a run is warm is not known in advance: every warm run still misses
+the current season (report states, injury effects of 2026), and computing
+the digests is the build's own first step. So the decision is made during the
+build, by the warm gate (`nba_ou.utils.warm_gate`):
+
+- Each build holds a file lock, shared.
+- A build that starts computing a past season takes the lock exclusive. It
+  waits there until the other build has finished, then goes on alone. Two
+  builds turning cold at once take turns; they do not deadlock.
+- Computing a past season means one of two things. Either the memo refused a
+  stored entry (inputs changed, corrupt, read failed, rebuild), and the miss
+  is reported as the entry loads. Or a table stored nowhere gains its first
+  entry, which happens after a code-key change. A table that stays empty is
+  no work: the injury memo asks for season 2000 on every run and stores
+  nothing for it.
+- Misses of the current season pass: they are part of every warm run.
+
+The closing build's log is printed as one block when it ends. The run then
+prints `closing rows (side process)` and `closing and intermediate rows, side
+by side` in its `[time]` lines, plus a line naming the cold memo when a build
+waited. The side process is spawned, not forked, so it shares no S3 or
+database connection. If it dies without a result (e.g. killed for memory),
+the closing rows are built again in the main process; if it raises, the run
+fails as a sequential one would. It runs sequentially without a usable
+history memo (`NBA_OU_HISTORY_MEMO=0`, no backend, `REBUILD=1`), with no
+closing rows to build, or with `[PredictionModels] PARALLEL_BUILDS = false` /
+`--sequential-builds`.
+
+**Validation** (2026-10-28, local, replay of 2026-04-10 at 22:30 UTC, 15
+games, local memo, `PYTHONHASHSEED=0`). Every run gave the closing rows (15 ×
+1,672), their layer inputs (11,437 × 5) and the intermediate rows (15 ×
+3,086) equal bit for bit to the sequential build:
+
+| Run | Intermediate | Closing | Total |
+|---|---:|---:|---:|
+| Sequential, warm | 2:56 | 4:36 | 7:32 |
+| Side by side, warm (no wait) | 4:16 | 5:42 | 5:43 |
+| Side by side, closing cold (one season's digest made stale) | 3:24 | 8:35, of which 2:06 waiting | 8:36 |
+
+On the laptop the closing rows are the longer build; on the runner the
+intermediate rows are (3:24 closing, 4:35 intermediate), so the expected run
+saving is ~2–3 min of contention-adjusted overlap. Memory side by side: ~3.0
+plus ~4.7 GB. The first runner runs should confirm the phase times and the
+peak.
 
 ### P6 · Runner hardware
 
 **What.** Run `lscpu`, `free -h` and `vmstat 5` during a run and measure the
-S3 download speed. That decides whether P5 fits, whether a second runner on the
+S3 download speed. That checks that P5 fits in memory and on 4 cores, whether a second runner on the
 same machine would help, or whether the bottleneck is disk or network.
 
 **Note.** A second runner shortens the queue, not the total work. After P1 it
@@ -378,7 +427,9 @@ caches miss.
 4. ~~P4: memo fixes, with a cold run planned outside game hours.~~ Done on
    `perf/prediction-loop`; deploy with a warm-up run, then check the next
    morning retrain's memo report.
-5. P6, then P5 only if the runner's memory allows it.
+5. ~~P5: closing and intermediate side by side.~~ Done on
+   `perf/prediction-loop`, warm builds only; confirm phase times and memory on
+   the runner. P6 still measures the runner itself.
 6. P7: Streamlit on Aiven, then the Supabase clean-up.
 
 ## Progress log
@@ -401,6 +452,13 @@ caches miss.
   reason: fingerprint now per-season dimension rows. Every memo miss names the
   inputs that changed. The 2026-10-27 afternoon misses were the line-history
   rebuild, not a key fault. `values_only` for the closing memo not needed.
+- 2026-10-28 — P5 done on `perf/prediction-loop`. The closing rows build
+  in a spawned side process beside the intermediate rows. A warm gate (a
+  shared file lock) makes a build that starts computing a past season wait for
+  the other and finish alone, so only warm builds overlap.
+  `PARALLEL_BUILDS` / `--sequential-builds` turn it off. On a replay of
+  2026-04-10: 7:32 → 5:43 warm; a cold closing build waited 2:06 then ran
+  alone; every frame equal bit for bit.
 
 ## Sources
 

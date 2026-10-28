@@ -379,3 +379,136 @@ def test_no_filed_report_skips_the_closing_rows_not_the_run(monkeypatch, capsys)
     assert "1 slot(s) predicted" in out
     assert "baselines skipped" in out
     assert "0 failure(s)" in out
+
+
+def _side_by_side_job(monkeypatch, *, parallel_builds: bool, order: list):
+    """A run with a closing and an intermediate slot and one filed game."""
+    from nba_ou.modeling.registry_paths import ModelSlot
+
+    slots = [
+        ModelSlot(
+            schema_version="2_5",
+            target="line_error",
+            horizon_minutes=horizon,
+            variant="main",
+        )
+        for horizon in (0, 60)
+    ]
+    monkeypatch.setattr(
+        job,
+        "SETTINGS",
+        SimpleNamespace(
+            prediction_model_slots=slots,
+            intermediate_input_mode="own",
+            report_required_max_horizon=300,
+            parallel_builds=parallel_builds,
+            headless=True,
+            nba_injury_reports_url="",
+            s3_aws_profile=None,
+            s3_aws_region="eu-west-1",
+            s3_bucket="bucket",
+        ),
+    )
+    monkeypatch.setattr(job, "update_all_databases", lambda **_: None)
+    monkeypatch.setattr(job, "check_line_feed", _sbr_lines)
+    monkeypatch.setattr(
+        job,
+        "get_all_info_for_scheduled_games",
+        lambda **_: {"scheduled_games": pd.DataFrame({"GAME_ID": ["g5"]})},
+    )
+    tonight = pd.DataFrame(
+        {
+            "GAME_ID": ["g5"],
+            "GAME_DATE": ["2025-11-03"],
+            "TOTAL_POINTS": [np.nan],
+        }
+    )
+
+    def closing(**_):
+        order.append("closing")
+        return tonight.copy(), _history()
+
+    monkeypatch.setattr(job, "create_df_to_predict", closing)
+    intermediate = pd.DataFrame(
+        {"GAME_ID": ["g5"], "TIME_TO_MATCH_MIN": [60], "SNAPSHOT_PASSED": [False]}
+    )
+
+    def intermediate_rows(*_, **__):
+        order.append("intermediate")
+        return intermediate
+
+    monkeypatch.setattr(job, "tonight_intermediate_frame", intermediate_rows)
+    monkeypatch.setattr(job, "side_by_side_reason", lambda: None)
+    monkeypatch.setattr(job, "make_s3_client", lambda **_: object())
+    monkeypatch.setattr(job, "read_slot_builds", lambda **_: {})
+    monkeypatch.setattr(job, "PredictionRunRecorder", _NullRecorder)
+    monkeypatch.setattr(job, "load_baseline_predictions_for_nba_games", lambda **_: {})
+    served = {}
+
+    def serve(*, slot, frames, df, **_):
+        served[slot.horizon_minutes] = (sorted(frames), df["GAME_ID"].tolist())
+        return pd.DataFrame({"GAME_ID": ["g5"]})
+
+    monkeypatch.setattr(job, "load_registry_model_and_predict", serve)
+
+    class _Now:
+        @staticmethod
+        def now(tz=None):
+            return pd.Timestamp("2025-11-03 12:00", tz=tz).to_pydatetime()
+
+    monkeypatch.setattr(job, "datetime", _Now)
+    return served
+
+
+def test_closing_rows_build_beside_the_intermediate_rows(monkeypatch, capsys):
+    """The side build starts before the intermediate rows and is collected
+    after them; every slot then sees both frames, as in a sequential run."""
+    from nba_ou.prediction.side_build import SideResult
+
+    order = []
+    served = _side_by_side_job(monkeypatch, parallel_builds=True, order=order)
+
+    class _InlineSide:
+        """The side process, run in this one when collected."""
+
+        def __init__(self, fn, args, kwargs, label):
+            self.call, self.label = (fn, args, kwargs), label
+            self.gate = SimpleNamespace(cold_cause=None, waited=0.0)
+            self.released = False
+            order.append("side started")
+
+        @classmethod
+        def start(cls, fn, *args, current_season, label, **kwargs):
+            assert current_season == 2025
+            return cls(fn, args, kwargs, label)
+
+        def release_gate(self):
+            self.released = True
+
+        def result(self):
+            assert self.released
+            fn, args, kwargs = self.call
+            return SideResult(fn(*args, **kwargs), 1.0, None, 0.0)
+
+    monkeypatch.setattr(job, "SideBuild", _InlineSide)
+    job.predict_nba_games(persist=False)
+
+    assert order == ["side started", "intermediate", "closing"]
+    both = ["closing_line", "intermediate_line"]
+    assert served == {0: (both, ["g5"]), 60: (both, ["g5"])}
+    out = capsys.readouterr().out
+    assert "[time] closing rows (side process)" in out
+    assert "[time] closing and intermediate rows, side by side" in out
+
+
+def test_turned_off_the_builds_run_one_after_the_other(monkeypatch, capsys):
+    order = []
+    served = _side_by_side_job(monkeypatch, parallel_builds=False, order=order)
+    monkeypatch.setattr(
+        job.SideBuild, "start", lambda *_, **__: pytest.fail("side build started")
+    )
+    job.predict_nba_games(persist=False)
+
+    assert order == ["closing", "intermediate"]
+    assert served[0] == (["closing_line", "intermediate_line"], ["g5"])
+    assert "one after the other: turned off" in capsys.readouterr().out

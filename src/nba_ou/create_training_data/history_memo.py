@@ -58,6 +58,8 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
+from nba_ou.utils import warm_gate
+
 MEMO_PREFIX = "train_data/input_cache/v1/memo"
 
 #: The root of the memos the intermediate builder's injury and line-history
@@ -431,6 +433,8 @@ class HistoryMemo:
         self._tables: dict[tuple[str, int], dict] = {}
         self._sizes: dict[tuple[str, int], int] = {}
         self._pending: dict[tuple[str, int], Future] = {}
+        #: Tables whose stored entry was refused: computed again, for sure.
+        self._refused: set[tuple[str, int]] = set()
 
     def prefetch(self, names: Iterable[str]) -> None:
         """Start downloading every usable season of ``names`` in the background.
@@ -466,6 +470,11 @@ class HistoryMemo:
 
         Loaded once per build and shared by every caller; ``flush`` writes the
         tables that gained entries.
+
+        Computing a season is reported to the warm gate
+        (``nba_ou.utils.warm_gate``): a refused entry as it is loaded, a table
+        with no entry stored when it gains its first. A table that stays empty
+        (a season with nothing to keep) is no work, and holds no one.
         """
         if not self.usable(season):
             return None
@@ -473,7 +482,13 @@ class HistoryMemo:
         if key not in self._tables:
             pending = self._pending.pop(key, None)
             loaded = pending.result() if pending is not None else self.load(*key)
-            self._tables[key] = loaded if isinstance(loaded, dict) else {}
+            if isinstance(loaded, dict):
+                self._tables[key] = loaded
+            elif key in self._refused:
+                warm_gate.cold(name, key[1])
+                self._tables[key] = {}
+            else:
+                self._tables[key] = _MissedTable(name, key[1])
             self._sizes[key] = len(self._tables[key])
         return self._tables[key]
 
@@ -503,6 +518,7 @@ class HistoryMemo:
             return None
         if history_memo_rebuild():
             self.report.append(f"{name} {season}: rebuilt")
+            self._refused.add((name, season))
             return None
         try:
             raw = self.backend.get(self._key(name, season, "json"))
@@ -514,16 +530,19 @@ class HistoryMemo:
                     f"{name} {season}: inputs changed"
                     + self._changed_parts(meta.get("parts"), season)
                 )
+                self._refused.add((name, season))
                 return None
             payload = self.backend.get(self._key(name, season, "pkl"))
             if payload is None or hashlib.sha256(payload).hexdigest() != meta["sha256"]:
                 self.report.append(f"{name} {season}: payload missing or corrupt")
+                self._refused.add((name, season))
                 return None
             if meta.get("compression") == "zlib":
                 payload = zlib.decompress(payload)
             return pickle.loads(payload)
         except Exception as exc:  # noqa: BLE001 -- a broken store is a miss
             self.report.append(f"{name} {season}: read failed ({exc})")
+            self._refused.add((name, season))
             return None
 
     def _changed_parts(self, stored: dict | None, season: int) -> str:
@@ -545,6 +564,8 @@ class HistoryMemo:
             return
         try:
             # zlib: the pickled tables shrink ~6x, and they are read over S3.
+            if isinstance(value, _MissedTable):
+                value = dict(value)
             payload = zlib.compress(
                 pickle.dumps(value, protocol=pickle.HIGHEST_PROTOCOL), 6
             )
@@ -559,6 +580,35 @@ class HistoryMemo:
             self.backend.put(self._key(name, season, "json"), json.dumps(meta).encode())
         except Exception as exc:  # noqa: BLE001
             self.report.append(f"{name} {season}: write failed ({exc})")
+
+
+class _MissedTable(dict):
+    """A season table with no entry stored: its first entry tells the warm
+    gate this build is computing a past season."""
+
+    def __init__(self, name: str, season: int) -> None:
+        super().__init__()
+        self._missed: tuple[str, int] | None = (name, season)
+
+    def _computed(self) -> None:
+        if self._missed is not None:
+            missed, self._missed = self._missed, None
+            warm_gate.cold(*missed)
+
+    def __setitem__(self, key, value) -> None:
+        self._computed()
+        super().__setitem__(key, value)
+
+    def update(self, *args, **kwargs) -> None:
+        other = dict(*args, **kwargs)
+        if other:
+            self._computed()
+        super().update(other)
+
+    def setdefault(self, key, default=None):
+        if key not in self:
+            self._computed()
+        return super().setdefault(key, default)
 
 
 class _SeasonRows:

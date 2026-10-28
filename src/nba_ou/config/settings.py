@@ -312,6 +312,18 @@ class Settings:
         return mode
 
     @property
+    def parallel_builds(self) -> bool:
+        """``[PredictionModels] PARALLEL_BUILDS``: the predictor builds the
+        closing rows in a side process while it builds the intermediate rows,
+        as long as both stay warm (``nba_ou.prediction.side_build``).
+
+        Default true; ``false`` builds them one after the other.
+        """
+        return self.config.getboolean(
+            "PredictionModels", "PARALLEL_BUILDS", fallback=True
+        )
+
+    @property
     def report_required_max_horizon(self) -> int | None:
         """``[PredictionModels] REPORT_REQUIRED_MAX_HORIZON``: intermediate
         slots of this horizon (minutes) or shorter skip a game until both
