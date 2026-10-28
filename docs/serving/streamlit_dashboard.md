@@ -36,8 +36,11 @@ not query the database. Page scripts compose modules in `nba_ou.dashboard`:
 - `ui/`: source caching, filters, native cards, tables, and Altair comparisons.
 
 The design uses the Streamlit skill's native layouts, financial-dashboard
-theme patterns, bounded caching, and fragments. No injected CSS or legacy
-HTML components are used. APIs are compatible with the installed 1.54.
+theme patterns, bounded caching, and fragments. A scoped stylesheet handles
+growing card widths and larger menus. Totals comparisons use `st.html` for
+semantic spanning table headers, which native `st.table` does not render.
+No JavaScript or legacy HTML components are used. APIs are compatible with
+the installed 1.54.
 
 ## Today's rules
 
@@ -122,19 +125,26 @@ HTML components are used. APIs are compatible with the installed 1.54.
 15. Cards and Table share the game order: tip-off by default, or the largest
     absolute market edge per game (missing edges last, tip-off breaks ties).
     Within a game, Largest edge also orders the prediction rows by magnitude.
-16. Cards wrap in a content-sized horizontal container that fills the available
-    screen width. There are no configured pixel widths, minimum/maximum card
-    sizes or caps on the number of games per row; browser layout reflows them
-    as the available width changes.
-    Logos are 44px and team names stay written in full, resolved from the NBA
+16. Cards wrap by their content width and grow to share any unused space in
+    each row. There are no configured pixel widths or caps on the number of
+    games per row; browser layout reflows them as the available width changes.
+    Body text uses a 16px base, so content-sized cards and their spacing scale
+    with the slightly larger text while retaining responsive wrapping.
+    Logos are 48px and team names stay written in full, resolved from the NBA
     team IDs in `prediction.games`; the same names appear in the table,
-    details and tonight's bets. Per model family, totals cards use closing
-    and intermediate rows, with Total points and Line error in adjacent
+    details and tonight's bets. Each totals card uses one table with Model
+    and Snapshot row labels, grouping closing and intermediate rows under
+    each available model. Total points and Line error appear in adjacent
     column groups. Each target has separate Prediction and Margin columns
     (four data columns in total); margins retain the colored pick. Different
     target horizons remain labeled individually; missing
     targets are shown as a dash, never a synthetic prediction. Pivoting the
     display does not combine or remove any vote.
+    Column-group headers span the Prediction and Margin columns, numbers
+    align right, and the table scrolls horizontally on narrow screens.
+    TabPFN labels omit the `v3_5` suffix; family keys and votes retain it.
+    Navigation and menu options use 50% larger text and taller controls;
+    card text retains the 16px base.
 
 ## Read path and freshness timestamps
 

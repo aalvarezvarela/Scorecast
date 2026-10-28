@@ -25,10 +25,11 @@ def model_name(kind) -> str:
 
 
 def family_label(kind, schema_version, variant) -> str:
-    # TabPFN variants repeat the model name (``tabpfn_v3_5``).
+    # Keep the variant in family_key, but omit TabPFN's redundant v3_5 suffix.
     variant = str(variant).removeprefix("tabpfn_")
+    show_variant = variant != "main" and not (int(kind) == 3 and variant == "v3_5")
     return f"{model_name(kind)} · {str(schema_version).replace('_', '.')}" + (
-        f" · {variant}" if variant != "main" else ""
+        f" · {variant}" if show_variant else ""
     )
 
 

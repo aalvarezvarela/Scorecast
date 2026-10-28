@@ -1,8 +1,10 @@
+from io import StringIO
 from pathlib import Path
 from unittest.mock import Mock
 
 import pandas as pd
 import pytest
+from bs4 import BeautifulSoup
 from nba_ou.dashboard.repositories.predictions import DashboardDataError, TodayData
 from nba_ou.dashboard.ui import loaders
 from nba_ou.dashboard.ui import today as today_ui
@@ -35,16 +37,29 @@ def app_setup(monkeypatch, today_data):
     loaders.load_today.clear()
 
 
+def card_tables(app):
+    tables = []
+    for node in app.get("html"):
+        soup = BeautifulSoup(node.proto.body, "html.parser")
+        table = soup.select_one(".prediction-comparison table")
+        if table is None:
+            continue
+        frame = pd.read_html(StringIO(str(table)), header=[0, 1], index_col=[0, 1])[0]
+        frame.index.names = [th.get_text() for th in table.select("th[rowspan]")]
+        tables.append(frame)
+    return tables
+
+
 def rendered_signals(app):
-    values = [text.value for text in app.markdown]
-    values.extend(
-        str(value) for table in app.table for value in table.value.to_numpy().flat
-    )
-    return {
+    signals = {
         value.split("-badge[", 1)[1].removesuffix("]")
-        for value in values
+        for value in (text.value for text in app.markdown)
         if "-badge[" in value
     }
+    for node in app.get("html"):
+        soup = BeautifulSoup(node.proto.body, "html.parser")
+        signals.update(badge.get_text() for badge in soup.select(".pick"))
+    return signals
 
 
 def headlines(app):
@@ -67,18 +82,20 @@ def test_today_combines_totals_with_line_error_and_shows_one_consensus(app_setup
     assert headlines(app) == [":gray[No bet: tied vote]"] * 2
     assert {m.label: m.value for m in app.metric}["Bets"] == "0"
     assert not app.multiselect
-    assert len(app.table) == 2
+    tables = card_tables(app)
+    assert len(tables) == 2
     assert all(
-        list(table.value.columns)
+        list(table.columns)
         == [
             ("Total points", "Prediction"),
             ("Total points", "Margin"),
             ("Line error", "Prediction"),
             ("Line error", "Margin"),
         ]
-        for table in app.table
+        for table in tables
     )
-    assert all(len(table.value) == 2 for table in app.table)
+    assert all(len(table) == 2 for table in tables)
+    assert all(table.index.names == ["Model", "Snapshot"] for table in tables)
     assert not app.get("arrow_vega_lite_chart")
 
 
@@ -223,8 +240,8 @@ def test_minimum_edge_neutralizes_badges_but_preserves_values(app_setup):
     assert rendered_signals(app) == {"OVER", "UNDER"}
     before = [
         str(value)
-        for table in app.table
-        for value in table.value.xs("Prediction", axis=1, level=1).to_numpy().flat
+        for table in card_tables(app)
+        for value in table.xs("Prediction", axis=1, level=1).to_numpy().flat
     ]
     app.selectbox(key="today_min_edge_xgboost").select(2.0).run()
     assert not app.exception
@@ -232,8 +249,8 @@ def test_minimum_edge_neutralizes_badges_but_preserves_values(app_setup):
     assert headlines(app) == [":gray[No bet]"] * 2
     assert [
         str(value)
-        for table in app.table
-        for value in table.value.xs("Prediction", axis=1, level=1).to_numpy().flat
+        for table in card_tables(app)
+        for value in table.xs("Prediction", axis=1, level=1).to_numpy().flat
     ] == before
     assert app_setup.call_count == 1
 
@@ -348,6 +365,23 @@ def test_all_targets_and_tabpfn_participate_in_the_large_summary(app_setup, toda
     assert any("1 OVER · 4 UNDER" in text.value for text in app.caption)
     assert any("Majority: 4 of 5 predictions" in text.value for text in app.caption)
     assert {m.label: m.value for m in app.metric}["Bets"] == "2"
+    # Both model families share one table, retaining TabPFN's own snapshot.
+    tables = card_tables(app)
+    assert len(tables) == 2
+    combined = next(
+        table
+        for table in tables
+        if table.index.get_level_values("Model").str.startswith("TabPFN").any()
+    )
+    assert len(combined) == 3
+    assert combined.index.names == ["Model", "Snapshot"]
+    assert combined.index.get_level_values("Model").str.startswith("TabPFN").sum() == 1
+    tabpfn = combined.loc[
+        combined.index.get_level_values("Model").str.startswith("TabPFN")
+    ]
+    assert list(tabpfn.index.get_level_values("Snapshot")) == ["T−4h"]
+    assert tabpfn.iloc[0][("Total points", "Prediction")] == "—"
+    assert "OVER" in tabpfn.iloc[0][("Line error", "Margin")]
 
 
 def test_team_names_are_full_on_cards_table_and_bet_summary(app_setup, today_data):

@@ -1,6 +1,9 @@
 import pandas as pd
+from bs4 import BeautifulSoup
+from nba_ou.dashboard.domain.models import family_label
 from nba_ou.dashboard.domain.picks import game_pick
 from nba_ou.dashboard.ui.formatting import compact_totals_table
+from nba_ou.dashboard.ui.totals_table import totals_table_html
 
 
 def example_predictions():
@@ -87,3 +90,49 @@ def test_missing_target_is_empty_not_a_fabricated_prediction():
     assert table.loc["Closing", ("Total points", "Margin")] == "—"
     assert table.loc["T−11h", ("Line error", "Prediction")] == "—"
     assert table.loc["T−11h", ("Line error", "Margin")] == "—"
+
+
+def test_html_spans_target_headers_and_preserves_all_predictions_and_picks():
+    table = pd.concat(
+        [compact_totals_table(example_predictions())],
+        keys=["XGBoost · 2.5"],
+        names=["Model"],
+    )
+    soup = BeautifulSoup(totals_table_html(table), "html.parser")
+    groups = soup.select('th[scope="colgroup"]')
+    assert [(th.get_text(), th["colspan"]) for th in groups] == [
+        ("Total points", "2"),
+        ("Line error", "2"),
+    ]
+    assert len(soup.select("tbody tr")) == 2
+    assert [cell.get_text() for cell in soup.select("td.prediction")] == [
+        "240.9",
+        "241.1",
+        "239.9",
+        "242.3",
+    ]
+    assert [badge.get_text() for badge in soup.select(".pick")] == [
+        "UNDER",
+        "UNDER",
+        "UNDER",
+        "OVER",
+    ]
+
+
+def test_html_escapes_model_labels():
+    table = pd.concat(
+        [compact_totals_table(example_predictions())],
+        keys=['<img src=x onerror="alert(1)">'],
+        names=["Model"],
+    )
+    soup = BeautifulSoup(totals_table_html(table), "html.parser")
+    assert not soup.select("img, script")
+    assert '<img src=x onerror="alert(1)">' in soup.get_text()
+
+
+def test_tabpfn_label_omits_variant_but_registry_variants_remain_visible():
+    assert family_label(3, "2_5", "tabpfn_v3_5") == "TabPFN · 2.5"
+    assert (
+        family_label(3, "2_5", "tabpfn_experimental") == "TabPFN · 2.5 · experimental"
+    )
+    assert family_label(1, "2_5", "alt") == "XGBoost · 2.5 · alt"

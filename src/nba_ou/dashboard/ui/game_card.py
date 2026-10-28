@@ -19,6 +19,7 @@ from nba_ou.dashboard.ui.formatting import (
     number,
     prediction_table,
 )
+from nba_ou.dashboard.ui.totals_table import totals_table_html
 
 # Beyond this the stored line may no longer be the one on offer.
 STALE_SNAPSHOT_MINUTES = 60
@@ -31,7 +32,7 @@ def _team(name: str, team_id, role: str) -> None:
         if logo:
             # Streamlit 1.54 has no image alt parameter; the visible caption
             # names the side, and the adjacent text remains usable without images.
-            st.image(logo, width=44, caption=role)
+            st.image(logo, width=48, caption=role)
         st.markdown(f"**{name}**")
 
 
@@ -72,6 +73,9 @@ def _predictions(
     spread: bool,
 ) -> None:
     if not spread:
+        tables = []
+        labels = []
+        unavailable = []
         for family in families:
             rows = (
                 predictions.loc[predictions["family_key"].eq(family.key)]
@@ -79,10 +83,14 @@ def _predictions(
                 else predictions
             )
             if rows.empty:
-                st.caption(f"{family.label} · no prediction for this game")
+                unavailable.append(family.label)
                 continue
-            st.markdown(f"**{family.label}**")
-            st.table(compact_totals_table(rows), border="horizontal")
+            tables.append(compact_totals_table(rows))
+            labels.append(family.label)
+        if tables:
+            st.html(totals_table_html(pd.concat(tables, keys=labels, names=["Model"])))
+        for label in unavailable:
+            st.caption(f"{label} · no prediction for this game")
         for name in missing_models:
             st.caption(f"{name} · no prediction yet for tonight")
         return

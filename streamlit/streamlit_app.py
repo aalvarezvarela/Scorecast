@@ -13,6 +13,7 @@ st.set_page_config(
     page_icon=":material/sports_basketball:",
     layout="wide",
 )
+st.html(APP_DIR.parent / "src/nba_ou/dashboard/ui/dashboard.css")
 
 for key, value in {
     "today_target": 1,

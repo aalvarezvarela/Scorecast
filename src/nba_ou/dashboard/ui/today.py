@@ -110,7 +110,9 @@ def render_today() -> None:
             or "Cards"
         )
     with refresh_col:
-        if st.button("Refresh", icon=":material/refresh:", width="stretch"):
+        if st.button(
+            "Refresh", icon=":material/refresh:", width="stretch", key="today_refresh"
+        ):
             load_today.clear(game_date)
     # Segmented controls can be deselected; keep a sensible explicit default.
     target = target or DEFAULT_TARGET
@@ -144,7 +146,11 @@ def render_today() -> None:
 
     live = live_predictions(data.predictions, now)
     families = model_families(displayed_models(live), targets)
-    with st.popover("Settings", icon=":material/tune:"):
+    with (
+        st.container(key="today_settings"),
+        st.popover("Settings", icon=":material/tune:"),
+        st.container(key="today_settings_options"),
+    ):
         reference = st.selectbox(
             "Compare against",
             list(REFERENCE_COLUMNS),
@@ -213,8 +219,8 @@ def render_today() -> None:
                 f"{missing} recorded game(s) have no predictions for these filters. Switch to Cards to see them."
             )
     else:
-        # The browser fits content-sized cards into the available screen width.
-        # No pixel widths, column counts or card-count limits are imposed.
+        # Cards wrap by content width, then grow to share unused row space.
+        # The scoped grid styles impose no column count or pixel width.
         with st.container(horizontal=True, gap="medium", key="games_grid"):
             for _, game in games.iterrows():
                 market = (
