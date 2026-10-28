@@ -9,6 +9,15 @@ from nba_ou.dashboard.repositories.predictions import TodayData
 NOW = pd.Timestamp("2026-10-28T18:00:00Z")
 
 
+def rendered_images(app):
+    # Streamlit 1.66 uses the public element name instead of the old proto name.
+    return app.get("image") or app.get("imgs")
+
+
+def rendered_charts(app):
+    return app.get("vega_lite_chart") or app.get("arrow_vega_lite_chart")
+
+
 def make_prediction(*, game_id=1, horizon=240, target=2, kind=1, **changes):
     tipoff = NOW + pd.Timedelta(hours=4 if game_id == 1 else 2)
     row = {

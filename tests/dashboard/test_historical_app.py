@@ -13,7 +13,7 @@ from nba_ou.dashboard.ui import loaders
 from streamlit.testing.v1 import AppTest
 from streamlit.testing.v1.element_tree import ButtonGroup
 
-from .conftest import NOW
+from .conftest import NOW, rendered_charts
 from .test_historical import analysis_row
 from .test_history import historical_slate
 
@@ -105,7 +105,7 @@ def test_history_defaults_to_clean_data_through_today_and_all_models(history_set
         "Own snapshot · Live",
         "Own snapshot · Replay",
     }
-    assert len(app.get("arrow_vega_lite_chart")) == 4
+    assert len(rendered_charts(app)) == 4
     assert any("95%" in text.value for text in app.caption)
     assert any("Madrid" in text.value for text in app.caption)
     assert any("Different picks" in table.value for table in app.dataframe)
@@ -139,7 +139,7 @@ def test_replay_timeline_handles_no_replay_without_using_live_rows(history_setup
     )
     app.button(key="history_refresh").click().run()
     assert not app.exception
-    assert len(app.get("arrow_vega_lite_chart")) == 3
+    assert len(rendered_charts(app)) == 3
     assert any(
         "No own-snapshot intermediate replay predictions" in text.value
         for text in app.caption
@@ -205,7 +205,7 @@ def test_partial_range_skips_read_and_does_not_leave_old_charts(history_setup):
     assert reader.call_count == 1
     assert "Choose a start and end date" in app.info[0].value
     assert not app.metric
-    assert not app.get("arrow_vega_lite_chart")
+    assert not rendered_charts(app)
 
 
 def test_empty_games_empty_outputs_and_safe_errors(history_setup):
@@ -222,7 +222,7 @@ def test_empty_games_empty_outputs_and_safe_errors(history_setup):
     assert not app.exception
     assert "No stored predictions" in app.info[0].value
     assert app.metric[0].value == "2/2"
-    assert not app.get("arrow_vega_lite_chart")
+    assert not rendered_charts(app)
     reader.return_value = AnalysisData(
         pd.DataFrame(), pd.DataFrame(), NOW.to_pydatetime()
     )

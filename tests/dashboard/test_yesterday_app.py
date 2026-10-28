@@ -10,7 +10,7 @@ from nba_ou.dashboard.ui import yesterday as yesterday_ui
 from streamlit.testing.v1 import AppTest
 from streamlit.testing.v1.element_tree import ButtonGroup
 
-from .conftest import NOW, FrozenDateTime
+from .conftest import NOW, FrozenDateTime, rendered_images
 from .test_history import historical_slate
 
 ENTRYPOINT = Path(__file__).resolve().parents[2] / "streamlit/streamlit_app.py"
@@ -67,7 +67,7 @@ def test_yesterday_defaults_to_live_with_final_scores_and_fixed_checkpoints(
         app.date_input(key="yesterday_date").value
         == (NOW - pd.Timedelta(days=1)).date()
     )
-    assert len(app.get("imgs")) == 5
+    assert len(rendered_images(app)) == 5
     assert any(text.value == "### 114 — 121" for text in app.markdown)
     assert any("Total points **235**" in text.value for text in app.caption)
     assert any("28 Oct 2026, 03:00 Madrid" in text.value for text in app.caption)

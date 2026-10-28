@@ -212,8 +212,8 @@ Predictions/NBA_predictions_2025-12-25.xlsx
 database/*
 secrets.ini
 config.secrets.ini
-.streamlit/secrets.toml
-src/.streamlit/secrets.toml
+# Streamlit secrets may live next to any app, including nested package paths.
+**/.streamlit/secrets.toml
 data/ref_data
 data/injury_data
 data/training_data.csv
@@ -231,6 +231,7 @@ data/
 *.json
 *.txt
 !requirements/*.txt
+!streamlit/requirements.txt
 *.joblib
 .codex
 # Experiment run outputs (regenerated; never source of truth)

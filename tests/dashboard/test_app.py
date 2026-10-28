@@ -11,7 +11,7 @@ from nba_ou.dashboard.ui import today as today_ui
 from streamlit.testing.v1 import AppTest
 from streamlit.testing.v1.element_tree import ButtonGroup
 
-from .conftest import NOW, FrozenDateTime
+from .conftest import NOW, FrozenDateTime, rendered_images
 
 ENTRYPOINT = Path(__file__).resolve().parents[2] / "streamlit/streamlit_app.py"
 
@@ -75,7 +75,7 @@ def test_today_combines_totals_with_line_error_and_shows_one_consensus(app_setup
     assert not app.exception
     assert app.title[0].value == "Today's predictions"
     assert app.session_state["today_target"] == 1
-    assert len(app.get("imgs")) == 5
+    assert len(rendered_images(app)) == 5
     assert any("28 Oct 2026, 23:00 Madrid" in text.value for text in app.caption)
     # Total points says OVER, line error says UNDER: all four predictions vote.
     assert rendered_signals(app) == {"OVER", "UNDER"}
@@ -181,7 +181,7 @@ def test_no_target_predictions_still_shows_the_games(app_setup, today_data):
     )
     app = AppTest.from_file(str(ENTRYPOINT)).run()
     assert not app.exception
-    assert len(app.get("imgs")) == 5
+    assert len(rendered_images(app)) == 5
     assert any("No live predictions" in info.value for info in app.info)
 
 
@@ -315,7 +315,9 @@ def test_tonights_bets_summary_is_after_all_games(app_setup, view):
         )
     else:
         last_game = max(
-            i for i, node in enumerate(nodes) if node.type == "arrow_data_frame"
+            i
+            for i, node in enumerate(nodes)
+            if node.type in {"dataframe", "arrow_data_frame"}
         )
     assert footer > last_game
 

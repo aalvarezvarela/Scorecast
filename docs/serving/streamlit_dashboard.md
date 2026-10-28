@@ -8,17 +8,42 @@ and market snapshots, uses `Europe/Madrid` with automatic DST changes.
 ## Run
 
 From the repository root, with the main and dashboard Poetry dependency groups
-installed (Streamlit 1.54+):
+installed, or with the standalone dashboard requirements (Python 3.12):
 
 ```bash
 poetry run streamlit run streamlit/streamlit_app.py
 ```
+
+For a minimal environment, install `pip install -r streamlit/requirements.txt`
+and run `streamlit run streamlit/streamlit_app.py` from the repository root.
+This manifest pins Streamlit 1.66.1 and only the dashboard runtime libraries;
+it does not install the project package, training models or scraper dependencies.
+The entrypoint adds `src/` to the import path itself.
 
 Run from the root so Streamlit reads `.streamlit/config.toml`. Configure
 `AIVEN_DB_URL` in the environment, the existing local Aiven configuration, or
 Streamlit secrets (top-level `AIVEN_DB_URL` or `[Aiven].AIVEN_DB_URL`). The
 dashboard explicitly selects Aiven regardless of `DB_ENV`; its connections
 use read-only transactions with connection and statement timeouts.
+
+## Streamlit Community Cloud
+
+Select `streamlit/streamlit_app.py` as the main file and Python **3.12** in
+Advanced settings. Cloud finds `streamlit/requirements.txt` next to that
+entrypoint before considering the root Poetry configuration. It uses the
+existing root `.streamlit/config.toml` theme and the committed local NBA mark.
+
+Add this setting in the app's **Secrets** field, using the real Aiven URI:
+
+```toml
+AIVEN_DB_URL = "postgresql://USER:PASSWORD@HOST:PORT/DATABASE?sslmode=require"
+```
+
+Credentials stay outside Git. No Supabase credentials, S3 credentials, model
+files or `packages.txt` are needed for the dashboard runtime.
+
+Dependency-file selection follows the
+[Community Cloud documentation](https://docs.streamlit.io/deploy/streamlit-community-cloud/deploy-your-app/app-dependencies).
 
 `streamlit_app_old.py` and `streamlit_ou_app_old.py` preserve both original
 applications as references. The new application does not import either.
@@ -47,7 +72,7 @@ background glow, card surfaces with a red/blue top edge, growing card widths
 and larger menus. Totals comparisons use `st.html` for
 semantic spanning table headers, which native `st.table` does not render.
 No JavaScript or legacy HTML components are used. APIs are compatible with
-the installed 1.54.
+Streamlit 1.66.1 used by the standalone deployment requirements.
 
 ## Today's rules
 
