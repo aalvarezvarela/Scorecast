@@ -8,44 +8,71 @@ from nba_ou.dashboard.domain.teams import full_team_name, team_logo_url
 
 
 def render_game_header(game, *, now=None, show_result: bool = False) -> None:
-    """A light header with teams, Madrid tip-off time and optional final score."""
-    with st.container(key=f"match_header_{int(game['game_id'])}"):
-        away, home = st.columns(2)
-        with away:
-            render_team(game["away_team"], game["away_team_id"], "Away")
-        with home:
-            render_team(game["home_team"], game["home_team_id"], "Home")
-        timing = f"**{madrid_time(game['tipoff_at'])}**"
-        if now is not None:
-            timing += f" · {time_remaining(game['tipoff_at'], now)}"
-        st.caption(timing)
-        if show_result:
-            _game_result(game)
-
-
-def _game_result(game) -> None:
+    """A balanced matchup panel with a central score and a separate timing row."""
+    game_id = int(game["game_id"])
     final = (
-        game["status"] == 1
+        show_result
+        and game["status"] == 1
         and pd.notna(game["home_points"])
         and pd.notna(game["away_points"])
     )
+    with st.container(key=f"match_header_{game_id}"):
+        with st.container(
+            horizontal=True,
+            vertical_alignment="center",
+            gap="small",
+            key=f"match_matchup_{game_id}",
+        ):
+            render_team(
+                game["away_team"],
+                game["away_team_id"],
+                "Away",
+                key=f"match_team_{game_id}_away",
+            )
+            with st.container(
+                width="content",
+                horizontal_alignment="center",
+                gap=None,
+                key=f"match_center_{game_id}",
+            ):
+                if show_result:
+                    _game_result(game, final=final)
+                else:
+                    st.markdown("**VS**")
+            render_team(
+                game["home_team"],
+                game["home_team_id"],
+                "Home",
+                key=f"match_team_{game_id}_home",
+            )
+        with st.container(key=f"match_footer_{game_id}", gap=None):
+            timing = f"**{madrid_time(game['tipoff_at'])}**"
+            if now is not None:
+                timing += f" · {time_remaining(game['tipoff_at'], now)}"
+            st.caption(timing)
+            if final:
+                st.caption(
+                    f"Total points **{int(game['home_points'] + game['away_points'])}** · "
+                    f"Home margin **{int(game['home_points'] - game['away_points']):+d}**"
+                )
+
+
+def _game_result(game, *, final: bool) -> None:
     if final:
         st.markdown(f"### {int(game['away_points'])} — {int(game['home_points'])}")
-        st.caption(
-            f"Final · Total points **{int(game['home_points'] + game['away_points'])}** · "
-            f"Home margin **{int(game['home_points'] - game['away_points']):+d}**"
-        )
+        st.caption("Final")
     elif game["status"] == 2:
-        st.markdown("### :gray[Postponed / void]")
+        st.markdown("**Postponed / void**")
     else:
-        st.markdown("### :gray[Result pending]")
+        st.markdown("**Result pending**")
 
 
-def render_team(name: str, team_id, role: str) -> None:
+def render_team(name: str, team_id, role: str, *, key: str) -> None:
     name = full_team_name(name, team_id)
-    with st.container(horizontal=True, vertical_alignment="center"):
+    with st.container(horizontal_alignment="center", gap=None, key=key):
+        st.caption(role)
         logo = team_logo_url(name, team_id)
         if logo:
             # Streamlit 1.54 has no image alt parameter; use the visible side caption.
-            st.image(logo, width=48, caption=role)
-        st.markdown(f"**{name}**")
+            st.image(logo, width=48)
+        st.markdown(f"**{name}**", text_alignment="center")
