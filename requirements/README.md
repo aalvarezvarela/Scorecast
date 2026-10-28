@@ -30,12 +30,16 @@ match the project pins. See `docs/serving/streamlit_dashboard.md`.
 | `predict-tabpfn-cpu.txt` | main, cpu, scrape, tabpfn | not used yet |
 | `retrain-cuda.txt` | main, cuda | `retrain_prediction_models` |
 | `retrain-cpu.txt` | main, cpu | `s3_model_smoke_test` |
-| `tests-cpu.txt` | main, cpu, scrape, train, dev | `tests` |
+| `tests-cpu.txt` | main, cpu, scrape, train, dashboard, dev | `tests` |
 
 The groups are defined and commented in `pyproject.toml`. `retrain-*` leaves
 out `scrape` on purpose: the refit builds the closing frame for history, so it
 never reaches the odds scrapers or the injury-report PDFs, although those
 modules are in its static import closure.
+
+`tests-cpu.txt` includes `dashboard` because the suite imports the chart modules
+and uses Streamlit's `AppTest`. Both Streamlit and its Altair dependency must be
+installed for test collection.
 
 No file includes the `browser` group (Playwright): every job scrapes over
 plain HTTP, and Chromium is only needed by the manual scrapers (SBR's

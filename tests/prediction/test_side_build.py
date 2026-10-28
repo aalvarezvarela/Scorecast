@@ -31,7 +31,12 @@ def test_a_quiet_side_build_is_followed_live(capsys):
     assert outcome.value == "done"
     lines = capsys.readouterr().out.splitlines()
     marked = [line for line in lines if line.startswith("[slow] ")]
-    assert marked[0] == "[slow] starting"
+    # Spawning and importing can take longer than the heartbeat interval,
+    # so a heartbeat may precede the job's first line.
+    job_lines = [
+        line for line in marked if not line.startswith("[slow] ... still running ")
+    ]
+    assert job_lines == ["[slow] starting", "[slow] finishing"]
     assert any("still running" in line for line in marked)
     assert marked[-1] == "[slow] finishing"
 

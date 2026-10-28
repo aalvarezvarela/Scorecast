@@ -29,7 +29,7 @@ JOBS: dict[str, tuple[str, ...]] = {
     "retrain-cpu": ("main", "cpu"),
     "db-update": ("main", "scrape"),
     "core": ("main",),
-    "tests-cpu": ("main", "cpu", "scrape", "train", "dev"),
+    "tests-cpu": ("main", "cpu", "scrape", "train", "dashboard", "dev"),
 }
 
 
