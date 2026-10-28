@@ -75,6 +75,7 @@ from nba_ou.scheduling.cronjob_org import (
     github_headers,
     read_secret,
 )
+from nba_ou.scheduling.tabpfn_jobs import JOB_SEPARATOR, format_job
 
 
 @dataclass(frozen=True)
@@ -182,9 +183,11 @@ def pool_title(index: int, group: ScheduleGroup | None = None) -> str:
             f"TabPFN T-{inputs['horizon_minutes']} {dispatch.label} | "
             f"snapshot {snapshot:%d/%m %H:%M} Madrid"
         )
-    elif dispatch == PREDICTOR:
+    elif dispatch.workflow_file == PREDICTOR.workflow_file:
         times = ", ".join(f"{at.astimezone(MADRID):%H:%M}" for at in group.fire_times())
         purpose = f"Predictor {times} Madrid"
+        if "tabpfn" in inputs:
+            purpose += f" + TabPFN {dispatch.label}"
     elif dispatch.workflow_file == PAST_SNAPSHOTS_WORKFLOW:
         purpose = f"Past snapshots {inputs['game_date']}"
     elif dispatch == FINISHED_MATCHES:
@@ -279,33 +282,53 @@ def trigger_times(
     return dict(sorted(runs.items()))
 
 
-def tabpfn_runs(
+@dataclass(frozen=True)
+class TabPFNSnapshot:
+    """The TabPFN run of one (snapshot minute, horizon): the games whose
+    snapshot it is, and the predictor run that covers them (None when none
+    does)."""
+
+    at: datetime
+    horizon: int
+    game_ids: tuple[str, ...]
+    label: str
+    covered_by: datetime | None
+
+    def dispatch(self, game_date: str) -> Dispatch:
+        """The TabPFN workflow's dispatch of this snapshot."""
+        return Dispatch(
+            TABPFN_WORKFLOW,
+            (
+                ("target", "line_error total_points"),
+                ("line", "intermediate"),
+                ("horizon_minutes", str(self.horizon)),
+                ("update_db", "false"),
+                ("game_date", game_date),
+                ("as_of", self.at.isoformat()),
+                ("snapshot_game_ids", " ".join(self.game_ids)),
+            ),
+            label=self.label,
+        )
+
+
+def tabpfn_snapshots(
     games: pd.DataFrame,
-    game_date: str,
-    now: datetime,
     predictor_runs: Mapping[datetime, tuple[str, ...]] | None = None,
-) -> list[tuple[datetime, Dispatch]]:
-    """Runs per (snapshot minute, horizon), fired ``TABPFN_DELAY_MINUTES``
-    after the predictor run that covers the snapshot. Each predicts every game
-    not started when it runs; ``snapshot_game_ids`` (metadata, not a filter)
-    and the label name the games whose snapshot it is.
+) -> list[TabPFNSnapshot]:
+    """One per (snapshot minute, horizon) of ``TABPFN_HORIZONS``, in order.
 
     ``predictor_runs`` is ``trigger_times``' plan: it groups snapshots and fires
     each group at its last one, so a snapshot's predictor run can be up to
-    ``GROUP_MINUTES`` after it. A snapshot no predictor run covers fires after
-    the snapshot itself. Coinciding dispatches are spaced at least one minute
-    apart without changing their snapshot cutoffs. Runs already past are
-    skipped. An explicit game date keeps a queued dispatch tied to its original slate even if the runner
-    starts it after midnight.
+    ``GROUP_MINUTES`` after it. Games sharing a tip-off share each horizon's
+    snapshot.
     """
-    delay = timedelta(minutes=TABPFN_DELAY_MINUTES)
     covering = {
         reason: run
         for run, reasons in (predictor_runs or {}).items()
         for reason in reasons
     }
     snapshots: dict[tuple[datetime, int], set[str]] = defaultdict(set)
-    fire_at: dict[tuple[datetime, int], datetime] = {}
+    covered: dict[tuple[datetime, int], datetime | None] = {}
     game_labels: dict[str, str] = {}
     for game in games.itertuples(index=False):
         status = str(game.game_status or "").upper()
@@ -319,29 +342,29 @@ def tabpfn_runs(
         for horizon in TABPFN_HORIZONS:
             at = (tipoff - timedelta(minutes=horizon)).to_pydatetime()
             at = at.astimezone(UTC).replace(second=0, microsecond=0)
-            after = max(at, covering.get(f"{label} T-{horizon}", at))
+            run = covering.get(f"{label} T-{horizon}")
             snapshots[(at, horizon)].add(str(game.game_id))
-            fire_at[(at, horizon)] = max(fire_at.get((at, horizon), after), after)
-    runs = [
-        (
-            fire_at[(at, horizon)] + delay,
-            Dispatch(
-                TABPFN_WORKFLOW,
-                (
-                    ("target", "line_error total_points"),
-                    ("line", "intermediate"),
-                    ("horizon_minutes", str(horizon)),
-                    ("update_db", "false"),
-                    ("game_date", game_date),
-                    ("as_of", at.isoformat()),
-                    ("snapshot_game_ids", " ".join(sorted(game_ids))),
-                ),
-                label=", ".join(game_labels[game] for game in sorted(game_ids)[:2])
-                + (f" +{len(game_ids) - 2}" if len(game_ids) > 2 else ""),
-            ),
+            previous = covered.get((at, horizon))
+            covered[(at, horizon)] = max(filter(None, (previous, run)), default=None)
+    return [
+        TabPFNSnapshot(
+            at=at,
+            horizon=horizon,
+            game_ids=tuple(sorted(game_ids)),
+            label=", ".join(game_labels[game] for game in sorted(game_ids)[:2])
+            + (f" +{len(game_ids) - 2}" if len(game_ids) > 2 else ""),
+            covered_by=covered[(at, horizon)],
         )
-        for (at, horizon), game_ids in snapshots.items()
+        for (at, horizon), game_ids in sorted(
+            snapshots.items(), key=lambda item: (item[0][0], -item[0][1])
+        )
     ]
+
+
+def _spaced(runs: list[tuple[datetime, Dispatch]], now: datetime):
+    """``runs`` still ahead, in order, each at least
+    ``TABPFN_SPACING_MINUTES`` after the one before; the snapshot cutoffs of
+    their inputs stay as they are."""
     ordered = sorted(
         ((fire, dispatch) for fire, dispatch in runs if fire > now + MIN_LEAD),
         key=lambda run: (
@@ -357,6 +380,72 @@ def tabpfn_runs(
             fire = max(fire, spaced[-1][0] + timedelta(minutes=TABPFN_SPACING_MINUTES))
         spaced.append((fire, dispatch))
     return spaced
+
+
+def tabpfn_runs(
+    games: pd.DataFrame,
+    game_date: str,
+    now: datetime,
+    predictor_runs: Mapping[datetime, tuple[str, ...]] | None = None,
+) -> list[tuple[datetime, Dispatch]]:
+    """Runs per (snapshot minute, horizon), fired ``TABPFN_DELAY_MINUTES``
+    after the predictor run that covers the snapshot. Each predicts every game
+    not started when it runs; ``snapshot_game_ids`` (metadata, not a filter)
+    and the label name the games whose snapshot it is.
+
+    A snapshot no predictor run covers fires after the snapshot itself.
+    Coinciding dispatches are spaced at least one minute apart without
+    changing their snapshot cutoffs. Runs already past are skipped. An
+    explicit game date keeps a queued dispatch tied to its original slate even
+    if the runner starts it after midnight.
+    """
+    delay = timedelta(minutes=TABPFN_DELAY_MINUTES)
+    return _spaced(
+        [
+            (max(snap.at, snap.covered_by or snap.at) + delay, snap.dispatch(game_date))
+            for snap in tabpfn_snapshots(games, predictor_runs)
+        ],
+        now,
+    )
+
+
+def joined_tabpfn_runs(
+    games: pd.DataFrame,
+    game_date: str,
+    now: datetime,
+    predictor_runs: Mapping[datetime, tuple[str, ...]],
+) -> tuple[dict[datetime, Dispatch], list[tuple[datetime, Dispatch]]]:
+    """The TabPFN runs as jobs of the predictor runs that cover them.
+
+    Returns each such predictor run's dispatch, carrying its jobs in its
+    ``tabpfn`` input (``nba_ou.prediction.tabpfn_run.parse_jobs``), and, as
+    ``tabpfn_runs`` books them, the TabPFN runs no predictor run covers.
+    """
+    jobs: dict[datetime, list[TabPFNSnapshot]] = defaultdict(list)
+    alone = []
+    for snap in tabpfn_snapshots(games, predictor_runs):
+        if snap.covered_by in predictor_runs:
+            jobs[snap.covered_by].append(snap)
+        else:
+            alone.append((snap.at, snap.dispatch(game_date)))
+    joined = {
+        run: Dispatch(
+            PREDICTOR.workflow_file,
+            (
+                (
+                    "tabpfn",
+                    JOB_SEPARATOR.join(
+                        format_job(snap.horizon, snap.at, snap.game_ids)
+                        for snap in snaps
+                    ),
+                ),
+            ),
+            label="; ".join(f"T-{snap.horizon} {snap.label}" for snap in snaps),
+        )
+        for run, snaps in sorted(jobs.items())
+    }
+    delay = timedelta(minutes=TABPFN_DELAY_MINUTES)
+    return joined, _spaced([(at + delay, dispatch) for at, dispatch in alone], now)
 
 
 def post_game_runs(
@@ -514,8 +603,21 @@ def main() -> None:
         default=DEFAULT_OFFSET_MINUTES,
         help="fire this long after each snapshot",
     )
-    parser.add_argument("--no-tabpfn", action="store_true", help="book no TabPFN runs")
+    parser.add_argument(
+        "--tabpfn",
+        choices=("separate", "joined", "none"),
+        default=SETTINGS.tabpfn_runs,
+        help=(
+            "TabPFN runs as dispatches of their own, as jobs of the predictor "
+            "runs covering their snapshots, or none ([Schedule] TABPFN_RUNS, "
+            f"now {SETTINGS.tabpfn_runs})"
+        ),
+    )
+    parser.add_argument(
+        "--no-tabpfn", action="store_true", help="book no TabPFN runs (--tabpfn none)"
+    )
     args = parser.parse_args()
+    tabpfn_mode = "none" if args.no_tabpfn else args.tabpfn
 
     now = datetime.now(UTC)
     game_date = args.game_date or now.astimezone(EASTERN).date().isoformat()
@@ -532,10 +634,17 @@ def main() -> None:
     window = predictor_window(game_date)
     triggers = trigger_times(tipoffs, horizons, now, args.offset_minutes, window)
     tabpfn = []
-    if not args.no_tabpfn:
+    joined: dict[datetime, Dispatch] = {}
+    if tabpfn_mode == "separate":
         tabpfn = tabpfn_runs(games, game_date, now, triggers)
+    elif tabpfn_mode == "joined":
+        joined, tabpfn = joined_tabpfn_runs(games, game_date, now, triggers)
     after_games = post_game_runs(tipoffs, game_date, now)
-    groups = group_schedules(triggers)
+    # A predictor run carrying TabPFN jobs has inputs of its own: a job of its
+    # own too, not one shared with other hours.
+    groups = group_schedules(at for at in triggers if at not in joined)
+    for at, dispatch in joined.items():
+        groups += group_schedules([at], dispatch)
     for at, dispatch in tabpfn:
         groups += group_schedules([at], dispatch)
     for at, dispatch in after_games:
@@ -544,6 +653,8 @@ def main() -> None:
     print(f"\n{len(triggers)} predictor run(s) still ahead:")
     for at, reasons in triggers.items():
         print(f"  {_clock(at)}  {', '.join(reasons)}")
+        if at in joined:
+            print(f"      + TabPFN jobs: {joined[at].label}")
     print(f"{len(tabpfn)} TabPFN run(s) still ahead:")
     for at, dispatch in tabpfn:
         inputs = dict(dispatch.inputs)

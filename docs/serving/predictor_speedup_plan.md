@@ -145,6 +145,7 @@ Ordered by saving.
 | P6 · Runner hardware | depends on the result | low to measure | — | open |
 | P7 · Streamlit on Aiven | — (unblocks the Supabase clean-up) | medium | dashboard history | open |
 | P8 · Step 2 (schedule, referees, injury reports, odds) | ≈15–25 s per run | low | low | **done** (`perf/prediction-loop`), to confirm on the runner |
+| P9 · TabPFN inside the predictor run | ≈2.5–3 min and a queue slot per TabPFN run (phase 1); most of its ~6:42 rebuild with phase 2 | medium | medium | phase 1 **done** (`feat/tabpfn-thinking`), not booked; phase 2 open |
 
 ### P0 · Measure before optimizing — done
 
@@ -460,6 +461,47 @@ injury report sync` line.
 - Loading less history: it changes feature values, and no optimization may.
 - More workers in the injury step: under 1 min on normal runs.
 
+### P9 · TabPFN inside the predictor run — phase 1 done, not booked yet
+
+A TabPFN run (`scripts/predict_tabpfn.py`, about 11:30 of runner time at
+T-720 on 2026-10-28) repeats most of the predictor run that fired two minutes
+before it: job start and venv, SBR check (0:22), step 2 (1:35), then its own
+rows (6:42) and fits (line_error 1:42, total_points 0:18). It also waits in
+the runner's queue as a run of its own.
+
+**Phase 1 (done on `feat/tabpfn-thinking`).** The TabPFN core (specs and
+training rows, tonight's rows, fits, store) is `nba_ou.prediction.tabpfn_run`,
+used by both scripts. `predict_nba_games.py --tabpfn JOBS` runs each job once
+the predictor's own predictions are stored, after freeing their frames, so a
+TabPFN failure or slow fit never costs them; a failed job fails the run at the
+end, as a slot does. A job reads the run's schedule, referees, reports and
+line source and rebuilds its rows at its snapshot (`as_of`), exactly as a
+separate run does: a scheduled run's inputs all stop at its snapshot, so data
+fetched later changes nothing, except a report stamped before the snapshot and
+published after the step-2 sync. `--tabpfn-refresh` (workflow
+`tabpfn_refresh`, off by default) fetches step 2 again and builds the rows at
+that moment instead, for predicting on the latest data. The scheduler books it
+with `[Schedule] TABPFN_RUNS = joined` (default `separate`, today's runs). The
+predictor workflow now installs `requirements/predict-tabpfn-cuda.txt`, has
+`TABPFN_ACCESS_TOKEN`, and takes its OIDC session right before the run.
+
+Saving: job start, SBR check and step 2 per TabPFN run, plus its queue slot;
+the fit comes after the predictions (safer for memory; it could overlap the
+builds later). A predictor run can carry up to three jobs (2026-10-28 dry
+run: 23 jobs in 10 predictor runs), each ~9 min in phase 1, so such a run
+takes ~40 min warm: within the hourly gap, not on a cold day.
+
+**Phase 2 (open).** Keep the history-only parts of the predictor's
+intermediate build (base game features 1:46, referees 0:40, the injury
+features' history ~2:00 on 2026-10-27) in the process, and recompute only
+tonight's parts for each job. Needs the stages checked for any dependence on
+tonight's injuries and odds, and a bit-for-bit comparison with a separate run
+at the same `as_of`.
+
+**Validation (to do before booking `joined`).** A manual predictor dispatch
+with one `tabpfn` job and `persist` off, compared with a separate TabPFN run
+at the same `as_of`: same rows bit for bit, and the phase times.
+
 ## Expected result
 
 | Scenario | Predictor | TabPFN | Runner per day (2026-10-27) | T-30 ready |
@@ -489,6 +531,9 @@ caches miss.
 6. P7: Streamlit on Aiven, then the Supabase clean-up.
 7. ~~P8: step 2 in parallel.~~ Done (`perf/prediction-logging`, left out of
    PR #87); confirm the `[time] step 2 ...` lines on the runner.
+8. P9: TabPFN inside the predictor run. Phase 1 done on
+   `feat/tabpfn-thinking` (not booked: `TABPFN_RUNS = separate`); validate,
+   book `joined`, then phase 2.
 
 ## Progress log
 
@@ -531,6 +576,11 @@ caches miss.
   the 51 slots one line each in one step, the side log live, warnings and
   failures as annotations, and the timings in the job summary. CI progress
   bars, the cleaning banner and the memo's per-season miss list are shorter.
+
+- 2026-10-28 — TabPFN thinking modes (`--modes`, `thinking_medium`,
+  `thinking_high`, each its own variant) and P9 phase 1 on
+  `feat/tabpfn-thinking`: TabPFN jobs inside the predictor run, after its
+  stored predictions; refresh optional and off; not booked yet.
 
 ## Sources
 

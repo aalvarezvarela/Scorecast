@@ -11,6 +11,18 @@ on:
                 description: "Run even with PREDICTIONS_ENABLED set to false"
                 type: boolean
                 default: false
+            tabpfn:
+                description: "TabPFN jobs after the predictions, ';'-separated HORIZON@AS_OF@GAME_IDS (empty = none; the scheduler fills it)"
+                type: string
+                default: ""
+            tabpfn_modes:
+                description: "TabPFN modes of those jobs: standard, thinking_medium, thinking_high"
+                type: string
+                default: standard
+            tabpfn_refresh:
+                description: "Fetch reports and odds again before the TabPFN jobs and predict at that moment, not at their snapshot"
+                type: boolean
+                default: false
     # schedule:
     #     # Every day at 23:00 UTC (1 hour before midnight)
     #     - cron: "11 00 * * *"
@@ -58,7 +70,12 @@ jobs:
             AIVEN_DB_URL: ${{ secrets.AIVEN_DB_URL }}
             AIVEN_DB_PASSWORD: ${{ secrets.AIVEN_DB_PASSWORD }}
             ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
+            # The TabPFN jobs a run carries (--tabpfn) fit on the hosted API.
+            TABPFN_ACCESS_TOKEN: ${{ secrets.TABPFN_ACCESS_TOKEN }}
             S3_AWS_PROFILE: ""
+            # Local copies of the season partitions the TabPFN jobs fit on,
+            # outside the checkout: finished seasons download once.
+            NBA_OU_PARTITION_CACHE_DIR: ~/.cache/nba_ou/season_partitions
             # Local input cache outside the checkout (actions/checkout cleans
             # it): finished-season reads and ticks are fetched once per runner.
             NBA_OU_INPUT_CACHE_DIR: ~/.cache/nba_ou/inputs
@@ -75,25 +92,35 @@ jobs:
               with:
                   python-version: "3.12"
 
+            # The job's own venv, reused across runs while its requirements and
+            # Python stay the same (.github/actions/job-venv).
+            # Only what the predictor needs (generated from poetry.lock, see
+            # requirements/README.md), then the repo itself WITHOUT its Poetry
+            # dependencies, which would pull in the training and lab stacks.
+            # With the tabpfn group: a run may carry TabPFN jobs (--tabpfn).
+            - name: Job venv
+              uses: ./.github/actions/job-venv
+              with:
+                  requirements: requirements/predict-tabpfn-cuda.txt
+
+            # Taken right before the run, not at the start: the 1 h OIDC
+            # session then lasts as long as it can into a run that carries
+            # TabPFN jobs, whose S3 writes come last.
             - name: Configure AWS credentials (OIDC)
               uses: aws-actions/configure-aws-credentials@v6
               with:
                   role-to-assume: ${{ secrets.AWS_ROLE_TO_ASSUME }}
                   aws-region: eu-west-1
 
-            # The job's own venv, reused across runs while its requirements and
-            # Python stay the same (.github/actions/job-venv).
-            # Only what the predictor needs (generated from poetry.lock, see
-            # requirements/README.md), then the repo itself WITHOUT its Poetry
-            # dependencies, which would pull in the training and lab stacks.
-            - name: Job venv
-              uses: ./.github/actions/job-venv
-              with:
-                  requirements: requirements/predict-cuda.txt
-
             # Every enabled slot (closing and intermediate, all targets)
             # predicts on every run, whatever the time to tip.
             - name: Run NBA predictor
+              env:
+                  TABPFN_JOBS: ${{ inputs.tabpfn }}
+                  # Empty (a dispatch from before the input existed): standard.
+                  TABPFN_MODES: ${{ inputs.tabpfn_modes || 'standard' }}
               run: |
                   python scripts/predict_nba_games.py \
+                      ${TABPFN_JOBS:+--tabpfn "$TABPFN_JOBS" --tabpfn-modes $TABPFN_MODES} \
+                      ${{ inputs.tabpfn_refresh && '--tabpfn-refresh' || '' }} \
                       ${{ github.event_name == 'workflow_dispatch' && !inputs.persist && '--no-persist' || '' }}

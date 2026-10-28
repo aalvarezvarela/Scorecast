@@ -65,6 +65,19 @@ day, `schedule_snapshot_triggers.yml` runs
    has its own run and triggers nothing; a manual run without
    `snapshot_game_ids` takes the snapshot nearest the cutoff as its own. A
    moved game is just another row from the lines so far.
+   `[Schedule] TABPFN_RUNS` (`--tabpfn` per booking) decides how they are
+   booked: `separate` (the default) as above; `joined` as jobs of the
+   predictor run that covers their snapshot, in its `tabpfn` input
+   (`HORIZON@AS_OF@GAME_IDS`, `;`-separated, `nba_ou.scheduling.tabpfn_jobs`),
+   run once that run's own predictions are stored, each stored as a TabPFN run
+   of its own (`nba_ou.prediction.tabpfn_run`); `none` books none. A joined job
+   reads the predictor run's schedule, referees, reports and line source, and
+   its rows are cut at its snapshot as a separate run's are. A predictor run
+   carrying jobs gets a pool job of its own (its payload differs), and a
+   snapshot no predictor run covers keeps its own TabPFN dispatch. The
+   predictor's `tabpfn_refresh` input (off by default) fetches the schedule,
+   reports and odds again before the jobs and builds their rows at that
+   moment instead of at their snapshot; `tabpfn_modes` is their `modes`.
    `--no-tabpfn` books none of these runs. Snapshots already past when the
    scheduler runs (normally 09:30 Madrid) are lost, including early T-720s;
    there is no catch-up or previous-day booking.
@@ -85,6 +98,15 @@ training window; database updates, the schedule and tonight's feature rows are
 shared, and all outputs are stored in one prediction run. If a target's inference
 fails, the other targets are still attempted and saved, and the run fails with
 a partial result. `--feature-slot` requires a single target.
+
+Its `modes` input (`--modes` in the script) lists the fits of each target, `standard` by
+default, which is today's model and what the scheduler requests. The other
+modes are TabPFN's thinking at medium or high effort (`thinking_medium`,
+`thinking_high`): the server searches the fit within its default time budget,
+which costs more time and inference. Each mode is stored as its own variant
+(`tabpfn_v3_5`, `tabpfn_v3_5_thinking_high`), so a run with
+`modes="standard thinking_high"` stores both side by side. No scheduled run
+uses thinking yet; dispatch one by hand to try it.
 
 ## The day's schedule
 

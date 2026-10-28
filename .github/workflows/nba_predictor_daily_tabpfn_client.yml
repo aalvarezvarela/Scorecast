@@ -10,6 +10,8 @@ name: Predictions - Upcoming Games with TabPFN
 #     gh workflow run nba_predictor_daily_tabpfn_client.yml -f target=line_error
 #     gh workflow run nba_predictor_daily_tabpfn_client.yml \
 #         -f line=intermediate -f horizon_minutes=360
+#     gh workflow run nba_predictor_daily_tabpfn_client.yml \
+#         -f modes="standard thinking_high"
 on:
     workflow_dispatch:
         inputs:
@@ -28,6 +30,10 @@ on:
                 description: "With line=intermediate: minutes before tip-off (an enabled slot's horizon)"
                 type: string
                 default: "360"
+            modes:
+                description: "TabPFN modes, each fitted and stored as its own variant: standard, thinking_medium, thinking_high"
+                type: string
+                default: standard
             game_date:
                 description: "Game date YYYY-MM-DD (empty = today's Pacific date)"
                 type: string
@@ -133,6 +139,8 @@ jobs:
                   TABPFN_TARGETS: ${{ inputs.target }}
                   TABPFN_LINE: ${{ inputs.line }}
                   TABPFN_HORIZON: ${{ inputs.horizon_minutes }}
+                  # Empty (a dispatch from before the input existed): standard.
+                  TABPFN_MODES: ${{ inputs.modes || 'standard' }}
                   TABPFN_GAME_DATE: ${{ inputs.game_date }}
                   TABPFN_GAME_IDS: ${{ inputs.game_ids }}
                   TABPFN_AS_OF: ${{ inputs.as_of }}
@@ -147,6 +155,7 @@ jobs:
                   if [[ -n "$TABPFN_AS_OF" ]]; then args+=(--as-of "$TABPFN_AS_OF"); fi
                   if [[ -n "$TABPFN_SNAPSHOT_GAME_IDS" ]]; then args+=(--snapshot-game-ids "$TABPFN_SNAPSHOT_GAME_IDS"); fi
                   python scripts/predict_tabpfn.py --targets "$TABPFN_TARGETS" \
+                      --modes "$TABPFN_MODES" \
                       --line "$TABPFN_LINE" "${args[@]}" \
                       ${{ !inputs.update_db && '--skip-db-update' || '' }} \
                       ${{ !inputs.persist && '--no-persist' || '' }}

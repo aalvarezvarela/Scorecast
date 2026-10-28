@@ -7,6 +7,7 @@ is handed, and that its output goes through the store as a TabPFN build.
 
 from __future__ import annotations
 
+import sys
 from datetime import datetime
 from types import SimpleNamespace
 from unittest.mock import Mock
@@ -25,11 +26,14 @@ from nba_ou.modeling.registry_models import (
 )
 from nba_ou.modeling.registry_paths import ModelSlot, ModelTarget
 from nba_ou.postgre_db.predictions_aiven import schema as store_schema
+from nba_ou.prediction import tabpfn_run
 from nba_ou.prediction.prediction_store import PredictionRunRecorder
 from nba_ou.prediction.prediction_tabpfn_client import (
     FittedTabPFN,
     feature_slot_for,
+    fit_tabpfn,
     model_variant,
+    parse_modes,
     predict_with_tabpfn,
     rows_of_horizon,
     tabpfn_training_set,
@@ -77,6 +81,63 @@ def test_an_intermediate_run_takes_the_slot_of_its_horizon():
 def test_the_variant_names_the_model_version():
     assert model_variant("v3.5") == "tabpfn_v3_5"
     assert model_variant("v3.5-fast") == "tabpfn_v3_5_fast"
+
+
+def test_a_thinking_mode_is_a_variant_of_its_own():
+    """The standard model keeps the variant every earlier run was stored as."""
+    assert model_variant("v3.5", "standard") == "tabpfn_v3_5"
+    assert model_variant("v3.5", "thinking_medium") == "tabpfn_v3_5_thinking_medium"
+    assert model_variant("v3.5", "thinking_high") == "tabpfn_v3_5_thinking_high"
+    with pytest.raises(ValueError, match="thinking"):
+        model_variant("v3.5", "thinking")
+
+
+def test_modes_are_parsed_once_each_in_order():
+    assert parse_modes(["standard"]) == ["standard"]
+    assert parse_modes(["thinking_high, standard thinking_high"]) == [
+        "thinking_high",
+        "standard",
+    ]
+    with pytest.raises(ValueError, match="high"):
+        parse_modes(["high"])
+    with pytest.raises(ValueError, match="at least one"):
+        parse_modes([" , "])
+
+
+@pytest.mark.parametrize(
+    ("mode", "overrides"),
+    [
+        ("standard", {}),
+        ("thinking_medium", {"thinking_effort": "medium"}),
+        ("thinking_high", {"thinking_effort": "high"}),
+    ],
+)
+def test_a_thinking_fit_asks_the_client_for_its_effort(monkeypatch, mode, overrides):
+    """Nothing reaches the hosted service: the client module is a stand-in."""
+    created = []
+
+    class _Regressor:
+        @classmethod
+        def create_default_for_version(cls, version, **options):
+            created.append((version, options))
+            return cls()
+
+        def fit(self, X, y):
+            return self
+
+    client = SimpleNamespace(
+        __version__="0.6.1",
+        TabPFNRegressor=_Regressor,
+        set_access_token=Mock(),
+        init=Mock(),
+    )
+    monkeypatch.setitem(sys.modules, "tabpfn_client", client)
+    monkeypatch.setenv("TABPFN_ACCESS_TOKEN", "token")
+    training_set = tabpfn_training_set(_history(), _spec(), frame_key="k")
+
+    model = fit_tabpfn(training_set, model_version="v3.5", mode=mode)
+    assert created == [("v3.5", {"random_state": 0, **overrides})]
+    assert model.mode == mode
 
 
 def _spec(
@@ -391,6 +452,16 @@ def test_invalid_target_lists_fail_before_starting(monkeypatch, args):
     predict.assert_not_called()
 
 
+#: What the script itself calls; ``_run_dependencies`` patches the rest in
+#: ``tabpfn_run``.
+SCRIPT_DEPENDENCIES = {
+    "make_s3_client",
+    "update_all_databases",
+    "check_line_feed",
+    "get_all_info_for_scheduled_games",
+}
+
+
 def _run_dependencies(monkeypatch, *, horizon=0, total_schema="2_5"):
     """Fake I/O and paid inference; keep target preparation, serving and storage real."""
     specs = {
@@ -406,6 +477,7 @@ def _run_dependencies(monkeypatch, *, horizon=0, total_schema="2_5"):
     clock = Mock(wraps=datetime)
     clock.now.side_effect = lambda tz: PREDICTION_AT.astimezone(tz)
     monkeypatch.setattr(job, "datetime", clock)
+    monkeypatch.setattr(tabpfn_run, "datetime", clock)
     monkeypatch.setattr(
         job,
         "SETTINGS",
@@ -430,11 +502,12 @@ def _run_dependencies(monkeypatch, *, horizon=0, total_schema="2_5"):
         ) - pd.to_timedelta(tonight["TIME_TO_MATCH_MIN"], unit="min")
         tonight["SNAPSHOT_PASSED"] = True
 
-    def fit(training_set, *, model_version):
+    def fit(training_set, *, model_version, mode):
         return FittedTabPFN(
             _MeanRegressor().fit(training_set.X, training_set.y),
             model_version=model_version,
             client_version="0.6.1",
+            mode=mode,
         )
 
     dependencies = {
@@ -471,7 +544,10 @@ def _run_dependencies(monkeypatch, *, horizon=0, total_schema="2_5"):
         "persist_prediction_run": Mock(return_value=[]),
     }
     for name, dependency in dependencies.items():
-        monkeypatch.setattr(job, name, dependency)
+        # The job's own steps are the script's; the rest is the shared
+        # TabPFN run (nba_ou.prediction.tabpfn_run).
+        module = job if name in SCRIPT_DEPENDENCIES else tabpfn_run
+        monkeypatch.setattr(module, name, dependency)
     return dependencies
 
 
@@ -550,6 +626,58 @@ def test_target_failure_preserves_other_predictions_and_fails_run(
     assert len(tables.predictions) == 2
     assert recorder.slots[failed_index]["status"] == "failed"
     assert recorder.slots[1 - failed_index]["status"] == "predicted"
+
+
+def test_a_run_fits_the_standard_model_only_by_default(monkeypatch):
+    deps = _run_dependencies(monkeypatch)
+    job.predict_tabpfn(targets=["line_error", "total_points"])
+    modes = [fit.kwargs["mode"] for fit in deps["fit_tabpfn"].call_args_list]
+    assert modes == ["standard", "standard"]
+    recorder = deps["persist_prediction_run"].call_args.args[0]
+    tables = recorder.tables(status=store_schema.RUN_STATUS_OK)
+    assert set(tables.model_builds["variant"]) == {"tabpfn_v3_5"}
+
+
+def test_each_mode_is_its_own_fit_and_variant(monkeypatch):
+    """Two modes over two targets: four fits on the targets' own rows, stored
+    as four builds of one run."""
+    deps = _run_dependencies(monkeypatch)
+    job.predict_tabpfn(
+        targets=["line_error", "total_points"], modes=["standard", "thinking_high"]
+    )
+    fits = deps["fit_tabpfn"].call_args_list
+    assert [(fit.args[0].n_games, fit.kwargs["mode"]) for fit in fits] == [
+        (4, "standard"),
+        (4, "thinking_high"),
+        (6, "standard"),
+        (6, "thinking_high"),
+    ]
+    recorder = deps["persist_prediction_run"].call_args.args[0]
+    tables = recorder.tables(status=store_schema.RUN_STATUS_OK)
+    builds = tables.model_builds
+    assert len(builds) == 4
+    assert sorted(builds["variant"]) == [
+        "tabpfn_v3_5",
+        "tabpfn_v3_5",
+        "tabpfn_v3_5_thinking_high",
+        "tabpfn_v3_5_thinking_high",
+    ]
+    assert len(tables.predictions) == 8
+    assert [slot["status"] for slot in recorder.slots] == ["predicted"] * 4
+
+
+def test_the_cli_passes_modes_and_refuses_an_unknown_one(monkeypatch):
+    predict = Mock()
+    monkeypatch.setattr(job, "predict_tabpfn", predict)
+    job.main([])
+    assert predict.call_args.kwargs["modes"] == ["standard"]
+    job.main(["--modes", "standard thinking_high"])
+    assert predict.call_args.kwargs["modes"] == ["standard", "thinking_high"]
+    predict.reset_mock()
+    with pytest.raises(SystemExit) as exc:
+        job.main(["--modes", "thinking"])
+    assert exc.value.code == 2
+    predict.assert_not_called()
 
 
 def test_mixed_closing_schemas_use_one_frame_at_the_newest_version(monkeypatch):
@@ -699,7 +827,7 @@ def test_snapshots_far_from_the_cutoff_are_predicted_as_built(monkeypatch):
     # neither is the triggering snapshot, so nothing is waited for or rebuilt.
     deps = _run_dependencies(monkeypatch, horizon=360)
     waited = []
-    monkeypatch.setattr(job, "_wait_until", waited.append)
+    monkeypatch.setattr(tabpfn_run, "_wait_until", waited.append)
     job.predict_tabpfn(
         line="intermediate", as_of="2026-10-21T17:00:00Z", update_db=False
     )
@@ -717,7 +845,7 @@ def test_page_tipoff_a_few_minutes_off_rebuilds_at_the_rows_own_snapshot(
     deps = _run_dependencies(monkeypatch, horizon=360)
     snapshot = pd.Timestamp("2026-10-21 17:30", tz="UTC")
     waited = []
-    monkeypatch.setattr(job, "_wait_until", waited.append)
+    monkeypatch.setattr(tabpfn_run, "_wait_until", waited.append)
     job.predict_tabpfn(line="intermediate", as_of=as_of, update_db=False)
     cutoffs = [
         call.kwargs["as_of"]
@@ -748,9 +876,9 @@ def test_another_games_snapshot_minutes_away_is_not_the_runs(
         **{"0022600001": "2026-10-21 18:00", "0022600002": "2026-10-21 18:10"}
     )
     build = Mock()
-    monkeypatch.setattr(job, "_wait_until", Mock())
+    monkeypatch.setattr(tabpfn_run, "_wait_until", Mock())
     cutoff = pd.Timestamp("2026-10-21 18:00", tz="UTC")
-    got = job._rebuild_at_row_snapshot(rows, cutoff, build, snapshot_games)
+    got = tabpfn_run._rebuild_at_row_snapshot(rows, cutoff, build, snapshot_games)
     assert got is rows
     build.assert_not_called()
 
@@ -765,9 +893,9 @@ def test_the_snapshot_games_page_tipoff_off_rebuilds_at_their_snapshot(
     )
     build = Mock(return_value="rebuilt")
     waited = []
-    monkeypatch.setattr(job, "_wait_until", waited.append)
+    monkeypatch.setattr(tabpfn_run, "_wait_until", waited.append)
     cutoff = pd.Timestamp("2026-10-21 18:00", tz="UTC")
-    got = job._rebuild_at_row_snapshot(rows, cutoff, build, ["0022600001"])
+    got = tabpfn_run._rebuild_at_row_snapshot(rows, cutoff, build, ["0022600001"])
     snapshot = pd.Timestamp("2026-10-21 18:05", tz="UTC")
     assert got == "rebuilt"
     build.assert_called_once_with(snapshot)
@@ -776,11 +904,11 @@ def test_the_snapshot_games_page_tipoff_off_rebuilds_at_their_snapshot(
 
 def test_wait_until_sleeps_only_for_a_snapshot_still_ahead(monkeypatch):
     sleeps = []
-    monkeypatch.setattr(job.time, "sleep", sleeps.append)
+    monkeypatch.setattr(tabpfn_run.time, "sleep", sleeps.append)
     now = pd.Timestamp.now(tz="UTC")
-    job._wait_until(now - pd.Timedelta(minutes=1))
+    tabpfn_run._wait_until(now - pd.Timedelta(minutes=1))
     assert sleeps == []
-    job._wait_until(now + pd.Timedelta(minutes=5))
+    tabpfn_run._wait_until(now + pd.Timedelta(minutes=5))
     assert len(sleeps) == 1 and 290 < sleeps[0] <= 300
 
 
@@ -840,3 +968,51 @@ def test_invalid_schedule_inputs_fail_before_starting(monkeypatch, args):
         job.main(args)
     assert exc.value.code == 2
     predict.assert_not_called()
+
+
+# --- jobs carried by the daily predictor (--tabpfn) --------------------------
+
+
+def test_a_scheduled_job_reads_as_its_snapshot_and_games():
+    from nba_ou.scheduling.tabpfn_jobs import format_job
+
+    at = datetime(2026, 10, 28, 23, 0, tzinfo=ZoneInfo("UTC"))
+    text = ";".join(
+        [
+            format_job(720, at, ["0022600132", "0022600131"]),
+            format_job(480, at, ["0022600133"]),
+        ]
+    )
+    jobs = tabpfn_run.parse_jobs(text, modes=["standard", "thinking_high"])
+    assert [(job_.horizon, job_.snapshot_games) for job_ in jobs] == [
+        (720, ("0022600131", "0022600132")),
+        (480, ("0022600133",)),
+    ]
+    for parsed in jobs:
+        assert parsed.dataset_type == "intermediate_line"
+        assert parsed.as_of == pd.Timestamp(at)
+        assert parsed.targets == ("line_error", "total_points")
+        assert parsed.modes == ("standard", "thinking_high")
+        assert parsed.name == f"TabPFN t{parsed.horizon:04d}"
+
+
+def test_a_job_without_cutoff_is_live_and_horizon_zero_is_the_closing_line():
+    live, closing = tabpfn_run.parse_jobs(" 360 ; 0 ;", targets=["line_error"])
+    assert (live.horizon, live.as_of, live.snapshot_games) == (360, None, None)
+    assert (closing.dataset_type, closing.horizon) == ("closing_line", 0)
+    assert tabpfn_run.parse_jobs("") == []
+
+
+@pytest.mark.parametrize(
+    ("text", "message"),
+    [
+        ("t720", "not a number"),
+        ("-60", "negative"),
+        ("0@2026-10-28T23:00:00+00:00", "--line intermediate"),
+        ("720@2026-10-28T23:00:00", "timezone"),
+        ("720@2026-10-28T23:00:00+00:00@123", "10-digit"),
+    ],
+)
+def test_a_malformed_job_is_refused(text, message):
+    with pytest.raises(ValueError, match=message):
+        tabpfn_run.parse_jobs(text)

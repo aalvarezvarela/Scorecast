@@ -20,6 +20,12 @@ go through the registry slots' serving path
 (``load_and_predict_model_for_nba_games``): the same NaN budget, picks and
 output columns, for every target. The run is stored as ``model_builds.kind`` 3
 (``KIND_TABPFN``).
+
+Each fit is in one mode (``MODES``): the standard model, or thinking, where the
+server searches the fit's configuration within a time budget, at an effort
+(``tabpfn_client``'s ``thinking_effort``). A thinking mode is its own variant
+(``model_variant``), so its predictions are stored apart from the standard
+model's and the two can be compared.
 """
 
 from __future__ import annotations
@@ -53,6 +59,14 @@ INTERMEDIATE_LINE = "intermediate_line"
 DEFAULT_INTERMEDIATE_HORIZON = 360
 #: The intermediate frames' snapshot column: minutes before tip-off.
 SNAPSHOT_COLUMN = "TIME_TO_MATCH_MIN"
+#: The standard model: what every run fitted before thinking was supported.
+STANDARD_MODE = "standard"
+#: The thinking modes, by their ``tabpfn_client`` ``thinking_effort``.
+THINKING_EFFORTS = {"thinking_medium": "medium", "thinking_high": "high"}
+#: The modes a run can fit, each a variant of its own.
+MODES = (STANDARD_MODE, *THINKING_EFFORTS)
+#: The modes of a run when none are given.
+DEFAULT_MODES = (STANDARD_MODE,)
 
 
 @dataclass(frozen=True)
@@ -111,9 +125,31 @@ def rows_of_horizon(df: pd.DataFrame, spec: ModelSpec) -> pd.DataFrame:
     return rows
 
 
-def model_variant(model_version: str) -> str:
-    """``tabpfn_v3_5``: the ``model_builds.variant`` of a TabPFN model."""
-    return "tabpfn_" + model_version.lower().replace(".", "_").replace("-", "_")
+def parse_modes(values: Sequence[str]) -> list[str]:
+    """Modes separated by spaces or commas, each once in order."""
+    modes = list(
+        dict.fromkeys(
+            value for item in values for value in item.replace(",", " ").split()
+        )
+    )
+    if not modes:
+        raise ValueError("Provide at least one TabPFN mode.")
+    unknown = [mode for mode in modes if mode not in MODES]
+    if unknown:
+        raise ValueError(
+            f"Unknown TabPFN mode(s) {', '.join(unknown)}; choose from "
+            + ", ".join(MODES)
+        )
+    return modes
+
+
+def model_variant(model_version: str, mode: str = STANDARD_MODE) -> str:
+    """The ``model_builds.variant`` of a TabPFN model: ``tabpfn_v3_5`` for the
+    standard model, ``tabpfn_v3_5_thinking_high`` for a thinking mode."""
+    if mode not in MODES:
+        raise ValueError(f"Unknown TabPFN mode {mode!r}; choose from {MODES}.")
+    variant = "tabpfn_" + model_version.lower().replace(".", "_").replace("-", "_")
+    return variant if mode == STANDARD_MODE else f"{variant}_{mode}"
 
 
 def numeric_features(X: pd.DataFrame) -> pd.DataFrame:
@@ -174,10 +210,18 @@ def _authenticate(tabpfn_client) -> None:
 class FittedTabPFN:
     """A fitted TabPFN regressor that reads features as it was fitted on them."""
 
-    def __init__(self, regressor, *, model_version: str, client_version: str):
+    def __init__(
+        self,
+        regressor,
+        *,
+        model_version: str,
+        client_version: str,
+        mode: str = STANDARD_MODE,
+    ):
         self.regressor = regressor
         self.model_version = model_version
         self.client_version = client_version
+        self.mode = mode
 
     def predict(self, X: pd.DataFrame):
         return self.regressor.predict(numeric_features(X))
@@ -187,9 +231,14 @@ def fit_tabpfn(
     training_set: TabPFNTrainingSet,
     *,
     model_version: str = DEFAULT_MODEL_VERSION,
+    mode: str = STANDARD_MODE,
     random_state: int = 0,
 ) -> FittedTabPFN:
-    """Fit the hosted regressor of ``model_version`` on ``training_set``."""
+    """Fit the hosted regressor of ``model_version`` on ``training_set``, in
+    ``mode`` (``MODES``). A thinking fit runs within the server's default time
+    budget."""
+    if mode not in MODES:
+        raise ValueError(f"Unknown TabPFN mode {mode!r}; choose from {MODES}.")
     try:
         import tabpfn_client
     except ImportError as exc:
@@ -199,14 +248,18 @@ def fit_tabpfn(
         ) from exc
 
     _authenticate(tabpfn_client)
+    thinking = (
+        {} if mode == STANDARD_MODE else {"thinking_effort": THINKING_EFFORTS[mode]}
+    )
     regressor = tabpfn_client.TabPFNRegressor.create_default_for_version(
-        model_version, random_state=random_state
+        model_version, random_state=random_state, **thinking
     )
     regressor.fit(training_set.X, training_set.y)
     return FittedTabPFN(
         regressor,
         model_version=model_version,
         client_version=tabpfn_client.__version__,
+        mode=mode,
     )
 
 
@@ -234,7 +287,7 @@ def predict_with_tabpfn(
         return pd.DataFrame()
     target = str(spec.identity.target)
     horizon = spec.identity.horizon_minutes
-    variant = model_variant(model.model_version)
+    variant = model_variant(model.model_version, model.mode)
     train_date_max = training_set.train_date_max
     # As load_registry_model_and_predict marks an intermediate slot's rows.
     input_mode = {} if dataset_type == CLOSING_LINE else {"INPUT_MODE": "own"}
@@ -248,7 +301,14 @@ def predict_with_tabpfn(
         model_version=model.model_version,
         required_features=list(spec.features.feature_names),
         prediction_source=variant,
-        training_code_tag=f"tabpfn-client {model.client_version}",
+        training_code_tag=(
+            f"tabpfn-client {model.client_version}"
+            + (
+                ""
+                if model.mode == STANDARD_MODE
+                else f", thinking {THINKING_EFFORTS[model.mode]}"
+            )
+        ),
         train_date_min=training_set.train_date_min.isoformat(),
         train_date_max=train_date_max.isoformat(),
         prediction_datetime=prediction_datetime,

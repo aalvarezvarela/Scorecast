@@ -513,3 +513,116 @@ def test_turned_off_the_builds_run_one_after_the_other(monkeypatch, capsys):
     assert order == ["closing", "intermediate"]
     assert served[0] == (["closing_line", "intermediate_line"], ["g5"])
     assert "one after the other: turned off" in capsys.readouterr().out
+
+
+# --- TabPFN jobs after the predictions ----------------------------------------
+
+
+def _tabpfn_job(**changes):
+    from nba_ou.prediction.tabpfn_run import TabPFNJob
+
+    return TabPFNJob(
+        **{
+            "dataset_type": "intermediate_line",
+            "horizon": 720,
+            "as_of": pd.Timestamp("2025-11-03 11:00", tz="UTC"),
+            "snapshot_games": ("g5",),
+            **changes,
+        }
+    )
+
+
+def _with_tabpfn(monkeypatch, order: list, *, failing: set[int] = frozenset()):
+    """The side-by-side job, sequential, with the store and the TabPFN run's
+    parts faked: what is under test is where and on what each job runs."""
+    from unittest.mock import Mock
+
+    from nba_ou.prediction.tabpfn_run import JobOutcome
+
+    _side_by_side_job(monkeypatch, parallel_builds=False, order=order)
+    scheduled = {"scheduled_games": pd.DataFrame({"GAME_ID": ["g5"]})}
+    fetch = Mock(return_value=scheduled)
+    monkeypatch.setattr(job, "get_all_info_for_scheduled_games", fetch)
+
+    def stored(*_, **__):
+        order.append("stored")
+        return []
+
+    monkeypatch.setattr(job, "persist_prediction_run", stored)
+    calls = {"rows": [], "fits": []}
+
+    def load_fit_inputs(tabpfn_job, **_):
+        if tabpfn_job.horizon in failing:
+            raise RuntimeError("partitions too old")
+        return SimpleNamespace(specs=[f"spec {tabpfn_job.horizon}"])
+
+    def tonight_rows(tabpfn_job, data, specs, **_):
+        calls["rows"].append((tabpfn_job, data))
+        return SimpleNamespace(df=pd.DataFrame())
+
+    def fit_and_store(tabpfn_job, inputs, rows, data, **kwargs):
+        order.append(f"TabPFN T-{tabpfn_job.horizon}")
+        calls["fits"].append(kwargs["persist"])
+        return JobOutcome(
+            predicted=[f"2_5/line_error/t{tabpfn_job.horizon:04d}/tabpfn_v3_5"],
+            failures=[],
+            n_fits=1,
+        )
+
+    monkeypatch.setattr(job, "load_fit_inputs", load_fit_inputs)
+    monkeypatch.setattr(job, "tonight_rows", tonight_rows)
+    monkeypatch.setattr(job, "fit_and_store", fit_and_store)
+    return fetch, scheduled, calls
+
+
+def test_tabpfn_jobs_run_once_the_predictions_are_stored(monkeypatch, capsys):
+    """On the run's own schedule and reports, at each job's snapshot."""
+    order = []
+    fetch, scheduled, calls = _with_tabpfn(monkeypatch, order)
+    jobs = [_tabpfn_job(), _tabpfn_job(horizon=480)]
+    job.predict_nba_games(persist=True, tabpfn_jobs=jobs)
+
+    assert order[-3:] == ["stored", "TabPFN T-720", "TabPFN T-480"]
+    fetch.assert_called_once()
+    assert [(got, data) for got, data in calls["rows"]] == [
+        (jobs[0], scheduled),
+        (jobs[1], scheduled),
+    ]
+    assert calls["fits"] == [True, True]
+    assert "2 TabPFN model(s) predicted" in capsys.readouterr().out
+
+
+def test_refreshed_tabpfn_jobs_fetch_again_and_predict_at_this_moment(monkeypatch):
+    order = []
+    fetch, _, calls = _with_tabpfn(monkeypatch, order)
+    job.predict_nba_games(
+        persist=False, tabpfn_jobs=[_tabpfn_job()], tabpfn_refresh=True
+    )
+
+    assert fetch.call_count == 2
+    assert fetch.call_args.kwargs["dataset_type"] == "intermediate_line"
+    ((refreshed, _),) = calls["rows"]
+    assert refreshed.as_of is None and refreshed.snapshot_games is None
+    assert refreshed.horizon == 720
+    assert calls["fits"] == [False]
+
+
+def test_a_failed_tabpfn_job_costs_only_itself_and_fails_the_run(monkeypatch, capsys):
+    order = []
+    _with_tabpfn(monkeypatch, order, failing={720})
+    with pytest.raises(SystemExit) as exc:
+        job.predict_nba_games(
+            persist=True, tabpfn_jobs=[_tabpfn_job(), _tabpfn_job(horizon=480)]
+        )
+    assert exc.value.code == 1
+    # The predictions were stored before; the next job still ran.
+    assert order[-2:] == ["stored", "TabPFN T-480"]
+    assert "TabPFN t0720: RuntimeError: partitions too old" in capsys.readouterr().out
+
+
+def test_a_run_without_tabpfn_jobs_fits_nothing(monkeypatch):
+    order = []
+    _, _, calls = _with_tabpfn(monkeypatch, order)
+    job.predict_nba_games(persist=True)
+    assert calls == {"rows": [], "fits": []}
+    assert order[-1] == "stored"

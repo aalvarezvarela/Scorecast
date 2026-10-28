@@ -1,7 +1,10 @@
 import argparse
+import gc
 import os
 import time
 import traceback
+from collections.abc import Sequence
+from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -47,6 +50,16 @@ from nba_ou.prediction.side_build import (
     SideBuild,
     SideBuildFailed,
     side_by_side_reason,
+)
+from nba_ou.prediction.tabpfn_run import (
+    DEFAULT_TARGETS as TABPFN_TARGETS,
+)
+from nba_ou.prediction.tabpfn_run import (
+    TabPFNJob,
+    fit_and_store,
+    load_fit_inputs,
+    parse_jobs,
+    tonight_rows,
 )
 from nba_ou.utils.general_utils import get_season_year_from_date
 from nba_ou.utils.phase_timer import PhaseTimer, duration
@@ -128,6 +141,8 @@ def run_prediction_pipeline(
     intermediate_input: str | None = None,
     line_source: str | None = None,
     parallel_builds: bool | None = None,
+    tabpfn_jobs: Sequence[TabPFNJob] = (),
+    tabpfn_refresh: bool = False,
 ) -> None:
     """
     Main execution function for the NBA prediction pipeline.
@@ -161,6 +176,12 @@ def run_prediction_pipeline(
     ``parallel_builds`` overrides ``[PredictionModels] PARALLEL_BUILDS``: the
     closing rows build in a side process beside the intermediate rows while
     both stay warm (``nba_ou.prediction.side_build``).
+
+    ``tabpfn_jobs`` (``nba_ou.prediction.tabpfn_run``) run once this run's
+    predictions are stored, each a TabPFN run of its own, on the schedule,
+    referees, reports and line source fetched above; ``tabpfn_refresh``
+    fetches those again and builds the rows at that moment instead of at each
+    job's snapshot. A failed job fails the run at the end, as a slot does.
     """
     configure_tqdm_for_environment()
 
@@ -185,6 +206,10 @@ def run_prediction_pipeline(
     )
     if not persist:
         print_status("Dry run (--no-persist): no predictions are stored")
+    for job in tabpfn_jobs:
+        print(
+            f"  {describe_tabpfn_job(job)}" + (", refreshed" if tabpfn_refresh else "")
+        )
 
     # Each phase prints a [time] line as it ends, the summary their list.
     timer = PhaseTimer()
@@ -503,12 +528,34 @@ def run_prediction_pipeline(
                 partial=bool(failures),
             )
 
+    tabpfn_predicted: list[str] = []
+    if tabpfn_jobs:
+        # After the stored predictions: a TabPFN failure or slow fit never
+        # costs them. Their frames are not read again; free them first.
+        del frames, clean_frames, builds, recorder
+        del df_to_predict, intermediate_df, layer_inputs
+        gc.collect()
+        tabpfn_predicted, tabpfn_failures = tabpfn_after_predictions(
+            tabpfn_jobs,
+            scheduled_data,
+            lines,
+            s3_client=s3,
+            date_to_predict=date_to_predict,
+            timer=timer,
+            log=log,
+            persist=persist,
+            refresh=tabpfn_refresh,
+        )
+        failures += tabpfn_failures
+
     log.step("Summary", group=False)
     print(timer.summary())
     print_status(f"{len(predicted)} slot(s) predicted")
     print_status(f"{len(skipped)} slot(s) skipped", ok=not skipped)
     for label in skipped:
         print(f"      - {label}")
+    if tabpfn_jobs:
+        print_status(f"{len(tabpfn_predicted)} TabPFN model(s) predicted")
     print_status(f"{len(failures)} failure(s)", ok=not failures)
     for failure in failures:
         log.error(failure)
@@ -518,7 +565,12 @@ def run_prediction_pipeline(
                 f"### Predictions for {date_to_predict}",
                 "",
                 f"{len(predicted)} slot(s) predicted, {len(skipped)} skipped, "
-                f"{len(failures)} failure(s)"
+                + (
+                    f"{len(tabpfn_predicted)} TabPFN model(s) predicted, "
+                    if tabpfn_jobs
+                    else ""
+                )
+                + f"{len(failures)} failure(s)"
                 + ("" if persist else " (dry run: nothing stored)"),
                 "",
                 *(f"- ✖ {failure}" for failure in failures),
@@ -532,6 +584,101 @@ def run_prediction_pipeline(
         raise SystemExit(1)
 
     print("\nPrediction pipeline completed successfully.")
+
+
+def describe_tabpfn_job(job: TabPFNJob) -> str:
+    """``TabPFN t0720 (line_error, total_points; standard) at the snapshot of
+    2026-10-28 23:00 UTC``."""
+    at = (
+        "now"
+        if job.as_of is None
+        else f"the snapshot of {job.as_of.tz_convert('UTC'):%Y-%m-%d %H:%M} UTC"
+    )
+    return f"{job.name} ({', '.join(job.targets)}; {', '.join(job.modes)}) at {at}"
+
+
+def tabpfn_after_predictions(
+    jobs: Sequence[TabPFNJob],
+    scheduled_data: dict,
+    lines,
+    *,
+    s3_client,
+    date_to_predict: str,
+    timer: PhaseTimer,
+    log: RunLog,
+    persist: bool,
+    refresh: bool,
+) -> tuple[list[str], list[str]]:
+    """Each TabPFN job, a TabPFN run of its own (``nba_ou.prediction.tabpfn_run``):
+    the labels it predicted and its failures. A job that fails costs only
+    itself.
+
+    The jobs read this run's schedule, referees, reports and line source
+    (``lines``), and a scheduled job's rows are cut at its snapshot, as a
+    TabPFN run on its own cuts them. With ``refresh`` those are fetched again
+    first, and the rows are built at this moment instead.
+    """
+    predicted: list[str] = []
+    failures: list[str] = []
+    for job in jobs:
+        prefix = f"{job.name}: "
+        log.step(f"{prefix}Loading the Feature Spec and Training Frame")
+        print_status(describe_tabpfn_job(job))
+        try:
+            with timer.phase(f"{prefix}spec and training rows"):
+                inputs = load_fit_inputs(
+                    job,
+                    s3_client=s3_client,
+                    bucket=SETTINGS.s3_bucket,
+                    slots=SETTINGS.prediction_model_slots,
+                    date_to_predict=date_to_predict,
+                )
+            data = scheduled_data
+            if refresh:
+                log.step(f"{prefix}Fetching Scheduled Games & Reports Again")
+                with timer.phase(f"{prefix}scheduled games and reports"):
+                    data = get_all_info_for_scheduled_games(
+                        date_to_predict=date_to_predict,
+                        nba_injury_reports_url=SETTINGS.nba_injury_reports_url,
+                        headless=SETTINGS.headless,
+                        line_source=lines,
+                        dataset_type=job.dataset_type,
+                    )
+                # The rows of this moment, not of the booked snapshot.
+                job = replace(job, as_of=None, snapshot_games=None)
+            started = time.perf_counter()
+            rows = tonight_rows(
+                job,
+                data,
+                inputs.specs,
+                date_to_predict=date_to_predict,
+                log=log,
+                step_prefix=prefix,
+            )
+            if rows is None:
+                continue
+            timer.record(f"{prefix}tonight's rows", time.perf_counter() - started)
+        except Exception as e:  # noqa: BLE001 -- the other jobs still run
+            traceback.print_exc()
+            failures.append(f"{job.name}: {type(e).__name__}: {e}")
+            print_status(failures[-1], ok=False)
+            continue
+        outcome = fit_and_store(
+            job,
+            inputs,
+            rows,
+            data,
+            s3_client=s3_client,
+            bucket=SETTINGS.s3_bucket,
+            date_to_predict=date_to_predict,
+            timer=timer,
+            log=log,
+            persist=persist,
+            step_prefix=prefix,
+        )
+        predicted += outcome.predicted
+        failures += outcome.failures
+    return predicted, failures
 
 
 def timed_closing_rows(
@@ -726,7 +873,44 @@ if __name__ == "__main__":
             "never side by side ([PredictionModels] PARALLEL_BUILDS)."
         ),
     )
+    parser.add_argument(
+        "--tabpfn",
+        default="",
+        metavar="JOBS",
+        help=(
+            "TabPFN jobs to run once the predictions are stored, separated by ';': "
+            "HORIZON[@AS_OF[@GAME_IDS]], e.g. "
+            "'720@2026-10-28T23:00:00+00:00@0022600131' (0: the closing line). "
+            "Each is a TabPFN run of its own (scripts/predict_tabpfn.py)."
+        ),
+    )
+    parser.add_argument(
+        "--tabpfn-targets",
+        nargs="+",
+        default=list(TABPFN_TARGETS),
+        help=f"Targets of the TabPFN jobs (default: {' '.join(TABPFN_TARGETS)}).",
+    )
+    parser.add_argument(
+        "--tabpfn-modes",
+        nargs="+",
+        default=["standard"],
+        help="TabPFN modes of the jobs: standard, thinking_medium, thinking_high.",
+    )
+    parser.add_argument(
+        "--tabpfn-refresh",
+        action="store_true",
+        help=(
+            "Fetch the schedule, reports and odds again before the TabPFN jobs, "
+            "and build their rows at that moment instead of at their snapshot."
+        ),
+    )
     args = parser.parse_args()
+    try:
+        tabpfn_jobs = parse_jobs(
+            args.tabpfn, targets=args.tabpfn_targets, modes=args.tabpfn_modes
+        )
+    except ValueError as exc:
+        parser.error(str(exc))
 
     predict_nba_games(
         normalize_total_lines=not args.no_normalize_total_lines,
@@ -738,4 +922,6 @@ if __name__ == "__main__":
         intermediate_input=args.intermediate_input,
         line_source=args.line_source,
         parallel_builds=False if args.sequential_builds else None,
+        tabpfn_jobs=tabpfn_jobs,
+        tabpfn_refresh=args.tabpfn_refresh,
     )
