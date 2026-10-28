@@ -30,6 +30,7 @@ import pandas as pd
 from tqdm import tqdm
 
 from nba_ou.postgre_db.line_history_aiven.fetch import MARKET_MONEYLINE
+from nba_ou.utils.run_log import progress_disabled
 
 from .snapshots import (
     DEFAULT_SNAPSHOT_GRID,
@@ -271,7 +272,7 @@ def add_movement_features(
             sorted(set(grid)),
             desc=progress and f"{progress}: history",
             unit="snapshot",
-            disable=progress is None,
+            disable=progress_disabled(progress),
         )
     ]
     aggregate_frames = [frame for frame in aggregate_frames if not frame.empty]

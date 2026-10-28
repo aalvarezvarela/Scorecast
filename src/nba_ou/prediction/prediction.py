@@ -183,7 +183,7 @@ def _resolve_feature_names_from_metadata(metadata: dict) -> list[str] | None:
 
 
 def clean_prediction_frame(
-    df: pd.DataFrame, *, passthrough_columns: Sequence[str] = ()
+    df: pd.DataFrame, *, passthrough_columns: Sequence[str] = (), verbose: int = 1
 ) -> pd.DataFrame:
     """``df`` cleaned as a model's prediction reads it.
 
@@ -213,7 +213,7 @@ def clean_prediction_frame(
         # beyond the declared non-feature ones; the model's own feature list
         # decides its inputs, so dropping them here is safe.
         unexpected_text="drop",
-        verbose=1,
+        verbose=verbose,
         # Rows are limited by each model's own training limit (max_na_per_row)
         # over its features. A fixed 30 columns over the whole frame rejected
         # every game of the 2026-10-20 opener (71), while the closing models
@@ -229,7 +229,7 @@ def clean_prediction_frames(
 
     A frame that fails to clean, or whose index repeats a label (its rows
     could not be found again), is left out: its slots then clean their own
-    rows, and fail one by one as they did before.
+    rows, and fail one by one as they did before. Each frame prints one line.
     """
     clean_frames = {}
     for dataset_type, frame in frames.items():
@@ -237,8 +237,13 @@ def clean_prediction_frames(
             print(f"  {dataset_type}: the frame's index repeats; cleaned per slot.")
             continue
         try:
-            clean_frames[dataset_type] = clean_prediction_frame(
-                frame, passthrough_columns=passthrough_columns
+            clean = clean_prediction_frame(
+                frame, passthrough_columns=passthrough_columns, verbose=0
+            )
+            clean_frames[dataset_type] = clean
+            print(
+                f"  {dataset_type} cleaned: {len(frame)} -> {len(clean)} row(s), "
+                f"{frame.shape[1]} -> {clean.shape[1]} columns"
             )
         except Exception as exc:  # noqa: BLE001 -- each slot reports it
             print(f"  {dataset_type}: cleaning failed ({exc}); cleaned per slot.")

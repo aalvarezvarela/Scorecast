@@ -17,10 +17,23 @@ def test_returns_the_value_and_prints_the_side_log(capsys):
     outcome = side.result()
     assert outcome.value == 6
     assert outcome.cold_cause is None
+    assert outcome.peak.endswith("GB")
     out = capsys.readouterr().out
-    assert "----- sum (side process) -----" in out
-    assert "adding" in out
-    assert "[time] sum (side process)" in out
+    assert "sum (side process, " in out
+    assert "[sum] adding" in out.splitlines()
+
+
+def test_a_quiet_side_build_is_followed_live(capsys):
+    """Lines show as the side process writes them, and a quiet stretch says
+    the build is still running."""
+    side = SideBuild.start(side_jobs.slow, 3.0, current_season=2026, label="slow")
+    outcome = side.result(heartbeat_seconds=1.0)
+    assert outcome.value == "done"
+    lines = capsys.readouterr().out.splitlines()
+    marked = [line for line in lines if line.startswith("[slow] ")]
+    assert marked[0] == "[slow] starting"
+    assert any("still running" in line for line in marked)
+    assert marked[-1] == "[slow] finishing"
 
 
 def test_a_raising_build_raises_here_with_its_traceback():

@@ -49,7 +49,8 @@ from nba_ou.prediction.side_build import (
     side_by_side_reason,
 )
 from nba_ou.utils.general_utils import get_season_year_from_date
-from nba_ou.utils.phase_timer import PhaseTimer
+from nba_ou.utils.phase_timer import PhaseTimer, duration
+from nba_ou.utils.run_log import RunLog
 from nba_ou.utils.s3_models import (
     make_s3_client,
 )
@@ -63,16 +64,6 @@ def print_banner(date_to_predict: str) -> None:
     print(line)
     print(f"  Prediction Date: {date_to_predict}")
     print(line + "\n")
-
-
-def print_step_header(step_number: int, title: str) -> None:
-    """Print a compact, eye-catching step header."""
-    sep = "-" * 70
-    clock = datetime.now(ZoneInfo("UTC")).strftime("%H:%M:%S")
-    header = f" STEP {step_number} — {title} [{clock} UTC] "
-    print(sep)
-    print(header.center(len(sep)))
-    print(sep)
 
 
 def print_status(message: str, ok: bool = True) -> None:
@@ -103,7 +94,31 @@ def configure_tqdm_for_environment() -> None:
         os.environ.setdefault("TQDM_DISABLE", "1")
 
 
-def predict_nba_games(
+def slot_overview(slots: list) -> list[str]:
+    """The slots one line per schema, target and variant, with their horizons:
+    ``2_5/line_error/main: t0000 t0030 t0060 (3)``."""
+    horizons: dict[str, list[str]] = {}
+    for slot in slots:
+        key = f"{slot.schema_version}/{slot.target.value}/{slot.variant}"
+        horizons.setdefault(key, []).append(slot.horizon_label)
+    return [
+        f"{key}: {' '.join(labels)} ({len(labels)})" for key, labels in horizons.items()
+    ]
+
+
+def predict_nba_games(**kwargs) -> None:
+    """``run_prediction_pipeline`` with its log in numbered steps
+    (``nba_ou.utils.run_log``)."""
+    log = RunLog()
+    try:
+        return run_prediction_pipeline(log, **kwargs)
+    finally:
+        # An exception's traceback then prints outside the step's group.
+        log.end_group()
+
+
+def run_prediction_pipeline(
+    log: RunLog,
     normalize_total_lines: bool = True,
     normalize_spread_lines: bool = True,
     null_extreme_spread_prices: bool = True,
@@ -160,20 +175,22 @@ def predict_nba_games(
         # worth running.
         print("  No model slots enabled in [PredictionModels] ENABLED_MODELS.")
     else:
-        print("  Enabled model slots:")
-        for slot in configured_slots:
-            print(f"    - {slot.describe()}")
+        print(f"  Enabled model slots ({len(configured_slots)}):")
+        for line in slot_overview(configured_slots):
+            print(f"    - {line}")
     latest_slots = latest_input_slots(configured_slots, intermediate_input)
     print(
         f"  Intermediate input: {len(latest_slots)} slot(s) read the latest "
         "snapshot, the others their own"
     )
+    if not persist:
+        print_status("Dry run (--no-persist): no predictions are stored")
 
     # Each phase prints a [time] line as it ends, the summary their list.
     timer = PhaseTimer()
 
     # Step 1: Update the database
-    print_step_header(1, "Updating All Databases")
+    log.step("Updating All Databases")
     with timer.phase("database update"):
         season_to_update = get_season_year_from_date(date_to_predict)
         try:
@@ -193,7 +210,7 @@ def predict_nba_games(
     # Step 1b: SBR's lines must still be moving, or every prediction below is
     # made on lines frozen hours ago; Covers stands in when it is not. The
     # database update above stands either way.
-    print_step_header(1, "Checking SBR Line Feed")
+    log.step("Checking SBR Line Feed")
     with timer.phase("SBR line feed"):
         lines = check_line_feed(
             pd.Timestamp(date_to_predict).date(),
@@ -204,7 +221,7 @@ def predict_nba_games(
         )
 
     # Step 2: Fetch scheduled games, referees, injuries and odds
-    print_step_header(2, "Fetching Scheduled Games & Reports")
+    log.step("Fetching Scheduled Games & Reports")
     with timer.phase("scheduled games and reports"):
         try:
             scheduled_data = get_all_info_for_scheduled_games(
@@ -215,10 +232,7 @@ def predict_nba_games(
             )
             print_status("Fetched scheduled games, refs, injuries and odds")
             if scheduled_data["scheduled_games"].empty:
-                print_status(
-                    "⚠️ WARNING: No scheduled games found for the specified date.",
-                    ok=False,
-                )
+                log.warning("No scheduled games found for the specified date.")
                 return 0
 
         except Exception as e:
@@ -226,7 +240,6 @@ def predict_nba_games(
             raise
 
     # Step 3: Build feature DataFrame for prediction
-    print_step_header(3, "Preparing Feature DataFrame")
     # The builder produces the base schema. Each slot reads its own
     # feature_names, and newer versions only add columns, so one frame at
     # the newest version any enabled slot needs serves every slot.
@@ -252,6 +265,7 @@ def predict_nba_games(
     # intermediate rows; a build that turns cold waits for the other and
     # finishes alone (nba_ou.prediction.side_build).
     side = None
+    reason = None
     if closing_ids and wants_intermediate:
         if parallel_builds is None:
             parallel_builds = SETTINGS.parallel_builds
@@ -262,13 +276,14 @@ def predict_nba_games(
                 scheduled_data,
                 current_season=int(season_to_update),
                 label="closing rows",
+                own_label="intermediate rows",
                 **closing_kwargs,
             )
             side_started = time.perf_counter()
-            print_status("Closing rows build in a side process, beside the next step")
-        else:
-            print_status(f"Closing and intermediate rows one after the other: {reason}")
     if side is None:
+        log.step("Preparing Closing Rows")
+        if reason is not None:
+            print_status(f"Closing and intermediate rows one after the other: {reason}")
         df_to_predict, layer_inputs = timed_closing_rows(
             timer, scheduled_data, closing_ids, **closing_kwargs
         )
@@ -283,7 +298,12 @@ def predict_nba_games(
     # failure here costs only those slots, never the closing ones.
     intermediate_df = None
     if wants_intermediate:
-        print_step_header(3, "Preparing Intermediate Snapshot Rows")
+        log.step("Preparing Intermediate Snapshot Rows")
+        if side is not None:
+            print_status(
+                "The closing rows build meanwhile in a side process; its log "
+                "follows in the next step"
+            )
         try:
             with timer.phase("intermediate rows"):
                 try:
@@ -328,8 +348,9 @@ def predict_nba_games(
                 side.release_gate()
 
     if side is not None:
+        log.step("Closing Rows (side process)")
         df_to_predict, layer_inputs = side_closing_rows(
-            side, timer, scheduled_data, closing_ids, **closing_kwargs
+            side, timer, log, scheduled_data, closing_ids, **closing_kwargs
         )
         timer.record(
             "closing and intermediate rows, side by side",
@@ -372,9 +393,7 @@ def predict_nba_games(
     s3 = make_s3_client(profile=SETTINGS.s3_aws_profile, region=SETTINGS.s3_aws_region)
     prediction_time = datetime.now(ZoneInfo("Europe/Madrid"))
 
-    if not persist:
-        print_status("Dry run (--no-persist): no predictions are stored")
-
+    log.step("Cleaning Rows and Reading Models")
     # Cleaned once here, not once per slot: each slot reads its rows from it.
     with timer.phase("cleaning"):
         clean_frames = clean_prediction_frames(
@@ -388,12 +407,10 @@ def predict_nba_games(
 
     predicted: list[str] = []
     skipped: list[str] = []
-    step_number = 4
+    log.step(f"Generating Predictions ({len(configured_slots)} slots)")
     slots_started = time.perf_counter()
     for slot in configured_slots:
         label = slot.describe()
-        print_step_header(step_number, f"Generating Predictions ({label})")
-        step_number += 1
         slot_started = time.perf_counter()
         try:
             build = builds.get(slot)
@@ -424,22 +441,21 @@ def predict_nba_games(
             # No frame of this model's dataset type, or no row of its
             # horizon. The reason is printed above; a missing intermediate
             # frame is already in the failures.
-            print_status(f"No rows for {label}; skipped")
+            print(f"  - {label}: no rows; skipped")
             skipped.append(label)
             continue
 
         print_status(
-            f"Predictions generated for {label} ({len(predictions_df)} row(s))"
+            f"{label}: {len(predictions_df)} row(s), "
+            f"{time.perf_counter() - slot_started:.1f} s"
         )
         predicted.append(label)
         if rejected:
             print_status(f"Prediction store rejected {label}: {rejected}", ok=False)
             failures.append(f"{label} (prediction store): {rejected}")
-        print(f"[time] {label}: {time.perf_counter() - slot_started:.1f} s")
     timer.record(f"{len(configured_slots)} slots", time.perf_counter() - slots_started)
 
-    print_step_header(step_number, "Generating Predictions (Baselines)")
-    step_number += 1
+    log.step("Generating Predictions (Baselines)")
     if df_to_predict.empty:
         # The baselines predict the closing rows; none was built.
         print_status("No closing rows; baselines skipped")
@@ -478,8 +494,7 @@ def predict_nba_games(
                 failures.append(f"baselines: {e}")
 
     if persist:
-        print_step_header(step_number, "Storing Predictions")
-        step_number += 1
+        log.step("Storing Predictions")
         with timer.phase("storing"):
             failures += persist_prediction_run(
                 recorder,
@@ -488,7 +503,7 @@ def predict_nba_games(
                 partial=bool(failures),
             )
 
-    print_step_header(step_number, "Summary")
+    log.step("Summary", group=False)
     print(timer.summary())
     print_status(f"{len(predicted)} slot(s) predicted")
     print_status(f"{len(skipped)} slot(s) skipped", ok=not skipped)
@@ -496,7 +511,23 @@ def predict_nba_games(
         print(f"      - {label}")
     print_status(f"{len(failures)} failure(s)", ok=not failures)
     for failure in failures:
-        print(f"      - {failure}")
+        log.error(failure)
+    log.summary(
+        "\n".join(
+            [
+                f"### Predictions for {date_to_predict}",
+                "",
+                f"{len(predicted)} slot(s) predicted, {len(skipped)} skipped, "
+                f"{len(failures)} failure(s)"
+                + ("" if persist else " (dry run: nothing stored)"),
+                "",
+                *(f"- ✖ {failure}" for failure in failures),
+                *(f"- skipped: {label}" for label in skipped),
+                "",
+                timer.markdown(),
+            ]
+        )
+    )
     if failures:
         raise SystemExit(1)
 
@@ -527,7 +558,12 @@ def timed_closing_rows(
 
 
 def side_closing_rows(
-    side: SideBuild, timer: PhaseTimer, scheduled_data: dict, closing_ids, **kwargs
+    side: SideBuild,
+    timer: PhaseTimer,
+    log: RunLog,
+    scheduled_data: dict,
+    closing_ids,
+    **kwargs,
 ) -> tuple[pd.DataFrame, pd.DataFrame | None]:
     """The closing rows of the side build; built here if its process died."""
     try:
@@ -536,19 +572,24 @@ def side_closing_rows(
         print_status(f"Failed to prepare features: {e}", ok=False)
         raise
     if outcome is None:
-        print_status("Closing rows lost with the side process: built here", ok=False)
+        log.warning("Closing rows lost with the side process: built here")
         return timed_closing_rows(timer, scheduled_data, closing_ids, **kwargs)
-    timer.record("closing rows (side process)", outcome.seconds)
-    if outcome.cold_cause:
-        print_status(
-            f"Closing rows were cold ({outcome.cold_cause}): they waited "
-            f"{outcome.waited:.0f} s for the intermediate rows"
-        )
-    if side.gate.cold_cause:
-        print_status(
-            f"Intermediate rows were cold ({side.gate.cold_cause}): they waited "
-            f"{side.gate.waited:.0f} s for the closing rows"
-        )
+    timer.record("closing rows (side process)", outcome.seconds, peak=outcome.peak)
+    # A cold build computed past seasons the history memo should have held:
+    # the reason a run is slow, worth seeing on the run's page.
+    for build, cause, waited, other in (
+        ("Closing rows", outcome.cold_cause, outcome.waited, "intermediate rows"),
+        ("Intermediate rows", side.gate.cold_cause, side.gate.waited, "closing rows"),
+    ):
+        if cause:
+            log.warning(
+                f"{build} were cold ({cause}): they computed past seasons"
+                + (
+                    f", after waiting {duration(waited)} for the {other}"
+                    if waited >= 1
+                    else ""
+                )
+            )
     print_status("Feature DataFrame prepared")
     return outcome.value
 

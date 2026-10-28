@@ -500,7 +500,7 @@ class HistoryMemo:
         loaded = sum(self._sizes.values())
         print(
             f"History memo: {len(self._tables)} season tables, {loaded:,} entries"
-            + (f"; {'; '.join(self.report)}" if self.report else "")
+            + (f"; {'; '.join(_grouped(self.report))}" if self.report else "")
         )
 
     def usable(self, season) -> bool:
@@ -580,6 +580,27 @@ class HistoryMemo:
             self.backend.put(self._key(name, season, "json"), json.dumps(meta).encode())
         except Exception as exc:  # noqa: BLE001
             self.report.append(f"{name} {season}: write failed ({exc})")
+
+
+def _grouped(report: list[str]) -> list[str]:
+    """``report``'s lines with one per table and cause, its seasons listed:
+    ``"rows 2018, 2020: inputs changed"`` for ``"rows 2018: inputs changed"``
+    and ``"rows 2020: inputs changed"``. A line of another shape stays as is."""
+    seasons: dict[tuple[str, str], list[str]] = {}
+    for line in report:
+        head, sep, cause = line.partition(": ")
+        name, _, season = head.rpartition(" ")
+        if not sep or not name or not season.isdigit():
+            name, season, cause = line, "", ""
+        seasons.setdefault((name, cause), []).append(season)
+    return [
+        (
+            f"{name} {', '.join(sorted(filter(None, listed)))}: {cause}"
+            if cause
+            else name
+        )
+        for (name, cause), listed in seasons.items()
+    ]
 
 
 class _MissedTable(dict):

@@ -97,6 +97,7 @@ from nba_ou.prediction.prediction_tabpfn_client import (
 )
 from nba_ou.utils.general_utils import get_season_year_from_date
 from nba_ou.utils.phase_timer import PhaseTimer
+from nba_ou.utils.run_log import RunLog
 from nba_ou.utils.s3_models import make_s3_client
 
 #: Partitions older than this many days mean the daily refit has stopped.
@@ -105,13 +106,6 @@ DEFAULT_MAX_FRAME_AGE_DAYS = 2
 DEFAULT_TARGETS = ("line_error", "total_points")
 #: ``--line``: the dataset type of the slot TabPFN follows.
 LINES = {"closing": CLOSING_LINE, "intermediate": INTERMEDIATE_LINE}
-
-
-def print_step_header(step_number: int, title: str) -> None:
-    clock = datetime.now(ZoneInfo("UTC")).strftime("%H:%M:%S")
-    print("-" * 70)
-    print(f" STEP {step_number} — {title} [{clock} UTC] ".center(70))
-    print("-" * 70)
 
 
 def print_status(message: str, ok: bool = True) -> None:
@@ -206,7 +200,18 @@ def _rebuild_at_row_snapshot(
     return build_rows(snapshot)
 
 
-def predict_tabpfn(
+def predict_tabpfn(**kwargs) -> None:
+    """``run_tabpfn`` with its log in numbered steps (``nba_ou.utils.run_log``)."""
+    log = RunLog()
+    try:
+        return run_tabpfn(log, **kwargs)
+    finally:
+        # An exception's traceback then prints outside the step's group.
+        log.end_group()
+
+
+def run_tabpfn(
+    log: RunLog,
     *,
     targets: Sequence[str] = DEFAULT_TARGETS,
     line: str = "closing",
@@ -273,7 +278,7 @@ def predict_tabpfn(
     timer = PhaseTimer()
 
     # Step 1: everything the fit needs from S3, before any other work.
-    print_step_header(1, "Loading the Feature Spec and Training Frame")
+    log.step("Loading the Feature Spec and Training Frame")
     started = time.perf_counter()
     s3 = make_s3_client(profile=SETTINGS.s3_aws_profile, region=SETTINGS.s3_aws_region)
     bucket = SETTINGS.s3_bucket
@@ -359,7 +364,7 @@ def predict_tabpfn(
 
     # Step 2: tonight's rows, with the lines of this moment.
     if update_db:
-        print_step_header(2, "Updating All Databases")
+        log.step("Updating All Databases")
         season_to_update = int(get_season_year_from_date(date_to_predict))
         with timer.phase("database update"):
             update_all_databases(
@@ -371,7 +376,7 @@ def predict_tabpfn(
             )
         print_status("Databases updated")
 
-    print_step_header(2, "Checking SBR Line Feed")
+    log.step("Checking SBR Line Feed")
     # Covers stands in when SBR is frozen or empty (prediction.line_source).
     with timer.phase("SBR line feed"):
         lines = check_line_feed(
@@ -381,7 +386,7 @@ def predict_tabpfn(
             report=print_status,
         )
 
-    print_step_header(2, "Fetching Scheduled Games & Reports")
+    log.step("Fetching Scheduled Games & Reports")
     with timer.phase("scheduled games and reports"):
         scheduled_data = get_all_info_for_scheduled_games(
             date_to_predict=date_to_predict,
@@ -415,7 +420,7 @@ def predict_tabpfn(
                 "No game has both injury reports filed yet; nothing to predict."
             )
             return
-        print_step_header(2, "Preparing Tonight's Closing Rows")
+        log.step("Preparing Tonight's Closing Rows")
         # As in the daily predictor, build the newest schema once; earlier
         # targets select their own features from those rows.
         frame_version = newest_version(spec.identity.schema_version for spec in specs)
@@ -440,7 +445,7 @@ def predict_tabpfn(
                 ok=False,
             )
     else:
-        print_step_header(2, f"Preparing Tonight's T-{horizon} Rows")
+        log.step(f"Preparing Tonight's T-{horizon} Rows")
         if cutoff is not None:
             # Current reports were synchronized above. For a queued snapshot,
             # read archived roster observations at its cutoff rather than
@@ -487,6 +492,7 @@ def predict_tabpfn(
         recorder.add_frame(
             INTERMEDIATE_LINE, latest_quotes, version=BASE_SCHEMA_VERSION
         )
+    predicted: list[str] = []
     passthrough = () if dataset_type == CLOSING_LINE else PASSTHROUGH_COLUMNS
     # Cleaned once for every target, not once per target.
     clean_rows = clean_prediction_frames(
@@ -497,7 +503,7 @@ def predict_tabpfn(
             f"{spec.identity.schema_version}/{target}/{format_horizon(horizon)}/"
             f"{model_variant(model_version)}"
         )
-        print_step_header(3, f"Fitting and Predicting ({label})")
+        log.step(f"Fitting and Predicting ({label})")
         try:
             with timer.phase(f"{target} fit"):
                 model = fit_tabpfn(training_set, model_version=model_version)
@@ -514,6 +520,7 @@ def predict_tabpfn(
             if predictions.empty:
                 print_status(f"{target}: no game survived the spec's NaN budget.")
             else:
+                predicted.append(label)
                 value_column = {
                     "line_error": "PRED_LINE_ERROR",
                     "total_points": "PRED_TOTAL_POINTS",
@@ -542,14 +549,33 @@ def predict_tabpfn(
     if not persist:
         print_status("Dry run (--no-persist): nothing stored")
     else:
-        print_step_header(4, "Storing Predictions")
+        log.step("Storing Predictions")
         with timer.phase("storing"):
             failures += persist_prediction_run(
                 recorder, s3_client=s3, bucket=bucket, partial=bool(failures)
             )
+    log.step("Summary", group=False)
     print(timer.summary())
+    print_status(f"{len(predicted)} of {len(targets)} target(s) predicted")
+    print_status(f"{len(failures)} failure(s)", ok=not failures)
     for failure in failures:
-        print_status(failure, ok=False)
+        log.error(failure)
+    log.summary(
+        "\n".join(
+            [
+                f"### TabPFN {model_version} for {date_to_predict}, "
+                f"{format_horizon(horizon)}",
+                "",
+                f"{len(predicted)} of {len(targets)} target(s) predicted, "
+                f"{len(failures)} failure(s)"
+                + ("" if persist else " (dry run: nothing stored)"),
+                "",
+                *(f"- ✖ {failure}" for failure in failures),
+                "",
+                timer.markdown(),
+            ]
+        )
+    )
     if failures:
         raise SystemExit(1)
 

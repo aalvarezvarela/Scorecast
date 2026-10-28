@@ -45,12 +45,23 @@ class PhaseTimer:
         finally:
             self.record(label, time.perf_counter() - started, failed=failed)
 
-    def record(self, label: str, seconds: float, *, failed: bool = False) -> None:
-        """A phase timed by the caller, as ``phase`` records its own."""
+    def record(
+        self,
+        label: str,
+        seconds: float,
+        *,
+        failed: bool = False,
+        peak: str | None = None,
+    ) -> None:
+        """A phase timed by the caller, as ``phase`` records its own.
+
+        ``peak`` is the memory peak to print in place of this process's (a
+        phase run in another process).
+        """
         self.phases.append((label, seconds, failed))
         print(
             f"[time] {label}: {duration(seconds)}"
-            f"{' (did not finish)' if failed else ''}; peak RSS {peak_rss()}",
+            f"{' (did not finish)' if failed else ''}; peak RSS {peak or peak_rss()}",
             flush=True,
         )
 
@@ -65,5 +76,19 @@ class PhaseTimer:
         lines.append(
             f"  {'total':<{width}}  {duration(time.perf_counter() - self.started)}"
             f"; peak RSS {peak_rss()}"
+        )
+        return "\n".join(lines)
+
+    def markdown(self) -> str:
+        """``summary`` as a Markdown table (a GitHub Actions job summary)."""
+        lines = ["| Phase | Wall clock |", "| --- | ---: |"]
+        for label, seconds, failed in self.phases:
+            lines.append(
+                f"| {label}{' (did not finish)' if failed else ''} "
+                f"| {duration(seconds)} |"
+            )
+        lines.append(
+            f"| **total** (peak RSS {peak_rss()}) "
+            f"| **{duration(time.perf_counter() - self.started)}** |"
         )
         return "\n".join(lines)

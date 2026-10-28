@@ -222,6 +222,9 @@ results. In short:
   `REPORT_REQUIRED_MAX_HORIZON` (300) or shorter
   (`prediction/report_requirement.py`). A failing slot does not stop the
   others; the run exits 1 at the end. `--no-persist` predicts without storing.
+  The predictor and TabPFN log numbered steps (`utils/run_log.py`): in GitHub
+  Actions each step is a collapsible group, warnings and failures are
+  annotations, and the timings go to the job summary.
 - Scheduling: cron-job.org dispatches the workflows. The two daily times
   (update + retrain, booking of the day's runs) are `[Schedule]` in
   `config.ini`, applied with `scripts/cronjobs/setup_cronjobs.py --apply`. The
