@@ -500,10 +500,17 @@ def _require_aware(as_of: datetime) -> None:
 
 
 #: Count and row hash of everything the snapshot reads see, per season: the
-#: spans and filings of its games, the games, and the reports published in it
-#: (by publication season, 1 September to 31 August). The dimensions the reads
-#: join come with no season.
+#: spans and filings of its games, the games, the reports published in it (by
+#: publication season, 1 September to 31 August) and the dimension rows its
+#: spans, filings and games join. Only the rows a season joins: ``ir_reason``
+#: gains a row with almost every new report, and while the whole dimension
+#: tables keyed every season, each new reason rebuilt every season's report
+#: states (~1:25 on the runner, ``docs/serving/predictor_speedup_plan.md`` P4).
 _SEASON_FINGERPRINTS = f"""
+    WITH span_keys AS (
+        SELECT DISTINCT g.season_year, s.team_id, s.reason_id, s.status_id
+        FROM {SCHEMA}.ir_status_span s JOIN {SCHEMA}.ir_game g USING (game_id)
+    )
     SELECT g.season_year::int AS season, 'status_span' AS part, count(*) AS n,
            sum(hashtextextended(s::text, 0))::text AS h
     FROM {SCHEMA}.ir_status_span s JOIN {SCHEMA}.ir_game g USING (game_id)
@@ -522,13 +529,26 @@ _SEASON_FINGERPRINTS = f"""
            count(*), sum(hashtextextended(r::text, 0))::text
     FROM {SCHEMA}.ir_report r GROUP BY 1
     UNION ALL
-    SELECT NULL, 'dimensions', count(*), sum(hashtextextended(d::text, 0))::text
+    SELECT season_year::int, 'dimensions', count(*),
+           sum(hashtextextended(d, 0))::text
     FROM (
-        SELECT t::text AS d FROM {SCHEMA}.ir_team t
-        UNION ALL SELECT r::text FROM {SCHEMA}.ir_reason r
-        UNION ALL SELECT c::text FROM {SCHEMA}.ir_reason_category c
-        UNION ALL SELECT s::text FROM {SCHEMA}.ir_status s
+        SELECT k.season_year, t::text AS d
+        FROM span_keys k JOIN {SCHEMA}.ir_team t ON t.team_id = k.team_id
+        UNION SELECT k.season_year, r::text
+        FROM span_keys k JOIN {SCHEMA}.ir_reason r ON r.reason_id = k.reason_id
+        UNION SELECT k.season_year, c::text
+        FROM span_keys k JOIN {SCHEMA}.ir_reason r ON r.reason_id = k.reason_id
+        JOIN {SCHEMA}.ir_reason_category c ON c.category_id = r.category_id
+        UNION SELECT k.season_year, st::text
+        FROM span_keys k JOIN {SCHEMA}.ir_status st ON st.status_id = k.status_id
+        UNION SELECT g.season_year, t::text
+        FROM {SCHEMA}.ir_filing_span f JOIN {SCHEMA}.ir_game g USING (game_id)
+        JOIN {SCHEMA}.ir_team t ON t.team_id = f.team_id
+        UNION SELECT g.season_year, t::text
+        FROM {SCHEMA}.ir_game g
+        JOIN {SCHEMA}.ir_team t ON t.tricode IN (g.team_home, g.team_away)
     ) dims
+    GROUP BY 1
 """
 
 
@@ -539,10 +559,9 @@ def report_season_fingerprints(conn: psycopg.Connection) -> dict[int, str]:
     import hashlib
 
     frame = pd.read_sql_query(_SEASON_FINGERPRINTS, conn)
-    dims = frame.loc[frame["season"].isna(), ["n", "h"]].to_numpy().tolist()
     parts = frame.dropna(subset=["season"]).astype({"season": int})
     out = {}
-    chain = hashlib.sha256(repr(dims).encode()).hexdigest()
+    chain = ""
     for season in sorted(parts["season"].unique()):
         rows = parts[parts["season"] == season].sort_values("part")
         chain = hashlib.sha256(

@@ -9,9 +9,15 @@ from nba_ou.create_training_data import history_memo as memo
 
 def _inputs(seed: int = 0):
     rng = np.random.default_rng(seed)
-    game_ids = [f"002{s % 100:02d}{g:05d}" for s in (2021, 2022, 2023) for g in range(40)]
-    games = pd.DataFrame({"GAME_ID": game_ids, "PTS": rng.integers(80, 130, len(game_ids))})
-    odds = pd.DataFrame({"game_id": game_ids, "line": rng.normal(220, 5, len(game_ids))})
+    game_ids = [
+        f"002{s % 100:02d}{g:05d}" for s in (2021, 2022, 2023) for g in range(40)
+    ]
+    games = pd.DataFrame(
+        {"GAME_ID": game_ids, "PTS": rng.integers(80, 130, len(game_ids))}
+    )
+    odds = pd.DataFrame(
+        {"game_id": game_ids, "line": rng.normal(220, 5, len(game_ids))}
+    )
     return {"games": (games, "GAME_ID"), "odds": (odds, "game_id")}
 
 
@@ -35,7 +41,9 @@ def test_digests_do_not_see_later_seasons():
     games, _ = inputs["games"]
     extra = pd.DataFrame({"GAME_ID": ["0022400001"], "PTS": [100]})
     grown = pd.concat([games, extra], ignore_index=True)
-    after = memo.season_input_digests({**inputs, "games": (grown, "GAME_ID")}, [2021, 2022])
+    after = memo.season_input_digests(
+        {**inputs, "games": (grown, "GAME_ID")}, [2021, 2022]
+    )
     assert after == before
 
 
@@ -147,6 +155,39 @@ def test_prefetched_tables_equal_loaded_ones(tmp_path):
     assert reader.table("other", 2021) == {}
 
 
+def test_computing_a_season_is_reported_to_the_warm_gate(tmp_path, monkeypatch):
+    """A refused entry is reported as it loads, a table stored nowhere when it
+    gains its first entry, and a table that stays empty never: it is no work."""
+    backend = memo._LocalBackend(tmp_path)
+    digests = memo.season_input_digests(_inputs(), [2020, 2021, 2022, 2023])
+    writer = memo.HistoryMemo(backend, digests, max_season=2023, code="c")
+    for season in (2020, 2021):
+        writer.table("rows", season)[season] = {"value": 1.0}
+    writer.flush()
+    reported = []
+    monkeypatch.setattr(
+        memo.warm_gate, "cold", lambda name, season: reported.append((name, season))
+    )
+    changed = {**digests, 2021: "other"}
+    reader = memo.HistoryMemo(backend, changed, max_season=2023, code="c")
+    reader.prefetch(["rows"])
+    assert reader.table("rows", 2020) == {2020: {"value": 1.0}}
+    reader.table("rows", 2021)  # refused: inputs changed
+    assert reported == [("rows", 2021)]
+    empty = reader.table("rows", 2022)
+    reader.table("rows", 2023)  # stays empty
+    assert reported == [("rows", 2021)]
+    empty.update({})
+    assert reported == [("rows", 2021)]
+    empty["k"] = 1
+    empty["k2"] = 2
+    assert reported == [("rows", 2021), ("rows", 2022)]
+    reader.flush()
+    stored = memo.HistoryMemo(backend, changed, max_season=2023, code="c")
+    table = stored.table("rows", 2022)
+    assert type(table) is dict and table == {"k": 1, "k2": 2}
+
+
 def _package(tmp_path, files: dict[str, str]):
     """A throwaway package ``pkg`` with ``files`` (relative path -> source)."""
     root = tmp_path / "pkg"
@@ -226,9 +267,7 @@ def test_closure_rejects_an_unknown_root(tmp_path):
 
 
 def _key(root, *roots, settings="s"):
-    return memo._closure_key(
-        roots, package_root=root, package="pkg", settings=settings
-    )
+    return memo._closure_key(roots, package_root=root, package="pkg", settings=settings)
 
 
 def test_closure_key_sees_its_closure_only(tmp_path):
@@ -338,3 +377,62 @@ def test_rebuild_reads_nothing_and_rewrites(tmp_path, monkeypatch):
     assert memo.HistoryMemo(backend, digests, 2021, code="c").table("rows", 2021) == {
         "k": "new"
     }
+
+
+def test_parts_are_each_season_s_own_input_digests():
+    parts = {}
+    digests = memo.season_input_digests(_inputs(), [2021, 2022], parts=parts)
+    assert digests == memo.season_input_digests(_inputs(), [2021, 2022])
+    assert sorted(parts) == [2021, 2022]
+    assert sorted(parts[2021]) == ["games", "odds"]
+    # Not chained: a season's parts depend on its own rows only.
+    assert parts[2021]["games"] != parts[2022]["games"]
+
+
+def _written(backend, inputs, seasons):
+    parts = {}
+    digests = memo.season_input_digests(inputs, seasons, parts=parts)
+    writer = memo.HistoryMemo(backend, digests, max(seasons), code="c", parts=parts)
+    for season in seasons:
+        writer.table("rows", season)["k"] = season
+    writer.flush()
+
+
+def _read(backend, inputs, seasons):
+    parts = {}
+    digests = memo.season_input_digests(inputs, seasons, parts=parts)
+    reader = memo.HistoryMemo(backend, digests, max(seasons), code="c", parts=parts)
+    tables = {season: reader.table("rows", season) for season in seasons}
+    return tables, reader.report
+
+
+def test_a_miss_names_the_inputs_that_changed(tmp_path):
+    backend = memo._LocalBackend(tmp_path)
+    _written(backend, _inputs(), [2021, 2022, 2023])
+    games, _ = _inputs()["games"]
+    changed = games.copy()
+    changed.loc[changed["GAME_ID"].str[3:5] == "22", "PTS"] += 1
+
+    tables, report = _read(
+        backend, {**_inputs(), "games": (changed, "GAME_ID")}, [2021, 2022, 2023]
+    )
+    assert tables[2021] == {"k": 2021}
+    assert tables[2022] == {} and tables[2023] == {}
+    assert sorted(report) == [
+        "rows 2022: inputs changed (games)",
+        "rows 2023: inputs changed (an earlier season)",
+    ]
+
+
+def test_an_entry_stored_without_parts_misses_as_before(tmp_path):
+    backend = memo._LocalBackend(tmp_path)
+    digests = memo.season_input_digests(_inputs(), [2021])
+    writer = memo.HistoryMemo(backend, digests, 2021, code="c")
+    writer.table("rows", 2021)["k"] = 1
+    writer.flush()
+
+    games, _ = _inputs()["games"]
+    _, report = _read(
+        backend, {**_inputs(), "games": (games.iloc[1:], "GAME_ID")}, [2021]
+    )
+    assert report == ["rows 2021: inputs changed"]

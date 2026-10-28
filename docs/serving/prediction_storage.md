@@ -1,7 +1,9 @@
 # Prediction storage: Aiven tables + S3 run archive
 
-Status: **Implemented** (checked 2026-10-22) — merged in PR #49; the Aiven
-schema was created on 2026-10-21 (see "Implementation status").
+Status: **Implemented** (checked 2026-10-27) — merged in PR #49; the Aiven
+schema was created on 2026-10-21 (see "Implementation status"). Since
+2026-10-27 (`perf/prediction-loop`) the store is the only place predictions
+are written: the parallel write to the old Supabase table is removed.
 
 Updated 2026-10-21. It replaces the 2026-10-17 draft (one wide fact table with
 results and settlement columns).
@@ -9,7 +11,8 @@ results and settlement columns).
 ## Goals
 
 1. Keep every model output needed for later analysis in a small, queryable
-   **Aiven** store, independent of the old Supabase table (which stays as is;
+   **Aiven** store, independent of the old Supabase table (which keeps the
+   predictions of 2026-03-06 to 2026-10-27 and is no longer written;
    importing it is out of scope).
 2. Archive the exact inputs of every run in **S3**, so any prediction can be
    reproduced, re-scored or explained later.
@@ -562,15 +565,18 @@ Implemented (branch `feat/prediction-storage-aiven`, 2026-10-21):
 | Tests (the writer ones need `NBA_OU_TEST_PG_DSN`) | `tests/test_prediction_store.py` |
 
 - SHAP is removed from `prediction.py` and from the predictor's requirements
-  (the old Supabase columns are written null).
+  (the old Supabase columns were written null until that table stopped).
 - Each model's output carries `PREDICTED_AT_UTC` (taken right after its
   inference), `MODEL_DATASET_TYPE` and `MODEL_BUILD_PREFIX`.
 - The old per-model S3 snapshots are replaced by the v2 archive. The old
-  Supabase table is still written, in parallel, until it is removed
-  (rollout 3) -- but no longer from inside the predictor: the scripts call
-  it separately after the store has the output, so a Supabase failure is
-  reported (the run exits non-zero) without costing the store anything, and
-  it does not make the store's run `partial`.
+  Supabase table was written in parallel from 2026-10-26 (first Aiven run)
+  to 2026-10-27; that write is removed (rollout 3), from the scripts and
+  from `load_and_predict_model_for_nba_games` and the baselines, which only
+  return their output now. It cost ~2.5 s per slot, two thirds of the
+  prediction loop (`predictor_speedup_plan.md`, D4). The Supabase readers
+  (`postgre_db/predictions/update/`, used by Streamlit), the writer
+  `upload_predictions_to_postgre` and the "Update finished matches" step stay
+  until the dashboard reads this store (`predictor_speedup_plan.md`, P7).
 - A storage failure does not lose the run's other output: it is reported
   with the slot failures and the run exits non-zero.
 - Baselines: the historical average's fit id is `1.0-<last history date>`,
@@ -585,20 +591,20 @@ Not done yet:
 
 - Factoring the feature-matrix preparation into one function shared with an
   offline SHAP tool (only needed when SHAP is first recomputed).
-- `TIME_TO_MATCH_MINUTES` still zero-fills a missing `GAME_TIME`, but only in
-  the old Supabase rows; the new store computes its own time to tip and
-  refuses a game without a tip-off.
-- Deleting the (now unused by the scripts) Supabase upload path inside
-  `load_and_predict_model_for_nba_games` and the scripts' parallel write,
-  after the parallel week.
+- `TIME_TO_MATCH_MINUTES` still zero-fills a missing `GAME_TIME` in the
+  output frame (the old Supabase column); the new store computes its own
+  time to tip and refuses a game without a tip-off.
+- Moving Streamlit to this store, then deleting the Supabase writer and
+  readers (`predictor_speedup_plan.md`, P7).
 
 ## Rollout
 
 1. ~~Review the DDL (`create_prediction_store.py --print`) and create it on
    Aiven.~~ Done 2026-10-21.
 2. Dry-run one game day (`--no-persist`) for both workflows.
-3. Turn on in both workflows; keep the old Supabase write running in
-   parallel for a week, then remove it.
+3. ~~Turn on in both workflows; keep the old Supabase write running in
+   parallel for a week, then remove it.~~ On since 2026-10-26; the Supabase
+   write was removed on 2026-10-27, after a day and a half in parallel.
 4. Schedule the finished-games job (its workflow is dispatch-only today).
 5. Recompute SHAP offline for a handful of stored predictions to confirm the
    archive is sufficient (prediction values must match).

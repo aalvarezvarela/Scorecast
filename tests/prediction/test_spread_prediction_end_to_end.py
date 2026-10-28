@@ -5,9 +5,6 @@ places in this function assumed the totals market: the mandatory-line check,
 the summary column list, the SHAP confidence margin and the final dropna. Each
 would have raised on the first spread model to reach production, and none was
 visible from the target-resolution unit tests.
-
-The Postgres upload is monkeypatched out -- what is under test is the frame
-handed to it.
 """
 
 from datetime import datetime
@@ -22,6 +19,7 @@ from nba_ou.prediction.prediction import (
     PREDICTION_TARGET_SPREAD_ERROR,
     PREDICTION_TARGET_TOTAL_POINTS,
     _prepare_required_features_for_prediction,
+    clean_prediction_frame,
     load_and_predict_model_for_nba_games,
 )
 from xgboost import XGBRegressor
@@ -34,15 +32,6 @@ ODDS_TOTAL_COL = "ODDS_TOTAL_LINE_bet365"
 # Timezone-aware, as every real caller passes: the time-to-tip subtraction is
 # against a tz-aware game time.
 PREDICTION_AT = datetime(2026, 9, 21, 18, 0, tzinfo=ZoneInfo("Europe/Madrid"))
-
-
-@pytest.fixture
-def captured_uploads(monkeypatch):
-    uploads = []
-    monkeypatch.setattr(
-        prediction_module, "upload_predictions_to_postgre", uploads.append
-    )
-    return uploads
 
 
 def _model(seed: int = 0) -> XGBRegressor:
@@ -87,7 +76,7 @@ def _predict(target, **kwargs):
     )
 
 
-def test_a_spread_model_produces_a_spread_residual_and_a_side(captured_uploads):
+def test_a_spread_model_produces_a_spread_residual_and_a_side():
     result = _predict(PREDICTION_TARGET_SPREAD_ERROR)
 
     assert not result.empty
@@ -98,7 +87,7 @@ def test_a_spread_model_produces_a_spread_residual_and_a_side(captured_uploads):
     assert (result["PREDICTION_VALUE_TYPE"] == "SPREAD_ERROR").all()
 
 
-def test_the_predicted_margin_is_the_line_plus_the_residual(captured_uploads):
+def test_the_predicted_margin_is_the_line_plus_the_residual():
     result = _predict(PREDICTION_TARGET_SPREAD_ERROR)
     expected = result["SPREAD_LINE_AT_PREDICTION"] + result["PRED_SPREAD_ERROR"]
     pd.testing.assert_series_equal(
@@ -131,9 +120,9 @@ def test_the_mandatory_line_check_still_fires_when_one_is_named():
         )
 
 
-def test_slot_identity_reaches_the_database_row(captured_uploads):
-    """The upload happens inside this function, so columns attached to the
-    RETURNED frame afterwards would never be stored."""
+def test_slot_identity_reaches_the_output_rows():
+    """Which slot, spec and build produced each row: what the prediction
+    store's recorder reads."""
     identity = {
         "MODEL_TARGET": "spread_error",
         "MODEL_HORIZON_MINUTES": 0,
@@ -142,16 +131,14 @@ def test_slot_identity_reaches_the_database_row(captured_uploads):
         "SPEC_ID": "a3f9c21d4b0e",
         "FIT_ID": "20260921T154203Z-a3f9c21d",
     }
-    _predict(PREDICTION_TARGET_SPREAD_ERROR, extra_summary_columns=identity)
+    result = _predict(PREDICTION_TARGET_SPREAD_ERROR, extra_summary_columns=identity)
 
-    assert len(captured_uploads) == 1
-    uploaded = captured_uploads[0]
     for column, value in identity.items():
-        assert column in uploaded.columns, column
-        assert (uploaded[column] == value).all(), column
+        assert column in result.columns, column
+        assert (result[column] == value).all(), column
 
 
-def test_a_line_error_model_is_unaffected_by_the_spread_branches(captured_uploads):
+def test_a_line_error_model_is_unaffected_by_the_spread_branches():
     result = _predict(PREDICTION_TARGET_LINE_ERROR)
     assert set(result["PRED_PICK"]).issubset({"OVER", "UNDER", "PUSH"})
     assert (result["PREDICTION_VALUE_TYPE"] == "DIFF_FROM_LINE").all()
@@ -170,9 +157,7 @@ def test_a_line_error_model_is_unaffected_by_the_spread_branches(captured_upload
     "missing_feature",
     ["REF_CREW_FTA_TENDENCY_BEFORE", "N_REPORT_OUT_PLAYERS_BEFORE_TEAM_HOME"],
 )
-def test_predictions_continue_with_nan_live_features(
-    captured_uploads, target, missing_feature
-):
+def test_predictions_continue_with_nan_live_features(target, missing_feature):
     features = [missing_feature, "FEAT_B"]
     training = _frame(32).rename(columns={"FEAT_A": missing_feature})
     model = XGBRegressor(n_estimators=6, max_depth=2, verbosity=0)
@@ -194,14 +179,11 @@ def test_predictions_continue_with_nan_live_features(
     assert len(result) == len(frame)
     assert result.NA_COLUMNS_COUNT.eq(1).all()
     assert result.NA_COLUMNS_NAMES.eq(missing_feature).all()
-    assert len(captured_uploads[0]) == len(frame)
 
 
-def test_snapshot_marks_reach_the_output_and_a_dry_run_stores_nothing(
-    captured_uploads,
-):
+def test_snapshot_marks_reach_the_output():
     """An intermediate row's snapshot time and passed flag survive cleaning
-    into the summary; ``persist=False`` returns it without uploading."""
+    into the summary."""
     frame = _frame()
     snapshot_ts = pd.Timestamp("2026-09-21 22:30", tz="UTC")
     frame["SNAPSHOT_TS_UTC"] = snapshot_ts
@@ -216,16 +198,14 @@ def test_snapshot_marks_reach_the_output_and_a_dry_run_stores_nothing(
         prediction_target=PREDICTION_TARGET_LINE_ERROR,
         prediction_datetime=PREDICTION_AT,
         passthrough_columns=("SNAPSHOT_TS_UTC", "SNAPSHOT_PASSED", "NOT_THERE"),
-        persist=False,
     )
 
-    assert captured_uploads == []
     assert (result["SNAPSHOT_TS_UTC"] == snapshot_ts).all()
     assert result["SNAPSHOT_PASSED"].tolist() == [True, False] * 3
     assert "NOT_THERE" not in result.columns
 
 
-def test_a_row_over_the_training_nan_limit_is_not_predicted(captured_uploads):
+def test_a_row_over_the_training_nan_limit_is_not_predicted():
     """The spec's max_na_per_row, counted over the model's features."""
     frame = _frame()
     frame.loc[frame.index[0], FEATURES] = np.nan
@@ -237,7 +217,6 @@ def test_a_row_over_the_training_nan_limit_is_not_predicted(captured_uploads):
         required_features=FEATURES,
         prediction_target=PREDICTION_TARGET_LINE_ERROR,
         prediction_datetime=PREDICTION_AT,
-        persist=False,
     )
 
     limited = load_and_predict_model_for_nba_games(df=frame, max_na_per_row=1, **kwargs)
@@ -252,3 +231,57 @@ def test_a_row_over_the_training_nan_limit_is_not_predicted(captured_uploads):
         df=frame.iloc[:1], max_na_per_row=0, **kwargs
     )
     assert nothing_left.empty
+
+
+def test_rows_of_the_frame_cleaned_once_predict_as_when_cleaned_alone():
+    """What lets the daily job clean each frame once for its 51 slots."""
+    frame = _frame()
+    # One row cleaning drops (no totals line), one display column it drops.
+    frame.loc[frame.index[2], ODDS_TOTAL_COL] = np.nan
+    frame["DISPLAY_NOTE"] = "text"
+    rows = frame.index[1:5]
+    kwargs = dict(
+        regressor=_model(),
+        model_name="line_error_t0000_main_2_5_21_09_26",
+        model_type="line_error_t0000",
+        model_version="21_09_26",
+        required_features=FEATURES,
+        prediction_target=PREDICTION_TARGET_LINE_ERROR,
+        prediction_datetime=PREDICTION_AT,
+    )
+
+    alone = load_and_predict_model_for_nba_games(df=frame.loc[rows], **kwargs)
+    clean = clean_prediction_frame(frame)
+    once = load_and_predict_model_for_nba_games(
+        df=clean.loc[rows[rows.isin(clean.index)]], cleaned=True, **kwargs
+    )
+
+    assert len(once) == 3
+    pd.testing.assert_frame_equal(
+        once.drop(columns="PREDICTED_AT_UTC"), alone.drop(columns="PREDICTED_AT_UTC")
+    )
+
+
+def test_an_xgboost_model_reads_an_array_with_the_dataframe_s_predictions():
+    rng = np.random.default_rng(3)
+    X = pd.DataFrame(
+        {
+            "FEAT_A": rng.normal(size=40),
+            "FEAT_COUNT": rng.integers(0, 9, size=40),
+            "FEAT_FLAG": rng.integers(0, 2, size=40).astype(bool),
+        }
+    )
+    X.loc[::5, "FEAT_A"] = np.nan
+    model = XGBRegressor(n_estimators=8, max_depth=3, verbosity=0)
+    model.fit(X, X["FEAT_A"].fillna(0) + X["FEAT_COUNT"] - X["FEAT_FLAG"])
+
+    np.testing.assert_array_equal(
+        prediction_module._predict(model, X), model.predict(X)
+    )
+
+
+def test_features_in_another_order_than_the_booster_s_raise():
+    """An array carries no names: the order is checked before it is built."""
+    frame = _frame()
+    with pytest.raises(ValueError, match="feature_names mismatch"):
+        prediction_module._predict(_model(), frame[FEATURES[::-1]])

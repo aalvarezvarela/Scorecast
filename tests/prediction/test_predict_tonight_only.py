@@ -12,7 +12,6 @@ from types import SimpleNamespace
 import numpy as np
 import pandas as pd
 import pytest
-from nba_ou.prediction import baseline_predictions
 from nba_ou.prediction.baseline_predictions import (
     HISTORICAL_AVERAGE_LINE_ERROR_BASELINE_MODEL_NAME,
     baseline_history_window,
@@ -118,19 +117,17 @@ def test_baselines_read_history_from_the_layer_inputs(monkeypatch):
 
     monkeypatch.setattr(job, "create_df_to_predict", build)
     monkeypatch.setattr(job, "make_s3_client", lambda **_: object())
+    # Every build is read in the slot's turn, by the stubbed predictor.
+    monkeypatch.setattr(job, "read_slot_builds", lambda **_: {})
     monkeypatch.setattr(job, "PredictionRunRecorder", _NullRecorder)
-    monkeypatch.setattr(job, "persist_prediction_run", lambda *_, **__: [])
-    uploaded = {}
+    stored = {}
 
-    def upload(predictions):
-        uploaded[predictions["MODEL_NAME"].iloc[0]] = predictions
+    def persist(recorder, **_):
+        for predictions in recorder.outputs:
+            stored[predictions["MODEL_NAME"].iloc[0]] = predictions
+        return []
 
-    monkeypatch.setattr(job, "upload_predictions_to_postgre", upload)
-    monkeypatch.setattr(
-        baseline_predictions,
-        "upload_predictions_to_postgre",
-        lambda df: pytest.fail("baselines stored from inside the predictor"),
-    )
+    monkeypatch.setattr(job, "persist_prediction_run", persist)
 
     class _Now:
         @staticmethod
@@ -141,7 +138,7 @@ def test_baselines_read_history_from_the_layer_inputs(monkeypatch):
     job.predict_nba_games()
 
     assert built["target_game_ids"] == ["g5"]
-    average = uploaded[HISTORICAL_AVERAGE_LINE_ERROR_BASELINE_MODEL_NAME]
+    average = stored[HISTORICAL_AVERAGE_LINE_ERROR_BASELINE_MODEL_NAME]
     assert average["PRED_TOTAL_POINTS"].tolist() == [
         np.mean([210.0, 220.0, 230.0, 240.0])
     ]
@@ -191,26 +188,17 @@ def test_a_failing_slot_does_not_stop_the_others(monkeypatch, capsys):
         job, "create_df_to_predict", lambda **_: (tonight.copy(), _history())
     )
     monkeypatch.setattr(job, "make_s3_client", lambda **_: object())
+    # Every build is read in the slot's turn, by the stubbed predictor.
+    monkeypatch.setattr(job, "read_slot_builds", lambda **_: {})
     monkeypatch.setattr(job, "PredictionRunRecorder", _NullRecorder)
     monkeypatch.setattr(
         job,
         "persist_prediction_run",
         lambda *_, **__: pytest.fail("a dry run stored predictions"),
     )
-    monkeypatch.setattr(
-        job,
-        "upload_predictions_to_postgre",
-        lambda df: pytest.fail("a dry run stored predictions in Supabase"),
-    )
-    monkeypatch.setattr(
-        baseline_predictions,
-        "upload_predictions_to_postgre",
-        lambda df: pytest.fail("a dry run stored baselines"),
-    )
     served = []
 
-    def serve(*, slot, persist, **_):
-        assert persist is False
+    def serve(*, slot, **_):
         served.append(slot.target)
         if slot.target == "line_error":
             raise RuntimeError("booster unreadable")
@@ -235,11 +223,9 @@ def test_a_failing_slot_does_not_stop_the_others(monkeypatch, capsys):
     assert "Baseline predictions generated" in out
 
 
-def test_a_failing_supabase_write_does_not_cost_the_prediction_store(
-    monkeypatch, capsys
-):
-    """The old table and the store are written independently: a Supabase
-    failure is reported, and the store still gets every slot's output."""
+def test_a_run_stores_every_slot_and_baseline_in_the_prediction_store(monkeypatch):
+    """The prediction store (Aiven and its S3 archive) is the only place a run
+    writes predictions: it gets the slot and both baselines, in one run."""
     from nba_ou.modeling.registry_paths import ModelSlot
 
     tonight = pd.DataFrame(
@@ -283,19 +269,14 @@ def test_a_failing_supabase_write_does_not_cost_the_prediction_store(
         job, "create_df_to_predict", lambda **_: (tonight.copy(), _history())
     )
     monkeypatch.setattr(job, "make_s3_client", lambda **_: object())
+    # Every build is read in the slot's turn, by the stubbed predictor.
+    monkeypatch.setattr(job, "read_slot_builds", lambda **_: {})
     monkeypatch.setattr(
         job,
         "load_registry_model_and_predict",
-        lambda *, persist, **_: pd.DataFrame(
-            {"GAME_ID": ["g5"], "MODEL_NAME": ["m"], "persisted_inside": [persist]}
-        ),
+        lambda **_: pd.DataFrame({"GAME_ID": ["g5"], "MODEL_NAME": ["m"]}),
     )
     monkeypatch.setattr(job, "PredictionRunRecorder", _NullRecorder)
-
-    def supabase_down(predictions):
-        raise ConnectionError("supabase down")
-
-    monkeypatch.setattr(job, "upload_predictions_to_postgre", supabase_down)
     stored = {}
 
     def persist(recorder, *, partial, **_):
@@ -311,17 +292,10 @@ def test_a_failing_supabase_write_does_not_cost_the_prediction_store(
             return pd.Timestamp("2025-11-03 12:00", tz=tz).to_pydatetime()
 
     monkeypatch.setattr(job, "datetime", _Now)
-    with pytest.raises(SystemExit) as exit_info:
-        job.predict_nba_games()
+    job.predict_nba_games()
 
-    assert exit_info.value.code == 1
-    # The slot and both baselines reached the store, the slot without having
-    # been written to Supabase from inside the predictor.
     assert len(stored["outputs"]) == 3
-    assert stored["outputs"][0]["persisted_inside"].tolist() == [False]
-    # Supabase is not the store: its failure does not make the run partial.
     assert stored["partial"] is False
-    assert "supabase down" in capsys.readouterr().out
 
 
 def test_no_filed_report_skips_the_closing_rows_not_the_run(monkeypatch, capsys):
@@ -374,6 +348,8 @@ def test_no_filed_report_skips_the_closing_rows_not_the_run(monkeypatch, capsys)
         job, "tonight_intermediate_frame", lambda *_, **__: intermediate
     )
     monkeypatch.setattr(job, "make_s3_client", lambda **_: object())
+    # Every build is read in the slot's turn, by the stubbed predictor.
+    monkeypatch.setattr(job, "read_slot_builds", lambda **_: {})
     monkeypatch.setattr(job, "PredictionRunRecorder", _NullRecorder)
     monkeypatch.setattr(
         job,
@@ -403,3 +379,136 @@ def test_no_filed_report_skips_the_closing_rows_not_the_run(monkeypatch, capsys)
     assert "1 slot(s) predicted" in out
     assert "baselines skipped" in out
     assert "0 failure(s)" in out
+
+
+def _side_by_side_job(monkeypatch, *, parallel_builds: bool, order: list):
+    """A run with a closing and an intermediate slot and one filed game."""
+    from nba_ou.modeling.registry_paths import ModelSlot
+
+    slots = [
+        ModelSlot(
+            schema_version="2_5",
+            target="line_error",
+            horizon_minutes=horizon,
+            variant="main",
+        )
+        for horizon in (0, 60)
+    ]
+    monkeypatch.setattr(
+        job,
+        "SETTINGS",
+        SimpleNamespace(
+            prediction_model_slots=slots,
+            intermediate_input_mode="own",
+            report_required_max_horizon=300,
+            parallel_builds=parallel_builds,
+            headless=True,
+            nba_injury_reports_url="",
+            s3_aws_profile=None,
+            s3_aws_region="eu-west-1",
+            s3_bucket="bucket",
+        ),
+    )
+    monkeypatch.setattr(job, "update_all_databases", lambda **_: None)
+    monkeypatch.setattr(job, "check_line_feed", _sbr_lines)
+    monkeypatch.setattr(
+        job,
+        "get_all_info_for_scheduled_games",
+        lambda **_: {"scheduled_games": pd.DataFrame({"GAME_ID": ["g5"]})},
+    )
+    tonight = pd.DataFrame(
+        {
+            "GAME_ID": ["g5"],
+            "GAME_DATE": ["2025-11-03"],
+            "TOTAL_POINTS": [np.nan],
+        }
+    )
+
+    def closing(**_):
+        order.append("closing")
+        return tonight.copy(), _history()
+
+    monkeypatch.setattr(job, "create_df_to_predict", closing)
+    intermediate = pd.DataFrame(
+        {"GAME_ID": ["g5"], "TIME_TO_MATCH_MIN": [60], "SNAPSHOT_PASSED": [False]}
+    )
+
+    def intermediate_rows(*_, **__):
+        order.append("intermediate")
+        return intermediate
+
+    monkeypatch.setattr(job, "tonight_intermediate_frame", intermediate_rows)
+    monkeypatch.setattr(job, "side_by_side_reason", lambda: None)
+    monkeypatch.setattr(job, "make_s3_client", lambda **_: object())
+    monkeypatch.setattr(job, "read_slot_builds", lambda **_: {})
+    monkeypatch.setattr(job, "PredictionRunRecorder", _NullRecorder)
+    monkeypatch.setattr(job, "load_baseline_predictions_for_nba_games", lambda **_: {})
+    served = {}
+
+    def serve(*, slot, frames, df, **_):
+        served[slot.horizon_minutes] = (sorted(frames), df["GAME_ID"].tolist())
+        return pd.DataFrame({"GAME_ID": ["g5"]})
+
+    monkeypatch.setattr(job, "load_registry_model_and_predict", serve)
+
+    class _Now:
+        @staticmethod
+        def now(tz=None):
+            return pd.Timestamp("2025-11-03 12:00", tz=tz).to_pydatetime()
+
+    monkeypatch.setattr(job, "datetime", _Now)
+    return served
+
+
+def test_closing_rows_build_beside_the_intermediate_rows(monkeypatch, capsys):
+    """The side build starts before the intermediate rows and is collected
+    after them; every slot then sees both frames, as in a sequential run."""
+    from nba_ou.prediction.side_build import SideResult
+
+    order = []
+    served = _side_by_side_job(monkeypatch, parallel_builds=True, order=order)
+
+    class _InlineSide:
+        """The side process, run in this one when collected."""
+
+        def __init__(self, fn, args, kwargs, label):
+            self.call, self.label = (fn, args, kwargs), label
+            self.gate = SimpleNamespace(cold_cause=None, waited=0.0)
+            self.released = False
+            order.append("side started")
+
+        @classmethod
+        def start(cls, fn, *args, current_season, label, **kwargs):
+            assert current_season == 2025
+            return cls(fn, args, kwargs, label)
+
+        def release_gate(self):
+            self.released = True
+
+        def result(self):
+            assert self.released
+            fn, args, kwargs = self.call
+            return SideResult(fn(*args, **kwargs), 1.0, None, 0.0)
+
+    monkeypatch.setattr(job, "SideBuild", _InlineSide)
+    job.predict_nba_games(persist=False)
+
+    assert order == ["side started", "intermediate", "closing"]
+    both = ["closing_line", "intermediate_line"]
+    assert served == {0: (both, ["g5"]), 60: (both, ["g5"])}
+    out = capsys.readouterr().out
+    assert "[time] closing rows (side process)" in out
+    assert "[time] closing and intermediate rows, side by side" in out
+
+
+def test_turned_off_the_builds_run_one_after_the_other(monkeypatch, capsys):
+    order = []
+    served = _side_by_side_job(monkeypatch, parallel_builds=False, order=order)
+    monkeypatch.setattr(
+        job.SideBuild, "start", lambda *_, **__: pytest.fail("side build started")
+    )
+    job.predict_nba_games(persist=False)
+
+    assert order == ["closing", "intermediate"]
+    assert served[0] == (["closing_line", "intermediate_line"], ["g5"])
+    assert "one after the other: turned off" in capsys.readouterr().out

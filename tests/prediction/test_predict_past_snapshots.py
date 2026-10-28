@@ -101,10 +101,12 @@ def test_each_slot_reads_its_own_snapshot(monkeypatch):
     )
     monkeypatch.setattr(job, "tonight_intermediate_frame", lambda *a, **k: frame)
     monkeypatch.setattr(job, "make_s3_client", lambda **_: object())
+    # Every build is read in the slot's turn, by the stubbed predictor.
+    monkeypatch.setattr(job, "read_slot_builds", lambda **_: {})
     calls = []
 
-    def predict(*, slot, frames, latest_input, persist, **_):
-        calls.append((slot.horizon_minutes, latest_input, persist))
+    def predict(*, slot, frames, latest_input, **_):
+        calls.append((slot.horizon_minutes, latest_input))
         assert set(frames) == {"intermediate_line"}
         return frames["intermediate_line"].iloc[:1]
 
@@ -115,11 +117,6 @@ def test_each_slot_reads_its_own_snapshot(monkeypatch):
         "persist_prediction_run",
         lambda *_, **__: pytest.fail("a dry run stored predictions"),
     )
-    monkeypatch.setattr(
-        job,
-        "upload_predictions_to_postgre",
-        lambda df: pytest.fail("a dry run stored predictions in Supabase"),
-    )
     job.predict_past_snapshots("2026-10-21", persist=False, update_databases=False)
     # The closing slot is left out; no slot reads the latest snapshot.
-    assert calls == [(30, False, False), (60, False, False)]
+    assert calls == [(30, False), (60, False)]

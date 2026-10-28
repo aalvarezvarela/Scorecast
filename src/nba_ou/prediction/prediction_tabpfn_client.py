@@ -218,9 +218,12 @@ def predict_with_tabpfn(
     training_set: TabPFNTrainingSet,
     prediction_datetime: datetime | None = None,
     passthrough_columns: Sequence[str] = (),
+    cleaned: bool = False,
 ) -> pd.DataFrame:
     """Tonight's rows of ``spec`` predicted by ``model``, shaped as a slot's
     output: every closing row, or the intermediate rows of the spec's horizon.
+    ``cleaned``: ``df`` is ``clean_prediction_frame`` of tonight's rows, shared
+    by the run's targets.
 
     The build is (spec, training cutoff, window size): the same rows and
     features give the same ``fit_id``, however often a day's runs repeat it.
@@ -251,8 +254,8 @@ def predict_with_tabpfn(
         prediction_datetime=prediction_datetime,
         prediction_target=resolve_prediction_target(target),
         passthrough_columns=passthrough_columns,
-        persist=False,
         max_na_per_row=spec.cleaning.max_na_per_row,
+        cleaned=cleaned,
         extra_summary_columns={
             "MODEL_TARGET": target,
             "MODEL_HORIZON_MINUTES": horizon,

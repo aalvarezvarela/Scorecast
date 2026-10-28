@@ -211,10 +211,13 @@ results. In short:
   (`status`, `split`, `update`, `rebuild`).
 - Serving: `scripts/predict_nba_games.py` builds tonight's closing rows and,
   when any enabled slot has a horizon, tonight's intermediate rows for every
-  horizon. Every enabled slot predicts on every run, whatever the time to tip:
-  closing slots every game, intermediate slots the row of their own horizon,
-  marked `SNAPSHOT_PASSED` (False = built from the ticks so far, not the
-  trained snapshot). A game without both teams' injury report is skipped by
+  horizon, the closing rows in a spawned side process meanwhile
+  (`prediction/side_build.py`); a build that starts computing a past season
+  waits for the other (`utils/warm_gate.py`), so only warm builds overlap
+  (`PARALLEL_BUILDS`, `--sequential-builds`). Every enabled slot predicts on
+  every run, whatever the time to tip: closing slots every game,
+  intermediate slots the row of their own horizon, marked `SNAPSHOT_PASSED`
+  (False = built from the ticks so far, not the trained snapshot). A game without both teams' injury report is skipped by
   the closing slots and by intermediate slots of horizon
   `REPORT_REQUIRED_MAX_HORIZON` (300) or shorter
   (`prediction/report_requirement.py`). A failing slot does not stop the

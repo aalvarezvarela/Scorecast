@@ -122,16 +122,22 @@ def _stored_report_states(
         history_memo.season_of_game_ids(earlier["game_id"]), index=earlier.index
     )
     fingerprints = fetch.report_season_fingerprints(conn)
-    digests = {}
+    digests, parts = {}, {}
     for season in sorted(seasons.unique()):
         known = [s for s in fingerprints if s <= season]
         chain = fingerprints[max(known)] if known else "none"
         rows = earlier[seasons.eq(season)].sort_values(["game_id", "snapshot_minutes"])
+        rows_digest = history_memo._frame_digest(rows.reset_index(drop=True))
         digest = hashlib.sha256(chain.encode())
-        digest.update(history_memo._frame_digest(rows.reset_index(drop=True)))
+        digest.update(rows_digest)
         digests[int(season)] = digest.hexdigest()
+        parts[int(season)] = {"reports": chain, "cutoffs": rows_digest.hex()}
     memo = history_memo.HistoryMemo(
-        backend, digests, max(digests), code=history_memo.code_key(__name__)
+        backend,
+        digests,
+        max(digests),
+        code=history_memo.code_key(__name__),
+        parts=parts,
     )
     memo.prefetch([REPORT_STATES_MEMO])
     parts = []
@@ -823,22 +829,27 @@ def _injury_history_memo(
     # Values only: the prediction build's frames also hold tonight's games,
     # which change their schema but no earlier row, and the season-partition
     # update shares these entries.
+    parts: dict[int, dict[str, str]] = {}
     digests = history_memo.season_input_digests(
         {name: (frame, game_id_column(frame)) for name, frame in inputs.items()},
         range(2000, max(seasons) + 1),
         values_only=True,
+        parts=parts,
     )
     votes = hashlib.sha256(history_memo._frame_digest(voting)).hexdigest()
     digests = {
         season: hashlib.sha256(f"{digest}|{votes}".encode()).hexdigest()
         for season, digest in digests.items()
     }
+    for season_parts in parts.values():
+        season_parts["all_star_votes"] = votes
     # The rows are computed from frames the builder prepares.
     memo = history_memo.HistoryMemo(
         backend,
         digests,
         max(seasons),
         code=history_memo.code_key(history_memo.INTERMEDIATE_BUILDER),
+        parts=parts,
     )
     memo.prefetch([PLAYER_ROWS_MEMO, EFFECTS_MEMO])
     return memo
@@ -873,15 +884,22 @@ def _effect_prior_table(
     finished = cutoffs[
         history_memo.season_of_game_ids(cutoffs["game_id"]) <= last_finished
     ].sort_values(["game_id", "snapshot_minutes"])
-    digest = hashlib.sha256(
-        f"{memo.digests[last_finished]}|{reports[max(known)] if known else 'none'}".encode()
-    )
-    digest.update(history_memo._frame_digest(finished.reset_index(drop=True)))
+    report_chain = reports[max(known)] if known else "none"
+    cutoffs_digest = history_memo._frame_digest(finished.reset_index(drop=True))
+    digest = hashlib.sha256(f"{memo.digests[last_finished]}|{report_chain}".encode())
+    digest.update(cutoffs_digest)
     prior_memo = history_memo.HistoryMemo(
         memo.backend,
         {last_finished: digest.hexdigest()},
         last_finished,
         code=memo.code,
+        parts={
+            last_finished: {
+                "injury_inputs": memo.digests[last_finished],
+                "reports": report_chain,
+                "cutoffs": cutoffs_digest.hex(),
+            }
+        },
     )
     table = prior_memo.table(EFFECT_PRIORS_MEMO, last_finished)
     if table is None:

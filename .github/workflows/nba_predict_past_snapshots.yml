@@ -12,7 +12,7 @@ on:
                 type: string
                 default: ""
             persist:
-                description: "Store the predictions (off = dry run: no table rows, no S3 snapshots)"
+                description: "Store the predictions (off = dry run: no Aiven prediction-store rows, no S3 run archive)"
                 type: boolean
                 default: true
             force:
@@ -49,7 +49,9 @@ jobs:
             DB_ENV: supabase
             SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
             SUPABASE_DB_PASSWORD: ${{ secrets.SUPABASE_DB_PASSWORD }}
-            # Aiven: the SBR line history and the injury-report timelines.
+            # Aiven: the SBR line history, the injury-report timelines and the
+            # prediction store (the only place predictions are written;
+            # Supabase is read only).
             AIVEN_DB_URL: ${{ secrets.AIVEN_DB_URL }}
             AIVEN_DB_PASSWORD: ${{ secrets.AIVEN_DB_PASSWORD }}
             ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}

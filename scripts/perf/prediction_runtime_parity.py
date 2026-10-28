@@ -411,7 +411,6 @@ def run(args: argparse.Namespace) -> int:
                         frames=frames,
                         frame_versions=frame_versions,
                         passthrough_columns=PASSTHROUGH_COLUMNS,
-                        persist=False,
                         latest_input=slot in latest_slots,
                     )
                 except Exception as exc:  # noqa: BLE001 -- as the predictor does

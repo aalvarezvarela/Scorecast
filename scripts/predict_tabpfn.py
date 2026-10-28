@@ -79,6 +79,7 @@ from nba_ou.prediction.intermediate_frame import (
     tonight_intermediate_frame,
 )
 from nba_ou.prediction.line_source import LINE_SOURCE_COLUMN, check_line_feed
+from nba_ou.prediction.prediction import clean_prediction_frames
 from nba_ou.prediction.prediction_store import (
     PredictionRunRecorder,
     persist_prediction_run,
@@ -486,6 +487,11 @@ def predict_tabpfn(
         recorder.add_frame(
             INTERMEDIATE_LINE, latest_quotes, version=BASE_SCHEMA_VERSION
         )
+    passthrough = () if dataset_type == CLOSING_LINE else PASSTHROUGH_COLUMNS
+    # Cleaned once for every target, not once per target.
+    clean_rows = clean_prediction_frames(
+        {dataset_type: df_to_predict}, passthrough_columns=passthrough
+    ).get(dataset_type)
     for target, spec, training_set in zip(targets, specs, training_sets, strict=True):
         label = (
             f"{spec.identity.schema_version}/{target}/{format_horizon(horizon)}/"
@@ -497,14 +503,13 @@ def predict_tabpfn(
                 model = fit_tabpfn(training_set, model_version=model_version)
             with timer.phase(f"{target} predict"):
                 predictions = predict_with_tabpfn(
-                    df=df_to_predict,
+                    df=df_to_predict if clean_rows is None else clean_rows,
                     spec=spec,
                     model=model,
                     training_set=training_set,
                     prediction_datetime=datetime.now(ZoneInfo("Europe/Madrid")),
-                    passthrough_columns=(
-                        () if dataset_type == CLOSING_LINE else PASSTHROUGH_COLUMNS
-                    ),
+                    passthrough_columns=passthrough,
+                    cleaned=clean_rows is not None,
                 )
             if predictions.empty:
                 print_status(f"{target}: no game survived the spec's NaN budget.")

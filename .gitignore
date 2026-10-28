@@ -243,3 +243,5 @@ artifacts/
 # copy; they carry account-specific role and bucket ARNs, so they stay out of
 # the repo. scripts/backup/README.md describes the permissions they grant.
 scripts/backup/iam/
+.agents/skills/developing-with-streamlit
+.claude/skills/developing-with-streamlit

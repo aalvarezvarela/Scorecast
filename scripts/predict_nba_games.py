@@ -22,9 +22,6 @@ from nba_ou.create_training_data.schema_layers import (
     newest_version,
 )
 from nba_ou.fetch_data.scheduled_game.get_schedule_games import get_schedule_games
-from nba_ou.postgre_db.predictions.create.create_ou_predictions_db import (
-    upload_predictions_to_postgre,
-)
 from nba_ou.postgre_db.predictions_aiven.schema import WORKFLOW_DAILY
 from nba_ou.postgre_db.update_all.update_all_databases import update_all_databases
 from nba_ou.prediction.baseline_predictions import (
@@ -38,11 +35,18 @@ from nba_ou.prediction.intermediate_frame import (
 )
 from nba_ou.prediction.line_source import LINE_SOURCE_COLUMN, check_line_feed
 from nba_ou.prediction.prediction import (
+    clean_prediction_frames,
     load_registry_model_and_predict,
+    read_slot_builds,
 )
 from nba_ou.prediction.prediction_store import (
     PredictionRunRecorder,
     persist_prediction_run,
+)
+from nba_ou.prediction.side_build import (
+    SideBuild,
+    SideBuildFailed,
+    side_by_side_reason,
 )
 from nba_ou.utils.general_utils import get_season_year_from_date
 from nba_ou.utils.phase_timer import PhaseTimer
@@ -108,6 +112,7 @@ def predict_nba_games(
     allow_stale_lines: bool = False,
     intermediate_input: str | None = None,
     line_source: str | None = None,
+    parallel_builds: bool | None = None,
 ) -> None:
     """
     Main execution function for the NBA prediction pipeline.
@@ -127,7 +132,7 @@ def predict_nba_games(
 
     A slot that fails does not stop the others; the run exits non-zero at the
     end if anything failed. ``persist=False`` stores no predictions: no
-    predictions-table rows and no S3 snapshots. The database update and the
+    prediction-store rows and no S3 run archive. The database update and the
     injury-report sync in steps 1-3 still write. ``dump_frames`` writes the
     feature frames to that local directory, for inspection.
 
@@ -137,6 +142,10 @@ def predict_nba_games(
     does the run stop after the database update with exit 1 and predict
     nothing; ``allow_stale_lines`` predicts anyway. ``line_source="covers"``
     forces the fallback.
+
+    ``parallel_builds`` overrides ``[PredictionModels] PARALLEL_BUILDS``: the
+    closing rows build in a side process beside the intermediate rows while
+    both stay warm (``nba_ou.prediction.side_build``).
     """
     configure_tqdm_for_environment()
 
@@ -228,44 +237,42 @@ def predict_nba_games(
     # the baselines skip, and the intermediate slots still predict.
     not_filed = {str(game) for game in scheduled_data.get("games_not_updated", [])}
     closing_ids = [game for game in tonight_ids if game not in not_filed]
-    with timer.phase("closing rows"):
-        layer_inputs = None
-        try:
-            if not closing_ids:
-                df_to_predict = pd.DataFrame()
-                print_status(
-                    "No game has both injury reports filed yet: no closing rows, "
-                    "the closing slots and the baselines skip"
-                )
-            else:
-                df_to_predict, layer_inputs = closing_rows(
-                    scheduled_data,
-                    tonight_ids=tonight_ids,
-                    frame_version=frame_version,
-                    date_to_predict=date_to_predict,
-                    normalize_total_lines=normalize_total_lines,
-                    normalize_spread_lines=normalize_spread_lines,
-                    null_extreme_spread_prices=null_extreme_spread_prices,
-                )
-                print_status("Feature DataFrame prepared")
+    closing_kwargs = dict(
+        tonight_ids=tonight_ids,
+        frame_version=frame_version,
+        date_to_predict=date_to_predict,
+        normalize_total_lines=normalize_total_lines,
+        normalize_spread_lines=normalize_spread_lines,
+        null_extreme_spread_prices=null_extreme_spread_prices,
+    )
+    wants_intermediate = any(slot.horizon_minutes for slot in configured_slots)
 
-        except Exception as e:
-            print_status(f"Failed to prepare features: {e}", ok=False)
-            raise
-
-    if closing_ids and df_to_predict.empty:
-        print("⚠️  Warning: No games found for the specified date.")
-        raise ValueError("df to predict is empty")
-
-    if not df_to_predict.empty:
-        print_status(f"Found {len(df_to_predict)} game(s) to predict")
-
-    # Everything this run predicts, stored at the end in one piece: the S3 run
-    # archive and the Aiven prediction store (docs/serving/prediction_storage.md).
-    recorder = PredictionRunRecorder(workflow=WORKFLOW_DAILY, game_date=date_to_predict)
-    recorder.set_schedule(scheduled_data["scheduled_games"])
-    if not df_to_predict.empty:
-        recorder.add_frame("closing_line", df_to_predict, version=frame_version)
+    # The two builds are independent until the predictions. On a warm run the
+    # closing rows build in a side process while this one builds the
+    # intermediate rows; a build that turns cold waits for the other and
+    # finishes alone (nba_ou.prediction.side_build).
+    side = None
+    if closing_ids and wants_intermediate:
+        if parallel_builds is None:
+            parallel_builds = SETTINGS.parallel_builds
+        reason = side_by_side_reason() if parallel_builds else "turned off"
+        if reason is None:
+            side = SideBuild.start(
+                closing_rows,
+                scheduled_data,
+                current_season=int(season_to_update),
+                label="closing rows",
+                **closing_kwargs,
+            )
+            side_started = time.perf_counter()
+            print_status("Closing rows build in a side process, beside the next step")
+        else:
+            print_status(f"Closing and intermediate rows one after the other: {reason}")
+    if side is None:
+        df_to_predict, layer_inputs = timed_closing_rows(
+            timer, scheduled_data, closing_ids, **closing_kwargs
+        )
+        check_closing_rows(df_to_predict, closing_ids)
 
     # Everything that failed without stopping the run; non-empty means the run
     # exits non-zero once every slot and the baselines have had their turn.
@@ -274,9 +281,77 @@ def predict_nba_games(
     # Intermediate slots predict a fixed time before tip-off: tonight's rows
     # for every horizon, built tonight-only from the live line history. A
     # failure here costs only those slots, never the closing ones.
+    intermediate_df = None
+    if wants_intermediate:
+        print_step_header(3, "Preparing Intermediate Snapshot Rows")
+        try:
+            with timer.phase("intermediate rows"):
+                try:
+                    intermediate_df = tonight_intermediate_frame(
+                        scheduled_data,
+                        game_date=date_to_predict,
+                        latest_input=bool(latest_slots),
+                        # Every intermediate slot reads the latest row: build
+                        # it alone.
+                        latest_only=all(
+                            slot in latest_slots
+                            for slot in configured_slots
+                            if slot.horizon_minutes
+                        ),
+                    )
+                    print_status(
+                        f"{len(intermediate_df)} snapshot row(s) over "
+                        f"{intermediate_df['GAME_ID'].nunique()} game(s), "
+                        f"{int(intermediate_df['SNAPSHOT_PASSED'].sum())} "
+                        "already passed"
+                    )
+                    if latest_slots:
+                        latest_rows = intermediate_df[
+                            intermediate_df[LATEST_INPUT_COLUMN]
+                        ]
+                        print_status(
+                            "Latest snapshots: "
+                            + ", ".join(
+                                f"{game} T-{minutes}"
+                                for game, minutes in latest_rows[
+                                    ["GAME_ID", "TIME_TO_MATCH_MIN"]
+                                ].itertuples(index=False)
+                            )
+                        )
+                except Exception as e:  # noqa: BLE001 -- the closing slots still run
+                    traceback.print_exc()
+                    print_status(f"Intermediate rows unavailable: {e}", ok=False)
+                    failures.append(f"intermediate frame: {e}")
+        finally:
+            # A side build waiting on the gate must not outlive this process.
+            if side is not None:
+                side.release_gate()
+
+    if side is not None:
+        df_to_predict, layer_inputs = side_closing_rows(
+            side, timer, scheduled_data, closing_ids, **closing_kwargs
+        )
+        timer.record(
+            "closing and intermediate rows, side by side",
+            time.perf_counter() - side_started,
+        )
+        check_closing_rows(df_to_predict, closing_ids)
+
+    # Everything this run predicts, stored at the end in one piece: the S3 run
+    # archive and the Aiven prediction store (docs/serving/prediction_storage.md).
+    recorder = PredictionRunRecorder(workflow=WORKFLOW_DAILY, game_date=date_to_predict)
+    recorder.set_schedule(scheduled_data["scheduled_games"])
     # No closing frame when no closing row was built: the closing slots then
     # skip ("not this model's turn"), as a slot of an unbuilt frame does.
-    frames = {} if df_to_predict.empty else {"closing_line": df_to_predict}
+    frames = {}
+    if not df_to_predict.empty:
+        frames["closing_line"] = df_to_predict
+        recorder.add_frame("closing_line", df_to_predict, version=frame_version)
+    if intermediate_df is not None:
+        frames["intermediate_line"] = intermediate_df
+        recorder.add_frame(
+            "intermediate_line", intermediate_df, version=BASE_SCHEMA_VERSION
+        )
     # The intermediate builder has no schema-layer step yet, so its frame is
     # the base; a slot needing a newer version fails by name (see
     # load_registry_model_and_predict) instead of missing columns.
@@ -284,45 +359,6 @@ def predict_nba_games(
         "closing_line": frame_version,
         "intermediate_line": BASE_SCHEMA_VERSION,
     }
-    if any(slot.horizon_minutes for slot in configured_slots):
-        print_step_header(3, "Preparing Intermediate Snapshot Rows")
-        with timer.phase("intermediate rows"):
-            try:
-                intermediate_df = tonight_intermediate_frame(
-                    scheduled_data,
-                    game_date=date_to_predict,
-                    latest_input=bool(latest_slots),
-                    # Every intermediate slot reads the latest row: build it alone.
-                    latest_only=all(
-                        slot in latest_slots
-                        for slot in configured_slots
-                        if slot.horizon_minutes
-                    ),
-                )
-                frames["intermediate_line"] = intermediate_df
-                recorder.add_frame(
-                    "intermediate_line", intermediate_df, version=BASE_SCHEMA_VERSION
-                )
-                print_status(
-                    f"{len(intermediate_df)} snapshot row(s) over "
-                    f"{intermediate_df['GAME_ID'].nunique()} game(s), "
-                    f"{int(intermediate_df['SNAPSHOT_PASSED'].sum())} already passed"
-                )
-                if latest_slots:
-                    latest_rows = intermediate_df[intermediate_df[LATEST_INPUT_COLUMN]]
-                    print_status(
-                        "Latest snapshots: "
-                        + ", ".join(
-                            f"{game} T-{minutes}"
-                            for game, minutes in latest_rows[
-                                ["GAME_ID", "TIME_TO_MATCH_MIN"]
-                            ].itertuples(index=False)
-                        )
-                    )
-            except Exception as e:  # noqa: BLE001 -- the closing slots still run
-                traceback.print_exc()
-                print_status(f"Intermediate rows unavailable: {e}", ok=False)
-                failures.append(f"intermediate frame: {e}")
 
     if dump_frames is not None:
         dump_dir = Path(dump_frames)
@@ -339,11 +375,19 @@ def predict_nba_games(
     if not persist:
         print_status("Dry run (--no-persist): no predictions are stored")
 
+    # Cleaned once here, not once per slot: each slot reads its rows from it.
+    with timer.phase("cleaning"):
+        clean_frames = clean_prediction_frames(
+            frames, passthrough_columns=PASSTHROUGH_COLUMNS
+        )
+
+    with timer.phase("model reads"):
+        builds = read_slot_builds(
+            s3_client=s3, bucket=SETTINGS.s3_bucket, slots=configured_slots
+        )
+
     predicted: list[str] = []
     skipped: list[str] = []
-    # The old Supabase table's failures: reported, but they do not make the
-    # prediction store's run partial.
-    legacy_failures: list[str] = []
     step_number = 4
     slots_started = time.perf_counter()
     for slot in configured_slots:
@@ -352,6 +396,9 @@ def predict_nba_games(
         step_number += 1
         slot_started = time.perf_counter()
         try:
+            build = builds.get(slot)
+            if isinstance(build, Exception):
+                raise build
             predictions_df = load_registry_model_and_predict(
                 s3_client=s3,
                 bucket=SETTINGS.s3_bucket,
@@ -361,11 +408,10 @@ def predict_nba_games(
                 frames=frames,
                 frame_versions=frame_versions,
                 passthrough_columns=PASSTHROUGH_COLUMNS,
-                # Stored below, each destination on its own: a failing
-                # Supabase write must not cost the prediction store its rows.
-                persist=False,
                 latest_input=slot in latest_slots,
                 report_required_max_horizon=SETTINGS.report_required_max_horizon,
+                clean_frames=clean_frames,
+                resolved=build,
             )
         except Exception as e:  # noqa: BLE001 -- the other slots still run
             traceback.print_exc()
@@ -389,15 +435,7 @@ def predict_nba_games(
         if rejected:
             print_status(f"Prediction store rejected {label}: {rejected}", ok=False)
             failures.append(f"{label} (prediction store): {rejected}")
-        upload_seconds = 0.0
-        if persist:
-            upload_started = time.perf_counter()
-            legacy_failures += legacy_supabase_upload(predictions_df, label)
-            upload_seconds = time.perf_counter() - upload_started
-        print(
-            f"[time] {label}: {time.perf_counter() - slot_started:.1f} s"
-            + (f" (Supabase upload {upload_seconds:.1f} s)" if persist else "")
-        )
+        print(f"[time] {label}: {time.perf_counter() - slot_started:.1f} s")
     timer.record(f"{len(configured_slots)} slots", time.perf_counter() - slots_started)
 
     print_step_header(step_number, "Generating Predictions (Baselines)")
@@ -414,7 +452,6 @@ def predict_nba_games(
                     df=df_to_predict,
                     df_history=baseline_history_window(layer_inputs, date_to_predict),
                     prediction_datetime=prediction_time,
-                    upload_to_postgres=False,
                 )
                 print_status("Baseline predictions generated")
                 for (
@@ -434,10 +471,6 @@ def predict_nba_games(
                         failures.append(
                             f"{baseline_name} (prediction store): {rejected}"
                         )
-                    if persist:
-                        legacy_failures += legacy_supabase_upload(
-                            baseline_predictions_df, baseline_name
-                        )
 
             except Exception as e:  # noqa: BLE001 -- reported with the slot failures
                 traceback.print_exc()
@@ -454,7 +487,6 @@ def predict_nba_games(
                 bucket=SETTINGS.s3_bucket,
                 partial=bool(failures),
             )
-    failures += legacy_failures
 
     print_step_header(step_number, "Summary")
     print(timer.summary())
@@ -469,6 +501,64 @@ def predict_nba_games(
         raise SystemExit(1)
 
     print("\nPrediction pipeline completed successfully.")
+
+
+def timed_closing_rows(
+    timer: PhaseTimer, scheduled_data: dict, closing_ids: list[str], **closing_kwargs
+) -> tuple[pd.DataFrame, pd.DataFrame | None]:
+    """The closing rows built in this process, as the "closing rows" phase.
+
+    A run with no game whose both injury reports are filed has none to build.
+    """
+    with timer.phase("closing rows"):
+        try:
+            if not closing_ids:
+                print_status(
+                    "No game has both injury reports filed yet: no closing rows, "
+                    "the closing slots and the baselines skip"
+                )
+                return pd.DataFrame(), None
+            df_to_predict, layer_inputs = closing_rows(scheduled_data, **closing_kwargs)
+            print_status("Feature DataFrame prepared")
+            return df_to_predict, layer_inputs
+        except Exception as e:
+            print_status(f"Failed to prepare features: {e}", ok=False)
+            raise
+
+
+def side_closing_rows(
+    side: SideBuild, timer: PhaseTimer, scheduled_data: dict, closing_ids, **kwargs
+) -> tuple[pd.DataFrame, pd.DataFrame | None]:
+    """The closing rows of the side build; built here if its process died."""
+    try:
+        outcome = side.result()
+    except SideBuildFailed as e:
+        print_status(f"Failed to prepare features: {e}", ok=False)
+        raise
+    if outcome is None:
+        print_status("Closing rows lost with the side process: built here", ok=False)
+        return timed_closing_rows(timer, scheduled_data, closing_ids, **kwargs)
+    timer.record("closing rows (side process)", outcome.seconds)
+    if outcome.cold_cause:
+        print_status(
+            f"Closing rows were cold ({outcome.cold_cause}): they waited "
+            f"{outcome.waited:.0f} s for the intermediate rows"
+        )
+    if side.gate.cold_cause:
+        print_status(
+            f"Intermediate rows were cold ({side.gate.cold_cause}): they waited "
+            f"{side.gate.waited:.0f} s for the closing rows"
+        )
+    print_status("Feature DataFrame prepared")
+    return outcome.value
+
+
+def check_closing_rows(df_to_predict: pd.DataFrame, closing_ids: list[str]) -> None:
+    if closing_ids and df_to_predict.empty:
+        print("⚠️  Warning: No games found for the specified date.")
+        raise ValueError("df to predict is empty")
+    if not df_to_predict.empty:
+        print_status(f"Found {len(df_to_predict)} game(s) to predict")
 
 
 def closing_rows(
@@ -519,20 +609,6 @@ def closing_rows(
     return df_to_predict, layer_inputs
 
 
-def legacy_supabase_upload(predictions: pd.DataFrame, label: str) -> list[str]:
-    """Write ``predictions`` to the old Supabase table; the failure, if any.
-
-    Runs in parallel with the prediction store during the transition
-    (docs/serving/prediction_storage.md, rollout 3), and independently of it.
-    """
-    try:
-        upload_predictions_to_postgre(predictions)
-    except Exception as e:  # noqa: BLE001 -- reported with the run's failures
-        print_status(f"Supabase write failed for {label}: {e}", ok=False)
-        return [f"{label} (Supabase): {e}"]
-    return []
-
-
 def latest_input_slots(configured_slots: list, mode: str | None = None) -> list:
     """The enabled slots that read the latest snapshot on this run.
 
@@ -566,7 +642,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--no-persist",
         action="store_true",
-        help="Predict without storing: no predictions table rows, no S3 snapshots",
+        help="Predict without storing: no prediction-store rows, no S3 run archive",
     )
     parser.add_argument(
         "--dump-frames",
@@ -601,6 +677,14 @@ if __name__ == "__main__":
             "frozen or empty) or covers (force the fallback, for tests)."
         ),
     )
+    parser.add_argument(
+        "--sequential-builds",
+        action="store_true",
+        help=(
+            "Build the closing and intermediate rows one after the other, "
+            "never side by side ([PredictionModels] PARALLEL_BUILDS)."
+        ),
+    )
     args = parser.parse_args()
 
     predict_nba_games(
@@ -612,4 +696,5 @@ if __name__ == "__main__":
         allow_stale_lines=args.allow_stale_lines,
         intermediate_input=args.intermediate_input,
         line_source=args.line_source,
+        parallel_builds=False if args.sequential_builds else None,
     )

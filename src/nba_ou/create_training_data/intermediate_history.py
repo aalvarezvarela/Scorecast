@@ -184,6 +184,15 @@ def load_season_histories(
             max(seasons),
             # ``build_side`` and the ticks come from the builder.
             code=memo.code_key(memo.INTERMEDIATE_BUILDER),
+            parts={
+                season: {
+                    "settings": hashlib.sha256(settings.encode()).hexdigest(),
+                    "ticks": hashlib.sha256(
+                        repr(fingerprints[season]).encode()
+                    ).hexdigest(),
+                }
+                for season in seasons
+            },
         )
         if backend is not None
         else None

@@ -269,12 +269,15 @@ def compact_training_config(tmp_path):
         frame[c] = np.linspace(30, 70, n)
     path = tmp_path / "training_data_2_5_test.csv"
     frame.to_csv(path, index=False)
-    return ExperimentConfig(
-        experiment_name="compact_yahoo",
-        prediction_strategy="line_error_regressor",
-        data=DataConfig(csv_path=str(path)),
-        cleaning=CleaningConfig(verbose=0, max_na_per_row=0),
-    ), frame
+    return (
+        ExperimentConfig(
+            experiment_name="compact_yahoo",
+            prediction_strategy="line_error_regressor",
+            data=DataConfig(csv_path=str(path)),
+            cleaning=CleaningConfig(verbose=0, max_na_per_row=0),
+        ),
+        frame,
+    )
 
 
 def test_training_matrix_includes_every_selected_input(compact_training_config):
@@ -329,7 +332,9 @@ def test_training_fails_when_cleaning_loses_a_yahoo_column(
 
 
 @pytest.mark.parametrize("drop_raw", [YAHOO_RAW_COLUMNS[:1], YAHOO_RAW_COLUMNS])
-def test_closing_training_rejects_missing_raw_columns(compact_training_config, drop_raw):
+def test_closing_training_rejects_missing_raw_columns(
+    compact_training_config, drop_raw
+):
     from training_pipeline.data import prepare_dataset
 
     config, frame = compact_training_config
@@ -371,7 +376,6 @@ def test_prediction_hands_observed_and_missing_raw_inputs_to_the_model(monkeypat
         return original_predict(X, **kwargs)
 
     monkeypatch.setattr(model, "predict", record_inputs)
-    monkeypatch.setattr(prediction, "upload_predictions_to_postgre", lambda df: None)
     result = prediction.load_and_predict_model_for_nba_games(
         frame,
         model,
@@ -383,5 +387,8 @@ def test_prediction_hands_observed_and_missing_raw_inputs_to_the_model(monkeypat
         prediction_datetime=datetime(2026, 9, 21, 18, tzinfo=ZoneInfo("Europe/Madrid")),
     )
     assert len(result) == 2
-    assert list(seen[0].columns) == list(YAHOO_FEATURE_COLUMNS)
-    pd.testing.assert_frame_equal(seen[0], frame[list(YAHOO_FEATURE_COLUMNS)])
+    # One array in the booster's feature order (checked by name before it is
+    # built), observed row and all-missing row alike.
+    np.testing.assert_array_equal(
+        seen[0], frame[list(YAHOO_FEATURE_COLUMNS)].to_numpy(dtype=np.float64)
+    )

@@ -4,9 +4,6 @@ from zoneinfo import ZoneInfo
 import numpy as np
 import pandas as pd
 from nba_ou.config.odds_columns import total_line_over_col_raw
-from nba_ou.postgre_db.predictions.create.create_ou_predictions_db import (
-    upload_predictions_to_postgre,
-)
 from nba_ou.utils.general_utils import get_season_year_from_date
 
 PREDICTION_VALUE_TYPE_LINE_ERROR = "DIFF_FROM_LINE"
@@ -297,11 +294,8 @@ def load_baseline_predictions_for_nba_games(
     prediction_datetime: datetime | None = None,
     random_seed: int | None = None,
     total_points_pick_line_col: str | None = None,
-    upload_to_postgres: bool = True,
 ) -> dict[str, pd.DataFrame]:
-    """
-    Build baseline predictions and optionally upload them to PostgreSQL.
-    """
+    """Build the baseline predictions, by baseline model name."""
     random_predictions = build_random_line_error_baseline_predictions(
         df,
         prediction_datetime=prediction_datetime,
@@ -319,9 +313,5 @@ def load_baseline_predictions_for_nba_games(
         RANDOM_LINE_ERROR_BASELINE_MODEL_NAME: random_predictions,
         HISTORICAL_AVERAGE_LINE_ERROR_BASELINE_MODEL_NAME: average_predictions,
     }
-
-    if upload_to_postgres:
-        for predictions_df in predictions_by_model.values():
-            upload_predictions_to_postgre(predictions_df)
 
     return predictions_by_model

@@ -204,11 +204,15 @@ def merge_yahoo_sportsbook_odds(
     # - moneyline_pct_money_away, moneyline_pct_money_home
 
     print(f"Merged odds data: {len(df_merged)} rows")
-    # sort by date, newest first
+    # Newest first. Stable, so a date's games keep the merge's (game id) order:
+    # the default quicksort ordered them by every other row too, so each
+    # night's new games reshuffled earlier seasons' rows, and the history
+    # memo, which digests rows in order, rebuilt 2020-2025 on the next morning's
+    # retrain (~24 min, docs/serving/predictor_speedup_plan.md P4).
     if "game_date" in df_merged.columns:
-        df_merged = df_merged.sort_values(by="game_date", ascending=False).reset_index(
-            drop=True
-        )
+        df_merged = df_merged.sort_values(
+            by="game_date", ascending=False, kind="stable"
+        ).reset_index(drop=True)
 
     # Drop redundant columns
     cols_to_drop = [
@@ -435,18 +439,23 @@ def _repair_by_season(frame, seasons, fingerprints, repair):
     if backend is None or not memoisable:
         return repair(frame)
 
-    digests = {}
+    digests, parts = {}, {}
     for season in memoisable:
-        digest = memo_module.hashlib.sha256(
-            memo_module._frame_digest(frame[season_of_rows == season])
-        )
-        digest.update(repr(fingerprints[season]).encode())
+        rows_digest = memo_module._frame_digest(frame[season_of_rows == season])
+        ticks = repr(fingerprints[season]).encode()
+        digest = memo_module.hashlib.sha256(rows_digest)
+        digest.update(ticks)
         digests[season] = digest.hexdigest()
+        parts[season] = {
+            "odds_rows": rows_digest.hex(),
+            "closing_ticks": memo_module.hashlib.sha256(ticks).hexdigest(),
+        }
     memo = memo_module.HistoryMemo(
         backend,
         digests,
         max_season=current - 1,
         code=memo_module.code_key(__name__),
+        parts=parts,
     )
     # One table per frame layout: the closing builder and the intermediate base
     # repair differently shaped odds frames (books combined or not), and under
