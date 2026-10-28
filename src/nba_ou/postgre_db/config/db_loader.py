@@ -10,6 +10,7 @@ from nba_ou.postgre_db.games.fetch_data_from_db.fetch_data_from_games_db import 
 from nba_ou.postgre_db.players.fetch_players_data_from_db import (
     load_players_from_db,
 )
+from nba_ou.utils.history_cache import cached
 from nba_ou.utils.seasons import drop_exhibition_games
 from psycopg import sql
 
@@ -122,6 +123,7 @@ def load_refs_from_db(seasons=None) -> pd.DataFrame | None:
             conn.close()
 
 
+@cached()
 def load_all_nba_data_from_db(seasons=None, extra_game_ids=None):
     """Load games and players from Postgres with uppercase column names.
 

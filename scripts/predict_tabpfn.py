@@ -80,6 +80,7 @@ from nba_ou.prediction.tabpfn_run import (
     tonight_rows,
 )
 from nba_ou.utils.general_utils import get_season_year_from_date
+from nba_ou.utils.history_cache import history_cache
 from nba_ou.utils.phase_timer import PhaseTimer
 from nba_ou.utils.run_log import RunLog
 from nba_ou.utils.s3_models import make_s3_client
@@ -237,9 +238,11 @@ def run_tabpfn(
         scheduled_data = restrict_to_games(scheduled_data, job.wanted_games)
 
     started = time.perf_counter()
-    rows = tonight_rows(
-        job, scheduled_data, inputs.specs, date_to_predict=date_to_predict, log=log
-    )
+    # The build's two reads of the closing odds (base features, referees) load once.
+    with history_cache():
+        rows = tonight_rows(
+            job, scheduled_data, inputs.specs, date_to_predict=date_to_predict, log=log
+        )
     if rows is None:
         return
     timer.record("tonight's rows", time.perf_counter() - started)

@@ -5,6 +5,7 @@ from nba_ou.postgre_db.config.db_config import (
 )
 from nba_ou.postgre_db.row_order import read_sql_canonical
 from nba_ou.postgre_db.season_tables import read_through
+from nba_ou.utils.history_cache import cached
 from nba_ou.utils.seasons import drop_exhibition_games
 from psycopg import sql
 
@@ -27,6 +28,7 @@ def _normalize_game_ids(game_ids) -> list[str]:
     return normalized
 
 
+@cached()
 def get_injury_data_from_db(seasons=None, extra_game_ids=None):
     """Load injury data from database for the specified seasons.
 

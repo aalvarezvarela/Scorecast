@@ -9,6 +9,7 @@ from nba_ou.postgre_db.config.db_config import (
 )
 from nba_ou.postgre_db.row_order import read_sql_canonical
 from nba_ou.postgre_db.season_tables import read_through
+from nba_ou.utils.history_cache import cached
 
 
 def _normalize_optional_list(values) -> list:
@@ -30,6 +31,7 @@ def _normalize_optional_list(values) -> list:
     return normalized
 
 
+@cached()
 def load_all_star_voting_from_db(
     player_ids=None,
     player_names=None,

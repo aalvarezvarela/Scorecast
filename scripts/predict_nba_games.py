@@ -61,6 +61,7 @@ from nba_ou.prediction.tabpfn_run import (
     parse_jobs,
     tonight_rows,
 )
+from nba_ou.utils import history_cache
 from nba_ou.utils.general_utils import get_season_year_from_date
 from nba_ou.utils.phase_timer import PhaseTimer, duration
 from nba_ou.utils.run_log import RunLog
@@ -121,10 +122,12 @@ def slot_overview(slots: list) -> list[str]:
 
 def predict_nba_games(**kwargs) -> None:
     """``run_prediction_pipeline`` with its log in numbered steps
-    (``nba_ou.utils.run_log``)."""
+    (``nba_ou.utils.run_log``), its builds sharing their loads of stored
+    history (``nba_ou.utils.history_cache``)."""
     log = RunLog()
     try:
-        return run_prediction_pipeline(log, **kwargs)
+        with history_cache.history_cache():
+            return run_prediction_pipeline(log, **kwargs)
     finally:
         # An exception's traceback then prints outside the step's group.
         log.end_group()
@@ -263,6 +266,9 @@ def run_prediction_pipeline(
         except Exception as e:
             print_status(f"Failed to fetch scheduled data: {e}", ok=False)
             raise
+    # Nothing this run reads is written from here on, so the builds share
+    # their loads of stored history; one read before the update would not do.
+    history_cache.clear()
 
     # Step 3: Build feature DataFrame for prediction
     # The builder produces the base schema. Each slot reads its own
@@ -644,6 +650,7 @@ def tabpfn_after_predictions(
                         line_source=lines,
                         dataset_type=job.dataset_type,
                     )
+                history_cache.clear()
                 # The rows of this moment, not of the booked snapshot.
                 job = replace(job, as_of=None, snapshot_games=None)
             started = time.perf_counter()
