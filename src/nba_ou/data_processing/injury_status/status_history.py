@@ -272,6 +272,7 @@ class PreparedBoxHistory:
     form: pd.DataFrame
 
 
+@cached(shared=True)
 def prepare_box_and_form(box: pd.DataFrame) -> PreparedBoxHistory:
     prepared = prepare_box_history(box)
     return PreparedBoxHistory(box=prepared, form=build_player_form(prepared))

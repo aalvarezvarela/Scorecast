@@ -10,6 +10,7 @@ from tqdm import tqdm
 
 from nba_ou.config.constants import TEAM_ID_MAP
 from nba_ou.data_processing.past_injuries.past_injuries import PlayerLookupIndex
+from nba_ou.utils.history_cache import cached
 from nba_ou.utils.row_cache import RowCache
 
 TEAM_NAME_BY_ID = {str(v): k for k, v in TEAM_ID_MAP.items()}
@@ -229,6 +230,7 @@ class PreparedAllStarInputs:
     last_team_before_date_lookup: Callable[[str, pd.Timestamp], str | None]
 
 
+@cached(shared=True)
 def prepare_all_star_inputs(
     df_players: pd.DataFrame, all_star_voting_df: pd.DataFrame
 ) -> PreparedAllStarInputs:

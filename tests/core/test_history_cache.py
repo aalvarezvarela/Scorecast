@@ -109,3 +109,63 @@ def test_threads_asking_for_one_load_wait_for_a_single_read():
             thread.join(5)
     assert calls == [2025]
     assert [frame["season"].tolist() for frame in results] == [[2025]] * 3
+
+
+def test_a_frame_argument_keys_on_its_content():
+    calls = []
+
+    @cached()
+    def rolling(frame, window=3):
+        calls.append(len(frame))
+        return frame.assign(total=frame["x"].sum())
+
+    games = pd.DataFrame({"x": [1, 2, 3]})
+    with history_cache.history_cache():
+        rolling(games)
+        rolling(games.copy())
+        rolling(games.assign(x=[1, 2, 4]))
+        rolling(games.rename(columns={"x": "y"}).rename(columns={"y": "x"}))
+        renamed = games.copy()
+        renamed.index = [10, 11, 12]
+        rolling(renamed)
+    assert calls == [3, 3, 3]
+
+
+def test_a_frame_with_unhashable_cells_reads_every_time():
+    calls = []
+
+    @cached()
+    def load(frame):
+        calls.append(1)
+        return frame
+
+    rosters = pd.DataFrame({"players": [[1, 2], [3]]})
+    with history_cache.history_cache():
+        load(rosters)
+        load(rosters)
+    assert len(calls) == 2
+
+
+def test_a_shared_result_is_the_same_object_for_every_caller():
+    @cached(shared=True)
+    def prepare(frame):
+        return {"lookup": frame.set_index("x")}
+
+    games = pd.DataFrame({"x": [1, 2]})
+    with history_cache.history_cache():
+        assert prepare(games) is prepare(games.copy())
+    assert prepare(games) is not prepare(games)
+
+
+def test_a_failed_read_is_not_kept():
+    answers = [None, pd.DataFrame({"x": [1]})]
+
+    @cached()
+    def load(season):
+        return answers.pop(0)
+
+    with history_cache.history_cache():
+        assert load(2025) is None
+        assert load(2025)["x"].tolist() == [1]
+        assert load(2025)["x"].tolist() == [1]
+    assert answers == []

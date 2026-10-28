@@ -145,7 +145,7 @@ Ordered by saving.
 | P6 · Runner hardware | depends on the result | low to measure | — | open |
 | P7 · Streamlit on Aiven | — (unblocks the Supabase clean-up) | medium | dashboard history | open |
 | P8 · Step 2 (schedule, referees, injury reports, odds) | ≈15–25 s per run | low | low | **done** (`perf/prediction-loop`), to confirm on the runner |
-| P9 · TabPFN inside the predictor run | ≈2.5–3 min and a queue slot per TabPFN run (phase 1); most of its ~6:42 rebuild with phase 2 | medium | medium | phase 1 **done** (PR #89), not booked; phase 2 level 1 **done** (`perf/tabpfn-history-cache`) |
+| P9 · TabPFN inside the predictor run | ≈2.5–3 min and a queue slot per TabPFN run (phase 1); most of its ~6:42 rebuild with phase 2 | medium | medium | phase 1 **done** (PR #89), not booked; phase 2 levels 1–2 **done** (`perf/tabpfn-history-cache`) |
 
 ### P0 · Measure before optimizing — done
 
@@ -515,8 +515,17 @@ two or three times), the memo fingerprints (~10 s) and games and players
   TabPFN refresh. `predict_tabpfn.py` holds it for its build. Measured: the
   predictor build 183 → 162 s and the TabPFN build after it 187 → 138 s;
   both frames identical bit for bit to the uncached builds.
-- Level 2 (open): computed results keyed on their inputs (team rolling
-  statistics, player history, all-star inputs), ~30 s more.
+- Level 2 (**done**, same branch): the steps computed from those frames
+  alone, a frame argument keyed on its content (a SHA-256 of
+  `hash_pandas_object` per column, ~0.2 s for the 266k player rows):
+  `process_team_statistics_for_training` (the team rolling statistics), and,
+  shared rather than copied as their callers only read them,
+  `prepare_player_history`, `prepare_all_star_inputs` and
+  `prepare_box_and_form`; plus `load_games_from_db` (the referees' games). A
+  loader's `None` (a failed read) is not kept. Measured: the TabPFN build
+  after the predictor's 138 → 93 s (base features 52 → 24 s, injuries 64 →
+  47 s); the predictor build 162–173 s across runs (database latency); both
+  frames identical bit for bit; peak 5.3 GB.
 - Level 3 (open): reused database connections, ~15–20 s more.
 
 **Validation (to do before booking `joined`).** A manual predictor dispatch
@@ -554,8 +563,8 @@ caches miss.
    PR #87); confirm the `[time] step 2 ...` lines on the runner.
 8. P9: TabPFN inside the predictor run. Phase 1 done on
    `feat/tabpfn-thinking` (not booked: `TABPFN_RUNS = separate`); phase 2
-   level 1 on `perf/tabpfn-history-cache`; validate on the runner, then
-   levels 2–3 or book `joined`.
+   levels 1–2 on `perf/tabpfn-history-cache`; validate on the runner, then
+   level 3 or book `joined`.
 
 ## Progress log
 
@@ -606,7 +615,8 @@ caches miss.
 - 2026-10-28 — P9 phase 2 level 1 on `perf/tabpfn-history-cache`: an
   in-process cache for the loads of stored history. Predictor build 183 →
   162 s, TabPFN build in the same run 187 → 138 s (local, 2026-04-10 replay),
-  frames identical bit for bit.
+  frames identical bit for bit. Level 2 (computed steps keyed on their
+  input frames): the TabPFN build 138 → 93 s, still identical.
 
 ## Sources
 
