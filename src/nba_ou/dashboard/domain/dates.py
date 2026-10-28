@@ -24,6 +24,13 @@ def madrid_time(value, *, include_date: bool = True) -> str:
     return f"{timestamp.strftime(pattern)} Madrid"
 
 
+def madrid_clock(value) -> str:
+    """``HH:MM`` in Madrid, for times beside a full tip-off date."""
+    if value is None or pd.isna(value):
+        return "—"
+    return utc_timestamp(value).tz_convert(MADRID).strftime("%H:%M")
+
+
 def time_remaining(tipoff, now) -> str:
     minutes = max(
         0, int((utc_timestamp(tipoff) - utc_timestamp(now)).total_seconds() // 60)

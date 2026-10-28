@@ -114,9 +114,25 @@ def test_spread_missing_market_or_model_line_never_falls_back_to_raw_error(chang
 
 
 @pytest.mark.parametrize("spread", [False, True])
-@pytest.mark.parametrize("edge", [-1.0, -0.5, -0.1, 0.0, 0.1, 0.5, 1.0])
+@pytest.mark.parametrize("edge", [-0.1, -0.05, 0.0, 0.05, 0.1])
 def test_small_edges_and_threshold_equality_are_neutral(edge, spread):
     assert signal(edge, spread=spread) == "NO EDGE"
+
+
+def test_tabpfn_bets_on_a_smaller_edge_than_registry_models():
+    raw = pd.DataFrame(
+        [make_prediction(kind=kind, target=1, prediction_value=1.55) for kind in (1, 3)]
+    )
+    rows = compare_predictions(
+        select_predictions(raw, 1, NOW),
+        market_snapshots(raw, 1, NOW),
+        min_edge={1: 0.1, 3: 0.01},
+    ).set_index("kind")
+    # 229 + 1.55 against Bet365 230.5: an edge of +0.05 for both models.
+    assert rows["comparison_edge"].round(9).tolist() == [0.05, 0.05]
+    assert rows.loc[1, "signal"] == "NO EDGE"
+    assert rows.loc[3, "signal"] == "OVER"
+    assert rows["min_edge"].tolist() == [0.1, 0.01]
 
 
 @pytest.mark.parametrize("spread,side", [(False, "OVER"), (True, "HOME")])

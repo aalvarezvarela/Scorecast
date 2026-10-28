@@ -15,10 +15,10 @@ st.set_page_config(
 )
 
 for key, value in {
-    "today_target": 2,
+    "today_target": 1,
     "today_view": "Cards",
     "today_reference": "Bet365",
-    "today_charts": True,
+    "today_charts": False,
 }.items():
     if key not in st.session_state:
         st.session_state[key] = value

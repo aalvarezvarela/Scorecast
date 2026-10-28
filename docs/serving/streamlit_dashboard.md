@@ -88,10 +88,26 @@ HTML components are used. APIs are compatible with the installed 1.54.
     Refresh data clears that slate's cached read without launching inference.
 11. Directional badges require `abs(market_edge) > minimum_edge`; equality and
     smaller values show NO EDGE while the numeric values remain visible.
-    The default is 1.0 point, adjustable in Display settings over the production
-    evaluation levels `(0, 0.1, 0.5, 1, 1.5, 2, 3, 4, 6)` from the retraining
-    campaigns. This is a display filter, not a calibrated confidence score.
-12. Cards and Table share the game order: tip-off by default, or the largest
+    The minimum is per model kind: 0.1 point for registry (XGBoost) models and
+    0.01 for TabPFN, whose outputs sit much closer to the line. Both are
+    adjustable in Settings over `(0, 0.01, 0.05, 0.1, 0.5, 1, 1.5, 2, 3, 4, 6)`.
+    This is a display filter, not a calibrated confidence score.
+12. Each game reduces to one instruction (`domain/picks.py`): a bet when every
+    directional prediction points the same way (predictions below their
+    minimum count in the `n of m`, those without a line do not vote), "models
+    disagree" when any two oppose, otherwise no bet. The bet names the line at
+    the selected reference: `OVER 230.5`, or for spread the team and its
+    handicap (implied home margin 3.5 → home `-3.5`, away `+3.5`). Bets are
+    listed above the cards. Line error is the default target; charts are off
+    by default.
+13. A model kind with no live output for the target (typically TabPFN before
+    its first run of the day) is still listed in every card.
+14. Line freshness: the line history stores changes only, so a quote's stored
+    age is how long Bet365 had gone without moving line or price at the
+    snapshot. Cards show that as "Last Bet365 move HH:MM" (snapshot time minus
+    age) next to the snapshot time, and flag the snapshot itself once it is
+    60 minutes old, since the line may have moved after it.
+15. Cards and Table share the game order: tip-off by default, or the largest
     absolute market edge per game (missing edges last, tip-off breaks ties).
     Within a game, Largest edge also orders the prediction rows by magnitude.
 

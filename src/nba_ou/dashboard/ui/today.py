@@ -6,15 +6,19 @@ import pandas as pd
 
 import streamlit as st
 from nba_ou.dashboard.config import (
-    DEFAULT_MIN_EDGE_POINTS,
+    DEFAULT_MIN_EDGE_BY_KIND,
+    DEFAULT_TARGET,
     MIN_EDGE_LEVELS,
+    MODEL_NAMES,
     REFERENCE_COLUMNS,
+    SIGNAL_COLORS,
     TARGET_LABELS,
 )
 from nba_ou.dashboard.domain.comparisons import compare_predictions
-from nba_ou.dashboard.domain.dates import madrid_time, slate_date
+from nba_ou.dashboard.domain.dates import madrid_clock, madrid_time, slate_date
 from nba_ou.dashboard.domain.models import model_families
 from nba_ou.dashboard.domain.ordering import order_board
+from nba_ou.dashboard.domain.picks import bet_text, game_pick
 from nba_ou.dashboard.domain.selection import (
     live_predictions,
     market_snapshots,
@@ -27,11 +31,64 @@ from nba_ou.dashboard.ui.loaders import load_today
 from nba_ou.dashboard.ui.prediction_table import render_prediction_table
 
 
+def _min_edge_select(kind: int) -> float:
+    default = DEFAULT_MIN_EDGE_BY_KIND[kind]
+    return st.selectbox(
+        f"Minimum edge · {MODEL_NAMES[kind]} (points)",
+        MIN_EDGE_LEVELS,
+        index=MIN_EDGE_LEVELS.index(default),
+        key=f"today_min_edge_{MODEL_NAMES[kind].lower()}",
+        help="A prediction bets only when its absolute market edge is strictly "
+        "above this threshold. All predictions remain visible.",
+    )
+
+
+def _picks_summary(games, picks, markets_by_game, reference) -> None:
+    bets = [game_id for game_id, pick in picks.items() if pick.status == "BET"]
+    with st.container(horizontal=True):
+        st.metric("Games", len(games), border=True)
+        st.metric("Bets", len(bets), border=True)
+        st.metric(
+            "Models disagree",
+            sum(pick.status == "SPLIT" for pick in picks.values()),
+            border=True,
+        )
+        st.metric(
+            "No bet",
+            sum(pick.status in ("NO BET", "NO LINE") for pick in picks.values()),
+            border=True,
+        )
+    if not bets:
+        return
+    with st.container(border=True):
+        st.markdown("**Tonight's bets**")
+        for _, game in games.loc[games["game_id"].isin(bets)].iterrows():
+            pick = picks[game["game_id"]]
+            market = (
+                markets_by_game.loc[game["game_id"]]
+                if game["game_id"] in markets_by_game.index
+                else None
+            )
+            line = (
+                market.get(REFERENCE_COLUMNS[reference]) if market is not None else None
+            )
+            text = bet_text(
+                pick.side, line, home=game["home_team"], away=game["away_team"]
+            )
+            st.markdown(
+                f"{madrid_clock(game['tipoff_at'])} · {game['away_team']} @ "
+                f"{game['home_team']} → :{SIGNAL_COLORS[pick.side]}[**{text}**] "
+                f"· {pick.agreeing}/{pick.predictions}"
+            )
+
+
 @st.fragment(run_every="60s")
 def render_today() -> None:
     game_date = slate_date()
     st.caption(f"NBA slate · {game_date.strftime('%d %b %Y')} · All times in Madrid")
-    target_col, refresh_col = st.columns([4, 1], vertical_alignment="bottom")
+    target_col, view_col, refresh_col = st.columns(
+        [4, 2, 1], vertical_alignment="bottom"
+    )
     with target_col:
         target = st.segmented_control(
             "Prediction target",
@@ -40,11 +97,18 @@ def render_today() -> None:
             key="today_target",
             width="stretch",
         )
+    with view_col:
+        view = (
+            st.segmented_control(
+                "Display", ["Cards", "Table"], key="today_view", width="stretch"
+            )
+            or "Cards"
+        )
     with refresh_col:
-        if st.button("Refresh data", icon=":material/refresh:", width="stretch"):
+        if st.button("Refresh", icon=":material/refresh:", width="stretch"):
             load_today.clear(game_date)
     # Segmented controls can be deselected; keep a sensible explicit default.
-    target = target or 2
+    target = target or DEFAULT_TARGET
     spread = target == 3
     try:
         # Only the session's first read shows a spinner, not each minute's refresh.
@@ -84,8 +148,7 @@ def render_today() -> None:
         k for k in labels if k not in known
     ]
     st.session_state[known_key] = known | set(labels)
-    model_col, view_col = st.columns([3, 2], vertical_alignment="bottom")
-    with model_col:
+    with st.popover("Settings", icon=":material/tune:"):
         family_keys = st.multiselect(
             "Models",
             list(labels),
@@ -93,27 +156,13 @@ def render_today() -> None:
             key=models_key,
             placeholder="Select models",
         )
-    with view_col:
-        view = (
-            st.segmented_control(
-                "Display", ["Cards", "Table"], key="today_view", width="stretch"
-            )
-            or "Cards"
-        )
-    with st.popover("Display settings", icon=":material/tune:"):
         reference = st.selectbox(
             "Compare against",
             list(REFERENCE_COLUMNS),
             key="today_reference",
-            help="This changes the displayed edge and signal, never the model's original prediction.",
+            help="This changes the displayed edge and pick, never the model's original prediction.",
         )
-        min_edge = st.selectbox(
-            "Minimum edge (points)",
-            MIN_EDGE_LEVELS,
-            index=MIN_EDGE_LEVELS.index(DEFAULT_MIN_EDGE_POINTS),
-            key="today_min_edge",
-            help="Directional signals require an absolute market edge strictly above this threshold. All predictions remain visible.",
-        )
+        min_edge = {kind: _min_edge_select(kind) for kind in MODEL_NAMES}
         show_chart = st.toggle("Show comparison charts", key="today_charts")
         sort_by = st.selectbox(
             "Sort games by", ["Tip-off", "Largest edge"], key="today_sort"
@@ -124,49 +173,43 @@ def render_today() -> None:
     predictions = compare_predictions(selected, markets, reference, min_edge=min_edge)
     games, predictions = order_board(games, predictions, sort_by)
     visible_families = [f for f in families if f.key in family_keys]
+    # A model with no live output for this target still gets a row, so a
+    # TabPFN run that has not happened yet is visible rather than absent.
+    missing_models = tuple(
+        name
+        for kind, name in MODEL_NAMES.items()
+        if not any(family.kind == kind for family in families)
+    )
+    markets_by_game = (
+        markets.set_index("game_id") if not markets.empty else pd.DataFrame()
+    )
+    by_game = {
+        game_id: (
+            predictions.loc[predictions["game_id"].eq(game_id)]
+            if not predictions.empty
+            else predictions
+        )
+        for game_id in games["game_id"]
+    }
+    picks = {game_id: game_pick(rows) for game_id, rows in by_game.items()}
 
-    with st.container(horizontal=True):
-        st.metric("Games tonight", len(games), border=True)
-        st.metric(
-            "With predictions",
-            f"{predictions['game_id'].nunique() if not predictions.empty else 0} / {len(games)}",
-            border=True,
-        )
-        st.metric(
-            "Closing",
-            int(predictions["dataset_type"].eq(1).sum())
-            if not predictions.empty
-            else 0,
-            border=True,
-        )
-        st.metric(
-            "Intermediate",
-            int(predictions["dataset_type"].eq(2).sum())
-            if not predictions.empty
-            else 0,
-            border=True,
-        )
+    _picks_summary(games, picks, markets_by_game, reference)
     latest = live["predicted_at"].max() if not live.empty else None
-    st.caption(
-        f"Last read: {madrid_time(data.fetched_at, include_date=False)} · Latest available prediction: {madrid_time(latest)} · Updates every minute"
+    thresholds = " · ".join(
+        f"{MODEL_NAMES[kind]} > {value:g}" for kind, value in min_edge.items()
     )
     st.caption(
-        "Games recorded in Aiven. Market values are stored snapshots, not live quotes. Each game uses its nearest available intermediate model horizon."
+        f"A prediction bets when |edge vs {reference}| clears its minimum ({thresholds} pts); "
+        "a game is a bet when every such prediction points the same way. "
+        f"Latest prediction {madrid_time(latest)} · read {madrid_clock(data.fetched_at)} · updates every minute."
     )
-    st.caption(
-        f"Signals require |edge vs {reference}| > {min_edge:g} points. Smaller edges are shown as NO EDGE."
-    )
-    if spread:
-        st.caption(
-            "Spread lines show the implied home margin. HOME/AWAY signals compare the reconstructed margin with the selected market line; the original model error remains visible."
-        )
 
     if not families:
         st.info(
             "No live predictions are available for this target yet. Recorded games and available market lines are shown below."
         )
     elif not family_keys:
-        st.info("Select at least one model to display predictions.")
+        st.info("Select at least one model in Settings to display predictions.")
 
     if view == "Table":
         render_prediction_table(predictions, reference, spread=spread)
@@ -179,27 +222,23 @@ def render_today() -> None:
             )
         return
 
-    markets_by_game = (
-        markets.set_index("game_id") if not markets.empty else pd.DataFrame()
-    )
     with st.container(horizontal=True, gap="medium"):
         for _, game in games.iterrows():
-            game_predictions = predictions.loc[
-                predictions["game_id"].eq(game["game_id"])
-            ]
             market = (
                 markets_by_game.loc[game["game_id"]]
                 if game["game_id"] in markets_by_game.index
                 else None
             )
-            with st.container(width=640):
+            with st.container(width=560):
                 render_game_card(
                     game,
-                    game_predictions,
+                    by_game[game["game_id"]],
                     market,
                     visible_families,
                     reference,
+                    picks[game["game_id"]],
                     spread=spread,
                     show_chart=show_chart,
                     now=now,
+                    missing_models=missing_models,
                 )

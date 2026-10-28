@@ -43,29 +43,78 @@ def rendered_signals(app):
     }
 
 
-def test_today_shows_both_team_images_madrid_times_and_comparisons(app_setup):
+def headlines(app):
+    return [
+        text.value.removeprefix("### ")
+        for text in app.markdown
+        if text.value.startswith("### ")
+    ]
+
+
+def test_today_opens_on_line_error_with_the_bet_first(app_setup):
     app = AppTest.from_file(str(ENTRYPOINT)).run()
     assert not app.exception
     assert app.title[0].value == "Today's predictions"
+    assert app.session_state["today_target"] == 1
     assert len(app.get("imgs")) == 4
-    assert any("28 Oct 2026, 23:00 Madrid" in text.value for text in app.markdown)
-    assert rendered_signals(app) == {"OVER"}
-    assert len(app.get("arrow_vega_lite_chart")) == 2
+    assert any("28 Oct 2026, 23:00 Madrid" in text.value for text in app.caption)
+    # 229 + 1.0 against Bet365 230.5: -0.5 clears XGBoost's 0.1 minimum.
+    assert rendered_signals(app) == {"UNDER"}
+    assert headlines(app) == [":blue[UNDER 230.5]"] * 2
+    assert {m.label: m.value for m in app.metric}["Bets"] == "2"
+    assert not app.get("arrow_vega_lite_chart")
+
+
+def test_tabpfn_is_listed_before_its_first_run(app_setup):
+    app = AppTest.from_file(str(ENTRYPOINT)).run()
+    assert not app.exception
+    assert sum("TabPFN · no prediction yet" in text.value for text in app.caption) == 2
 
 
 def test_targets_update_totals_and_spread_without_loading_again(app_setup):
     app = AppTest.from_file(str(ENTRYPOINT)).run()
-    app.session_state["today_target"] = 1
+    app.session_state["today_target"] = 2
     app.run()
     assert not app.exception
-    assert rendered_signals(app) == {"NO EDGE"}
+    assert rendered_signals(app) == {"OVER"}
     app.session_state["today_target"] = 3
     app.run()
     assert not app.exception
     assert rendered_signals(app) == {"AWAY"}
-    assert any(m.label == "Predicted spread error" for m in app.metric)
-    assert not any(m.label == "Predicted total" for m in app.metric)
+    # Bet365 implied home margin 3.5: the away side gets +3.5.
+    assert headlines(app) == [
+        ":blue[Golden State Warriors +3.5]",
+        ":blue[New York Knicks +3.5]",
+    ]
     assert app_setup.call_count == 1
+
+
+def test_models_that_disagree_are_not_a_bet(app_setup, today_data):
+    mask = (
+        today_data.predictions["game_id"].eq(1)
+        & today_data.predictions["target"].eq(1)
+        & today_data.predictions["dataset_type"].eq(1)
+    )
+    today_data.predictions.loc[mask, "prediction_value"] = 3.0
+    app = AppTest.from_file(str(ENTRYPOINT)).run()
+    assert not app.exception
+    assert ":gray[No bet: models disagree]" in "".join(headlines(app))
+    assert any(text.value == "1 OVER · 1 UNDER" for text in app.caption)
+    assert {m.label: m.value for m in app.metric}["Models disagree"] == "1"
+
+
+def test_line_freshness_shows_last_move_and_flags_an_old_read(app_setup, today_data):
+    today_data.predictions["input_at"] = NOW - pd.Timedelta(minutes=68)
+    today_data.predictions["bet_line_age_minutes"] = 58.0
+    app = AppTest.from_file(str(ENTRYPOINT)).run()
+    assert not app.exception
+    # 18:00 UTC is 19:00 Madrid: read at 17:52, last move 58 min before.
+    stale = [text.value for text in app.caption if "Last Bet365 move" in text.value]
+    assert stale and all(
+        value.startswith("Last Bet365 move 16:54 · :orange[line read 17:52 Madrid")
+        for value in stale
+    )
+    assert all("68 min ago" in value for value in stale)
 
 
 @pytest.mark.parametrize(
@@ -135,14 +184,11 @@ def test_spread_reference_changes_badge_and_exposes_market_edge(app_setup, today
     app.run()
     assert not app.exception
     assert rendered_signals(app) == {"AWAY"}
-    assert {m.value for m in app.metric if m.label == "Predicted spread error"} == {
-        "+2.0"
-    }
-    assert {m.value for m in app.metric if m.label == "Edge vs Bet365"} == {"-2.0"}
+    assert any(":blue[New York Knicks +7.5]" == h for h in headlines(app))
     app.selectbox(key="today_reference").select("Market mean").run()
     assert not app.exception
     assert rendered_signals(app) == {"HOME"}
-    assert {m.value for m in app.metric if m.label == "Edge vs Market mean"} == {"+2.5"}
+    assert any(":orange[Boston Celtics -3.0]" == h for h in headlines(app))
     app.session_state["today_view"] = "Table"
     app.run()
     assert not app.exception
@@ -154,12 +200,13 @@ def test_spread_reference_changes_badge_and_exposes_market_edge(app_setup, today
 
 def test_minimum_edge_neutralizes_badges_but_preserves_values(app_setup):
     app = AppTest.from_file(str(ENTRYPOINT)).run()
-    assert rendered_signals(app) == {"OVER"}
-    before = [m.value for m in app.metric if m.label == "Predicted total"]
-    app.selectbox(key="today_min_edge").select(2.0).run()
+    assert rendered_signals(app) == {"UNDER"}
+    before = [text.value for text in app.markdown if text.value == "230.0"]
+    app.selectbox(key="today_min_edge_xgboost").select(1.0).run()
     assert not app.exception
     assert rendered_signals(app) == {"NO EDGE"}
-    assert [m.value for m in app.metric if m.label == "Predicted total"] == before
+    assert headlines(app) == [":gray[No bet]"] * 2
+    assert [text.value for text in app.markdown if text.value == "230.0"] == before
     assert app_setup.call_count == 1
 
 
@@ -170,6 +217,7 @@ def test_table_honors_largest_edge_sort_and_can_return_to_tipoff(app_setup, toda
         "prediction_value",
     ] = 240.0
     app = AppTest.from_file(str(ENTRYPOINT))
+    app.session_state["today_target"] = 2
     app.session_state["today_view"] = "Table"
     app.run()
     assert not app.exception
@@ -187,7 +235,9 @@ def test_table_honors_largest_edge_sort_and_can_return_to_tipoff(app_setup, toda
 def test_new_model_families_are_selected_without_restoring_removed_ones(
     app_setup, today_data
 ):
-    app = AppTest.from_file(str(ENTRYPOINT)).run()
+    app = AppTest.from_file(str(ENTRYPOINT))
+    app.session_state["today_target"] = 2
+    app.run()
     app.multiselect(key="today_models_2").set_value([]).run()
     assert not app.exception
     extra = today_data.predictions.loc[today_data.predictions["target"].eq(2)].copy()

@@ -36,6 +36,7 @@ def render_prediction_table(
         "Market mean",
         "Market median",
     ]
+    numeric_formats = {"Min edge": "%g"}
     st.dataframe(
         display.style.map(signal_style, subset=["Signal"]),
         hide_index=True,
@@ -46,6 +47,10 @@ def render_prediction_table(
                 label: st.column_config.NumberColumn(label, format="%.1f")
                 for label in numeric_columns
                 if label in display
+            },
+            **{
+                label: st.column_config.NumberColumn(label, format=pattern)
+                for label, pattern in numeric_formats.items()
             },
         },
         width="stretch",

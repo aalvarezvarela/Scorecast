@@ -27,6 +27,7 @@ def prediction_table(
     else:
         display["Spread error"] = predictions["predicted_error"]
     display[f"Edge vs {reference}"] = predictions["comparison_edge"]
+    display["Min edge"] = predictions["min_edge"]
     display["Signal"] = predictions["signal"]
     display["Predicted at (Madrid)"] = predictions["predicted_at"].map(madrid_time)
     return display

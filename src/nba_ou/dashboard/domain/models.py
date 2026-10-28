@@ -4,13 +4,28 @@ from dataclasses import dataclass
 
 import pandas as pd
 
+from nba_ou.dashboard.config import MODEL_NAMES
+
 
 @dataclass(frozen=True)
 class ModelFamily:
     key: str
     label: str
+    kind: int
     closing: bool
     intermediate: bool
+
+
+def model_name(kind) -> str:
+    return MODEL_NAMES.get(int(kind), f"Model kind {kind}")
+
+
+def family_label(kind, schema_version, variant) -> str:
+    # TabPFN variants repeat the model name (``tabpfn_v3_5``).
+    variant = str(variant).removeprefix("tabpfn_")
+    return f"{model_name(kind)} · {str(schema_version).replace('_', '.')}" + (
+        f" · {variant}" if variant != "main" else ""
+    )
 
 
 def with_family_metadata(frame: pd.DataFrame) -> pd.DataFrame:
@@ -22,10 +37,9 @@ def with_family_metadata(frame: pd.DataFrame) -> pd.DataFrame:
         + ":"
         + work["variant"].astype(str)
     )
+    work["model_name"] = work["kind"].map(model_name)
     work["model_label"] = [
-        f"{'TabPFN' if int(kind) == 3 else 'Registry model'} · "
-        f"{str(version).replace('_', '.')}"
-        + (f" · {variant}" if variant != "main" else "")
+        family_label(kind, version, variant)
         for kind, version, variant in zip(
             work["kind"], work["schema_version"], work["variant"], strict=True
         )
@@ -41,6 +55,7 @@ def model_families(frame: pd.DataFrame, target: int) -> list[ModelFamily]:
         ModelFamily(
             key=key,
             label=group["model_label"].iloc[0],
+            kind=int(group["kind"].iloc[0]),
             closing=bool(group["dataset_type"].eq(1).any()),
             intermediate=bool(group["dataset_type"].eq(2).any()),
         )

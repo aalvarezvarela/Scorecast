@@ -1,6 +1,7 @@
 """Keep a model's original anchor separate from the market used for comparison."""
 
 import math
+from collections.abc import Mapping
 
 import pandas as pd
 
@@ -31,8 +32,9 @@ def compare_predictions(
     markets: pd.DataFrame,
     reference: str = "Bet365",
     *,
-    min_edge: float = DEFAULT_MIN_EDGE_POINTS,
+    min_edge: float | Mapping[int, float] = DEFAULT_MIN_EDGE_POINTS,
 ) -> pd.DataFrame:
+    """``min_edge`` is one threshold, or one per ``kind`` (TabPFN differs)."""
     if selected.empty:
         return selected.copy()
     work = selected.copy()
@@ -67,8 +69,18 @@ def compare_predictions(
             work[column], errors="coerce"
         )
     work["comparison_edge"] = work[f"edge_{REFERENCE_COLUMNS[reference]}"]
+    work["min_edge"] = [
+        (
+            float(min_edge.get(int(kind), DEFAULT_MIN_EDGE_POINTS))
+            if isinstance(min_edge, Mapping)
+            else float(min_edge)
+        )
+        for kind in work["kind"]
+    ]
     work["signal"] = [
-        signal(edge, spread=int(target) == 3, min_edge=min_edge)
-        for edge, target in zip(work["comparison_edge"], work["target"], strict=True)
+        signal(edge, spread=int(target) == 3, min_edge=threshold)
+        for edge, target, threshold in zip(
+            work["comparison_edge"], work["target"], work["min_edge"], strict=True
+        )
     ]
     return work

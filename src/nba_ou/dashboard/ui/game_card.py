@@ -1,14 +1,23 @@
-"""Native, responsive game cards retaining both teams' existing logo images."""
+"""One card per game: the bet first, then the predictions and the line behind it."""
 
 import pandas as pd
 
 import streamlit as st
-from nba_ou.dashboard.config import SIGNAL_COLORS
-from nba_ou.dashboard.domain.dates import horizon_label, madrid_time, time_remaining
+from nba_ou.dashboard.config import REFERENCE_COLUMNS, SIGNAL_COLORS
+from nba_ou.dashboard.domain.dates import (
+    horizon_label,
+    madrid_clock,
+    madrid_time,
+    time_remaining,
+)
 from nba_ou.dashboard.domain.models import ModelFamily
+from nba_ou.dashboard.domain.picks import GamePick, bet_text
 from nba_ou.dashboard.domain.teams import team_logo_url
 from nba_ou.dashboard.ui.charts import comparison_chart
 from nba_ou.dashboard.ui.formatting import number, prediction_table
+
+# Beyond this the stored line may no longer be the one on offer.
+STALE_SNAPSHOT_MINUTES = 60
 
 
 def _team(name: str, team_id, role: str) -> None:
@@ -16,70 +25,106 @@ def _team(name: str, team_id, role: str) -> None:
         logo = team_logo_url(name, team_id)
         if logo:
             # Streamlit 1.54 has no image alt parameter; the visible caption
-            # names the team, and the adjacent text remains usable without images.
-            st.image(logo, width=48, caption=role)
+            # names the side, and the adjacent text remains usable without images.
+            st.image(logo, width=44, caption=role)
         st.markdown(f"**{name}**")
 
 
-def _market(market: pd.Series | None, *, spread: bool, now) -> None:
-    cols = st.columns(3)
-    for col, label, field in zip(
-        cols,
-        ("Bet365", "Market mean", "Market median"),
-        ("bet365_line", "books_mean_line", "books_median_line"),
+def _headline(pick: GamePick, market: pd.Series | None, reference: str, game) -> None:
+    if pick.status == "BET":
+        line = market.get(REFERENCE_COLUMNS[reference]) if market is not None else None
+        text = bet_text(pick.side, line, home=game["home_team"], away=game["away_team"])
+        st.markdown(f"### :{SIGNAL_COLORS[pick.side]}[{text}]")
+        st.caption(
+            f"{reference} line · {pick.agreeing} of {pick.predictions} "
+            "predictions agree, none against"
+        )
+        return
+    headline, detail = {
+        "SPLIT": (
+            "No bet: models disagree",
+            " · ".join(f"{count} {side}" for side, count in pick.counts.items()),
+        ),
+        "NO BET": ("No bet", "No prediction clears its minimum edge."),
+        "NO LINE": ("No bet: no line", f"No stored {reference} line to bet against."),
+        "PENDING": ("No predictions yet", "Waiting for the next prediction run."),
+    }[pick.status]
+    st.markdown(f"### :gray[{headline}]")
+    st.caption(detail)
+
+
+def _phase(row: pd.Series) -> str:
+    if row["phase"] == "Closing":
+        return "Closing"
+    return horizon_label(row["model_horizon_minutes"])
+
+
+def _predictions(
+    predictions: pd.DataFrame,
+    families: list[ModelFamily],
+    missing_models: tuple[str, ...],
+    *,
+    spread: bool,
+) -> None:
+    widths = [3, 2, 2, 2]
+    head = st.columns(widths)
+    for column, label in zip(
+        head,
+        ("Model", "Pred. margin" if spread else "Pred. total", "Edge", "Pick"),
         strict=True,
     ):
-        with col:
-            st.metric(label, number(market.get(field) if market is not None else None))
+        column.caption(label)
+    for _, row in predictions.iterrows():
+        name, value, edge, pick = st.columns(widths, vertical_alignment="center")
+        name.markdown(
+            f"**{row['model_name']}** · {_phase(row)}",
+            help=f"{row['model_label']}. Predicted {madrid_time(row['predicted_at'])}. "
+            f"Bets when |edge| > {row['min_edge']:g} pts.",
+        )
+        value.markdown(
+            number(row["predicted_home_margin" if spread else "predicted_total"])
+        )
+        edge.markdown(number(row["comparison_edge"], signed=True))
+        with pick:
+            st.badge(row["signal"], color=SIGNAL_COLORS[row["signal"]])
+    shown = set(predictions["family_key"]) if not predictions.empty else set()
+    for family in families:
+        if family.key not in shown:
+            st.caption(f"{family.label} · no prediction for this game")
+    for name in missing_models:
+        st.caption(f"{name} · no prediction yet for tonight")
+
+
+def _market(market: pd.Series | None, *, spread: bool, now) -> None:
     if market is None:
-        st.caption("Market data unavailable. No substitute line has been assumed.")
+        st.caption("No stored Bet365 line. No substitute line has been assumed.")
         return
     count = market.get("books_count")
-    count_label = (
-        f"{int(count)} bookmakers" if pd.notna(count) else "Bookmaker count unavailable"
+    books = f" · {int(count)} books" if pd.notna(count) else ""
+    st.caption(
+        ("Implied home margin · " if spread else "")
+        + f"Bet365 **{number(market.get('bet365_line'))}** · "
+        f"mean {number(market.get('books_mean_line'))} · "
+        f"median {number(market.get('books_median_line'))}{books}"
     )
-    st.caption(f"{count_label} · Snapshot: {madrid_time(market['market_at'])}")
+    read_at = market["market_at"]
+    # The line history stores changes only: the quote's age at the snapshot is
+    # how long Bet365 had gone without moving line or price.
     age = market.get("bet_line_age_minutes")
-    if pd.notna(age):
-        elapsed = max(0, (pd.Timestamp(now) - market["market_at"]).total_seconds() / 60)
-        if age + elapsed >= 30:
-            st.caption(
-                f":orange[Bet365 quote is approximately {int(age + elapsed)} min old.]"
-            )
-    if spread:
+    moved = (
+        f"Last Bet365 move {madrid_clock(read_at - pd.Timedelta(minutes=age))} · "
+        if pd.notna(age)
+        else ""
+    )
+    elapsed = max(0, (pd.Timestamp(now) - read_at).total_seconds() / 60)
+    snapshot = f"line read {madrid_clock(read_at)} Madrid"
+    if elapsed >= STALE_SNAPSHOT_MINUTES:
         st.caption(
-            "Spread lines are implied home margins. Signals use the selected market reference."
-        )
-
-
-def _prediction(row: pd.Series, reference: str, *, spread: bool, now) -> None:
-    st.caption(row["model_label"])
-    with st.container(horizontal=True, vertical_alignment="center"):
-        st.badge(row["signal"], color=SIGNAL_COLORS[row["signal"]])
-        if row["phase"] == "Intermediate":
-            st.caption(f"{horizon_label(row['model_horizon_minutes'])} model")
-    if spread:
-        left, right = st.columns(2)
-        left.metric(
-            "Predicted spread error",
-            number(row["predicted_error"], signed=True),
-            help="Original error relative to the line used by the model.",
-        )
-        right.metric(
-            f"Edge vs {reference}", number(row["comparison_edge"], signed=True)
+            f"{moved}:orange[{snapshot}, {int(elapsed)} min ago: "
+            "check the live price before betting.]"
         )
     else:
-        left, right = st.columns(2)
-        left.metric("Predicted total", number(row["predicted_total"]))
-        right.metric(
-            f"Edge vs {reference}", number(row["comparison_edge"], signed=True)
-        )
-        st.caption(
-            f"Error vs model line: {number(row['predicted_error'], signed=True)} pts"
-        )
-    st.caption(f"Predicted: {madrid_time(row['predicted_at'])}")
-    if (pd.Timestamp(now) - row["predicted_at"]).total_seconds() > 3600:
-        st.caption(":orange[Prediction is more than 1 hour old.]")
+        st.caption(f"{moved}{snapshot}")
 
 
 def render_game_card(
@@ -88,10 +133,12 @@ def render_game_card(
     market: pd.Series | None,
     families: list[ModelFamily],
     reference: str,
+    pick: GamePick,
     *,
     spread: bool,
     show_chart: bool,
     now,
+    missing_models: tuple[str, ...] = (),
 ) -> None:
     with st.container(border=True):
         away, home = st.columns(2)
@@ -99,30 +146,12 @@ def render_game_card(
             _team(game["away_team"], game["away_team_id"], "Away")
         with home:
             _team(game["home_team"], game["home_team_id"], "Home")
-        st.markdown(
+        st.caption(
             f"**{madrid_time(game['tipoff_at'])}** · {time_remaining(game['tipoff_at'], now)}"
         )
+        _headline(pick, market, reference, game)
+        _predictions(predictions, families, missing_models, spread=spread)
         _market(market, spread=spread, now=now)
-
-        closing, intermediate = st.columns(2)
-        for column, phase in ((closing, "Closing"), (intermediate, "Intermediate")):
-            with column:
-                st.markdown(f"**{phase} predictions**")
-                for family in families:
-                    rows = (
-                        predictions.loc[
-                            predictions["family_key"].eq(family.key)
-                            & predictions["phase"].eq(phase)
-                        ]
-                        if not predictions.empty
-                        else predictions
-                    )
-                    if rows.empty:
-                        st.caption(f"{family.label} · Not available")
-                    else:
-                        _prediction(rows.iloc[0], reference, spread=spread, now=now)
-                if not families:
-                    st.caption("Not available")
 
         if not predictions.empty and show_chart:
             chart = comparison_chart(
