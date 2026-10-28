@@ -4,6 +4,7 @@ import pandas as pd
 
 from nba_ou.dashboard.domain.dates import utc_timestamp
 from nba_ou.dashboard.domain.models import with_family_metadata
+from nba_ou.dashboard.domain.teams import full_team_name
 
 FAMILY_COLUMNS = ["game_id", "kind", "schema_version", "target", "variant"]
 SLOT_COLUMNS = [*FAMILY_COLUMNS, "dataset_type", "model_horizon_minutes"]
@@ -38,18 +39,29 @@ def upcoming_games(frame: pd.DataFrame, now) -> pd.DataFrame:
         return frame.copy()
     work = frame.copy()
     work["tipoff_at"] = pd.to_datetime(work["tipoff_at"], utc=True, errors="coerce")
+    for side in ("home", "away"):
+        work[f"{side}_team"] = [
+            full_team_name(name, team_id)
+            for name, team_id in zip(
+                work[f"{side}_team"], work[f"{side}_team_id"], strict=True
+            )
+        ]
     return work.loc[
         work["status"].eq(0) & work["tipoff_at"].gt(utc_timestamp(now))
     ].sort_values(["tipoff_at", "game_id"])
 
 
 def select_predictions(
-    frame: pd.DataFrame, target: int, now, family_keys: list[str] | None = None
+    frame: pd.DataFrame,
+    target: int | tuple[int, ...],
+    now,
+    family_keys: list[str] | None = None,
 ) -> pd.DataFrame:
     work = live_predictions(frame, now)
     if work.empty:
         return work
-    work = with_family_metadata(work.loc[work["target"].eq(target)])
+    targets = (target,) if isinstance(target, int) else target
+    work = with_family_metadata(work.loc[work["target"].isin(targets)])
     if family_keys is not None:
         work = work.loc[work["family_key"].isin(family_keys)].copy()
     if work.empty:

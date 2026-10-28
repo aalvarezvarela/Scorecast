@@ -10,7 +10,7 @@ DIRECTIONAL = ("OVER", "UNDER", "HOME", "AWAY")
 
 @dataclass(frozen=True)
 class GamePick:
-    """``status``: BET, SPLIT (directions disagree), NO BET, NO LINE, PENDING."""
+    """``status``: BET, TIE, NO BET, NO LINE, PENDING."""
 
     status: str
     side: str | None = None
@@ -20,10 +20,10 @@ class GamePick:
 
 
 def game_pick(predictions: pd.DataFrame) -> GamePick:
-    """Bet only when every directional signal points the same way.
+    """Follow the simple majority of directional signals; a tie is no bet.
 
     A prediction without a market line cannot vote; one below its minimum edge
-    votes for no bet, and ``agreeing`` out of ``predictions`` discloses it.
+    abstains, and ``agreeing`` out of ``predictions`` discloses it.
     """
     if predictions.empty:
         return GamePick("PENDING")
@@ -38,9 +38,11 @@ def game_pick(predictions: pd.DataFrame) -> GamePick:
     }
     if not counts:
         return GamePick("NO BET", predictions=available)
-    if len(counts) > 1:
-        return GamePick("SPLIT", predictions=available, counts=counts)
-    ((side, agreeing),) = counts.items()
+    agreeing = max(counts.values())
+    winners = [side for side, votes in counts.items() if votes == agreeing]
+    if len(winners) > 1:
+        return GamePick("TIE", predictions=available, counts=counts)
+    side = winners[0]
     return GamePick("BET", side, agreeing, available, counts)
 
 

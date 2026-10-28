@@ -39,13 +39,18 @@ _ESPN_IDS = {
 _NAMES_BY_ID = {int(team_id): name for name, team_id in TEAM_ID_MAP.items()}
 
 
-def team_logo_url(name: str, nba_team_id=None) -> str | None:
+def full_team_name(name: str, nba_team_id=None) -> str:
+    """Prefer stable NBA IDs to abbreviated or source-specific display names."""
     if nba_team_id is not None:
         try:
             name = _NAMES_BY_ID.get(int(nba_team_id), name)
         except (ValueError, TypeError):
             pass
-    name = TEAM_NAME_STANDARDIZATION.get(name, name)
+    return TEAM_NAME_STANDARDIZATION.get(name, name)
+
+
+def team_logo_url(name: str, nba_team_id=None) -> str | None:
+    name = full_team_name(name, nba_team_id)
     espn_id = _ESPN_IDS.get(name)
     if espn_id is None:
         return None

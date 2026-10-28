@@ -17,6 +17,7 @@ def comparison_chart(
     data = predictions[
         [
             "model_label",
+            "target_label",
             "phase",
             "model_horizon_minutes",
             "predicted_error",
@@ -26,10 +27,11 @@ def comparison_chart(
         ]
     ].copy()
     data["label"] = [
-        f"{model} · {phase}"
+        f"{model} · {target} · {phase}"
         + (f" {horizon_label(horizon)}" if phase == "Intermediate" else "")
-        for model, phase, horizon in zip(
+        for model, target, phase, horizon in zip(
             data["model_label"],
+            data["target_label"],
             data["phase"],
             data["model_horizon_minutes"],
             strict=True,

@@ -58,6 +58,10 @@ HTML components are used. APIs are compatible with the installed 1.54.
    Equal distances prefer the longer horizon. For each slot, the newest
    output wins across fits. Different families may have different available
    horizons; labels disclose each one (particularly TabPFN).
+   The market selector offers Totals (both `line_error` and `total_points`
+   together) and Spread. Each underlying target keeps its own closing and
+   nearest intermediate prediction; neither is averaged away. Rows and chart
+   labels identify the target explicitly.
 5. Model horizon, input horizon, and prediction timestamp remain separate.
    Choosing a trained horizon does not imply its nominal snapshot has passed.
    The details expose both horizon fields and the original input mode.
@@ -92,16 +96,24 @@ HTML components are used. APIs are compatible with the installed 1.54.
     0.01 for TabPFN, whose outputs sit much closer to the line. Both are
     adjustable in Settings over `(0, 0.01, 0.05, 0.1, 0.5, 1, 1.5, 2, 3, 4, 6)`.
     This is a display filter, not a calibrated confidence score.
-12. Each game reduces to one instruction (`domain/picks.py`): a bet when every
-    directional prediction points the same way (predictions below their
-    minimum count in the `n of m`, those without a line do not vote), "models
-    disagree" when any two oppose, otherwise no bet. The bet names the line at
+12. Each game reduces to one instruction (`domain/picks.py`): the side with
+    the most directional votes wins, with one equal vote per prediction.
+    Predictions below their minimum abstain but count in the `n of m`; those
+    without a line do not vote. Tied directions show "No bet: tied vote";
+    no directional votes also means no bet. The bet names the line at
     the selected reference: `OVER 230.5`, or for spread the team and its
     handicap (implied home margin 3.5 → home `-3.5`, away `+3.5`). Bets are
-    listed above the cards. Line error is the default target; charts are off
-    by default.
+    listed after all games, with the summary metrics, in both Cards and Table.
+    Totals is the default market; charts are off by default. In Totals, the
+    headline considers both targets and both closing/intermediate outputs
+    from every available displayed model, including TabPFN, with no model
+    weights. Three UNDER votes and one OVER vote therefore give UNDER; the
+    caption discloses both counts instead of requiring unanimity.
 13. A model kind with no live output for the target (typically TabPFN before
     its first run of the day) is still listed in every card.
+    Model selection is currently fixed: registry/XGBoost schema `2_5`, plus
+    available TabPFN builds. Other registry schemas are excluded. There is no
+    model-selection widget; old session preferences cannot hide a model.
 14. Line freshness: the line history stores changes only, so a quote's stored
     age is how long Bet365 had gone without moving line or price at the
     snapshot. Cards show that as "Last Bet365 move HH:MM" (snapshot time minus
@@ -110,6 +122,48 @@ HTML components are used. APIs are compatible with the installed 1.54.
 15. Cards and Table share the game order: tip-off by default, or the largest
     absolute market edge per game (missing edges last, tip-off breaks ties).
     Within a game, Largest edge also orders the prediction rows by magnitude.
+16. Cards wrap in a content-sized horizontal container that fills the available
+    screen width. There are no configured pixel widths, minimum/maximum card
+    sizes or caps on the number of games per row; browser layout reflows them
+    as the available width changes.
+    Logos are 44px and team names stay written in full, resolved from the NBA
+    team IDs in `prediction.games`; the same names appear in the table,
+    details and tonight's bets. Per model family, totals cards use closing
+    and intermediate rows, with Total points and Line error in adjacent
+    column groups. Each target has separate Prediction and Margin columns
+    (four data columns in total); margins retain the colored pick. Different
+    target horizons remain labeled individually; missing
+    targets are shown as a dash, never a synthetic prediction. Pivoting the
+    display does not combine or remove any vote.
+
+## Read path and freshness timestamps
+
+The freshness text makes **no additional query** and does not read any
+`line_history` schema. `market_snapshots` uses values already in the cached
+prediction frame. "Last Bet365 move" is `market_at - bet_line_age_minutes`;
+"line read" is `market_at`. The former describes the last recorded quote
+change (line or price), not proof that the line stayed unchanged after the
+snapshot. Closing `market_at` is approximated by run start, as noted above.
+
+One cache miss makes two SELECTs in one read-only transaction:
+
+1. The date's `prediction.games` rows.
+2. `prediction.predictions_full`, joined with `prediction.model_builds` for
+   `anchor_book` and `prediction.runs` for `finished_at`.
+
+The view itself joins five distinct physical tables, all in `prediction`:
+`predictions`, `inputs`, `model_builds`, `games`, and `runs`. The two outer
+joins repeat tables already present in that view; they are not calls to
+another service or extra SQL round trips. Cache hits and market/model
+presentation changes do not trigger these reads.
+
+No repository query, prediction schema, or freshness calculation was changed
+for the combined Totals layout. Possible follow-up improvements, **not
+implemented here**: expose `anchor_book` and `run_finished_at` directly in the
+view to simplify the outer query, select only dashboard columns instead of
+`v.*`, and store a precise market-observation timestamp for closing inputs.
+Measure actual query plans before adding indexes or materializing another
+table; the timestamp display itself requires neither.
 
 ## Validation
 

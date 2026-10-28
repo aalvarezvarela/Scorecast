@@ -45,3 +45,21 @@ def test_spread_chart_plots_market_edge_when_it_opposes_original_error():
     assert records[0]["comparison_edge"] == -2
     assert records[0]["signal"] == "AWAY"
     assert spec["layer"][1]["encoding"]["x"]["field"] == "comparison_edge"
+
+
+def test_combined_totals_have_distinct_chart_labels_for_both_targets(today_data):
+    raw = today_data.predictions
+    markets = market_snapshots(raw, 1, NOW)
+    predictions = compare_predictions(select_predictions(raw, (1, 2), NOW), markets)
+    spec = comparison_chart(
+        predictions.loc[predictions["game_id"].eq(1)], markets.iloc[0], spread=False
+    ).to_dict()
+    points = [
+        row
+        for dataset in spec["datasets"].values()
+        for row in dataset
+        if "signal" in row
+    ]
+    assert len(points) == 4
+    assert len({row["label"] for row in points}) == 4
+    assert {row["target_label"] for row in points} == {"Line error", "Total points"}

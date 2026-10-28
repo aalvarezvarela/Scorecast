@@ -1,4 +1,4 @@
-"""One card per game: the bet first, then the predictions and the line behind it."""
+"""One card per game: the bet, market lines, and model predictions."""
 
 import pandas as pd
 
@@ -12,15 +12,20 @@ from nba_ou.dashboard.domain.dates import (
 )
 from nba_ou.dashboard.domain.models import ModelFamily
 from nba_ou.dashboard.domain.picks import GamePick, bet_text
-from nba_ou.dashboard.domain.teams import team_logo_url
+from nba_ou.dashboard.domain.teams import full_team_name, team_logo_url
 from nba_ou.dashboard.ui.charts import comparison_chart
-from nba_ou.dashboard.ui.formatting import number, prediction_table
+from nba_ou.dashboard.ui.formatting import (
+    compact_totals_table,
+    number,
+    prediction_table,
+)
 
 # Beyond this the stored line may no longer be the one on offer.
 STALE_SNAPSHOT_MINUTES = 60
 
 
 def _team(name: str, team_id, role: str) -> None:
+    name = full_team_name(name, team_id)
     with st.container(horizontal=True, vertical_alignment="center"):
         logo = team_logo_url(name, team_id)
         if logo:
@@ -36,13 +41,13 @@ def _headline(pick: GamePick, market: pd.Series | None, reference: str, game) ->
         text = bet_text(pick.side, line, home=game["home_team"], away=game["away_team"])
         st.markdown(f"### :{SIGNAL_COLORS[pick.side]}[{text}]")
         st.caption(
-            f"{reference} line · {pick.agreeing} of {pick.predictions} "
-            "predictions agree, none against"
+            f"{reference} line · Majority: {pick.agreeing} of {pick.predictions} predictions · "
+            + " · ".join(f"{count} {side}" for side, count in pick.counts.items())
         )
         return
     headline, detail = {
-        "SPLIT": (
-            "No bet: models disagree",
+        "TIE": (
+            "No bet: tied vote",
             " · ".join(f"{count} {side}" for side, count in pick.counts.items()),
         ),
         "NO BET": ("No bet", "No prediction clears its minimum edge."),
@@ -66,7 +71,22 @@ def _predictions(
     *,
     spread: bool,
 ) -> None:
-    widths = [3, 2, 2, 2]
+    if not spread:
+        for family in families:
+            rows = (
+                predictions.loc[predictions["family_key"].eq(family.key)]
+                if not predictions.empty
+                else predictions
+            )
+            if rows.empty:
+                st.caption(f"{family.label} · no prediction for this game")
+                continue
+            st.markdown(f"**{family.label}**")
+            st.table(compact_totals_table(rows), border="horizontal")
+        for name in missing_models:
+            st.caption(f"{name} · no prediction yet for tonight")
+        return
+    widths = [4, 2, 2, 2]
     head = st.columns(widths)
     for column, label in zip(
         head,
@@ -77,7 +97,7 @@ def _predictions(
     for _, row in predictions.iterrows():
         name, value, edge, pick = st.columns(widths, vertical_alignment="center")
         name.markdown(
-            f"**{row['model_name']}** · {_phase(row)}",
+            f"**{row['model_name']} · {row['target_label']}** · {_phase(row)}",
             help=f"{row['model_label']}. Predicted {madrid_time(row['predicted_at'])}. "
             f"Bets when |edge| > {row['min_edge']:g} pts.",
         )
@@ -101,11 +121,11 @@ def _market(market: pd.Series | None, *, spread: bool, now) -> None:
         return
     count = market.get("books_count")
     books = f" · {int(count)} books" if pd.notna(count) else ""
-    st.caption(
+    st.markdown(
         ("Implied home margin · " if spread else "")
         + f"Bet365 **{number(market.get('bet365_line'))}** · "
-        f"mean {number(market.get('books_mean_line'))} · "
-        f"median {number(market.get('books_median_line'))}{books}"
+        f"mean **{number(market.get('books_mean_line'))}** · "
+        f"median **{number(market.get('books_median_line'))}**{books}"
     )
     read_at = market["market_at"]
     # The line history stores changes only: the quote's age at the snapshot is
@@ -150,8 +170,8 @@ def render_game_card(
             f"**{madrid_time(game['tipoff_at'])}** · {time_remaining(game['tipoff_at'], now)}"
         )
         _headline(pick, market, reference, game)
-        _predictions(predictions, families, missing_models, spread=spread)
         _market(market, spread=spread, now=now)
+        _predictions(predictions, families, missing_models, spread=spread)
 
         if not predictions.empty and show_chart:
             chart = comparison_chart(

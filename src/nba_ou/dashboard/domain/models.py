@@ -4,7 +4,11 @@ from dataclasses import dataclass
 
 import pandas as pd
 
-from nba_ou.dashboard.config import MODEL_NAMES
+from nba_ou.dashboard.config import (
+    DISPLAY_SCHEMA_VERSION,
+    MODEL_NAMES,
+    PREDICTION_TARGET_LABELS,
+)
 
 
 @dataclass(frozen=True)
@@ -38,6 +42,7 @@ def with_family_metadata(frame: pd.DataFrame) -> pd.DataFrame:
         + work["variant"].astype(str)
     )
     work["model_name"] = work["kind"].map(model_name)
+    work["target_label"] = work["target"].map(PREDICTION_TARGET_LABELS)
     work["model_label"] = [
         family_label(kind, version, variant)
         for kind, version, variant in zip(
@@ -47,10 +52,23 @@ def with_family_metadata(frame: pd.DataFrame) -> pd.DataFrame:
     return work
 
 
-def model_families(frame: pd.DataFrame, target: int) -> list[ModelFamily]:
+def displayed_models(frame: pd.DataFrame) -> pd.DataFrame:
+    """Always show the 2_5 registry models and any available TabPFN outputs."""
+    if frame.empty:
+        return frame.copy()
+    return frame.loc[
+        (frame["kind"].eq(1) & frame["schema_version"].eq(DISPLAY_SCHEMA_VERSION))
+        | frame["kind"].eq(3)
+    ].copy()
+
+
+def model_families(
+    frame: pd.DataFrame, target: int | tuple[int, ...]
+) -> list[ModelFamily]:
     if frame.empty:
         return []
-    work = with_family_metadata(frame.loc[frame["target"].eq(target)])
+    targets = (target,) if isinstance(target, int) else target
+    work = with_family_metadata(frame.loc[frame["target"].isin(targets)])
     return [
         ModelFamily(
             key=key,

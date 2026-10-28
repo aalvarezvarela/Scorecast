@@ -4,8 +4,11 @@ from zoneinfo import ZoneInfo
 
 MADRID = ZoneInfo("Europe/Madrid")
 SLATE_TIMEZONE = ZoneInfo("America/Los_Angeles")
-# Dict order is the target selector order; line error is the default.
-TARGET_LABELS = {1: "Line error", 2: "Total points", 3: "Spread error"}
+# Totals combines both regression targets for the same over/under market.
+TARGET_LABELS = {1: "Totals", 3: "Spread"}
+TARGET_GROUPS = {1: (1, 2), 3: (3,)}
+PREDICTION_TARGET_LABELS = {1: "Line error", 2: "Total points", 3: "Spread error"}
+DISPLAY_SCHEMA_VERSION = "2_5"
 DEFAULT_TARGET = 1
 REFERENCE_COLUMNS = {
     "Bet365": "bet365_line",

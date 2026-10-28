@@ -155,3 +155,39 @@ def test_started_and_void_games_disappear_but_unpredicted_games_remain(today_dat
 def test_missing_target_and_empty_model_selection_are_empty(today_data):
     assert select_predictions(today_data.predictions, 99, NOW).empty
     assert select_predictions(today_data.predictions, 2, NOW, []).empty
+
+
+def test_combined_totals_keep_closing_and_intermediate_for_each_target(today_data):
+    selected = select_predictions(today_data.predictions, (1, 2), NOW)
+    assert len(selected) == 8
+    assert selected.groupby(["game_id", "target"]).size().to_dict() == {
+        (1, 1): 2,
+        (1, 2): 2,
+        (2, 1): 2,
+        (2, 2): 2,
+    }
+    intermediate = selected.loc[selected["phase"].eq("Intermediate")]
+    assert intermediate.set_index(["game_id", "target"])[
+        "model_horizon_minutes"
+    ].to_dict() == {
+        (1, 1): 240,
+        (1, 2): 240,
+        (2, 1): 120,
+        (2, 2): 120,
+    }
+
+
+def test_targets_choose_independently_when_available_horizons_differ():
+    raw = pd.DataFrame(
+        [
+            make_prediction(target=1, horizon=240),
+            make_prediction(target=1, horizon=360),
+            make_prediction(target=2, horizon=120),
+            make_prediction(target=2, horizon=300),
+        ]
+    )
+    selected = select_predictions(raw, (1, 2), NOW)
+    assert selected.set_index("target")["model_horizon_minutes"].to_dict() == {
+        1: 240,
+        2: 300,
+    }

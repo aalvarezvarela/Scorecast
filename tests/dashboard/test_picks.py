@@ -13,10 +13,38 @@ def test_unanimous_directions_are_a_bet_even_with_neutral_predictions():
     )
 
 
-def test_any_opposing_direction_is_no_bet():
+def test_majority_wins_even_with_an_opposing_direction():
     pick = picks_of("HOME", "AWAY", "HOME")
-    assert pick.status == "SPLIT"
+    assert pick.status == "BET"
+    assert pick.side == "HOME"
+    assert pick.agreeing == 2
     assert pick.counts == {"HOME": 2, "AWAY": 1}
+
+
+@pytest.mark.parametrize(
+    "signals,side",
+    [
+        (("UNDER", "UNDER", "UNDER", "OVER"), "UNDER"),
+        (("OVER", "OVER", "UNDER", "NO EDGE", "UNAVAILABLE"), "OVER"),
+        (("AWAY", "HOME", "AWAY"), "AWAY"),
+    ],
+)
+def test_directional_majority_counts_all_models_equally(signals, side):
+    assert picks_of(*signals).side == side
+
+
+@pytest.mark.parametrize(
+    "signals",
+    [
+        ("OVER", "UNDER"),
+        ("OVER", "UNDER", "UNDER", "OVER", "NO EDGE", "UNAVAILABLE"),
+        ("HOME", "AWAY"),
+    ],
+)
+def test_only_a_tied_directional_vote_has_no_winning_side(signals):
+    pick = picks_of(*signals)
+    assert pick.status == "TIE"
+    assert pick.side is None
 
 
 def test_predictions_without_a_line_do_not_vote():
