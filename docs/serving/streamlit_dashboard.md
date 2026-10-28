@@ -36,11 +36,12 @@ not query the database. Page scripts compose modules in `nba_ou.dashboard`:
 - `ui/`: source caching, filters, native cards, tables, and Altair comparisons.
 
 The design uses the Streamlit skill's native layouts, an NBA-inspired navy,
-red and white theme, bounded caching, and fragments. The mark's blue
-`#253B73` and red `#B52532` anchor the palette; lighter tints make signal
-text readable on dark backgrounds. OVER/HOME use red, UNDER/AWAY use blue.
-A scoped stylesheet handles
-growing card widths and larger menus. Totals comparisons use `st.html` for
+red and white theme, bounded caching, and fragments. The NBA logo's blue
+`#17408B` and red `#C9082A` anchor the palette over a mid-navy `#182A4E`
+background; lighter tints keep signal text at 4.5:1 contrast or better.
+OVER/HOME use red, UNDER/AWAY use blue. A scoped stylesheet handles the
+background glow, card surfaces with a red/blue top edge, growing card widths
+and larger menus. Totals comparisons use `st.html` for
 semantic spanning table headers, which native `st.table` does not render.
 No JavaScript or legacy HTML components are used. APIs are compatible with
 the installed 1.54.

@@ -1,3 +1,27 @@
+/* A soft NBA-blue glow over the theme's navy background; the header is
+   translucent so the glow reaches the top navigation. */
+[data-testid="stApp"] {
+    background:
+        radial-gradient(70rem 32rem at 12% -8%, #2a4a8a 0%, transparent 65%),
+        radial-gradient(50rem 26rem at 100% 0%, #3a2350 0%, transparent 60%),
+        #182a4e;
+    background-attachment: fixed;
+}
+[data-testid="stHeader"] {
+    background: rgb(24 42 78 / 0.8);
+    backdrop-filter: blur(8px);
+}
+
+/* Game cards sit on a lighter surface with an NBA red/blue top edge. */
+[class*="st-key-game_slot_"] > [data-testid="stLayoutWrapper"] > [data-testid="stVerticalBlock"] {
+    background:
+        linear-gradient(90deg, #c9082a 0 50%, #2f6bd8 50% 100%) top / 100% 3px
+            no-repeat,
+        linear-gradient(180deg, #23396a 0%, #1f3360 100%);
+    border-color: #36528a;
+    box-shadow: 0 6px 18px rgb(6 14 32 / 0.35);
+}
+
 /* Grow each content-sized card into the unused space in its flex row.
    The keys belong to this app; no generated Streamlit class names are used. */
 .st-key-games_grid > div:has(> [class*="st-key-game_slot_"]) {
@@ -18,7 +42,7 @@
 }
 .prediction-comparison th, .prediction-comparison td {
     padding: 0.45rem 0.5rem;
-    border-bottom: 1px solid var(--border-color, #2a3e66);
+    border-bottom: 1px solid var(--border-color, #3a5790);
     vertical-align: middle;
 }
 .prediction-comparison thead th { font-weight: 600; text-align: center; }
@@ -31,15 +55,15 @@
 .prediction-comparison [scope="colgroup"] + [scope="colgroup"],
 .prediction-comparison thead tr:nth-child(2) > :nth-child(3),
 .prediction-comparison tr > :nth-child(5) {
-    border-left: 1px solid var(--border-color, #2a3e66);
+    border-left: 1px solid var(--border-color, #3a5790);
 }
 .prediction-comparison .pick {
     display: inline-block; padding: 0.1rem 0.3rem; border-radius: 0.25rem;
     font-size: 0.8em; margin-left: 0.25rem;
 }
-.prediction-comparison .pick-blue { color: #95b8ff; background: #182d57; }
-.prediction-comparison .pick-red { color: #f37582; background: #3d1726; }
-.prediction-comparison .pick-gray { color: #99a7bf; background: #99a7bf26; }
+.prediction-comparison .pick-blue { color: #a9c6ff; background: #2c4a86; }
+.prediction-comparison .pick-red { color: #ff8e9a; background: #4d2340; }
+.prediction-comparison .pick-gray { color: #afbcd4; background: #afbcd426; }
 
 /* Menu labels/options are 1.5 times their native 14px / 16px sizes.
    Card text keeps the existing 16px theme base. */
