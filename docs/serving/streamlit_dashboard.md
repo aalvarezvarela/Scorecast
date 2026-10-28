@@ -35,8 +35,11 @@ not query the database. Page scripts compose modules in `nba_ou.dashboard`:
 - `domain/`: pure selection, conversion, model identity, team logos and dates.
 - `ui/`: source caching, filters, native cards, tables, and Altair comparisons.
 
-The design uses the Streamlit skill's native layouts, financial-dashboard
-theme patterns, bounded caching, and fragments. A scoped stylesheet handles
+The design uses the Streamlit skill's native layouts, an NBA-inspired navy,
+red and white theme, bounded caching, and fragments. The mark's blue
+`#253B73` and red `#B52532` anchor the palette; lighter tints make signal
+text readable on dark backgrounds. OVER/HOME use red, UNDER/AWAY use blue.
+A scoped stylesheet handles
 growing card widths and larger menus. Totals comparisons use `st.html` for
 semantic spanning table headers, which native `st.table` does not render.
 No JavaScript or legacy HTML components are used. APIs are compatible with
@@ -145,6 +148,16 @@ the installed 1.54.
     TabPFN labels omit the `v3_5` suffix; family keys and votes retain it.
     Navigation and menu options use 50% larger text and taller controls;
     card text retains the 16px base.
+    The pick headline includes its reference, market mean, median and book
+    count in small text alongside it. Directional vote counts appear below
+    in bold text, coloring only the winning direction and keeping the other
+    direction gray (both gray for a tie), without the previous majority
+    sentence or a separate market-line row. No-bet cards still show the
+    reference line.
+    Today's title and the native top-bar logo use a local silhouette-only
+    SVG derived from `https://cdn.nba.com/logos/leagues/logo-nba.svg`.
+    The lettering is removed, retaining the original red and blue paths.
+    The same mark is used as the browser-tab icon.
 
 ## Read path and freshness timestamps
 

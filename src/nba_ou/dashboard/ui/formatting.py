@@ -4,7 +4,7 @@ import math
 
 import pandas as pd
 
-from nba_ou.dashboard.config import SIGNAL_COLORS
+from nba_ou.dashboard.config import SIGNAL_COLORS, SIGNAL_HEX_COLORS
 from nba_ou.dashboard.domain.dates import horizon_label, madrid_time
 
 
@@ -76,10 +76,5 @@ def prediction_table(
 
 
 def signal_style(value) -> str:
-    color = {
-        "OVER": "#FB923C",
-        "HOME": "#FB923C",
-        "UNDER": "#60A5FA",
-        "AWAY": "#60A5FA",
-    }.get(value, "#94A3B8")
+    color = SIGNAL_HEX_COLORS.get(value, SIGNAL_HEX_COLORS["NO EDGE"])
     return f"color: {color}; font-weight: bold"

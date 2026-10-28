@@ -36,27 +36,51 @@ def _team(name: str, team_id, role: str) -> None:
         st.markdown(f"**{name}**")
 
 
-def _headline(pick: GamePick, market: pd.Series | None, reference: str, game) -> None:
+def _headline(
+    pick: GamePick, market: pd.Series | None, reference: str, game, *, spread: bool
+) -> None:
     if pick.status == "BET":
         line = market.get(REFERENCE_COLUMNS[reference]) if market is not None else None
         text = bet_text(pick.side, line, home=game["home_team"], away=game["away_team"])
-        st.markdown(f"### :{SIGNAL_COLORS[pick.side]}[{text}]")
-        st.caption(
-            f"{reference} line · Majority: {pick.agreeing} of {pick.predictions} predictions · "
-            + " · ".join(f"{count} {side}" for side, count in pick.counts.items())
+        headline = f"### :{SIGNAL_COLORS[pick.side]}[{text}]"
+        detail = None
+    else:
+        text, detail = {
+            "TIE": ("No bet: tied vote", None),
+            "NO BET": ("No bet", "No prediction clears its minimum edge."),
+            "NO LINE": (
+                "No bet: no line",
+                f"No stored {reference} line to bet against.",
+            ),
+            "PENDING": ("No predictions yet", "Waiting for the next prediction run."),
+        }[pick.status]
+        headline = f"### :gray[{text}]"
+
+    with st.container(horizontal=True, vertical_alignment="center"):
+        st.markdown(headline, width="content")
+        if market is not None:
+            source = reference
+            if pick.status != "BET":
+                source += f" {number(market.get(REFERENCE_COLUMNS[reference]))}"
+            if reference != "Bet365":
+                source += f" · Bet365 {number(market.get('bet365_line'))}"
+            count = market.get("books_count")
+            books = f" · {int(count)} books" if pd.notna(count) else ""
+            st.caption(
+                ("Implied home margin · " if spread else "")
+                + f"{source} · mean {number(market.get('books_mean_line'))} · "
+                f"median {number(market.get('books_median_line'))}{books}",
+                width="content",
+            )
+    if pick.counts:
+        st.markdown(
+            " · ".join(
+                f":{SIGNAL_COLORS[side] if side == pick.side else 'gray'}[**{count} {side}**]"
+                for side, count in pick.counts.items()
+            )
         )
-        return
-    headline, detail = {
-        "TIE": (
-            "No bet: tied vote",
-            " · ".join(f"{count} {side}" for side, count in pick.counts.items()),
-        ),
-        "NO BET": ("No bet", "No prediction clears its minimum edge."),
-        "NO LINE": ("No bet: no line", f"No stored {reference} line to bet against."),
-        "PENDING": ("No predictions yet", "Waiting for the next prediction run."),
-    }[pick.status]
-    st.markdown(f"### :gray[{headline}]")
-    st.caption(detail)
+    if detail:
+        st.caption(detail)
 
 
 def _phase(row: pd.Series) -> str:
@@ -123,18 +147,10 @@ def _predictions(
         st.caption(f"{name} · no prediction yet for tonight")
 
 
-def _market(market: pd.Series | None, *, spread: bool, now) -> None:
+def _market_freshness(market: pd.Series | None, *, now) -> None:
     if market is None:
         st.caption("No stored Bet365 line. No substitute line has been assumed.")
         return
-    count = market.get("books_count")
-    books = f" · {int(count)} books" if pd.notna(count) else ""
-    st.markdown(
-        ("Implied home margin · " if spread else "")
-        + f"Bet365 **{number(market.get('bet365_line'))}** · "
-        f"mean **{number(market.get('books_mean_line'))}** · "
-        f"median **{number(market.get('books_median_line'))}**{books}"
-    )
     read_at = market["market_at"]
     # The line history stores changes only: the quote's age at the snapshot is
     # how long Bet365 had gone without moving line or price.
@@ -177,8 +193,8 @@ def render_game_card(
         st.caption(
             f"**{madrid_time(game['tipoff_at'])}** · {time_remaining(game['tipoff_at'], now)}"
         )
-        _headline(pick, market, reference, game)
-        _market(market, spread=spread, now=now)
+        _headline(pick, market, reference, game, spread=spread)
+        _market_freshness(market, now=now)
         _predictions(predictions, families, missing_models, spread=spread)
 
         if not predictions.empty and show_chart:

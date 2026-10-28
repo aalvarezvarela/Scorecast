@@ -6,13 +6,15 @@ from pathlib import Path
 import streamlit as st
 
 APP_DIR = Path(__file__).resolve().parent
+NBA_MARK = APP_DIR / "assets/nba-mark.svg"
 sys.path.insert(0, str(APP_DIR.parent / "src"))
 
 st.set_page_config(
     page_title="NBA · Predictions",
-    page_icon=":material/sports_basketball:",
+    page_icon=str(NBA_MARK),
     layout="wide",
 )
+st.logo(str(NBA_MARK), size="large", icon_image=str(NBA_MARK))
 st.html(APP_DIR.parent / "src/nba_ou/dashboard/ui/dashboard.css")
 
 for key, value in {

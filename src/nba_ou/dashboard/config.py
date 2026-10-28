@@ -26,10 +26,19 @@ DEFAULT_MIN_EDGE_POINTS = 0.1
 MODEL_NAMES = {1: "XGBoost", 3: "TabPFN"}
 DEFAULT_MIN_EDGE_BY_KIND = {1: DEFAULT_MIN_EDGE_POINTS, 3: 0.01}
 SIGNAL_COLORS = {
-    "OVER": "orange",
+    "OVER": "red",
     "UNDER": "blue",
-    "HOME": "orange",
+    "HOME": "red",
     "AWAY": "blue",
     "NO EDGE": "gray",
     "UNAVAILABLE": "gray",
+}
+# Readable NBA red/blue tints on the dark dashboard, shared by charts/tables.
+SIGNAL_HEX_COLORS = {
+    "OVER": "#F37582",
+    "UNDER": "#95B8FF",
+    "HOME": "#F37582",
+    "AWAY": "#95B8FF",
+    "NO EDGE": "#99A7BF",
+    "UNAVAILABLE": "#99A7BF",
 }

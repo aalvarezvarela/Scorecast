@@ -18,7 +18,7 @@
 }
 .prediction-comparison th, .prediction-comparison td {
     padding: 0.45rem 0.5rem;
-    border-bottom: 1px solid var(--border-color, #334155);
+    border-bottom: 1px solid var(--border-color, #2a3e66);
     vertical-align: middle;
 }
 .prediction-comparison thead th { font-weight: 600; text-align: center; }
@@ -31,15 +31,15 @@
 .prediction-comparison [scope="colgroup"] + [scope="colgroup"],
 .prediction-comparison thead tr:nth-child(2) > :nth-child(3),
 .prediction-comparison tr > :nth-child(5) {
-    border-left: 1px solid var(--border-color, #334155);
+    border-left: 1px solid var(--border-color, #2a3e66);
 }
 .prediction-comparison .pick {
     display: inline-block; padding: 0.1rem 0.3rem; border-radius: 0.25rem;
     font-size: 0.8em; margin-left: 0.25rem;
 }
-.prediction-comparison .pick-blue { color: #60a5fa; background: #60a5fa26; }
-.prediction-comparison .pick-orange { color: #fb923c; background: #fb923c26; }
-.prediction-comparison .pick-gray { color: #94a3b8; background: #94a3b826; }
+.prediction-comparison .pick-blue { color: #95b8ff; background: #182d57; }
+.prediction-comparison .pick-red { color: #f37582; background: #3d1726; }
+.prediction-comparison .pick-gray { color: #99a7bf; background: #99a7bf26; }
 
 /* Menu labels/options are 1.5 times their native 14px / 16px sizes.
    Card text keeps the existing 16px theme base. */

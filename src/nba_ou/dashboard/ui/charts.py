@@ -3,6 +3,7 @@
 import altair as alt
 import pandas as pd
 
+from nba_ou.dashboard.config import SIGNAL_HEX_COLORS
 from nba_ou.dashboard.domain.dates import horizon_label
 
 
@@ -57,15 +58,8 @@ def comparison_chart(
                 "signal:N",
                 legend=None,
                 scale=alt.Scale(
-                    domain=["OVER", "UNDER", "HOME", "AWAY", "NO EDGE", "UNAVAILABLE"],
-                    range=[
-                        "#FB923C",
-                        "#60A5FA",
-                        "#FB923C",
-                        "#60A5FA",
-                        "#94A3B8",
-                        "#94A3B8",
-                    ],
+                    domain=list(SIGNAL_HEX_COLORS),
+                    range=list(SIGNAL_HEX_COLORS.values()),
                 ),
             ),
             shape=alt.Shape(
@@ -103,7 +97,7 @@ def comparison_chart(
     else:
         rules = (
             alt.Chart(references)
-            .mark_rule(color="#94A3B8", opacity=0.7)
+            .mark_rule(color=SIGNAL_HEX_COLORS["NO EDGE"], opacity=0.7)
             .encode(
                 x="value:Q",
                 strokeDash=alt.StrokeDash(

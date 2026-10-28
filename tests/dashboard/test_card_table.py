@@ -62,7 +62,7 @@ def test_four_predictions_become_two_rows_without_losing_values_or_votes():
     assert table.loc["T−11h", ("Total points", "Prediction")] == "**239.9**"
     assert table.loc["T−11h", ("Total points", "Margin")] == "-1.6 :blue-badge[UNDER]"
     assert table.loc["T−11h", ("Line error", "Prediction")] == "**242.3**"
-    assert table.loc["T−11h", ("Line error", "Margin")] == "+0.8 :orange-badge[OVER]"
+    assert table.loc["T−11h", ("Line error", "Margin")] == "+0.8 :red-badge[OVER]"
     pick = game_pick(predictions)
     assert (pick.status, pick.side, pick.agreeing, pick.predictions) == (
         "BET",

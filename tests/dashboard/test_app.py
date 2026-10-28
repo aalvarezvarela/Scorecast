@@ -75,11 +75,18 @@ def test_today_combines_totals_with_line_error_and_shows_one_consensus(app_setup
     assert not app.exception
     assert app.title[0].value == "Today's predictions"
     assert app.session_state["today_target"] == 1
-    assert len(app.get("imgs")) == 4
+    assert len(app.get("imgs")) == 5
     assert any("28 Oct 2026, 23:00 Madrid" in text.value for text in app.caption)
     # Total points says OVER, line error says UNDER: all four predictions vote.
     assert rendered_signals(app) == {"OVER", "UNDER"}
     assert headlines(app) == [":gray[No bet: tied vote]"] * 2
+    assert (
+        sum(
+            text.value == ":gray[**2 OVER**] · :gray[**2 UNDER**]"
+            for text in app.markdown
+        )
+        == 2
+    )
     assert {m.label: m.value for m in app.metric}["Bets"] == "0"
     assert not app.multiselect
     tables = card_tables(app)
@@ -133,8 +140,10 @@ def test_three_over_votes_beat_one_under_vote(app_setup, today_data):
     today_data.predictions.loc[mask, "prediction_value"] = 3.0
     app = AppTest.from_file(str(ENTRYPOINT)).run()
     assert not app.exception
-    assert set(headlines(app)) == {":gray[No bet: tied vote]", ":orange[OVER 230.5]"}
-    assert any("3 OVER · 1 UNDER" in text.value for text in app.caption)
+    assert set(headlines(app)) == {":gray[No bet: tied vote]", ":red[OVER 230.5]"}
+    assert any(
+        text.value == ":red[**3 OVER**] · :gray[**1 UNDER**]" for text in app.markdown
+    )
     assert {m.label: m.value for m in app.metric}["Tied votes"] == "1"
     assert {m.label: m.value for m in app.metric}["Bets"] == "1"
 
@@ -193,7 +202,7 @@ def test_no_target_predictions_still_shows_the_games(app_setup, today_data):
     )
     app = AppTest.from_file(str(ENTRYPOINT)).run()
     assert not app.exception
-    assert len(app.get("imgs")) == 4
+    assert len(app.get("imgs")) == 5
     assert any("No live predictions" in info.value for info in app.info)
 
 
@@ -225,7 +234,7 @@ def test_spread_reference_changes_badge_and_exposes_market_edge(app_setup, today
     app.selectbox(key="today_reference").select("Market mean").run()
     assert not app.exception
     assert rendered_signals(app) == {"HOME"}
-    assert any(":orange[Boston Celtics -3.0]" == h for h in headlines(app))
+    assert any(":red[Boston Celtics -3.0]" == h for h in headlines(app))
     app.session_state["today_view"] = "Table"
     app.run()
     assert not app.exception
@@ -340,9 +349,7 @@ def test_all_targets_and_tabpfn_participate_in_the_large_summary(app_setup, toda
     app = AppTest.from_file(str(ENTRYPOINT)).run()
     assert not app.exception
     assert headlines(app) == [":blue[UNDER 230.5]"] * 2
-    assert (
-        sum("Majority: 4 of 4 predictions" in text.value for text in app.caption) == 2
-    )
+    assert sum(text.value == ":blue[**4 UNDER**]" for text in app.markdown) == 2
 
     # The TabPFN vote is counted, but one opposing vote does not veto four UNDERs.
     extra = today_data.predictions.loc[
@@ -362,8 +369,10 @@ def test_all_targets_and_tabpfn_participate_in_the_large_summary(app_setup, toda
     app.run()
     assert not app.exception
     assert headlines(app) == [":blue[UNDER 230.5]"] * 2
-    assert any("1 OVER · 4 UNDER" in text.value for text in app.caption)
-    assert any("Majority: 4 of 5 predictions" in text.value for text in app.caption)
+    assert any(
+        text.value == ":gray[**1 OVER**] · :blue[**4 UNDER**]" for text in app.markdown
+    )
+    assert not any("Majority:" in text.value for text in app.caption)
     assert {m.label: m.value for m in app.metric}["Bets"] == "2"
     # Both model families share one table, retaining TabPFN's own snapshot.
     tables = card_tables(app)

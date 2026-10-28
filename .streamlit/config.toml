@@ -1,12 +1,13 @@
-# Adapted from the Streamlit skill's financial-dashboard theme for 1.54.
+# NBA mark colors: blue #253B73, red #B52532 and white #FFFFFE.
+# Lighter red/blue text variants keep contrast on the navy backgrounds.
 [theme]
 base = "dark"
-primaryColor = "#2563EB"
-backgroundColor = "#0F172A"
-secondaryBackgroundColor = "#1E293B"
-textColor = "#F1F5F9"
-linkColor = "#60A5FA"
-borderColor = "#334155"
+primaryColor = "#B52532"
+backgroundColor = "#080F20"
+secondaryBackgroundColor = "#111D35"
+textColor = "#FFFFFE"
+linkColor = "#95B8FF"
+borderColor = "#2A3E66"
 showWidgetBorder = true
 baseRadius = "10px"
 buttonRadius = "8px"
@@ -15,11 +16,15 @@ headingFont = "sans-serif"
 baseFontSize = 16
 headingFontSizes = ["32px", "26px", "21px", "18px", "16px", "14px"]
 headingFontWeights = [700, 650, 600, 600, 600, 600]
-orangeColor = "#FB923C"
-blueColor = "#60A5FA"
-grayColor = "#94A3B8"
-dataframeHeaderBackgroundColor = "#1E293B"
-chartCategoricalColors = ["#FB923C", "#60A5FA", "#A78BFA", "#34D399", "#94A3B8"]
+redColor = "#B52532"
+redTextColor = "#F37582"
+redBackgroundColor = "#3D1726"
+blueColor = "#253B73"
+blueTextColor = "#95B8FF"
+blueBackgroundColor = "#182D57"
+grayColor = "#99A7BF"
+dataframeHeaderBackgroundColor = "#111D35"
+chartCategoricalColors = ["#F37582", "#95B8FF", "#FFFFFE", "#99A7BF"]
 
 [client]
 showErrorDetails = "none"

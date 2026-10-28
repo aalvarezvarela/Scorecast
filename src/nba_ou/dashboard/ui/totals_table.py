@@ -11,7 +11,7 @@ def _cell(value: str) -> str:
     text = escape(str(value))
     text = re.sub(r"\*\*([^*]+)\*\*", r"<strong>\1</strong>", text)
     return re.sub(
-        r":(orange|blue|gray)-badge\[(OVER|UNDER|NO EDGE|UNAVAILABLE)\]",
+        r":(red|blue|gray)-badge\[(OVER|UNDER|NO EDGE|UNAVAILABLE)\]",
         r'<span class="pick pick-\1">\2</span>',
         text,
     )
