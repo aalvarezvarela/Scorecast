@@ -162,26 +162,6 @@ def test_line_freshness_shows_last_move_and_flags_an_old_read(app_setup, today_d
     assert all("68 min ago" in value for value in stale)
 
 
-@pytest.mark.parametrize(
-    "filename,title",
-    [
-        ("historical.py", "Historical analysis"),
-    ],
-)
-def test_other_pages_contain_only_their_titles_without_reads(
-    app_setup, filename, title
-):
-    app = AppTest.from_file(str(ENTRYPOINT)).run()
-    count = app_setup.call_count
-    app.switch_page(f"app_pages/{filename}").run()
-    assert not app.exception
-    assert [t.value for t in app.title] == [title]
-    assert not app.metric
-    assert not app.markdown
-    assert not app.caption
-    assert app_setup.call_count == count
-
-
 def test_table_retains_logos_market_lines_and_madrid_times(app_setup):
     app = AppTest.from_file(str(ENTRYPOINT)).run()
     app.session_state["today_view"] = "Table"

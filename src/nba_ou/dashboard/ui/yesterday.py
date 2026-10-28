@@ -1,4 +1,4 @@
-"""Yesterday's slate: fixed checkpoints, stored quotes, and final scores."""
+"""Date-selectable slates: fixed checkpoints, stored quotes, and final scores."""
 
 from datetime import UTC, datetime, timedelta
 
@@ -29,7 +29,7 @@ TARGETS = {1: "Line error", 2: "Total points", 3: "Spread"}
 
 
 def _performance_summary(games: pd.DataFrame, rows: pd.DataFrame) -> None:
-    st.subheader("Yesterday's performance")
+    st.subheader("Daily performance")
     final = (
         games["status"].eq(1)
         & games["home_points"].notna()
@@ -78,7 +78,18 @@ def _game_card(game, rows: pd.DataFrame, *, spread: bool) -> None:
 
 @st.fragment(run_every="60s")
 def render_yesterday() -> None:
-    game_date = slate_date() - timedelta(days=1)
+    default_date = slate_date() - timedelta(days=1)
+    game_date = (
+        st.date_input(
+            "Game date",
+            value=default_date,
+            key="yesterday_date",
+            format="DD/MM/YYYY",
+            help="NBA slate date, using the same Pacific date boundary as Today. Game times are displayed in Madrid time.",
+            width=220,
+        )
+        or default_date
+    )
     st.caption(f"NBA slate · {game_date.strftime('%d %b %Y')} · All times in Madrid")
     target_col, source_col, view_col, refresh_col = st.columns(
         [3, 3, 2, 1], vertical_alignment="bottom"
@@ -146,14 +157,14 @@ def render_yesterday() -> None:
             "Intermediate rows use stored, exact own-horizon snapshots, which may have been reconstructed after the game. Closing rows remain live predictions in both modes."
         )
     try:
-        with st.spinner("Reading yesterday's predictions and results from Aiven…"):
+        with st.spinner("Reading predictions and results from Aiven…"):
             data = load_yesterday(game_date)
     except DashboardDataError as exc:
         st.error(str(exc), icon=":material/database:")
         return
     games = historical_games(data.games)
     if games.empty:
-        st.info("No games were recorded in Aiven for yesterday's NBA slate.")
+        st.info("No games were recorded in Aiven for the selected NBA slate.")
         return
     rows = grade_history(
         select_history(data.predictions, games, target, source, datetime.now(UTC)),

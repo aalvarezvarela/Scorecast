@@ -2,10 +2,11 @@
 
 from collections.abc import Mapping
 
+import numpy as np
 import pandas as pd
 
 from nba_ou.dashboard.config import DEFAULT_MIN_EDGE_BY_KIND
-from nba_ou.dashboard.domain.comparisons import prediction_values, signal
+from nba_ou.dashboard.domain.comparisons import prediction_values
 from nba_ou.dashboard.domain.dates import horizon_label, utc_timestamp
 from nba_ou.dashboard.domain.models import (
     displayed_models,
@@ -193,12 +194,17 @@ def grade_history(
     work["min_edge"] = work["kind"].map(
         lambda kind: thresholds.get(int(kind), DEFAULT_MIN_EDGE_BY_KIND[int(kind)])
     )
-    work["signal"] = [
-        signal(edge, spread=target == 3, min_edge=threshold)
-        for edge, target, threshold in zip(
-            work["comparison_edge"], work["target"], work["min_edge"], strict=True
-        )
-    ]
+    if not (np.isfinite(work["min_edge"]) & work["min_edge"].ge(0)).all():
+        raise ValueError("min_edge must be a finite, non-negative number of points")
+    edge = work["comparison_edge"]
+    neutral = edge.abs().le(work["min_edge"]) | np.isclose(
+        edge.abs(), work["min_edge"], rtol=0, atol=1e-9
+    )
+    work["signal"] = np.select(
+        [~np.isfinite(edge), neutral, work["target"].eq(3), edge.gt(0)],
+        ["UNAVAILABLE", "NO EDGE", np.where(edge.gt(0), "HOME", "AWAY"), "OVER"],
+        default="UNDER",
+    )
     final = (
         work["status"].eq(1) & work["home_points"].notna() & work["away_points"].notna()
     )
@@ -209,27 +215,21 @@ def grade_history(
     )
     work["prediction_error"] = work["predicted_value"] - work["actual_value"]
     work["absolute_error"] = work["prediction_error"].abs()
-    outcomes = []
-    for _, row in work.iterrows():
-        if not row["available"]:
-            result = "MISSING"
-        elif row["status"] == 2:
-            result = "VOID"
-        elif row["signal"] == "UNAVAILABLE":
-            result = "NO LINE"
-        elif row["signal"] == "NO EDGE":
-            result = "NO BET"
-        elif pd.isna(row["actual_value"]):
-            result = "PENDING"
-        else:
-            actual_edge = row["actual_value"] - row["reference_line"]
-            if actual_edge == 0:
-                result = "PUSH"
-            else:
-                positive = row["signal"] in ("OVER", "HOME")
-                result = "WIN" if (actual_edge > 0) == positive else "LOSS"
-        outcomes.append(result)
-    work["result"] = outcomes
+    actual_edge = work["actual_value"] - work["reference_line"]
+    positive = work["signal"].isin(["OVER", "HOME"])
+    work["result"] = np.select(
+        [
+            ~work["available"],
+            work["status"].eq(2),
+            work["signal"].eq("UNAVAILABLE"),
+            work["signal"].eq("NO EDGE"),
+            work["actual_value"].isna(),
+            actual_edge.eq(0),
+            actual_edge.gt(0).eq(positive),
+        ],
+        ["MISSING", "VOID", "NO LINE", "NO BET", "PENDING", "PUSH", "WIN"],
+        default="LOSS",
+    )
     return work
 
 

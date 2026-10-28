@@ -1,5 +1,6 @@
 """Display settings shared by the dashboard pages."""
 
+from datetime import date
 from zoneinfo import ZoneInfo
 
 MADRID = ZoneInfo("Europe/Madrid")
@@ -16,6 +17,8 @@ REFERENCE_COLUMNS = {
     "Market median": "books_median_line",
 }
 CACHE_TTL_SECONDS = 60
+# Earlier historical slates contained dataset errors; keep them out by default.
+HISTORY_DEFAULT_START_DATE = date(2026, 10, 27)
 # Point-based levels used by the production-model evaluation campaigns, plus
 # TabPFN's 0.01. Keep this lightweight: the dashboard must not import the
 # training pipeline.

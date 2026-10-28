@@ -26,8 +26,10 @@ applications as references. The new application does not import either.
 ## Pages and architecture
 
 The entrypoint registers three pages using `st.navigation`. Today is the
-default. Yesterday shows stored predictions and results; Historical remains
-a title-only placeholder without database reads. Page scripts compose
+default. Yesterday shows stored predictions and results for a selected date.
+[Historical analysis](historical_analysis.md) shows the closing timeline, live
+model/time heatmap and own-snapshot live/replay comparisons over a date range.
+Page scripts compose
 modules in `nba_ou.dashboard`:
 
 - `repositories/`: bounded, parameterized reads from `prediction.games` and
@@ -166,8 +168,10 @@ the installed 1.54.
 
 ## Yesterday's predictions
 
-The previous **NBA slate** is `slate_date() - 1 day`, using the same Pacific
-date boundary as Today, with every displayed time converted to Madrid.
+The **Game date** picker defaults to the previous **NBA slate**,
+`slate_date() - 1 day`, and allows reviewing other dates. It uses the same
+Pacific date boundary as Today, with every displayed time converted to Madrid.
+The selected date controls the games, prediction checkpoints and daily summary.
 The target selector separates Line error, Total points and Spread. Model
 selection remains registry schema `2_5` plus available TabPFN families.
 
@@ -231,7 +235,8 @@ Yesterday reads the same two Aiven sources in one read-only transaction;
 the games query includes final scores and the output query includes workflows
 1/2/3 and just closing/8h/6h/4h model slots. Post-tip replay outputs are allowed
 in the read, then separated in the domain layer. Both sources are fetched in
-one cached read, so changing source, target or thresholds needs no extra SQL.
+one cached read per selected date, so changing source, target or thresholds
+needs no extra SQL. Refresh clears only the selected date's cache entry.
 Results refresh every minute; the dashboard never calls the NBA API or the
 result updater, and no database migration is needed.
 
@@ -276,6 +281,6 @@ per-game horizons, fresh output selection, input mode separation, exclusions,
 market normalization and movements, missing data, signal thresholds, shared
 card/table ordering, Madrid DST and UI navigation/targets.
 
-Deferred: yesterday/history analytics, SHAP, inference controls, and an
+Deferred: historical combined-as-of strategies, SHAP, inference controls, and an
 independent schedule ingestion into Aiven. No compatibility adapter for the
 legacy storage is part of this application.

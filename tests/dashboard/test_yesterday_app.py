@@ -63,6 +63,10 @@ def test_yesterday_defaults_to_live_with_final_scores_and_fixed_checkpoints(
     assert app.title[0].value == "Yesterday's predictions"
     assert app.session_state["yesterday_source"] == "Live predictions"
     assert app.session_state["yesterday_target"] == 1
+    assert (
+        app.date_input(key="yesterday_date").value
+        == (NOW - pd.Timedelta(days=1)).date()
+    )
     assert len(app.get("imgs")) == 5
     assert any(text.value == "### 114 — 121" for text in app.markdown)
     assert any("Total points **235**" in text.value for text in app.caption)
@@ -105,6 +109,72 @@ def test_source_and_targets_change_without_another_aiven_read(yesterday_setup):
     assert not app.exception
     assert all("Spread error" in card.get_text() for card in tables(app))
     assert reader.call_count == 1
+
+
+def test_selected_date_updates_results_summary_and_refreshes_only_that_date(
+    yesterday_setup,
+):
+    reader, data = yesterday_setup
+    previous_date = (NOW - pd.Timedelta(days=2)).date()
+    games = data.games.loc[data.games["game_id"].eq(1)].copy()
+    games["game_date"] = previous_date
+    games["tipoff_at"] -= pd.Timedelta(days=1)
+    games[["away_points", "home_points"]] = [100, 110]
+    predictions = data.predictions.loc[data.predictions["game_id"].eq(1)].copy()
+    for column in (
+        "tipoff_at",
+        "tipoff_at_prediction",
+        "predicted_at",
+        "run_finished_at",
+        "input_at",
+    ):
+        predictions[column] -= pd.Timedelta(days=1)
+    previous_data = TodayData(games, predictions, data.fetched_at)
+    reader.side_effect = lambda game_date, **_: (
+        previous_data if game_date == previous_date else data
+    )
+    app = open_yesterday()
+    app.date_input(key="yesterday_date").set_value(previous_date).run()
+    assert not app.exception
+    assert reader.call_args.args[0] == previous_date
+    assert reader.call_count == 2
+    assert len(tables(app)) == 1
+    assert any(text.value == "### 100 — 110" for text in app.markdown)
+    assert any("NBA slate · 26 Oct 2026" in text.value for text in app.caption)
+    assert app.table[0].value["Games"].eq("1/1").all()
+    assert app.table[0].value["MAE"].eq("28.00 pts").all()
+
+    app.session_state["yesterday_target"] = 2
+    app.session_state["yesterday_source"] = "Snapshot replay"
+    app.run()
+    assert not app.exception
+    assert app.date_input(key="yesterday_date").value == previous_date
+    assert reader.call_count == 2
+    app.button(key="yesterday_refresh").click().run()
+    assert not app.exception
+    assert reader.call_count == 3
+    assert reader.call_args.args[0] == previous_date
+
+    app.date_input(key="yesterday_date").set_value(
+        data.games["game_date"].iloc[0]
+    ).run()
+    assert not app.exception
+    assert len(tables(app)) == 2
+    assert reader.call_count == 3
+
+
+def test_selecting_empty_date_clears_previous_cards_and_summary(yesterday_setup):
+    reader, data = yesterday_setup
+    app = open_yesterday()
+    reader.return_value = TodayData(pd.DataFrame(), pd.DataFrame(), data.fetched_at)
+    app.date_input(key="yesterday_date").set_value(
+        (NOW - pd.Timedelta(days=3)).date()
+    ).run()
+    assert not app.exception
+    assert "selected NBA slate" in app.info[0].value
+    assert not tables(app)
+    assert not app.table
+    assert not app.toggle
 
 
 def test_table_and_details_show_scores_original_outputs_and_madrid_timestamps(
@@ -158,7 +228,7 @@ def test_daily_summary_shows_win_rate_and_mae_per_model_before_all_cards(
     summary = next(
         i
         for i, node in enumerate(nodes)
-        if node.type == "subheader" and node.value == "Yesterday's performance"
+        if node.type == "subheader" and node.value == "Daily performance"
     )
     first_card = min(
         i
