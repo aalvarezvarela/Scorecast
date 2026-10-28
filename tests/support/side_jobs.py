@@ -14,6 +14,15 @@ def add(a, b, *, c=0):
     return a + b + c
 
 
+def slow(seconds):
+    """Prints, stays quiet ``seconds``, prints again; the last line has no
+    newline."""
+    print("starting", flush=True)
+    time.sleep(seconds)
+    print("finishing", end="", flush=True)
+    return "done"
+
+
 def fail():
     raise ValueError("boom")
 

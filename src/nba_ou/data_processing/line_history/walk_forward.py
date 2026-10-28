@@ -19,6 +19,8 @@ import numpy as np
 import pandas as pd
 from tqdm import tqdm
 
+from nba_ou.utils.run_log import progress_disabled
+
 
 @dataclass(frozen=True)
 class WalkForwardFit:
@@ -99,7 +101,7 @@ def walk_forward_least_squares(
         desc=progress,
         unit="row",
         mininterval=1.0,
-        disable=progress is None,
+        disable=progress_disabled(progress),
     ):
         timestamp = snapshot_ns[row_index]
         while event_index < len(events) and events[event_index][0] < timestamp:

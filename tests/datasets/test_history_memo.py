@@ -436,3 +436,21 @@ def test_an_entry_stored_without_parts_misses_as_before(tmp_path):
         backend, {**_inputs(), "games": (games.iloc[1:], "GAME_ID")}, [2021]
     )
     assert report == ["rows 2021: inputs changed"]
+
+
+def test_the_printed_report_lists_each_tables_seasons_once():
+    assert memo._grouped(
+        [
+            "repair/c 2025: inputs changed (an earlier season)",
+            "repair/c 2018: inputs changed (an earlier season)",
+            "repair/c 2019: inputs changed (odds)",
+            "rows 2020: payload missing or corrupt",
+            "repair/c 2020: inputs changed (an earlier season)",
+            "something else",
+        ]
+    ) == [
+        "repair/c 2018, 2020, 2025: inputs changed (an earlier season)",
+        "repair/c 2019: inputs changed (odds)",
+        "rows 2020: payload missing or corrupt",
+        "something else",
+    ]

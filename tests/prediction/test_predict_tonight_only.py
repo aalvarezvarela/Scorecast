@@ -478,8 +478,9 @@ def test_closing_rows_build_beside_the_intermediate_rows(monkeypatch, capsys):
             order.append("side started")
 
         @classmethod
-        def start(cls, fn, *args, current_season, label, **kwargs):
+        def start(cls, fn, *args, current_season, label, own_label, **kwargs):
             assert current_season == 2025
+            assert own_label == "intermediate rows"
             return cls(fn, args, kwargs, label)
 
         def release_gate(self):

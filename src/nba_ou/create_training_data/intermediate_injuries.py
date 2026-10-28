@@ -88,6 +88,7 @@ from nba_ou.postgre_db.injury_report_aiven import fetch, live
 from nba_ou.postgre_db.injury_report_aiven.live import LiveInjuryReports
 from nba_ou.postgre_db.row_order import canonical_row_order
 from nba_ou.utils.row_cache import RowCache
+from nba_ou.utils.run_log import progress_disabled
 
 KEYS = ["GAME_ID", "TIME_TO_MATCH_MIN"]
 PLAYER_STATS = ["PTS", "PACE_PER40", "DEF_RATING", "OFF_RATING", "TS_PCT", "MIN"]
@@ -743,7 +744,7 @@ def _horizons_in_processes(
                         total=len(horizons),
                         desc=progress,
                         unit="snapshot",
-                        disable=progress is None,
+                        disable=progress_disabled(progress),
                     )
                 )
             except Exception as exc:  # noqa: BLE001 -- a stuck or broken worker
@@ -1146,7 +1147,7 @@ def add_snapshot_injury_features(
                 total=len(horizons),
                 desc=progress,
                 unit="snapshot",
-                disable=progress is None,
+                disable=progress_disabled(progress),
             )
         ]
     if memo is not None:

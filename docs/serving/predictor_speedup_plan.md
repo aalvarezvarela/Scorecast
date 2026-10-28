@@ -1,8 +1,9 @@
 # Faster prediction runs on the self-hosted runner
 
 Status: **Partial** (updated 2026-10-28) — P0 and P3 are done (PR #84); P2
-(a, b and c), P4 and P5 are done on branch `perf/prediction-loop`, to be
-confirmed on the runner. P1, P6 and P7 are open. The progress log at the end records
+(a, b and c), P4 and P5 are merged (PR #87), and P8 is on branch
+`perf/prediction-logging`, all to be confirmed on a warm runner run. P1, P6
+and P7 are open. The progress log at the end records
 each step.
 
 Where the time of the prediction workflows goes and what to change to cut it,
@@ -143,6 +144,7 @@ Ordered by saving.
 | P5 · Closing and intermediate in parallel | ≈3 min per run | medium | memory, only warm builds overlap | **done** (`perf/prediction-loop`), to confirm on the runner |
 | P6 · Runner hardware | depends on the result | low to measure | — | open |
 | P7 · Streamlit on Aiven | — (unblocks the Supabase clean-up) | medium | dashboard history | open |
+| P8 · Step 2 (schedule, referees, injury reports, odds) | ≈15–25 s per run | low | low | **done** (`perf/prediction-loop`), to confirm on the runner |
 
 ### P0 · Measure before optimizing — done
 
@@ -350,10 +352,14 @@ build, by the warm gate (`nba_ou.utils.warm_gate`):
   nothing for it.
 - Misses of the current season pass: they are part of every warm run.
 
-The closing build's log is printed as one block when it ends. The run then
-prints `closing rows (side process)` and `closing and intermediate rows, side
-by side` in its `[time]` lines, plus a line naming the cold memo when a build
-waited. The side process is spawned, not forked, so it shares no S3 or
+The closing build's log is printed once the intermediate rows are done, in a
+step of its own: what it holds so far, then live, each line marked `[closing
+rows]`, with a `... still running` line after two quiet minutes. (Until
+2026-10-28 it came as one block at the end, and a cold closing build left the
+job log silent for 28 minutes.) The run then prints `closing rows (side
+process)`, with the side process's own memory peak, and `closing and
+intermediate rows, side by side` in its `[time]` lines, plus a warning naming
+the cold memo when a build computed past seasons. The side process is spawned, not forked, so it shares no S3 or
 database connection. If it dies without a result (e.g. killed for memory),
 the closing rows are built again in the main process; if it raises, the run
 fails as a sequential one would. It runs sequentially without a usable
@@ -398,6 +404,56 @@ for new predictions and either Supabase or an import for the older ones.
 needs") maps each dashboard use to the store. Once done, remove the Supabase
 writer, the readers and the "Update finished matches" step.
 
+### P8 · Step 2: scheduled games, referees, injury reports and odds — done (to confirm on the runner)
+
+**Measured.** Step 2 takes 45–58 s on the runner (52 s on 2026-10-28 02:31
+UTC). Of those, ~37 s printed nothing: referees, live rosters, the
+injury-report sync and the report state. The odds (Yahoo, SBR) took ~12 s
+after them. Local timings, read-only, 12 games:
+
+| Part | Local |
+|---|---:|
+| Schedule, referees, league rosters | 0.5 + 0.8 + 0.3 s |
+| Sync: team dimension (`DISTINCT` over `nba_players` since 2019) | 4.6 s cold, 0.2 s warm |
+| Sync: game dimension (the season's schedule request, 6.0 s, plus Supabase) | ~7 s |
+| Sync: rosters | 0.9–1.9 s |
+| Sync: download, validate and parse one new PDF | ~0.3 s plus the 0.6 s pause |
+| Report state (history from S3 and Aiven, today from Aiven) | 4.6–6 s |
+| Odds | ~16 s |
+
+There is no retry backlog: the 125 publication slots of yesterday and today
+were all ingested, so each run fetches only the 1–4 reports published since
+the previous one. Parsing is negligible. What costs is the dimensions each
+ingest reads and the odds waiting behind everything else.
+
+**Done.**
+
+- The odds are fetched in a thread from the start of step 2, beside the
+  referees, rosters, sync and report state. Nothing in between reads them,
+  and a failed fetch still fails the step when they are collected.
+- The sync reads the three dimensions (teams, games, rosters) in a thread
+  from its start, beside the slot registration and the downloads. They are
+  used only when the parsed reports' seasons are exactly the candidates'
+  seasons; otherwise, or when the prefetch failed, they are read again as
+  before. Same queries, same values, read a few seconds earlier, after the
+  step 1 database update.
+- Each part prints a `[time] step 2 ...` line, and the sync prints its
+  counts (pending, ingested, unavailable, failed).
+
+**Not done.**
+
+- Caching the dimensions across runs: the input cache's rule is that a
+  cached read is checked against the server, and checking `nba_players`
+  costs the scan itself.
+- Reading the report history before the sync: it reads the current season
+  from Aiven, which the sync may have just updated (a late report for one of
+  yesterday's games).
+
+**Validation.** Local, read-only (sync and roster archive stubbed), 12
+games: 30.1 s → 17.7 s, with the same odds rows. The dimension prefetch is
+covered by unit tests; its saving shows in the runner's `[time] step 2
+injury report sync` line.
+
 ### Dropped
 
 - Speeding up cache validation: 5–15 s per run.
@@ -431,6 +487,8 @@ caches miss.
    `perf/prediction-loop`, warm builds only; confirm phase times and memory on
    the runner. P6 still measures the runner itself.
 6. P7: Streamlit on Aiven, then the Supabase clean-up.
+7. ~~P8: step 2 in parallel.~~ Done (`perf/prediction-logging`, left out of
+   PR #87); confirm the `[time] step 2 ...` lines on the runner.
 
 ## Progress log
 
@@ -459,6 +517,20 @@ caches miss.
   `PARALLEL_BUILDS` / `--sequential-builds` turn it off. On a replay of
   2026-04-10: 7:32 → 5:43 warm; a cold closing build waited 2:06 then ran
   alone; every frame equal bit for bit.
+- 2026-10-28 — P8 done on `perf/prediction-loop`. Step 2's odds are fetched
+  beside the injury reports, and the sync's team, game and roster reads beside
+  its downloads. Every part of step 2 prints its time. Locally 30.1 s → 17.7 s.
+- 2026-10-28 — PR #87 merged (P2, P4, P5; P8 was not pushed in time). The
+  first run after it (40677865380) was the expected cold one: every memo entry
+  refused (`inputs changed`, new code keys). Both builds turned cold; the gate
+  let the intermediate rows go first (11:12) and the closing rows waited
+  10:05, then computed alone (~28 min); 42:16 in all, peak 4.8 GB. It looked
+  stuck because the side log printed only at the end. On
+  `perf/prediction-logging`, with P8: the predictor and TabPFN log numbered
+  steps (`nba_ou.utils.run_log`), each a collapsible group in GitHub Actions,
+  the 51 slots one line each in one step, the side log live, warnings and
+  failures as annotations, and the timings in the job summary. CI progress
+  bars, the cleaning banner and the memo's per-season miss list are shorter.
 
 ## Sources
 

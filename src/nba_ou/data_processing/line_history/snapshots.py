@@ -35,6 +35,7 @@ from nba_ou.postgre_db.line_history_aiven.fetch import (
     MARKET_SPREAD,
     MARKET_TOTALS,
 )
+from nba_ou.utils.run_log import progress_disabled
 
 from .normalization import (
     MARGIN_SIGMA,
@@ -280,7 +281,7 @@ def build_snapshot_panel(
 
     frames = []
     for snapshot_minutes in tqdm(
-        sorted(set(grid)), desc=progress, unit="snapshot", disable=progress is None
+        sorted(set(grid)), desc=progress, unit="snapshot", disable=progress_disabled(progress)
     ):
         latest = _as_of(working, snapshot_minutes)
         if latest.empty:
