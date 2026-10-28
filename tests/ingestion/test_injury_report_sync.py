@@ -249,3 +249,54 @@ def test_scoreboard_can_supply_tonight_without_a_box_score():
     assert games.iloc[0].team_home == "BOS"
     assert games.iloc[0].team_away == "NYK"
     assert games.iloc[0].tipoff_utc == pd.Timestamp("2026-10-16T23:00Z")
+
+
+def test_dimensions_load_beside_the_downloads_once(harness, monkeypatch):
+    """The dimensions of the candidates' seasons are read once, meanwhile, and
+    are what the ingest gets."""
+    loads = []
+    teams = pd.DataFrame({"report_name": ["Miami Heat"]})
+
+    def load(seasons):
+        loads.append(seasons)
+        return teams, pd.DataFrame({"game_id": []}), pd.DataFrame()
+
+    monkeypatch.setattr(sync, "_load_dimensions", load)
+    received = {}
+    monkeypatch.setattr(
+        sync,
+        "ingest_live_reports",
+        lambda c, reports, urls, **kwargs: received.update(kwargs),
+    )
+    run()
+    assert loads == [[2026]]
+    assert received["teams"] is teams
+
+
+def _counting_loads(monkeypatch, *, fail_first=False):
+    loads = []
+
+    def load(seasons):
+        loads.append(seasons)
+        if fail_first and len(loads) == 1:
+            raise ConnectionError("prefetch lost")
+        return pd.DataFrame(), pd.DataFrame({"game_id": []}), pd.DataFrame()
+
+    monkeypatch.setattr(sync, "_load_dimensions", load)
+    return loads
+
+
+def test_a_failed_prefetch_is_read_again(harness, monkeypatch):
+    loads = _counting_loads(monkeypatch, fail_first=True)
+    assert run().ingested == 2
+    assert loads == [[2026], [2026]]
+
+
+def test_reports_of_other_seasons_read_their_own_dimensions(harness, monkeypatch):
+    loads = _counting_loads(monkeypatch)
+    monkeypatch.setattr(
+        sync, "_Read", lambda report, era, season: SimpleNamespace(season_year=2025)
+    )
+    run()
+    # Prefetched for the candidates' 2026; the parsed reports say 2025.
+    assert loads == [[2026], [2025]]
