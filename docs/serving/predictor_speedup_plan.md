@@ -145,7 +145,7 @@ Ordered by saving.
 | P6 · Runner hardware | depends on the result | low to measure | — | open |
 | P7 · Streamlit on Aiven | — (unblocks the Supabase clean-up) | medium | dashboard history | open |
 | P8 · Step 2 (schedule, referees, injury reports, odds) | ≈15–25 s per run | low | low | **done** (`perf/prediction-loop`), to confirm on the runner |
-| P9 · TabPFN inside the predictor run | ≈2.5–3 min and a queue slot per TabPFN run (phase 1); most of its ~6:42 rebuild with phase 2 | medium | medium | phase 1 **done** (PR #89), not booked; phase 2 levels 1–2 **done** (`perf/tabpfn-history-cache`) |
+| P9 · TabPFN inside the predictor run | ≈2.5–3 min and a queue slot per TabPFN run (phase 1); most of its ~6:42 rebuild with phase 2 | medium | medium | phase 1 **done** (PR #89), not booked; phase 2 levels 1–2 **done** (PR #92), validated on the runner; not booked |
 
 ### P0 · Measure before optimizing — done
 
@@ -563,8 +563,8 @@ caches miss.
    PR #87); confirm the `[time] step 2 ...` lines on the runner.
 8. P9: TabPFN inside the predictor run. Phase 1 done on
    `feat/tabpfn-thinking` (not booked: `TABPFN_RUNS = separate`); phase 2
-   levels 1–2 on `perf/tabpfn-history-cache`; validate on the runner, then
-   level 3 or book `joined`.
+   levels 1–2 merged (PR #92) and validated on the runner; next: book
+   `joined` or level 3.
 
 ## Progress log
 
@@ -617,6 +617,14 @@ caches miss.
   162 s, TabPFN build in the same run 187 → 138 s (local, 2026-04-10 replay),
   frames identical bit for bit. Level 2 (computed steps keyed on their
   input frames): the TabPFN build 138 → 93 s, still identical.
+- 2026-10-28 — Phase 2 validated on the runner (PR #92 merged). Predictor
+  dispatch 40768878728 (`persist` off, one job T-720 at 14:30Z): tonight's
+  TabPFN rows 5:35 → 2:21, intermediate rows 6:44 → 5:18, the run 15:02 →
+  10:15, peak 6.9 → 7.3 GB. Its 24 predictions equal, to the last digit, a
+  separate TabPFN run at the same cutoff right after (40770941257, no cache,
+  rows 4:27). Both differ from the 15:36Z runs in NOP@DEN and DAL@OKC (and
+  SAS@UTA from the 14:46Z one): the stored data changed during the day, not
+  the cache.
 
 ## Sources
 
