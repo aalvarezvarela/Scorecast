@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import timedelta
 
@@ -122,6 +123,15 @@ def _read_pdf(
     return data, published
 
 
+def _load_dimensions(seasons: list[int]):
+    """The teams, games and rosters an ingest of ``seasons``' reports resolves on."""
+    with connect_nba_db() as source:
+        teams = R.load_team_dimension(source)
+        games = R.load_game_dimension(seasons, source)
+        rosters = R.load_rosters(source, seasons)
+    return teams, games, rosters
+
+
 def synchronize_injury_reports(
     game_date,
     *,
@@ -139,6 +149,14 @@ def synchronize_injury_reports(
     if not candidates:
         return result
     by_url = {c.url: c for c in candidates}
+    # The three dimension reads are the sync's slowest part (a full-season
+    # schedule request, a scan of nba_players), and they do not depend on the
+    # reports: they load while the slots are registered and downloaded. Used
+    # only when the parsed reports' seasons are exactly these.
+    prefetch_seasons = sorted({int(c.season[:4]) for c in candidates})
+    pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="injury-dimensions")
+    prefetched = pool.submit(_load_dimensions, prefetch_seasons)
+    pool.shutdown(wait=False)
     # Aiven remains mandatory for predictions; network/S3 failures can only
     # leave it at its previous known state, never substitute an in-memory feed.
     with connect_nba_db("aiven") as conn:
@@ -197,10 +215,14 @@ def synchronize_injury_reports(
         if parsed:
             try:
                 seasons = sorted({p.season_year for p in parsed})
-                with connect_nba_db() as source:
-                    teams = R.load_team_dimension(source)
-                    games = R.load_game_dimension(seasons, source)
-                    rosters = R.load_rosters(source, seasons)
+                teams = games = rosters = None
+                if seasons == prefetch_seasons:
+                    try:
+                        teams, games, rosters = prefetched.result()
+                    except Exception as exc:  # noqa: BLE001 -- read again below
+                        log.warning("Injury dimension prefetch failed: %s", exc)
+                if teams is None:
+                    teams, games, rosters = _load_dimensions(seasons)
                 if scheduled_games is not None:
                     current = scoreboard_dimension(scheduled_games)
                     games = pd.concat(

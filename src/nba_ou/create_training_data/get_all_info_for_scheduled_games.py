@@ -1,5 +1,6 @@
 import asyncio
 import logging
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
@@ -34,6 +35,7 @@ from nba_ou.prediction.line_source import (
     priced_game_ids,
 )
 from nba_ou.utils.ci import annotate
+from nba_ou.utils.phase_timer import PhaseTimer
 
 
 def _normalize_team_series(series: pd.Series) -> pd.Series:
@@ -419,26 +421,57 @@ def get_all_info_for_scheduled_games(
         str
     )
 
+    # Each part prints a [time] line as it ends: the odds in their own
+    # thread, the rest in turn.
+    timer = PhaseTimer()
+
+    def odds() -> tuple[pd.DataFrame, pd.DataFrame]:
+        with timer.phase("step 2 odds (beside the injury reports)"):
+            yahoo = get_yahoo_prediction_data(
+                date_to_predict, scheduled_games_for_merge
+            )
+            sportsbook = get_sportsbook_prediction_data(
+                date_to_predict,
+                scheduled_games_for_merge,
+                headless=headless,
+                line_source=line_source,
+            )
+        return yahoo, sportsbook
+
+    # The odds depend on the schedule alone, and nothing below reads them:
+    # they are fetched meanwhile and collected at the end.
+    pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="odds")
+    odds_future = pool.submit(odds)
+    pool.shutdown(wait=False)
+
     # Then get refs
-    df_referees_scheduled = process_scheduled_referee_assignments(scheduled_games)
+    with timer.phase("step 2 referees"):
+        df_referees_scheduled = process_scheduled_referee_assignments(scheduled_games)
     # Reports are synchronized before any feature reads. Aiven is the sole
     # prediction source; a failed refresh may use its previous eligible state.
-    roster_snapshots = load_live_rosters(scheduled_games)
+    with timer.phase("step 2 live rosters"):
+        roster_snapshots = load_live_rosters(scheduled_games)
     injury_as_of = pd.Timestamp.now(tz="UTC")
-    try:
-        synchronize_injury_reports(
-            date_to_predict,
-            scheduled_games=scheduled_games,
-            as_of=injury_as_of,
-            roster_snapshots=roster_snapshots,
+    with timer.phase("step 2 injury report sync"):
+        try:
+            synced = synchronize_injury_reports(
+                date_to_predict,
+                scheduled_games=scheduled_games,
+                as_of=injury_as_of,
+                roster_snapshots=roster_snapshots,
+            )
+            print(
+                f"Injury report sync: {synced.pending} pending, {synced.ingested} "
+                f"ingested, {synced.unavailable} unavailable, {synced.failed} failed"
+            )
+        except Exception as exc:
+            logging.getLogger(__name__).warning(
+                "Injury report refresh failed; reading existing Aiven state: %s", exc
+            )
+    with timer.phase("step 2 injury report state"):
+        injury_report_state = load_prediction_report_state(
+            scheduled_games.GAME_ID.astype(str).tolist(), injury_as_of
         )
-    except Exception as exc:
-        logging.getLogger(__name__).warning(
-            "Injury report refresh failed; reading existing Aiven state: %s", exc
-        )
-    injury_report_state = load_prediction_report_state(
-        scheduled_games.GAME_ID.astype(str).tolist(), injury_as_of
-    )
     # Tonight's games only. The state also holds every earlier covered game,
     # and this dict is merged into the realized-absence history, which must
     # keep what actually happened in those games, not their pre-game reports.
@@ -471,17 +504,8 @@ def get_all_info_for_scheduled_games(
         print("No game has both teams' injury reports filed yet: no closing rows")
 
     print("Fetched and processed scheduled games, referees, and injuries")
-    print("Processing odds data for scheduled games...")
-    # Fetch Yahoo odds data for the scheduled games using the temp dataframe
-    df_odds_yahoo_scheduled = get_yahoo_prediction_data(
-        date_to_predict, scheduled_games_for_merge
-    )
-    df_odds_sportsbook_scheduled = get_sportsbook_prediction_data(
-        date_to_predict,
-        scheduled_games_for_merge,
-        headless=headless,
-        line_source=line_source,
-    )
+    # A failed odds fetch raises here, as it did when it ran last.
+    df_odds_yahoo_scheduled, df_odds_sportsbook_scheduled = odds_future.result()
 
     return {
         "scheduled_games": scheduled_games,
