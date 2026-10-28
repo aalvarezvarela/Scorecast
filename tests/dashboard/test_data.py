@@ -38,6 +38,27 @@ def test_connection_explicitly_resolves_only_aiven(monkeypatch):
     assert connect.call_args.kwargs["connect_timeout"] == 8
 
 
+def test_history_reads_scores_and_post_tip_replays_in_one_read_only_snapshot(
+    monkeypatch,
+):
+    conn = MagicMock()
+    conn.__enter__.return_value = conn
+    cursor = conn.cursor.return_value.__enter__.return_value
+    cursor.description = [SimpleNamespace(name="game_id")]
+    cursor.fetchall.return_value = [(1,)]
+    monkeypatch.setattr(predictions, "open_connection", MagicMock(return_value=conn))
+    predictions.read_yesterday(NOW.date())
+    assert conn.read_only is True
+    assert conn.isolation_level == psycopg.IsolationLevel.REPEATABLE_READ
+    assert cursor.execute.call_count == 2
+    games_query = cursor.execute.call_args_list[0].args[0]
+    history_query, parameters = cursor.execute.call_args_list[1].args
+    assert "home_points, away_points" in games_query
+    assert "workflow IN (1, 2, 3)" in history_query
+    assert "time_to_tipoff_seconds >" not in history_query
+    assert parameters[0] == NOW.date()
+
+
 @pytest.mark.parametrize(
     "error",
     [

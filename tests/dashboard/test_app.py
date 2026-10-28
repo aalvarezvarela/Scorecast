@@ -165,7 +165,6 @@ def test_line_freshness_shows_last_move_and_flags_an_old_read(app_setup, today_d
 @pytest.mark.parametrize(
     "filename,title",
     [
-        ("yesterday.py", "Yesterday's predictions"),
         ("historical.py", "Historical analysis"),
     ],
 )

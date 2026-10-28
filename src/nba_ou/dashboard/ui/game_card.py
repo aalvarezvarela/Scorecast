@@ -8,32 +8,20 @@ from nba_ou.dashboard.domain.dates import (
     horizon_label,
     madrid_clock,
     madrid_time,
-    time_remaining,
 )
 from nba_ou.dashboard.domain.models import ModelFamily
 from nba_ou.dashboard.domain.picks import GamePick, bet_text
-from nba_ou.dashboard.domain.teams import full_team_name, team_logo_url
 from nba_ou.dashboard.ui.charts import comparison_chart
 from nba_ou.dashboard.ui.formatting import (
     compact_totals_table,
     number,
     prediction_table,
 )
+from nba_ou.dashboard.ui.teams import render_game_header
 from nba_ou.dashboard.ui.totals_table import totals_table_html
 
 # Beyond this the stored line may no longer be the one on offer.
 STALE_SNAPSHOT_MINUTES = 60
-
-
-def _team(name: str, team_id, role: str) -> None:
-    name = full_team_name(name, team_id)
-    with st.container(horizontal=True, vertical_alignment="center"):
-        logo = team_logo_url(name, team_id)
-        if logo:
-            # Streamlit 1.54 has no image alt parameter; the visible caption
-            # names the side, and the adjacent text remains usable without images.
-            st.image(logo, width=48, caption=role)
-        st.markdown(f"**{name}**")
 
 
 def _headline(
@@ -185,14 +173,7 @@ def render_game_card(
     missing_models: tuple[str, ...] = (),
 ) -> None:
     with st.container(border=True):
-        away, home = st.columns(2)
-        with away:
-            _team(game["away_team"], game["away_team_id"], "Away")
-        with home:
-            _team(game["home_team"], game["home_team_id"], "Home")
-        st.caption(
-            f"**{madrid_time(game['tipoff_at'])}** · {time_remaining(game['tipoff_at'], now)}"
-        )
+        render_game_header(game, now=now)
         _headline(pick, market, reference, game, spread=spread)
         _market_freshness(market, now=now)
         _predictions(predictions, families, missing_models, spread=spread)

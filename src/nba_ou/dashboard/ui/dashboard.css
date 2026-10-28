@@ -13,7 +13,7 @@
 }
 
 /* Game cards sit on a lighter surface with an NBA red/blue top edge. */
-[class*="st-key-game_slot_"] > [data-testid="stLayoutWrapper"] > [data-testid="stVerticalBlock"] {
+:is([class*="st-key-game_slot_"], [class*="st-key-yesterday_game_slot_"]) > [data-testid="stLayoutWrapper"] > [data-testid="stVerticalBlock"] {
     background:
         linear-gradient(90deg, #c9082a 0 50%, #2f6bd8 50% 100%) top / 100% 3px
             no-repeat,
@@ -24,12 +24,27 @@
 
 /* Grow each content-sized card into the unused space in its flex row.
    The keys belong to this app; no generated Streamlit class names are used. */
-.st-key-games_grid > div:has(> [class*="st-key-game_slot_"]) {
+:is(.st-key-games_grid, .st-key-yesterday_games_grid) > div:has(> :is([class*="st-key-game_slot_"], [class*="st-key-yesterday_game_slot_"])) {
     flex: 1 1 max-content !important;
     width: auto !important;
     min-width: 0;
 }
-.st-key-games_grid [class*="st-key-game_slot_"] {
+
+/* Keep logos and tip-off information together on a clean white surface. */
+[class*="st-key-match_header_"] {
+    background: #ffffff;
+    color: #17408b;
+    border-radius: 8px;
+    padding: 0.75rem 1rem;
+    box-sizing: border-box;
+}
+[class*="st-key-match_header_"] :is(h3, p, strong, span, figcaption) {
+    color: #17408b !important;
+}
+[class*="st-key-match_header_"] [data-testid="stImageCaption"] {
+    color: #52617a !important;
+}
+:is(.st-key-games_grid [class*="st-key-game_slot_"], .st-key-yesterday_games_grid [class*="st-key-yesterday_game_slot_"]) {
     width: 100% !important;
     min-width: 0;
 }
@@ -61,22 +76,32 @@
     display: inline-block; padding: 0.1rem 0.3rem; border-radius: 0.25rem;
     font-size: 0.8em; margin-left: 0.25rem;
 }
-.prediction-comparison .pick-blue { color: #a9c6ff; background: #2c4a86; }
+.prediction-comparison .pick-blue { color: #7ad7ff; background: #163f76; }
 .prediction-comparison .pick-red { color: #ff8e9a; background: #4d2340; }
+.prediction-comparison .pick-green { color: #77e4a4; background: #164b39; }
 .prediction-comparison .pick-gray { color: #afbcd4; background: #afbcd426; }
+.history-comparison small {
+    display: block; margin-top: 0.15rem; font-size: 0.75rem;
+    color: var(--text-color, #afbcd4); opacity: 0.75; font-weight: 400;
+}
 
 /* Menu labels/options are 1.5 times their native 14px / 16px sizes.
    Card text keeps the existing 16px theme base. */
 .st-key-today_target button p, .st-key-today_view button p,
 .st-key-today_target label p, .st-key-today_view label p,
+.st-key-yesterday_target button p, .st-key-yesterday_source button p,
+.st-key-yesterday_view button p, .st-key-yesterday_target label p,
+.st-key-yesterday_source label p, .st-key-yesterday_view label p,
 [data-testid="stTopNavLink"] span, [data-testid="stTopNavDropdownLink"] span,
 [role="listbox"] [role="option"] {
     font-size: 1.3125rem !important;
 }
-.st-key-today_target button, .st-key-today_view button {
+.st-key-today_target button, .st-key-today_view button,
+.st-key-yesterday_target button, .st-key-yesterday_source button, .st-key-yesterday_view button {
     min-height: 2.625rem; padding: 0.375rem 1.125rem;
 }
-.st-key-today_refresh button, .st-key-today_settings button {
+.st-key-today_refresh button, .st-key-today_settings button,
+.st-key-yesterday_refresh button, .st-key-yesterday_settings button {
     min-height: 3.5625rem; padding: 0.375rem 1.125rem;
 }
 .st-key-today_refresh button p, .st-key-today_settings button p,
@@ -84,7 +109,11 @@
 .st-key-today_settings_options [role="combobox"] {
     font-size: 1.5rem !important;
 }
-.st-key-today_settings_options [role="combobox"] { min-height: 3.5625rem; }
+.st-key-yesterday_refresh button p, .st-key-yesterday_settings button p,
+.st-key-yesterday_settings_options label p, .st-key-yesterday_settings_options [role="combobox"] {
+    font-size: 1.5rem !important;
+}
+:is(.st-key-today_settings_options, .st-key-yesterday_settings_options) [role="combobox"] { min-height: 3.5625rem; }
 [data-testid="stTopNavLink"], [data-testid="stTopNavDropdownLink"] {
     padding-block: 0.75rem;
 }

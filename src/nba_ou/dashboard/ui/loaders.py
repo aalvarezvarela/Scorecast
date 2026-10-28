@@ -4,7 +4,11 @@ from datetime import date
 
 import streamlit as st
 from nba_ou.dashboard.config import CACHE_TTL_SECONDS
-from nba_ou.dashboard.repositories.predictions import TodayData, read_today
+from nba_ou.dashboard.repositories.predictions import (
+    TodayData,
+    read_today,
+    read_yesterday,
+)
 
 
 def _aiven_secret() -> str:
@@ -20,3 +24,8 @@ def _aiven_secret() -> str:
 @st.cache_data(ttl=CACHE_TTL_SECONDS, max_entries=8, show_spinner=False)
 def load_today(game_date: date) -> TodayData:
     return read_today(game_date, dsn_override=_aiven_secret())
+
+
+@st.cache_data(ttl=CACHE_TTL_SECONDS, max_entries=8, show_spinner=False)
+def load_yesterday(game_date: date) -> TodayData:
+    return read_yesterday(game_date, dsn_override=_aiven_secret())

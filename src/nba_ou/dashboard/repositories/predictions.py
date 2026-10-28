@@ -11,13 +11,14 @@ from nba_ou.dashboard.repositories.connection import open_connection
 
 GAMES_QUERY = """
     SELECT game_id, game_date, tipoff_at, home_team, away_team,
-           home_team_id, away_team_id, status
+           home_team_id, away_team_id, status,
+           home_points, away_points, result_updated_at
     FROM prediction.games
     WHERE game_date = %s
     ORDER BY tipoff_at, game_id
 """
 
-PREDICTIONS_QUERY = """
+PREDICTIONS_SELECT = """
     SELECT v.*, m.anchor_book, r.finished_at AS run_finished_at,
            CASE WHEN v.input_mode = 0 THEN v.run_started_at
                 ELSE v.tipoff_at_prediction
@@ -26,6 +27,11 @@ PREDICTIONS_QUERY = """
     FROM prediction.predictions_full v
     JOIN prediction.model_builds m USING (model_build_id)
     JOIN prediction.runs r ON r.run_id = v.run_id
+"""
+
+PREDICTIONS_QUERY = (
+    PREDICTIONS_SELECT
+    + """
     WHERE v.game_date = %s
       AND v.workflow IN (1, 3)
       AND v.kind IN (1, 3)
@@ -34,6 +40,20 @@ PREDICTIONS_QUERY = """
       AND r.finished_at <= %s
     ORDER BY v.predicted_at, v.run_id, v.input_id, v.model_build_id
 """
+)
+
+HISTORY_QUERY = (
+    PREDICTIONS_SELECT
+    + """
+    WHERE v.game_date = %s
+      AND v.workflow IN (1, 2, 3)
+      AND v.kind IN (1, 3)
+      AND (v.dataset_type = 1 OR v.model_horizon_minutes IN (240, 360, 480))
+      AND v.predicted_at <= %s
+      AND r.finished_at <= %s
+    ORDER BY v.predicted_at, v.run_id, v.input_id, v.model_build_id
+"""
+)
 
 
 @dataclass(frozen=True)
@@ -54,6 +74,15 @@ def _frame(cursor, query: str, params: tuple) -> pd.DataFrame:
 
 def read_today(game_date: date, dsn_override: str = "") -> TodayData:
     """No DDL, writes, external APIs, model loads or Supabase fallback."""
+    return _read_slate(game_date, dsn_override, PREDICTIONS_QUERY)
+
+
+def read_yesterday(game_date: date, dsn_override: str = "") -> TodayData:
+    """Include stored replay outputs and final scores in the same Aiven snapshot."""
+    return _read_slate(game_date, dsn_override, HISTORY_QUERY)
+
+
+def _read_slate(game_date: date, dsn_override: str, query: str) -> TodayData:
     fetched_at = datetime.now(UTC)
     try:
         with open_connection(dsn_override) as conn:
@@ -61,9 +90,7 @@ def read_today(game_date: date, dsn_override: str = "") -> TodayData:
             conn.read_only = True
             with conn.cursor() as cursor:
                 games = _frame(cursor, GAMES_QUERY, (game_date,))
-                predictions = _frame(
-                    cursor, PREDICTIONS_QUERY, (game_date, fetched_at, fetched_at)
-                )
+                predictions = _frame(cursor, query, (game_date, fetched_at, fetched_at))
         return TodayData(games, predictions, fetched_at)
     except psycopg.errors.UndefinedTable:
         raise DashboardDataError(

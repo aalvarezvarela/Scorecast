@@ -6,9 +6,7 @@ import pandas as pd
 
 import streamlit as st
 from nba_ou.dashboard.config import (
-    DEFAULT_MIN_EDGE_BY_KIND,
     DEFAULT_TARGET,
-    MIN_EDGE_LEVELS,
     MODEL_NAMES,
     REFERENCE_COLUMNS,
     SIGNAL_COLORS,
@@ -27,21 +25,10 @@ from nba_ou.dashboard.domain.selection import (
     upcoming_games,
 )
 from nba_ou.dashboard.repositories.predictions import DashboardDataError
+from nba_ou.dashboard.ui.controls import minimum_edge_select
 from nba_ou.dashboard.ui.game_card import render_game_card
 from nba_ou.dashboard.ui.loaders import load_today
 from nba_ou.dashboard.ui.prediction_table import render_prediction_table
-
-
-def _min_edge_select(kind: int) -> float:
-    default = DEFAULT_MIN_EDGE_BY_KIND[kind]
-    return st.selectbox(
-        f"Minimum edge · {MODEL_NAMES[kind]} (points)",
-        MIN_EDGE_LEVELS,
-        index=MIN_EDGE_LEVELS.index(default),
-        key=f"today_min_edge_{MODEL_NAMES[kind].lower()}",
-        help="A prediction bets only when its absolute market edge is strictly "
-        "above this threshold. All predictions remain visible.",
-    )
 
 
 def _picks_summary(games, picks, markets_by_game, reference) -> None:
@@ -157,7 +144,9 @@ def render_today() -> None:
             key="today_reference",
             help="This changes the displayed edge and pick, never the model's original prediction.",
         )
-        min_edge = {kind: _min_edge_select(kind) for kind in MODEL_NAMES}
+        min_edge = {
+            kind: minimum_edge_select(kind, page="today") for kind in MODEL_NAMES
+        }
         show_chart = st.toggle("Show comparison charts", key="today_charts")
         sort_by = st.selectbox(
             "Sort games by", ["Tip-off", "Largest edge"], key="today_sort"

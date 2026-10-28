@@ -26,8 +26,9 @@ applications as references. The new application does not import either.
 ## Pages and architecture
 
 The entrypoint registers three pages using `st.navigation`. Today is the
-default; Yesterday and Historical contain only their English titles and do
-not query the database. Page scripts compose modules in `nba_ou.dashboard`:
+default. Yesterday shows stored predictions and results; Historical remains
+a title-only placeholder without database reads. Page scripts compose
+modules in `nba_ou.dashboard`:
 
 - `repositories/`: bounded, parameterized reads from `prediction.games` and
   `prediction.predictions_full`, joining model builds for `anchor_book` and
@@ -135,7 +136,10 @@ the installed 1.54.
     Body text uses a 16px base, so content-sized cards and their spacing scale
     with the slightly larger text while retaining responsive wrapping.
     Logos are 48px and team names stay written in full, resolved from the NBA
-    team IDs in `prediction.games`; the same names appear in the table,
+    team IDs in `prediction.games`. Both teams, logos and Madrid tip-off text share a white header with
+    dark NBA-blue text, on both Today and Yesterday cards. UNDER/AWAY use a
+    brighter sky-blue tint (`#7AD7FF`) consistently across headings, badges,
+    tables and charts. The same team names appear in the table,
     details and tonight's bets. Each totals card uses one table with Model
     and Snapshot row labels, grouping closing and intermediate rows under
     each available model. Total points and Line error appear in adjacent
@@ -159,6 +163,77 @@ the installed 1.54.
     SVG derived from `https://cdn.nba.com/logos/leagues/logo-nba.svg`.
     The lettering is removed, retaining the original red and blue paths.
     The same mark is used as the browser-tab icon.
+
+## Yesterday's predictions
+
+The previous **NBA slate** is `slate_date() - 1 day`, using the same Pacific
+date boundary as Today, with every displayed time converted to Madrid.
+The target selector separates Line error, Total points and Spread. Model
+selection remains registry schema `2_5` plus available TabPFN families.
+
+The default source is **Live predictions**. **Snapshot replay** switches
+intermediate rows to stored exact own-horizon outputs; it does not rerun any
+model. Both choices share the same recorded live closing predictions.
+
+Selection is independent for every game, model family and target:
+
+| Model type | Checkpoints | Selection |
+| --- | --- | --- |
+| Closing | T−6h, T−4h | Latest live output fully available by the checkpoint, at most 30 minutes old. |
+| Closing | Final pre-game | Latest live output fully available before tip-off; actual time remains visible. |
+| Intermediate, live | T−8h, T−6h, T−4h | The model trained at that horizon, on an input from the preceding 30 minutes; publication must be between 30 minutes before and 30 minutes after the checkpoint, and before tip-off. |
+| Intermediate, replay | T−8h, T−6h, T−4h | Exact match of model and input horizon, using the latest own-snapshot reconstruction (workflow 2 for XGBoost; own-snapshot workflow 3 for TabPFN). |
+
+Availability is the later of prediction time and run completion.
+Closing T−6h/T−4h also require the output itself to have been produced in the
+preceding 30 minutes; finishing a long run does not make an old output fresh.
+Future input snapshots are rejected even if TabPFN labeled a pre-horizon row
+as `own`.
+Live never reads workflow 2; replay never silently fills an absent XGBoost
+reconstruction with a live row. Intermediate live publication delays are
+explained on the page; exact input, prediction and availability times are in
+View details. Each slot is deduplicated across refits/reruns. Missing slots
+are explicit and never replaced with another trained horizon.
+
+Cards reuse the team header, NBA theme and wrapping/growing layout. Their
+white header includes the final away/home score, total points and home margin
+alongside the teams and Madrid tip-off time. Below it is one table:
+Model, Checkpoint, Predicted total (Spread error for spreads), Pick / Line,
+Result. Line-error outputs use their original anchor to recover total points.
+Original outputs, model lines, horizons and source metadata remain inspectable.
+Games with no predictions remain visible, including their scores in Table view.
+
+Every pick is recalculated with the selected per-kind minimum edge against
+**that row's stored bookmaker quote**, never a shared latest/final line.
+For spreads, the implied home margin is reconstructed before comparison.
+The view's `pick_result` grades its stored emitted side, which is a different
+policy; this page grades its displayed thresholded signal instead.
+
+Results are WIN, LOSS, PUSH, NO BET, NO LINE, MISSING, PENDING or VOID.
+WIN badges use green, LOSS badges use red, and other results remain neutral.
+Only games marked final with both scores are settled. There is no majority across
+hours or combined-target bet. Before the individual games, the daily summary
+separates both XGBoost and TabPFN into Closing at 6h, Closing at 4h, Closing at closing (the
+last available pre-game prediction), and Intermediate at 8h/6h/4h. Its compact
+table shows evaluated games / all games, wins / settled picks, win rate and
+MAE per checkpoint. TabPFN shows only intermediate checkpoints when no closing
+model outputs were stored; absent games within an existing checkpoint retain
+their missing-data status.
+Win rate is `wins / (wins + losses)`; pooled metrics use pooled counts and
+errors rather than averaging checkpoint percentages or means. MAE includes
+available predictions for final games regardless of whether they cleared the
+betting threshold. Game counts are distinct matches, not prediction rows.
+Metric help shows exclusions; repeated checkpoint rows are not independent
+games. Selection rules remain in Settings, and individual cards retain the
+checkpoint details.
+
+Yesterday reads the same two Aiven sources in one read-only transaction;
+the games query includes final scores and the output query includes workflows
+1/2/3 and just closing/8h/6h/4h model slots. Post-tip replay outputs are allowed
+in the read, then separated in the domain layer. Both sources are fetched in
+one cached read, so changing source, target or thresholds needs no extra SQL.
+Results refresh every minute; the dashboard never calls the NBA API or the
+result updater, and no database migration is needed.
 
 ## Read path and freshness timestamps
 

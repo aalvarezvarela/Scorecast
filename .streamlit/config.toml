@@ -20,11 +20,11 @@ redColor = "#C9082A"
 redTextColor = "#FF8E9A"
 redBackgroundColor = "#4D2340"
 blueColor = "#17408B"
-blueTextColor = "#A9C6FF"
-blueBackgroundColor = "#2C4A86"
+blueTextColor = "#7AD7FF"
+blueBackgroundColor = "#163F76"
 grayColor = "#AFBCD4"
 dataframeHeaderBackgroundColor = "#253D6C"
-chartCategoricalColors = ["#FF8E9A", "#A9C6FF", "#F4F6FB", "#AFBCD4"]
+chartCategoricalColors = ["#FF8E9A", "#7AD7FF", "#F4F6FB", "#AFBCD4"]
 
 [client]
 showErrorDetails = "none"

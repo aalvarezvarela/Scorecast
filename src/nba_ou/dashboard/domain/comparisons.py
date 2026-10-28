@@ -27,6 +27,19 @@ def signal(
     return "OVER" if value > 0 else "UNDER"
 
 
+def prediction_values(frame: pd.DataFrame) -> pd.DataFrame:
+    """Convert outputs using their original anchors, for live and historical views."""
+    work = frame.copy()
+    output = pd.to_numeric(work["prediction_value"], errors="coerce")
+    anchor = pd.to_numeric(work["model_line"], errors="coerce")
+    spread = work["target"].eq(3)
+    work["predicted_total"] = output.where(work["target"].eq(2), anchor + output)
+    work.loc[spread, "predicted_total"] = float("nan")
+    work["predicted_home_margin"] = (anchor + output).where(spread)
+    work["predicted_error"] = output.where(~work["target"].eq(2), output - anchor)
+    return work
+
+
 def compare_predictions(
     selected: pd.DataFrame,
     markets: pd.DataFrame,
@@ -37,14 +50,7 @@ def compare_predictions(
     """``min_edge`` is one threshold, or one per ``kind`` (TabPFN differs)."""
     if selected.empty:
         return selected.copy()
-    work = selected.copy()
-    output = pd.to_numeric(work["prediction_value"], errors="coerce")
-    anchor = pd.to_numeric(work["model_line"], errors="coerce")
-    spread = work["target"].eq(3)
-    work["predicted_total"] = output.where(work["target"].eq(2), anchor + output)
-    work.loc[spread, "predicted_total"] = float("nan")
-    work["predicted_home_margin"] = (anchor + output).where(spread)
-    work["predicted_error"] = output.where(~work["target"].eq(2), output - anchor)
+    work = prediction_values(selected)
     market_columns = [
         "game_id",
         "bet365_line",

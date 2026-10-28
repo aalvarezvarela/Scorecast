@@ -36,9 +36,9 @@ SIGNAL_COLORS = {
 # Readable NBA red/blue tints on the navy dashboard, shared by charts/tables.
 SIGNAL_HEX_COLORS = {
     "OVER": "#FF8E9A",
-    "UNDER": "#A9C6FF",
+    "UNDER": "#7AD7FF",
     "HOME": "#FF8E9A",
-    "AWAY": "#A9C6FF",
+    "AWAY": "#7AD7FF",
     "NO EDGE": "#AFBCD4",
     "UNAVAILABLE": "#AFBCD4",
 }
