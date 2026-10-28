@@ -7,6 +7,7 @@ is handed, and that its output goes through the store as a TabPFN build.
 
 from __future__ import annotations
 
+import sys
 from datetime import datetime
 from types import SimpleNamespace
 from unittest.mock import Mock
@@ -29,7 +30,9 @@ from nba_ou.prediction.prediction_store import PredictionRunRecorder
 from nba_ou.prediction.prediction_tabpfn_client import (
     FittedTabPFN,
     feature_slot_for,
+    fit_tabpfn,
     model_variant,
+    parse_modes,
     predict_with_tabpfn,
     rows_of_horizon,
     tabpfn_training_set,
@@ -77,6 +80,63 @@ def test_an_intermediate_run_takes_the_slot_of_its_horizon():
 def test_the_variant_names_the_model_version():
     assert model_variant("v3.5") == "tabpfn_v3_5"
     assert model_variant("v3.5-fast") == "tabpfn_v3_5_fast"
+
+
+def test_a_thinking_mode_is_a_variant_of_its_own():
+    """The standard model keeps the variant every earlier run was stored as."""
+    assert model_variant("v3.5", "standard") == "tabpfn_v3_5"
+    assert model_variant("v3.5", "thinking_medium") == "tabpfn_v3_5_thinking_medium"
+    assert model_variant("v3.5", "thinking_high") == "tabpfn_v3_5_thinking_high"
+    with pytest.raises(ValueError, match="thinking"):
+        model_variant("v3.5", "thinking")
+
+
+def test_modes_are_parsed_once_each_in_order():
+    assert parse_modes(["standard"]) == ["standard"]
+    assert parse_modes(["thinking_high, standard thinking_high"]) == [
+        "thinking_high",
+        "standard",
+    ]
+    with pytest.raises(ValueError, match="high"):
+        parse_modes(["high"])
+    with pytest.raises(ValueError, match="at least one"):
+        parse_modes([" , "])
+
+
+@pytest.mark.parametrize(
+    ("mode", "overrides"),
+    [
+        ("standard", {}),
+        ("thinking_medium", {"thinking_effort": "medium"}),
+        ("thinking_high", {"thinking_effort": "high"}),
+    ],
+)
+def test_a_thinking_fit_asks_the_client_for_its_effort(monkeypatch, mode, overrides):
+    """Nothing reaches the hosted service: the client module is a stand-in."""
+    created = []
+
+    class _Regressor:
+        @classmethod
+        def create_default_for_version(cls, version, **options):
+            created.append((version, options))
+            return cls()
+
+        def fit(self, X, y):
+            return self
+
+    client = SimpleNamespace(
+        __version__="0.6.1",
+        TabPFNRegressor=_Regressor,
+        set_access_token=Mock(),
+        init=Mock(),
+    )
+    monkeypatch.setitem(sys.modules, "tabpfn_client", client)
+    monkeypatch.setenv("TABPFN_ACCESS_TOKEN", "token")
+    training_set = tabpfn_training_set(_history(), _spec(), frame_key="k")
+
+    model = fit_tabpfn(training_set, model_version="v3.5", mode=mode)
+    assert created == [("v3.5", {"random_state": 0, **overrides})]
+    assert model.mode == mode
 
 
 def _spec(
@@ -430,11 +490,12 @@ def _run_dependencies(monkeypatch, *, horizon=0, total_schema="2_5"):
         ) - pd.to_timedelta(tonight["TIME_TO_MATCH_MIN"], unit="min")
         tonight["SNAPSHOT_PASSED"] = True
 
-    def fit(training_set, *, model_version):
+    def fit(training_set, *, model_version, mode):
         return FittedTabPFN(
             _MeanRegressor().fit(training_set.X, training_set.y),
             model_version=model_version,
             client_version="0.6.1",
+            mode=mode,
         )
 
     dependencies = {
@@ -550,6 +611,58 @@ def test_target_failure_preserves_other_predictions_and_fails_run(
     assert len(tables.predictions) == 2
     assert recorder.slots[failed_index]["status"] == "failed"
     assert recorder.slots[1 - failed_index]["status"] == "predicted"
+
+
+def test_a_run_fits_the_standard_model_only_by_default(monkeypatch):
+    deps = _run_dependencies(monkeypatch)
+    job.predict_tabpfn(targets=["line_error", "total_points"])
+    modes = [fit.kwargs["mode"] for fit in deps["fit_tabpfn"].call_args_list]
+    assert modes == ["standard", "standard"]
+    recorder = deps["persist_prediction_run"].call_args.args[0]
+    tables = recorder.tables(status=store_schema.RUN_STATUS_OK)
+    assert set(tables.model_builds["variant"]) == {"tabpfn_v3_5"}
+
+
+def test_each_mode_is_its_own_fit_and_variant(monkeypatch):
+    """Two modes over two targets: four fits on the targets' own rows, stored
+    as four builds of one run."""
+    deps = _run_dependencies(monkeypatch)
+    job.predict_tabpfn(
+        targets=["line_error", "total_points"], modes=["standard", "thinking_high"]
+    )
+    fits = deps["fit_tabpfn"].call_args_list
+    assert [(fit.args[0].n_games, fit.kwargs["mode"]) for fit in fits] == [
+        (4, "standard"),
+        (4, "thinking_high"),
+        (6, "standard"),
+        (6, "thinking_high"),
+    ]
+    recorder = deps["persist_prediction_run"].call_args.args[0]
+    tables = recorder.tables(status=store_schema.RUN_STATUS_OK)
+    builds = tables.model_builds
+    assert len(builds) == 4
+    assert sorted(builds["variant"]) == [
+        "tabpfn_v3_5",
+        "tabpfn_v3_5",
+        "tabpfn_v3_5_thinking_high",
+        "tabpfn_v3_5_thinking_high",
+    ]
+    assert len(tables.predictions) == 8
+    assert [slot["status"] for slot in recorder.slots] == ["predicted"] * 4
+
+
+def test_the_cli_passes_modes_and_refuses_an_unknown_one(monkeypatch):
+    predict = Mock()
+    monkeypatch.setattr(job, "predict_tabpfn", predict)
+    job.main([])
+    assert predict.call_args.kwargs["modes"] == ["standard"]
+    job.main(["--modes", "standard thinking_high"])
+    assert predict.call_args.kwargs["modes"] == ["standard", "thinking_high"]
+    predict.reset_mock()
+    with pytest.raises(SystemExit) as exc:
+        job.main(["--modes", "thinking"])
+    assert exc.value.code == 2
+    predict.assert_not_called()
 
 
 def test_mixed_closing_schemas_use_one_frame_at_the_newest_version(monkeypatch):

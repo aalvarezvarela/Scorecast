@@ -254,6 +254,10 @@ results. In short:
   with `tabpfn-client` on the rows, features, NaN budget and window of that
   slot's production spec, read from the season partitions, and predicts
   tonight's rows. Stored as `model_builds.kind` 3 / `runs.workflow` 3.
+  `--modes` (workflow input `modes`) fits each target in one or more modes:
+  `standard` (the default, the only one scheduled) or thinking
+  (`thinking_medium`, `thinking_high`), each its own variant
+  (`tabpfn_v3_5_thinking_high`).
 
 ## Adding or changing features
 

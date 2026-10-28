@@ -1,6 +1,7 @@
 """Predict tonight's games with TabPFN, on its own.
 
     python scripts/predict_tabpfn.py [--targets line_error total_points] [--no-persist]
+    python scripts/predict_tabpfn.py --modes standard thinking_high
     python scripts/predict_tabpfn.py --line intermediate [--horizon-minutes 360]
     python scripts/predict_tabpfn.py --line intermediate --horizon-minutes 720 \
         --game-date 2026-10-26 --as-of 2026-10-26T11:00:00Z
@@ -24,8 +25,10 @@ rows and columns of that slot's production build
    ticks so far when the snapshot is still ahead (``SNAPSHOT_PASSED`` False),
    as the daily predictor does. Every game of the slate that has not started
    is predicted, at either line; only that horizon's rows are built.
-3. TabPFN is fitted separately for each target on its spec's rows and features.
-   Tonight's rows are prepared once and all outputs share one prediction run.
+3. TabPFN is fitted separately for each target and mode (``--modes``: the
+   standard model by default, or thinking at medium or high effort, each
+   stored as a variant of its own) on its spec's rows and features. Tonight's
+   rows are prepared once and all outputs share one prediction run.
    The run goes to the prediction store (S3 run archive + Aiven) with
    ``runs.workflow`` 3 and ``model_builds.kind`` 3.
 
@@ -87,10 +90,14 @@ from nba_ou.prediction.prediction_store import (
 from nba_ou.prediction.prediction_tabpfn_client import (
     DEFAULT_INTERMEDIATE_HORIZON,
     DEFAULT_MODEL_VERSION,
+    DEFAULT_MODES,
     INTERMEDIATE_LINE,
+    MODES,
+    STANDARD_MODE,
     feature_slot_for,
     fit_tabpfn,
     model_variant,
+    parse_modes,
     predict_with_tabpfn,
     rows_of_horizon,
     tabpfn_training_set,
@@ -222,6 +229,7 @@ def run_tabpfn(
     snapshot_game_ids: Sequence[str] | None = None,
     feature_slot: ModelSlot | None = None,
     model_version: str = DEFAULT_MODEL_VERSION,
+    modes: Sequence[str] = DEFAULT_MODES,
     train_games: int | None = None,
     max_frame_age_days: int = DEFAULT_MAX_FRAME_AGE_DAYS,
     update_db: bool = True,
@@ -234,7 +242,9 @@ def run_tabpfn(
     intermediate slot's time before tip-off (default
     ``DEFAULT_INTERMEDIATE_HORIZON``). ``feature_slot`` defaults to the enabled
     slot of each target at that line. An explicit ``feature_slot`` requires
-    one target. ``persist=False`` stores nothing (the database update still writes).
+    one target. ``modes`` are the fits of each target (``MODES``; the standard
+    model by default), each stored as its own variant. ``persist=False``
+    stores nothing (the database update still writes).
     ``game_date`` pins a scheduled run to its slate and ``as_of`` the
     intermediate input cutoff, even when the runner is busy; every game of the
     slate not started when the run reads the schedule is predicted.
@@ -243,6 +253,7 @@ def run_tabpfn(
     (manual runs) keeps only those games.
     """
     targets = parse_targets(targets)
+    modes = parse_modes(modes)
     wanted_games = None if game_ids is None else set(parse_game_ids(game_ids))
     snapshot_games = (
         None if snapshot_game_ids is None else parse_game_ids(snapshot_game_ids)
@@ -270,8 +281,8 @@ def run_tabpfn(
         else datetime.now(ZoneInfo("US/Pacific")).strftime("%Y-%m-%d")
     )
     print(
-        f"TabPFN {model_version}, {', '.join(targets)} at {format_horizon(horizon)}, "
-        f"for {date_to_predict}"
+        f"TabPFN {model_version} ({', '.join(modes)}), {', '.join(targets)} at "
+        f"{format_horizon(horizon)}, for {date_to_predict}"
     )
 
     # Each phase prints a [time] line as it ends, the summary their list.
@@ -498,16 +509,26 @@ def run_tabpfn(
     clean_rows = clean_prediction_frames(
         {dataset_type: df_to_predict}, passthrough_columns=passthrough
     ).get(dataset_type)
-    for target, spec, training_set in zip(targets, specs, training_sets, strict=True):
+    # Each target in each mode: a fit and a variant of its own.
+    fits = [
+        (target, spec, training_set, mode)
+        for target, spec, training_set in zip(
+            targets, specs, training_sets, strict=True
+        )
+        for mode in modes
+    ]
+    for target, spec, training_set, mode in fits:
         label = (
             f"{spec.identity.schema_version}/{target}/{format_horizon(horizon)}/"
-            f"{model_variant(model_version)}"
+            f"{model_variant(model_version, mode)}"
         )
+        # The standard fit keeps its phase names; another mode is named in them.
+        phase = target if mode == STANDARD_MODE else f"{target} {mode}"
         log.step(f"Fitting and Predicting ({label})")
         try:
-            with timer.phase(f"{target} fit"):
-                model = fit_tabpfn(training_set, model_version=model_version)
-            with timer.phase(f"{target} predict"):
+            with timer.phase(f"{phase} fit"):
+                model = fit_tabpfn(training_set, model_version=model_version, mode=mode)
+            with timer.phase(f"{phase} predict"):
                 predictions = predict_with_tabpfn(
                     df=df_to_predict if clean_rows is None else clean_rows,
                     spec=spec,
@@ -556,17 +577,17 @@ def run_tabpfn(
             )
     log.step("Summary", group=False)
     print(timer.summary())
-    print_status(f"{len(predicted)} of {len(targets)} target(s) predicted")
+    print_status(f"{len(predicted)} of {len(fits)} model(s) predicted")
     print_status(f"{len(failures)} failure(s)", ok=not failures)
     for failure in failures:
         log.error(failure)
     log.summary(
         "\n".join(
             [
-                f"### TabPFN {model_version} for {date_to_predict}, "
-                f"{format_horizon(horizon)}",
+                f"### TabPFN {model_version} ({', '.join(modes)}) for "
+                f"{date_to_predict}, {format_horizon(horizon)}",
                 "",
-                f"{len(predicted)} of {len(targets)} target(s) predicted, "
+                f"{len(predicted)} of {len(fits)} model(s) predicted, "
                 f"{len(failures)} failure(s)"
                 + ("" if persist else " (dry run: nothing stored)"),
                 "",
@@ -688,6 +709,16 @@ def main(argv: Sequence[str] | None = None) -> None:
         help=f"TabPFN model version (default: {DEFAULT_MODEL_VERSION}).",
     )
     parser.add_argument(
+        "--modes",
+        nargs="+",
+        default=list(DEFAULT_MODES),
+        help=(
+            "TabPFN modes separated by spaces or commas, each fitted and stored "
+            f"as its own variant: {', '.join(MODES)} "
+            f"(default: {' '.join(DEFAULT_MODES)})."
+        ),
+    )
+    parser.add_argument(
         "--train-games",
         type=int,
         help="Fit on the last N games instead of the spec's window.",
@@ -716,6 +747,7 @@ def main(argv: Sequence[str] | None = None) -> None:
     args = parser.parse_args(argv)
     try:
         targets = parse_targets(args.targets)
+        modes = parse_modes(args.modes)
         game_ids = None if args.game_ids is None else parse_game_ids(args.game_ids)
         snapshot_game_ids = (
             None
@@ -745,6 +777,7 @@ def main(argv: Sequence[str] | None = None) -> None:
         snapshot_game_ids=snapshot_game_ids,
         feature_slot=args.feature_slot,
         model_version=args.model_version,
+        modes=modes,
         train_games=args.train_games,
         max_frame_age_days=args.max_frame_age_days,
         update_db=not args.skip_db_update,

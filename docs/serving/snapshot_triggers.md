@@ -86,6 +86,15 @@ shared, and all outputs are stored in one prediction run. If a target's inferenc
 fails, the other targets are still attempted and saved, and the run fails with
 a partial result. `--feature-slot` requires a single target.
 
+Its `modes` input (`--modes` in the script) lists the fits of each target, `standard` by
+default, which is today's model and what the scheduler requests. The other
+modes are TabPFN's thinking at medium or high effort (`thinking_medium`,
+`thinking_high`): the server searches the fit within its default time budget,
+which costs more time and inference. Each mode is stored as its own variant
+(`tabpfn_v3_5`, `tabpfn_v3_5_thinking_high`), so a run with
+`modes="standard thinking_high"` stores both side by side. No scheduled run
+uses thinking yet; dispatch one by hand to try it.
+
 ## The day's schedule
 
 All on the one self-hosted runner. The two fixed jobs come from `setup_cronjobs.py`,
