@@ -11,6 +11,13 @@ hashed. Workflows install with pip and never need Poetry:
 Keep `--no-deps`: the requirements file already pins everything, and a plain
 `pip install -e .` would resolve the main dependencies again, outside the lock.
 
+The standalone web dashboard is separate: `streamlit/requirements.txt` is a
+small, directly maintained deployment manifest, outside these generated job
+exports. Community Cloud selects it next to `streamlit/streamlit_app.py`, so
+it installs only the dashboard runtime. It pins Streamlit independently of
+the full-project Poetry lock; shared numpy/pandas/pyarrow/psycopg versions
+match the project pins. See `docs/serving/streamlit_dashboard.md`.
+
 ## Files
 
 | File | Poetry groups | Used by |

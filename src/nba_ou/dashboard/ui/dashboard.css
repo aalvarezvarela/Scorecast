@@ -1,0 +1,185 @@
+/* A soft NBA-blue glow over the theme's navy background; the header is
+   translucent so the glow reaches the top navigation. */
+[data-testid="stApp"] {
+    background:
+        radial-gradient(70rem 32rem at 12% -8%, #2a4a8a 0%, transparent 65%),
+        radial-gradient(50rem 26rem at 100% 0%, #3a2350 0%, transparent 60%),
+        #182a4e;
+    background-attachment: fixed;
+}
+[data-testid="stHeader"] {
+    background: rgb(24 42 78 / 0.8);
+    backdrop-filter: blur(8px);
+}
+
+/* Game cards sit on a lighter surface with an NBA red/blue top edge. */
+:is([class*="st-key-game_slot_"], [class*="st-key-yesterday_game_slot_"]) > [data-testid="stLayoutWrapper"] > [data-testid="stVerticalBlock"] {
+    background:
+        linear-gradient(90deg, #c9082a 0 50%, #2f6bd8 50% 100%) top / 100% 3px
+            no-repeat,
+        linear-gradient(180deg, #23396a 0%, #1f3360 100%);
+    border-color: #36528a;
+    box-shadow: 0 6px 18px rgb(6 14 32 / 0.35);
+}
+
+/* Grow each content-sized card into the unused space in its flex row.
+   The keys belong to this app; no generated Streamlit class names are used. */
+:is(.st-key-games_grid, .st-key-yesterday_games_grid) > div:has(> :is([class*="st-key-game_slot_"], [class*="st-key-yesterday_game_slot_"])) {
+    flex: 1 1 max-content !important;
+    width: auto !important;
+    min-width: 0;
+}
+
+/* White matchup panel: balanced teams, a central score, and a quiet footer. */
+[class*="st-key-match_header_"] {
+    background: #ffffff;
+    color: #17408b;
+    border: 1px solid #dfe6f1;
+    border-radius: 12px;
+    padding: 1rem;
+    box-sizing: border-box;
+    gap: 0.875rem !important;
+}
+[class*="st-key-match_header_"] :is(h3, p, strong, span, figcaption) {
+    color: #17408b !important;
+}
+[class*="st-key-match_matchup_"] {
+    flex-wrap: nowrap !important;
+    gap: 0.75rem !important;
+}
+[class*="st-key-match_matchup_"] > div:has(> [class*="st-key-match_team_"]) {
+    flex: 1 1 0 !important;
+    min-width: 0;
+    width: 0 !important;
+}
+[class*="st-key-match_matchup_"] > div:has(> [class*="st-key-match_center_"]) {
+    flex: 0 0 auto !important;
+    width: auto !important;
+}
+:is([class*="st-key-match_team_"], [class*="st-key-match_center_"]) [data-testid="stCaptionContainer"] p {
+    color: #6b7b94 !important;
+    font-size: 0.6875rem;
+    font-weight: 600;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    margin: 0 0 0.375rem;
+}
+[class*="st-key-match_team_"] [data-testid="stMarkdownContainer"] p {
+    font-size: 1rem;
+    line-height: 1.3;
+    overflow-wrap: anywhere;
+    margin: 0.5rem 0 0;
+}
+[class*="st-key-match_center_"] h3 {
+    font-size: 1.375rem !important;
+    font-weight: 700;
+    font-variant-numeric: tabular-nums;
+    letter-spacing: -0.035em;
+    line-height: 1.2;
+    white-space: nowrap;
+    padding: 0;
+    margin: 0 0 0.25rem;
+}
+[class*="st-key-match_center_"] [data-testid="stMarkdownContainer"] p {
+    background: #f0f4fa;
+    border: 1px solid #e0e7f1;
+    border-radius: 999px;
+    color: #62738e !important;
+    font-size: 0.75rem;
+    letter-spacing: 0.08em;
+    padding: 0.375rem 0.625rem;
+    margin: 0;
+    text-align: center;
+    max-width: 7rem;
+    box-sizing: border-box;
+}
+[class*="st-key-match_footer_"] {
+    border-top: 1px solid #e5ebf3;
+    padding-top: 0.625rem;
+}
+[class*="st-key-match_footer_"] p {
+    color: #586a86 !important;
+    font-size: 0.8125rem;
+    line-height: 1.5;
+    margin: 0;
+    text-align: center;
+}
+@media (max-width: 640px) {
+    [class*="st-key-match_header_"] { padding: 0.875rem; }
+    [class*="st-key-match_matchup_"] { gap: 0.5rem !important; }
+    [class*="st-key-match_team_"] [data-testid="stMarkdownContainer"] p { font-size: 0.875rem; }
+    [class*="st-key-match_center_"] h3 { font-size: 1.125rem !important; }
+}
+:is(.st-key-games_grid [class*="st-key-game_slot_"], .st-key-yesterday_games_grid [class*="st-key-yesterday_game_slot_"]) {
+    width: 100% !important;
+    min-width: 0;
+}
+
+/* Native table currently repeats MultiIndex headings instead of spanning them. */
+.prediction-comparison { width: 100%; overflow-x: auto; }
+.prediction-comparison table {
+    width: 100%; border-collapse: collapse; font-size: 0.875rem;
+    font-variant-numeric: tabular-nums;
+}
+.prediction-comparison th, .prediction-comparison td {
+    padding: 0.45rem 0.5rem;
+    border-bottom: 1px solid var(--border-color, #3a5790);
+    vertical-align: middle;
+}
+.prediction-comparison thead th { font-weight: 600; text-align: center; }
+.prediction-comparison thead th[rowspan], .prediction-comparison tbody th {
+    text-align: left; font-weight: 400;
+}
+.prediction-comparison td { text-align: right; white-space: nowrap; }
+.prediction-comparison tbody th { white-space: nowrap; }
+.prediction-comparison .prediction { font-weight: 600; }
+.prediction-comparison [scope="colgroup"] + [scope="colgroup"],
+.prediction-comparison thead tr:nth-child(2) > :nth-child(3),
+.prediction-comparison tr > :nth-child(5) {
+    border-left: 1px solid var(--border-color, #3a5790);
+}
+.prediction-comparison .pick {
+    display: inline-block; padding: 0.1rem 0.3rem; border-radius: 0.25rem;
+    font-size: 0.8em; margin-left: 0.25rem;
+}
+.prediction-comparison .pick-blue { color: #7ad7ff; background: #163f76; }
+.prediction-comparison .pick-red { color: #ff8e9a; background: #4d2340; }
+.prediction-comparison .pick-green { color: #77e4a4; background: #164b39; }
+.prediction-comparison .pick-gray { color: #afbcd4; background: #afbcd426; }
+.history-comparison small {
+    display: block; margin-top: 0.15rem; font-size: 0.75rem;
+    color: var(--text-color, #afbcd4); opacity: 0.75; font-weight: 400;
+}
+
+/* Menu labels/options are 1.5 times their native 14px / 16px sizes.
+   Card text keeps the existing 16px theme base. */
+.st-key-today_target button p, .st-key-today_view button p,
+.st-key-today_target label p, .st-key-today_view label p,
+.st-key-yesterday_target button p, .st-key-yesterday_source button p,
+.st-key-yesterday_view button p, .st-key-yesterday_target label p,
+.st-key-yesterday_source label p, .st-key-yesterday_view label p,
+[data-testid="stTopNavLink"] span, [data-testid="stTopNavDropdownLink"] span,
+[role="listbox"] [role="option"] {
+    font-size: 1.3125rem !important;
+}
+.st-key-today_target button, .st-key-today_view button,
+.st-key-yesterday_target button, .st-key-yesterday_source button, .st-key-yesterday_view button {
+    min-height: 2.625rem; padding: 0.375rem 1.125rem;
+}
+.st-key-today_refresh button, .st-key-today_settings button,
+.st-key-yesterday_refresh button, .st-key-yesterday_settings button {
+    min-height: 3.5625rem; padding: 0.375rem 1.125rem;
+}
+.st-key-today_refresh button p, .st-key-today_settings button p,
+.st-key-today_settings_options label p,
+.st-key-today_settings_options [role="combobox"] {
+    font-size: 1.5rem !important;
+}
+.st-key-yesterday_refresh button p, .st-key-yesterday_settings button p,
+.st-key-yesterday_settings_options label p, .st-key-yesterday_settings_options [role="combobox"] {
+    font-size: 1.5rem !important;
+}
+:is(.st-key-today_settings_options, .st-key-yesterday_settings_options) [role="combobox"] { min-height: 3.5625rem; }
+[data-testid="stTopNavLink"], [data-testid="stTopNavDropdownLink"] {
+    padding-block: 0.75rem;
+}
