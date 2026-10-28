@@ -41,6 +41,8 @@ SECRETS_FILE = PROJECT_ROOT / "nba_ou/config.secrets.ini"
 CONFIG_SCHEMA = {
     # Scraping / Browser
     "headless": ("Scraping", "HEADLESS", bool, True),
+    # Snapshot triggers: TabPFN runs on their own or inside the predictor's
+    "tabpfn_runs": ("Schedule", "TABPFN_RUNS", str, "separate"),
     # Database
     "db_env": ("Database", "DB_ENV", str, None),
     "db_name": ("Database", "DB_NAME", str, None),

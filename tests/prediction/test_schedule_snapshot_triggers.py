@@ -818,6 +818,105 @@ def test_booked_tabpfn_inputs_match_the_workflow_and_cli(monkeypatch):
         assert options["update_db"] is False
 
 
+def _joined(games, now):
+    predictor = job.trigger_times(
+        job.game_tipoffs(games), [720, 480, 360, 240, 30], now
+    )
+    return predictor, *job.joined_tabpfn_runs(games, "2026-10-22", now, predictor)
+
+
+def test_joined_tabpfn_jobs_ride_in_the_predictor_run_covering_their_snapshot():
+    from nba_ou.prediction.tabpfn_run import parse_jobs
+
+    games = _tabpfn_games()
+    now = _utc("2026-10-22 08:00")
+    predictor, joined, alone = _joined(games, now)
+    # Every TabPFN snapshot is also a predictor snapshot.
+    assert alone == []
+    assert set(joined) <= set(predictor)
+    expected = {
+        (str(game.game_id), horizon): game.tipoff_utc.to_pydatetime()
+        - timedelta(minutes=horizon)
+        for game in games.itertuples()
+        for horizon in (720, 480, 360, 240)
+    }
+    actual = {}
+    for run, dispatch in joined.items():
+        assert dispatch.workflow_file == job.PREDICTOR.workflow_file
+        assert dict(dispatch.inputs).keys() == {"tabpfn"}
+        for tabpfn_job in parse_jobs(dict(dispatch.inputs)["tabpfn"]):
+            # The run covering the snapshot fires at it or after it.
+            assert tabpfn_job.as_of <= pd.Timestamp(run)
+            for game_id in tabpfn_job.snapshot_games:
+                actual[(game_id, tabpfn_job.horizon)] = tabpfn_job.as_of
+    assert actual == expected
+    # 17:00 holds the 23:00 games' T-360 and the 01:00 game's T-480.
+    assert joined[_utc("2026-10-22 17:00")].label == "T-480 E@F; T-360 A@B, C@D"
+
+
+def test_a_tabpfn_snapshot_no_predictor_run_covers_keeps_its_own_dispatch():
+    games = _tabpfn_games()
+    now = _utc("2026-10-22 08:00")
+    joined, alone = job.joined_tabpfn_runs(games, "2026-10-22", now, {})
+    assert joined == {}
+    assert alone == job.tabpfn_runs(games, "2026-10-22", now)
+
+
+def test_a_predictor_run_with_tabpfn_jobs_books_a_job_of_its_own(monkeypatch):
+    """Joined: no TabPFN dispatch; each carrying predictor run fires once,
+    with inputs the predictor workflow takes."""
+    from pathlib import Path
+
+    import yaml
+
+    now = _utc("2026-10-22 08:00")
+
+    class Clock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return now.astimezone(tz)
+
+    monkeypatch.setattr(job, "datetime", Clock)
+    monkeypatch.setattr(
+        job, "fetch_tipoffs_for_date", Mock(return_value=_tabpfn_games())
+    )
+    monkeypatch.setattr(
+        job.sys,
+        "argv",
+        [
+            "schedule_snapshot_triggers.py",
+            "--game-date",
+            "2026-10-22",
+            "--tabpfn",
+            "joined",
+        ],
+    )
+    groups = []
+    monkeypatch.setattr(job, "MAX_POOL", 0)  # stop after planning, before booking
+    original = job.group_schedules
+
+    def recorded(times, dispatch=job.PREDICTOR):
+        made = original(times, dispatch)
+        groups.extend(made)
+        return made
+
+    monkeypatch.setattr(job, "group_schedules", recorded)
+    with pytest.raises(SystemExit):
+        job.main()
+
+    assert not any(g.dispatch.workflow_file == job.TABPFN_WORKFLOW for g in groups)
+    carrying = [g for g in groups if "tabpfn" in dict(g.dispatch.inputs)]
+    assert carrying and all(len(g.fire_times()) == 1 for g in carrying)
+    workflow = yaml.load(
+        Path(".github/workflows/nba_predictor_daily.yml").read_text(),
+        Loader=yaml.BaseLoader,
+    )
+    supported = workflow["on"]["workflow_dispatch"]["inputs"]
+    for group in carrying:
+        assert dict(group.dispatch.inputs).keys() <= supported.keys()
+        assert " + TabPFN T-" in job.pool_title(1, group)
+
+
 def test_booking_check_compares_next_execution_with_the_plan():
     day = pd.Timestamp("2026-10-22").date()
     groups = [

@@ -45,72 +45,45 @@ from __future__ import annotations
 import argparse
 import os
 import time
-from collections.abc import Callable, Collection, Sequence
+from collections.abc import Sequence
 from datetime import date, datetime
 from zoneinfo import ZoneInfo
 
 import pandas as pd
-from nba_ou.config.dataset_versions import BASE_SCHEMA_VERSION
 from nba_ou.config.settings import SETTINGS
-from nba_ou.create_training_data.create_df_to_predict import create_df_to_predict
 from nba_ou.create_training_data.get_all_info_for_scheduled_games import (
     get_all_info_for_scheduled_games,
 )
-from nba_ou.create_training_data.schema_layers import (
-    CLOSING_LINE,
-    LayerContext,
-    compute_new_columns,
-    is_layered,
-    newest_version,
-    parse_version,
-)
-from nba_ou.create_training_data.season_partitions import SeasonPartitions
+from nba_ou.create_training_data.schema_layers import CLOSING_LINE
 from nba_ou.fetch_data.scheduled_game.get_schedule_games import get_schedule_games
-from nba_ou.modeling.refit import resolve_training_frame
-from nba_ou.modeling.registry_paths import (
-    Channel,
-    ModelSlot,
-    ModelTarget,
-    format_horizon,
-)
-from nba_ou.modeling.registry_store import resolve_channel
-from nba_ou.postgre_db.line_history_aiven.ingest import TIPOFF_TOLERANCE_MINUTES
-from nba_ou.postgre_db.predictions_aiven.schema import WORKFLOW_TABPFN
+from nba_ou.modeling.registry_paths import ModelSlot, format_horizon
 from nba_ou.postgre_db.update_all.update_all_databases import update_all_databases
-from nba_ou.prediction.intermediate_frame import (
-    PASSTHROUGH_COLUMNS,
-    tonight_intermediate_frame,
-)
-from nba_ou.prediction.line_source import LINE_SOURCE_COLUMN, check_line_feed
-from nba_ou.prediction.prediction import clean_prediction_frames
-from nba_ou.prediction.prediction_store import (
-    PredictionRunRecorder,
-    persist_prediction_run,
-)
+from nba_ou.prediction.line_source import check_line_feed
 from nba_ou.prediction.prediction_tabpfn_client import (
     DEFAULT_INTERMEDIATE_HORIZON,
     DEFAULT_MODEL_VERSION,
     DEFAULT_MODES,
     INTERMEDIATE_LINE,
     MODES,
-    STANDARD_MODE,
-    feature_slot_for,
-    fit_tabpfn,
-    model_variant,
     parse_modes,
-    predict_with_tabpfn,
-    rows_of_horizon,
-    tabpfn_training_set,
+)
+from nba_ou.prediction.tabpfn_run import (
+    DEFAULT_MAX_FRAME_AGE_DAYS,
+    DEFAULT_TARGETS,
+    TabPFNJob,
+    TabPFNUnavailable,
+    fit_and_store,
+    load_fit_inputs,
+    parse_game_ids,
+    parse_targets,
+    restrict_to_games,
+    tonight_rows,
 )
 from nba_ou.utils.general_utils import get_season_year_from_date
 from nba_ou.utils.phase_timer import PhaseTimer
 from nba_ou.utils.run_log import RunLog
 from nba_ou.utils.s3_models import make_s3_client
 
-#: Partitions older than this many days mean the daily refit has stopped.
-DEFAULT_MAX_FRAME_AGE_DAYS = 2
-#: The targets of a run when none are given.
-DEFAULT_TARGETS = ("line_error", "total_points")
 #: ``--line``: the dataset type of the slot TabPFN follows.
 LINES = {"closing": CLOSING_LINE, "intermediate": INTERMEDIATE_LINE}
 
@@ -123,88 +96,6 @@ def configure_tqdm_for_environment() -> None:
     """Disable tqdm in GitHub Actions, as the daily predictor does."""
     if os.getenv("GITHUB_ACTIONS", "").lower() == "true":
         os.environ.setdefault("TQDM_DISABLE", "1")
-
-
-def parse_targets(values: Sequence[str]) -> list[str]:
-    """Validate a space/comma-separated list, keeping each target once in order."""
-    targets = list(
-        dict.fromkeys(
-            value for item in values for value in item.replace(",", " ").split()
-        )
-    )
-    if not targets:
-        raise ValueError("Provide at least one target.")
-    for target in targets:
-        if target not in {item.value for item in ModelTarget}:
-            raise ValueError(
-                f"Unknown target {target!r}; choose from "
-                + ", ".join(item.value for item in ModelTarget)
-            )
-    return targets
-
-
-def parse_game_ids(values: Sequence[str]) -> list[str]:
-    """NBA game IDs, preserving leading zeroes and removing duplicates."""
-    ids = list(
-        dict.fromkeys(
-            item for value in values for item in value.replace(",", " ").split()
-        )
-    )
-    if not ids or any(
-        len(item) != 10 or not item.isascii() or not item.isdigit() for item in ids
-    ):
-        raise ValueError(
-            "Game IDs must be 10-digit NBA IDs, separated by spaces or commas."
-        )
-    return ids
-
-
-def _wait_until(moment: pd.Timestamp) -> None:
-    """Sleep until ``moment`` (UTC) has passed."""
-    seconds = (moment - pd.Timestamp.now(tz="UTC")).total_seconds()
-    if seconds > 0:
-        print_status(f"Waiting {seconds:.0f} s for the snapshot at {moment}")
-        time.sleep(seconds)
-
-
-def _rebuild_at_row_snapshot(
-    rows: pd.DataFrame,
-    cutoff: pd.Timestamp,
-    build_rows: Callable[[pd.Timestamp], pd.DataFrame],
-    snapshot_games: Collection[str] | None = None,
-) -> pd.DataFrame:
-    """``rows`` with the games of ``cutoff``'s snapshot cut at their own snapshot.
-
-    The scheduler times ``--as-of`` from the NBA scoreboard's tip-off, the rows
-    from the line-history page's. A row of the snapshot that triggered the run
-    (``snapshot_games``) up to ``TIPOFF_TOLERANCE_MINUTES`` from the cutoff is
-    a few minutes off by rounding between the two: the rows are rebuilt at that
-    snapshot, after waiting for it to pass, so none of them is cut before the
-    snapshot it is labelled with. Without ``snapshot_games`` (a manual run) the
-    snapshot nearest the cutoff is the run's: another game's a few minutes away
-    is its own, and has a run of its own. The other rows are the rest of the
-    slate: a snapshot already passed reads its own ticks, one still ahead the
-    lines so far (``SNAPSHOT_PASSED`` False), as the daily predictor predicts
-    them.
-    """
-    snapshots = pd.to_datetime(rows["SNAPSHOT_TS_UTC"], utc=True)
-    distance = (snapshots - cutoff).abs()
-    near = distance.le(pd.Timedelta(minutes=TIPOFF_TOLERANCE_MINUTES))
-    if snapshot_games is not None:
-        near &= rows["GAME_ID"].astype(str).isin(set(snapshot_games))
-    elif near.any():
-        near &= distance.eq(distance[near].min())
-    if snapshots[near].eq(cutoff).all():
-        return rows
-    # Rows of different snapshots share one cutoff: the latest, so every near
-    # row has passed; the earlier ones read their ticks up to their own snapshot.
-    snapshot = snapshots[near].max()
-    print_status(
-        f"Line-history snapshot {snapshot} differs from --as-of {cutoff} "
-        "(scoreboard vs page tip-off); rebuilding at the snapshot"
-    )
-    _wait_until(snapshot)
-    return build_rows(snapshot)
 
 
 def predict_tabpfn(**kwargs) -> None:
@@ -249,25 +140,9 @@ def run_tabpfn(
     intermediate input cutoff, even when the runner is busy; every game of the
     slate not started when the run reads the schedule is predicted.
     ``snapshot_game_ids`` names the games whose snapshot ``as_of`` is
-    (metadata, not a filter: ``_rebuild_at_row_snapshot``). ``game_ids``
-    (manual runs) keeps only those games.
+    (metadata, not a filter: ``tabpfn_run._rebuild_at_row_snapshot``).
+    ``game_ids`` (manual runs) keeps only those games.
     """
-    targets = parse_targets(targets)
-    modes = parse_modes(modes)
-    wanted_games = None if game_ids is None else set(parse_game_ids(game_ids))
-    snapshot_games = (
-        None if snapshot_game_ids is None else parse_game_ids(snapshot_game_ids)
-    )
-    cutoff = None if as_of is None else pd.Timestamp(as_of)
-    if cutoff is not None and (
-        pd.isna(cutoff) or cutoff.tzinfo is None or line != "intermediate"
-    ):
-        raise ValueError(
-            "--as-of requires --line intermediate and a timestamp with timezone."
-        )
-    if feature_slot is not None and len(targets) != 1:
-        raise ValueError("--feature-slot requires exactly one target.")
-    configure_tqdm_for_environment()
     dataset_type = LINES[line]
     if dataset_type == CLOSING_LINE:
         if horizon_minutes is not None:
@@ -275,14 +150,33 @@ def run_tabpfn(
         horizon = 0
     else:
         horizon = horizon_minutes or DEFAULT_INTERMEDIATE_HORIZON
+    job = TabPFNJob(
+        targets=tuple(parse_targets(targets)),
+        dataset_type=dataset_type,
+        horizon=horizon,
+        modes=tuple(parse_modes(modes)),
+        as_of=None if as_of is None else pd.Timestamp(as_of),
+        snapshot_games=(
+            None
+            if snapshot_game_ids is None
+            else tuple(parse_game_ids(snapshot_game_ids))
+        ),
+        wanted_games=(
+            None if game_ids is None else frozenset(parse_game_ids(game_ids))
+        ),
+        feature_slot=feature_slot,
+        model_version=model_version,
+        train_games=train_games,
+    )
+    configure_tqdm_for_environment()
     date_to_predict = (
         date.fromisoformat(game_date).isoformat()
         if game_date is not None
         else datetime.now(ZoneInfo("US/Pacific")).strftime("%Y-%m-%d")
     )
     print(
-        f"TabPFN {model_version} ({', '.join(modes)}), {', '.join(targets)} at "
-        f"{format_horizon(horizon)}, for {date_to_predict}"
+        f"TabPFN {model_version} ({', '.join(job.modes)}), {', '.join(job.targets)} "
+        f"at {format_horizon(horizon)}, for {date_to_predict}"
     )
 
     # Each phase prints a [time] line as it ends, the summary their list.
@@ -293,84 +187,17 @@ def run_tabpfn(
     started = time.perf_counter()
     s3 = make_s3_client(profile=SETTINGS.s3_aws_profile, region=SETTINGS.s3_aws_region)
     bucket = SETTINGS.s3_bucket
-    specs = []
-    for target in targets:
-        slot = feature_slot or feature_slot_for(
-            target, SETTINGS.prediction_model_slots, horizon_minutes=horizon
+    try:
+        inputs = load_fit_inputs(
+            job,
+            s3_client=s3,
+            bucket=bucket,
+            slots=SETTINGS.prediction_model_slots,
+            date_to_predict=date_to_predict,
+            max_frame_age_days=max_frame_age_days,
         )
-        if slot.target != ModelTarget(target) or slot.horizon_minutes != horizon:
-            raise SystemExit(
-                f"The feature slot must be a {target} {format_horizon(horizon)} slot; "
-                f"got {slot.describe()}."
-            )
-        spec = resolve_channel(
-            s3_client=s3, bucket=bucket, slot=slot, channel=Channel.PRODUCTION
-        ).spec
-        if str(spec.identity.dataset_type) != dataset_type:
-            raise SystemExit(
-                f"{slot.describe()} serves a {spec.identity.dataset_type} model, "
-                f"not a {dataset_type} one."
-            )
-        if dataset_type == INTERMEDIATE_LINE and parse_version(
-            spec.identity.schema_version
-        ) > parse_version(BASE_SCHEMA_VERSION):
-            raise SystemExit(
-                f"{slot.describe()} is a {spec.identity.schema_version} model, and "
-                f"tonight's intermediate rows are built at {BASE_SCHEMA_VERSION}."
-            )
-        specs.append(spec)
-        print_status(
-            f"{slot.describe()}: spec {spec.spec_id}, {spec.features.n_features} "
-            f"features, {spec.training.train_games} games, max "
-            f"{spec.cleaning.max_na_per_row} NaN per row"
-        )
-
-    partitions = SeasonPartitions(
-        s3_client=s3,
-        bucket=bucket,
-        dataset_type=dataset_type,
-        schema_version=BASE_SCHEMA_VERSION,
-    )
-    current_to = partitions.limit_date()
-    if current_to is None:
-        raise SystemExit(
-            f"No {dataset_type} season partitions in S3; create them with "
-            "scripts/create_train_data/build_season_partitions.py split."
-        )
-    age_days = (pd.Timestamp(date_to_predict).date() - current_to).days
-    if age_days > max_frame_age_days:
-        raise SystemExit(
-            f"The {dataset_type} season partitions are current to {current_to}, "
-            f"{age_days} days ago (max {max_frame_age_days}); the daily refit has "
-            "not run."
-        )
-    # The refit's own frame: same partitions, horizon and layers.
-    # Base seasons and layer inputs are read once, however many versions.
-    training_frames = {}
-    base_frames = {}
-    layer_context = LayerContext()
-    training_sets = []
-    for target, spec in zip(targets, specs, strict=True):
-        schema_version = spec.identity.schema_version
-        if schema_version not in training_frames:
-            training_frames[schema_version] = resolve_training_frame(
-                spec,
-                partitions={dataset_type: partitions},
-                base_frames=base_frames,
-                layer_context=layer_context,
-            )
-        frame = training_frames[schema_version]
-        training_set = tabpfn_training_set(
-            frame.df, spec, frame_key=partitions.prefix, train_games=train_games
-        )
-        training_sets.append(training_set)
-        print_status(
-            f"{target}: training rows from {frame.build_id} ({frame.checksum}): "
-            f"{training_set.n_games} games, "
-            f"{training_set.train_date_min.date()} .. {training_set.train_date_max.date()}"
-        )
-    # The training sets hold what the fits need; free the full frames.
-    del training_frames, base_frames, layer_context, frame
+    except TabPFNUnavailable as exc:
+        raise SystemExit(str(exc)) from None
     timer.record("spec and training rows", time.perf_counter() - started)
 
     # Step 2: tonight's rows, with the lines of this moment.
@@ -406,188 +233,43 @@ def run_tabpfn(
             line_source=lines,
             dataset_type=dataset_type,
         )
-    if wanted_games is not None:
-        scheduled_data = dict(scheduled_data)
-        scheduled = scheduled_data["scheduled_games"]
-        missing = wanted_games - set(scheduled["GAME_ID"].astype(str))
-        if missing:
-            raise ValueError(
-                f"Requested game IDs are missing from the schedule: {sorted(missing)}"
-            )
-        scheduled_data["scheduled_games"] = scheduled.loc[
-            scheduled["GAME_ID"].astype(str).isin(wanted_games)
-        ].copy()
-    if scheduled_data["scheduled_games"].empty:
-        print_status("No scheduled games for this date; nothing to predict.")
-        return
+    if job.wanted_games is not None:
+        scheduled_data = restrict_to_games(scheduled_data, job.wanted_games)
 
-    latest_quotes = None
     started = time.perf_counter()
-    if dataset_type == CLOSING_LINE:
-        not_filed = {str(game) for game in scheduled_data["games_not_updated"]}
-        if not_filed >= set(scheduled_data["scheduled_games"]["GAME_ID"].astype(str)):
-            # Closing rows need both teams' injury report; none is filed yet.
-            print_status(
-                "No game has both injury reports filed yet; nothing to predict."
-            )
-            return
-        log.step("Preparing Tonight's Closing Rows")
-        # As in the daily predictor, build the newest schema once; earlier
-        # targets select their own features from those rows.
-        frame_version = newest_version(spec.identity.schema_version for spec in specs)
-        df_to_predict = tonight_closing_rows(
-            scheduled_data, schema_version=frame_version, game_date=date_to_predict
-        )
-        print_status(f"{len(df_to_predict)} game(s) to predict")
-        # The closing rows keep no raw quote: the store takes the bet line,
-        # prices and cross-book lines from each game's latest snapshot, as
-        # in the daily predictor. No model reads these rows.
-        try:
-            latest_quotes = tonight_intermediate_frame(
-                scheduled_data,
-                game_date=date_to_predict,
-                latest_input=True,
-                latest_only=True,
-            )
-        except Exception as exc:  # noqa: BLE001 -- only the bet line is lost
-            print_status(
-                f"Latest snapshot rows failed ({type(exc).__name__}: {exc}); "
-                "the stored bet line stays null",
-                ok=False,
-            )
-    else:
-        log.step(f"Preparing Tonight's T-{horizon} Rows")
-        if cutoff is not None:
-            # Current reports were synchronized above. For a queued snapshot,
-            # read archived roster observations at its cutoff rather than
-            # passing the roster just observed when the runner became free.
-            scheduled_data = dict(scheduled_data, roster_snapshots=None)
-
-        def build_rows(as_of: pd.Timestamp | None) -> pd.DataFrame:
-            rows = rows_of_horizon(
-                tonight_intermediate_frame(
-                    scheduled_data,
-                    game_date=date_to_predict,
-                    as_of=as_of,
-                    horizon=horizon,
-                ),
-                specs[0],
-            )
-            if wanted_games is not None:
-                rows = rows.loc[rows["GAME_ID"].astype(str).isin(wanted_games)].copy()
-            if rows.empty:
-                raise ValueError(f"No T-{horizon} rows were built for tonight's games.")
-            return rows
-
-        df_to_predict = build_rows(cutoff)
-        frame_version = BASE_SCHEMA_VERSION
-        if cutoff is not None:
-            df_to_predict = _rebuild_at_row_snapshot(
-                df_to_predict, cutoff, build_rows, snapshot_games
-            )
-        passed = int(df_to_predict["SNAPSHOT_PASSED"].sum())
-        print_status(
-            f"{len(df_to_predict)} game(s) to predict; T-{horizon} passed for "
-            f"{passed}, the rest from the lines so far"
-        )
-
+    rows = tonight_rows(
+        job, scheduled_data, inputs.specs, date_to_predict=date_to_predict, log=log
+    )
+    if rows is None:
+        return
     timer.record("tonight's rows", time.perf_counter() - started)
 
-    failures: list[str] = []
-    recorder = PredictionRunRecorder(
-        workflow=WORKFLOW_TABPFN, game_date=date_to_predict
+    outcome = fit_and_store(
+        job,
+        inputs,
+        rows,
+        scheduled_data,
+        s3_client=s3,
+        bucket=bucket,
+        date_to_predict=date_to_predict,
+        timer=timer,
+        log=log,
+        persist=persist,
     )
-    recorder.set_schedule(scheduled_data["scheduled_games"])
-    recorder.add_frame(dataset_type, df_to_predict, version=frame_version)
-    if latest_quotes is not None:
-        recorder.add_frame(
-            INTERMEDIATE_LINE, latest_quotes, version=BASE_SCHEMA_VERSION
-        )
-    predicted: list[str] = []
-    passthrough = () if dataset_type == CLOSING_LINE else PASSTHROUGH_COLUMNS
-    # Cleaned once for every target, not once per target.
-    clean_rows = clean_prediction_frames(
-        {dataset_type: df_to_predict}, passthrough_columns=passthrough
-    ).get(dataset_type)
-    # Each target in each mode: a fit and a variant of its own.
-    fits = [
-        (target, spec, training_set, mode)
-        for target, spec, training_set in zip(
-            targets, specs, training_sets, strict=True
-        )
-        for mode in modes
-    ]
-    for target, spec, training_set, mode in fits:
-        label = (
-            f"{spec.identity.schema_version}/{target}/{format_horizon(horizon)}/"
-            f"{model_variant(model_version, mode)}"
-        )
-        # The standard fit keeps its phase names; another mode is named in them.
-        phase = target if mode == STANDARD_MODE else f"{target} {mode}"
-        log.step(f"Fitting and Predicting ({label})")
-        try:
-            with timer.phase(f"{phase} fit"):
-                model = fit_tabpfn(training_set, model_version=model_version, mode=mode)
-            with timer.phase(f"{phase} predict"):
-                predictions = predict_with_tabpfn(
-                    df=df_to_predict if clean_rows is None else clean_rows,
-                    spec=spec,
-                    model=model,
-                    training_set=training_set,
-                    prediction_datetime=datetime.now(ZoneInfo("Europe/Madrid")),
-                    passthrough_columns=passthrough,
-                    cleaned=clean_rows is not None,
-                )
-            if predictions.empty:
-                print_status(f"{target}: no game survived the spec's NaN budget.")
-            else:
-                predicted.append(label)
-                value_column = {
-                    "line_error": "PRED_LINE_ERROR",
-                    "total_points": "PRED_TOTAL_POINTS",
-                    "spread_error": "PRED_SPREAD_ERROR",
-                }[target]
-                print(
-                    predictions[
-                        [
-                            "GAME_ID",
-                            "TEAM_NAME_TEAM_HOME",
-                            "TEAM_NAME_TEAM_AWAY",
-                            value_column,
-                            "PRED_PICK",
-                        ]
-                    ].to_string(index=False)
-                )
-            rejected = recorder.add_tabpfn(predictions, label=label)
-            if rejected:
-                failures.append(f"{label} (prediction store): {rejected}")
-        except Exception as exc:  # noqa: BLE001 -- persist the other targets
-            reason = f"{type(exc).__name__}: {exc}"
-            recorder.record_slot(label, "failed", reason=reason)
-            failures.append(f"{label}: {reason}")
-            print_status(failures[-1], ok=False)
-
-    if not persist:
-        print_status("Dry run (--no-persist): nothing stored")
-    else:
-        log.step("Storing Predictions")
-        with timer.phase("storing"):
-            failures += persist_prediction_run(
-                recorder, s3_client=s3, bucket=bucket, partial=bool(failures)
-            )
+    failures = outcome.failures
     log.step("Summary", group=False)
     print(timer.summary())
-    print_status(f"{len(predicted)} of {len(fits)} model(s) predicted")
+    print_status(f"{len(outcome.predicted)} of {outcome.n_fits} model(s) predicted")
     print_status(f"{len(failures)} failure(s)", ok=not failures)
     for failure in failures:
         log.error(failure)
     log.summary(
         "\n".join(
             [
-                f"### TabPFN {model_version} ({', '.join(modes)}) for "
+                f"### TabPFN {model_version} ({', '.join(job.modes)}) for "
                 f"{date_to_predict}, {format_horizon(horizon)}",
                 "",
-                f"{len(predicted)} of {len(fits)} model(s) predicted, "
+                f"{len(outcome.predicted)} of {outcome.n_fits} model(s) predicted, "
                 f"{len(failures)} failure(s)"
                 + ("" if persist else " (dry run: nothing stored)"),
                 "",
@@ -599,41 +281,6 @@ def run_tabpfn(
     )
     if failures:
         raise SystemExit(1)
-
-
-def tonight_closing_rows(
-    scheduled_data: dict, *, schema_version: str, game_date: str
-) -> pd.DataFrame:
-    """Tonight's closing rows at ``schema_version``, as the daily predictor
-    builds them."""
-    tonight_ids = scheduled_data["scheduled_games"]["GAME_ID"].astype(str).tolist()
-    df_tonight, layer_inputs = create_df_to_predict(
-        todays_prediction=True,
-        scheduled_data=scheduled_data,
-        strict_mode=30,
-        normalize_total_lines=True,
-        normalize_spread_lines=True,
-        null_extreme_spread_prices=True,
-        target_game_ids=tonight_ids,
-        return_layer_inputs=True,
-    )
-    if is_layered(schema_version):
-        added = compute_new_columns(
-            layer_inputs,
-            from_version=BASE_SCHEMA_VERSION,
-            to_version=schema_version,
-            dataset_type=CLOSING_LINE,
-            existing_columns=df_tonight.columns,
-        )
-        df_tonight = pd.concat([df_tonight, added.loc[df_tonight.index]], axis=1)
-    rows = df_tonight[df_tonight["GAME_DATE"] == game_date].copy()
-    if rows.empty:
-        raise ValueError("No closing rows were built for tonight's games.")
-    # Set here, not in the builder: no feature step may ever see it.
-    rows[LINE_SOURCE_COLUMN] = (
-        rows["GAME_ID"].astype(str).map(scheduled_data.get("line_sources", {}))
-    )
-    return rows
 
 
 def _parse_slot(value: str) -> ModelSlot:
