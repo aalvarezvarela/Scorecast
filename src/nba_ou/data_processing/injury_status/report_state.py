@@ -197,13 +197,11 @@ def load_prediction_report_state(
 ) -> InjuryReportState:
     """Historical outcomes plus today's Aiven state, capped at now and tipoff."""
     from nba_ou.postgre_db.config.db_config import connect_nba_db
-    from nba_ou.postgre_db.injury_report_aiven import fetch
     from nba_ou.postgre_db.row_order import read_sql_canonical
 
     as_of = pd.Timestamp(as_of)
     if as_of.tzinfo is None:
         raise ValueError("Prediction injury cutoff must be timezone-aware")
-    state = load_injury_report_state()
     ids = set(map(str, game_ids))
     with connect_nba_db("aiven") as conn:
         cutoffs = read_sql_canonical(
@@ -214,16 +212,32 @@ def load_prediction_report_state(
             conn,
             params={"ids": sorted(ids), "as_of": as_of.to_pydatetime()},
         )
+    return load_prediction_report_state_at_cutoffs(cutoffs)
+
+
+def load_prediction_report_state_at_cutoffs(cutoffs: pd.DataFrame) -> InjuryReportState:
+    """Historical state plus each replay game's state strictly before its cutoff."""
+    from nba_ou.postgre_db.config.db_config import connect_nba_db
+    from nba_ou.postgre_db.injury_report_aiven import fetch
+    from nba_ou.postgre_db.row_order import read_sql_canonical
+
+    state = load_injury_report_state()
+    cutoffs = cutoffs.copy().assign(
+        game_id=lambda f: f.game_id.astype(str), snapshot_minutes=0
+    )
+    ids = set(cutoffs.game_id)
+    with connect_nba_db("aiven") as conn:
         statuses, filings, ages = fetch.report_state_at_snapshots(conn, cutoffs)
         listed = read_sql_canonical(
             """
-            SELECT DISTINCT game_id, player_id::text AS player_id
-            FROM injury_report.ir_status_span
-            WHERE game_id = ANY(%(ids)s) AND valid_from < %(as_of)s
-              AND is_pregame AND status_id IS NOT NULL
-        """,
+            SELECT DISTINCT s.game_id, s.player_id::text AS player_id
+            FROM injury_report.ir_status_span s
+            JOIN unnest(%(ids)s::text[], %(cutoffs)s::timestamptz[])
+                 AS c(game_id, as_of) ON c.game_id = s.game_id
+            WHERE s.valid_from < c.as_of AND s.is_pregame AND s.status_id IS NOT NULL
+            """,
             conn,
-            params={"ids": sorted(ids), "as_of": as_of.to_pydatetime()},
+            params={"ids": cutoffs.game_id.tolist(), "cutoffs": cutoffs.as_of.tolist()},
         )
     current = snapshot_report_states(statuses, filings, ages, [0])[0]
 

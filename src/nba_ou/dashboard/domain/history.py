@@ -16,8 +16,8 @@ from nba_ou.dashboard.domain.models import (
 from nba_ou.dashboard.domain.teams import full_team_name
 
 HISTORY_SOURCES = ("Live predictions", "Snapshot replay")
-CHECKPOINT_TOLERANCE = pd.Timedelta(minutes=30)
-CLOSING_CHECKPOINTS = (360, 240, 0)
+CHECKPOINT_TOLERANCE = pd.Timedelta(minutes=60)
+CLOSING_CHECKPOINTS = (480, 360, 240, 0)
 INTERMEDIATE_CHECKPOINTS = (480, 360, 240)
 
 
@@ -41,10 +41,10 @@ def select_history(
 ) -> pd.DataFrame:
     """One row per game/family/checkpoint, including explicit missing slots.
 
-    Closing checkpoints freeze availability at the cutoff, with at most 30
-    minutes of age. Intermediate live rows use that model near its own input
-    horizon; up to 30 minutes of publication delay is disclosed, never hidden.
-    Replay uses exact own-horizon rows, allowing post-game reconstruction.
+    Live checkpoints select the nearest input within one hour on either side,
+    with publication also within that window. Final live closing remains the
+    last completed pre-game output. Replay uses exact reconstructed snapshots
+    for closing and intermediate models, allowing post-game publication.
     """
     if source not in HISTORY_SOURCES:
         raise ValueError("Unknown historical prediction source")
@@ -89,32 +89,31 @@ def select_history(
                     eligible = candidates.loc[
                         candidates["dataset_type"].eq(dataset_type)
                     ]
-                    closing_replay = pd.DataFrame()
-                    if dataset_type == 1:
-                        if source == "Snapshot replay":
-                            closing_replay = eligible.loc[
-                                eligible["workflow"].eq(4)
-                                & eligible["input_mode"].eq(0)
-                                & eligible["model_horizon_minutes"].eq(0)
-                                & eligible["snapshot_horizon_minutes"].eq(horizon)
-                            ]
+                    if dataset_type == 1 and source == "Snapshot replay":
+                        # Past-snapshot reconstructions (replay mode) and
+                        # historical backfill refits, never live outputs.
+                        eligible = eligible.loc[
+                            (
+                                (
+                                    eligible["workflow"].eq(2)
+                                    & eligible["input_mode"].eq(3)
+                                )
+                                | (
+                                    eligible["workflow"].eq(4)
+                                    & eligible["input_mode"].eq(0)
+                                )
+                            )
+                            & eligible["model_horizon_minutes"].eq(0)
+                            & eligible["snapshot_horizon_minutes"].eq(horizon)
+                        ]
+                    elif dataset_type == 1:
                         eligible = eligible.loc[
                             eligible["workflow"].isin([1, 3])
                             & eligible["input_mode"].eq(0)
                             & eligible["model_horizon_minutes"].eq(0)
                             & eligible["time_to_tipoff_seconds"].gt(0)
                             & eligible["available_at"].lt(tipoff)
-                            & eligible["available_at"].le(cutoff)
                         ]
-                        if horizon:
-                            eligible = eligible.loc[
-                                eligible["available_at"].ge(
-                                    cutoff - CHECKPOINT_TOLERANCE
-                                )
-                                & eligible["predicted_at"].ge(
-                                    cutoff - CHECKPOINT_TOLERANCE
-                                )
-                            ]
                     else:
                         eligible = eligible.loc[
                             eligible["model_horizon_minutes"].eq(horizon)
@@ -137,22 +136,35 @@ def select_history(
                                 & eligible["input_mode"].isin([1, 2])
                                 & eligible["time_to_tipoff_seconds"].gt(0)
                                 & eligible["available_at"].lt(tipoff)
-                                & eligible["input_at"].between(
-                                    cutoff - CHECKPOINT_TOLERANCE, cutoff
-                                )
-                                & eligible["available_at"].between(
-                                    cutoff - CHECKPOINT_TOLERANCE,
-                                    cutoff + CHECKPOINT_TOLERANCE,
-                                )
                             ]
-                    if not closing_replay.empty:
-                        eligible = closing_replay
+                    if source == "Live predictions" and horizon:
+                        eligible = eligible.loc[
+                            eligible["input_at"].between(
+                                cutoff - CHECKPOINT_TOLERANCE,
+                                cutoff + CHECKPOINT_TOLERANCE,
+                            )
+                            & eligible["available_at"].between(
+                                cutoff - CHECKPOINT_TOLERANCE,
+                                cutoff + CHECKPOINT_TOLERANCE,
+                            )
+                        ]
+                        # The stable initial sort breaks equal-distance ties in
+                        # favour of the latest completed output/build.
+                        eligible = eligible.assign(
+                            _distance=(eligible["input_at"] - cutoff).abs()
+                        ).sort_values("_distance", ascending=False, kind="stable")
                     label = (
                         "Closing · Final pre-game"
                         if dataset_type == 1 and not horizon
                         else f"{'Closing' if dataset_type == 1 else 'Intermediate'} · {horizon_label(horizon)}"
                     )
-                    row = eligible.iloc[-1].to_dict() if not eligible.empty else {}
+                    row = (
+                        eligible.iloc[-1]
+                        .drop(labels=["_distance"], errors="ignore")
+                        .to_dict()
+                        if not eligible.empty
+                        else {}
+                    )
                     row.update(
                         {
                             "game_id": game["game_id"],
@@ -162,15 +174,13 @@ def select_history(
                             "target": target,
                             "dataset_type": dataset_type,
                             "checkpoint": label,
-                            "checkpoint_order": (dataset_type - 1) * 3 + order,
+                            "checkpoint_order": (dataset_type - 1)
+                            * len(CLOSING_CHECKPOINTS)
+                            + order,
                             "checkpoint_at": cutoff,
                             "checkpoint_horizon_minutes": horizon,
                             "available": not eligible.empty,
-                            "source": (
-                                "Live predictions"
-                                if dataset_type == 1 and closing_replay.empty
-                                else source
-                            ),
+                            "source": source,
                         }
                     )
                     for column in (

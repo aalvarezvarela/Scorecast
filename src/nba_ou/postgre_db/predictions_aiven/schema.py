@@ -12,7 +12,8 @@ Codes (``SMALLINT``):
 * ``dataset_type``: 1 closing_line, 2 intermediate_line.
 * ``target``: 1 line_error, 2 total_points, 3 spread_error.
 * ``input_mode``: 0 closing (the closing frame), 1 own (a model's own
-  snapshot), 2 latest (the game's latest snapshot, read by every model).
+  snapshot), 2 latest (the game's latest snapshot, read by every model),
+  3 replay (a closing model on an explicitly reconstructed snapshot).
 * ``pick_side``: +1 OVER/HOME, -1 UNDER/AWAY, 0 no pick.
 * ``games.status``: 0 scheduled, 1 final, 2 postponed/void.
 * ``runs.workflow``: 1 daily predictor, 2 past-snapshot run, 3 TabPFN run,
@@ -41,10 +42,12 @@ TARGET_CODES: dict[str, int] = {"line_error": 1, "total_points": 2, "spread_erro
 INPUT_MODE_CLOSING = 0
 INPUT_MODE_OWN = 1
 INPUT_MODE_LATEST = 2
+INPUT_MODE_REPLAY = 3
 INPUT_MODE_CODES: dict[str, int] = {
     "closing": INPUT_MODE_CLOSING,
     "own": INPUT_MODE_OWN,
     "latest": INPUT_MODE_LATEST,
+    "replay": INPUT_MODE_REPLAY,
 }
 WORKFLOW_DAILY = 1
 WORKFLOW_PAST_SNAPSHOTS = 2

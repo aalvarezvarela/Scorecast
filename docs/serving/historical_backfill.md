@@ -64,7 +64,10 @@ on failure. The optional scheduled-prediction dependency waits on a hosted
 runner before taking the NBA runner.
 
 Saved predictions use workflow 4 (`historical_backfill`) and appear in
-**Snapshot replay**, not live predictions. TabPFN uses kind 3 and the standard
+**Snapshot replay**, not live predictions. Closing backfill rows fill the
+replay closing checkpoint of their input timepoint (T−4h by default), next to
+the past-snapshot closing replay (workflow 2, input mode 3); when both exist,
+the later output is shown. TabPFN uses kind 3 and the standard
 `tabpfn_v3_5` variant. Coverage matches the spec, kind, target, variant, model
 horizon, input timepoint and historical training end. Reruns retry missing rows.
 Independent local insertions should not overlap the same dates/specs.

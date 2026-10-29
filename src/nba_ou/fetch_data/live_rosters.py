@@ -10,6 +10,7 @@ import hashlib
 import io
 import json
 import logging
+from collections.abc import Mapping
 
 import pandas as pd
 from botocore.config import Config
@@ -332,7 +333,7 @@ def roster_overrides(scheduled_games, snapshots, *, as_of=None):
     result = {}
     if snapshots is None or snapshots.empty:
         return result
-    cutoff = pd.Timestamp.now(tz="UTC") if as_of is None else pd.Timestamp(as_of)
+    cutoff = pd.Timestamp.now(tz="UTC") if as_of is None else as_of
     stamps = pd.to_datetime(snapshots.FETCHED_AT_UTC, utc=True)
     for game in scheduled_games.itertuples():
         game_id = str(game.GAME_ID)
@@ -340,7 +341,11 @@ def roster_overrides(scheduled_games, snapshots, *, as_of=None):
             eligible = snapshots.loc[
                 snapshots.TEAM_ID.eq(team)
                 & snapshots.SEASON.eq(season_for_game(game))
-                & stamps.le(cutoff)
+                & stamps.le(
+                    pd.Timestamp(
+                        cutoff[game_id] if isinstance(cutoff, Mapping) else cutoff
+                    )
+                )
                 & stamps.dt.tz_convert("America/New_York").dt.date.eq(
                     pd.Timestamp(game.GAME_DATE_EST).date()
                 )

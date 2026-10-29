@@ -242,7 +242,9 @@ def test_final_and_replay_diagonal_match_yesterday_grading(source):
     actual = prepare_analysis(reduced)
     columns = ["game_id", "family_key", "checkpoint", "result", "absolute_error"]
     expected = (
-        expected.loc[expected["checkpoint"].isin(actual["checkpoint"])]
+        expected.loc[
+            expected["available"] & expected["checkpoint"].isin(actual["checkpoint"])
+        ]
         .sort_values(columns[:3])
         .reset_index(drop=True)
     )

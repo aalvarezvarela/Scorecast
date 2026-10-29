@@ -68,6 +68,7 @@ from nba_ou.postgre_db.predictions_aiven.schema import (
     INPUT_MODE_CLOSING,
     INPUT_MODE_CODES,
     INPUT_MODE_OWN,
+    INPUT_MODE_REPLAY,
     KIND_BASELINE,
     KIND_REGISTRY,
     KIND_TABPFN,
@@ -77,6 +78,7 @@ from nba_ou.postgre_db.predictions_aiven.schema import (
     RUN_STATUS_S3_FAILED,
     TARGET_CODES,
     WORKFLOW_HISTORICAL_BACKFILL,
+    WORKFLOW_PAST_SNAPSHOTS,
 )
 from nba_ou.prediction.line_source import LINE_SOURCE_COLUMN
 from nba_ou.prediction.report_requirement import NO_REPORT_ATTR
@@ -459,8 +461,11 @@ class PredictionRunRecorder:
                 frame["TIME_TO_MATCH_MIN"]
             ).astype("Int64")
         else:
-            keys["snapshot_horizon_minutes"] = pd.Series(
-                pd.NA, index=frame.index, dtype="Int64"
+            replay = _optional(frame, "INPUT_MODE").eq("replay")
+            keys["snapshot_horizon_minutes"] = (
+                pd.to_numeric(_optional(frame, "TIME_TO_MATCH_MIN"), errors="coerce")
+                .where(replay)
+                .astype("Int64")
             )
         if keys.duplicated().any():
             raise ValueError(f"the {dataset_type} frame repeats a (game, snapshot)")
@@ -605,19 +610,30 @@ class PredictionRunRecorder:
 
         closing = dataset_type.eq(CLOSING_LINE)
         mode = _optional(out, "INPUT_MODE").map(INPUT_MODE_CODES)
-        mode = mode.where(~closing, INPUT_MODE_CLOSING)
+        replay = closing & mode.eq(INPUT_MODE_REPLAY)
+        if (mode.eq(INPUT_MODE_REPLAY) & ~closing).any():
+            raise OutputRejected("replay input mode is reserved for closing models")
+        if replay.any() and (
+            self.workflow != WORKFLOW_PAST_SNAPSHOTS or kind != KIND_REGISTRY
+        ):
+            raise OutputRejected("closing replay requires a past-snapshot registry run")
+        mode = mode.where(~closing | replay, INPUT_MODE_CLOSING)
         if mode.isna().any():
             raise OutputRejected("an intermediate output without INPUT_MODE own/latest")
         snapshot = (
             pd.to_numeric(_optional(out, "TIME_TO_MATCH_MIN"), errors="coerce")
-            .where(~closing | (self.workflow == WORKFLOW_HISTORICAL_BACKFILL))
+            .where(~closing | replay | (self.workflow == WORKFLOW_HISTORICAL_BACKFILL))
             .astype("Int64")
         )
-        if snapshot[~closing].isna().any():
-            raise OutputRejected("an intermediate output without TIME_TO_MATCH_MIN")
+        if snapshot[~closing | replay].isna().any():
+            raise OutputRejected("a snapshot output without TIME_TO_MATCH_MIN")
         horizon = pd.to_numeric(out["MODEL_HORIZON_MINUTES"], errors="coerce").astype(
             "Int64"
         )
+        if (replay & (horizon.ne(0) | ~snapshot.isin([0, 240, 360, 480]))).any():
+            raise OutputRejected(
+                "closing replay requires model T-0 and input T-0/240/360/480"
+            )
         own = mode.eq(INPUT_MODE_OWN).to_numpy(dtype=bool)
         on_horizon = snapshot.eq(horizon).fillna(False).to_numpy(dtype=bool)
         if (own & ~on_horizon).any():
@@ -790,6 +806,16 @@ class PredictionRunRecorder:
                     )
                 bets = self._latest_quotes().reindex(located["game_id"].to_numpy())
                 bets.index = located.index
+                replay = located["input_mode"].eq(INPUT_MODE_REPLAY)
+                if replay.any():
+                    raw = bet_line_columns(frame, INTERMEDIATE_LINE, self.book)
+                    bets = bets.where(~replay, raw)
+                    replay_tipoff = pd.to_datetime(
+                        frame["SNAPSHOT_TS_UTC"], utc=True
+                    ) + pd.to_timedelta(
+                        located["snapshot_horizon_minutes"].astype(float), unit="m"
+                    )
+                    tipoff = tipoff.where(~replay, replay_tipoff)
             part = located[INPUT_KEY].assign(
                 tipoff_at=pd.to_datetime(tipoff, utc=True).to_numpy(),
                 total_model_line=_column(frame, total_line_col(self.book)).to_numpy(),

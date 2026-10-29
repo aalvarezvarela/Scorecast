@@ -35,7 +35,7 @@ import pandas as pd
 from nba_ou.create_training_data.create_intermediate_line_df import (
     create_intermediate_line_df,
 )
-from nba_ou.create_training_data.live_game_day import fetch_live_game_day
+from nba_ou.create_training_data.live_game_day import LiveGameDay, fetch_live_game_day
 from nba_ou.data_processing.line_history.snapshots import DEFAULT_SNAPSHOT_GRID
 from nba_ou.prediction.input_limits import LATEST_INPUT_COLUMN, LIMITED_COUNT_COLUMN
 from nba_ou.prediction.line_source import LINE_SOURCE_COLUMN
@@ -112,6 +112,7 @@ def tonight_intermediate_frame(
     latest_only: bool = False,
     horizon: int | None = None,
     verbose: bool = True,
+    live: LiveGameDay | None = None,
 ) -> pd.DataFrame:
     """Tonight's (game, snapshot) rows for every horizon, with the schedule's
     display columns and the snapshot marks (``SNAPSHOT_COLUMNS``); with
@@ -120,20 +121,26 @@ def tonight_intermediate_frame(
     game's row of that horizon.
 
     The run's ``line_source`` (``scheduled_data["line_source"]``) decides
-    where the line history comes from; each row's is in ``LINE_SOURCE``."""
+    where the line history comes from; each row's is in ``LINE_SOURCE``.
+    A preloaded ``live`` day reuses its exact ticks in the closing replay.
+    """
     if latest_only and not latest_input:
         raise ValueError("latest_only needs latest_input")
     if horizon is not None and latest_input:
         raise ValueError("horizon and latest_input are exclusive")
     scheduled = scheduled_data["scheduled_games"]
     line_source = scheduled_data.get("line_source")
-    live = fetch_live_game_day(
-        game_date,
-        scheduled_games=scheduled,
-        df_referees_scheduled=scheduled_data.get("df_referees_scheduled"),
-        roster_snapshots=scheduled_data.get("roster_snapshots"),
-        as_of=as_of,
-        line_source=line_source,
+    live = (
+        live
+        if live is not None
+        else fetch_live_game_day(
+            game_date,
+            scheduled_games=scheduled,
+            df_referees_scheduled=scheduled_data.get("df_referees_scheduled"),
+            roster_snapshots=scheduled_data.get("roster_snapshots"),
+            as_of=as_of,
+            line_source=line_source,
+        )
     )
     latest: dict[str, int] = {}
     if latest_input:

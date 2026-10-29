@@ -85,7 +85,7 @@ the folder of its topic, with a status line, and gets a row here.
 | Document | Status | Covers | Main code |
 |---|---|---|---|
 | [model_registry.md](serving/model_registry.md) | Implemented | The S3 slot registry: specs, builds, channels, daily refit and promotion | `modeling/registry_*.py`, `modeling/refit.py` |
-| [prediction_storage.md](serving/prediction_storage.md) | Implemented | The Aiven prediction store and the S3 run archive | `prediction/prediction_store.py`, `postgre_db/predictions_aiven/` |
+| [prediction_storage.md](serving/prediction_storage.md) | Implemented | The Aiven prediction store, S3 run archive and closing replay at T−8h/T−6h/T−4h/T−0 | `prediction/prediction_store.py`, `postgre_db/predictions_aiven/` |
 | [historical_backfill.md](serving/historical_backfill.md) | Reference | Past-only registry refits and standard TabPFN at one horizon, dry run and insertion | `scripts/backfill_past_predictions.py`, `prediction/historical_backfill.py` |
 | [streamlit_dashboard.md](serving/streamlit_dashboard.md) | Implemented | Aiven-only prediction dashboard, per-game horizons, team logos and Madrid times | `streamlit/streamlit_app.py`, `dashboard/` |
 | [historical_analysis.md](serving/historical_analysis.md) | Partial | Historical closing timeline, live model/time heatmap, own-snapshot replay comparison and pooled metrics; combined strategies pending | `dashboard/domain/analysis.py`, `dashboard/repositories/analysis.py`, `dashboard/ui/historical.py` |

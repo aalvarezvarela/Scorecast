@@ -52,7 +52,7 @@ def _performance_summary(games: pd.DataFrame, rows: pd.DataFrame) -> None:
                 )
                 if checkpoints["Checkpoint"].str.startswith("Closing").any():
                     st.caption(
-                        "Closing at closing = last available pre-game prediction."
+                        "Closing at closing = T−0 reconstruction in replay; last available pre-game prediction in live."
                     )
 
 
@@ -145,16 +145,16 @@ def render_yesterday() -> None:
             kind: minimum_edge_select(kind, page="yesterday") for kind in MODEL_NAMES
         }
         st.caption(
-            "Closing: T−6h, T−4h and the final available pre-game prediction. "
+            "Closing: T−8h, T−6h, T−4h and a final checkpoint (T−0 in replay; last completed pre-game output in live). "
             "Intermediate: the T−8h, T−6h and T−4h models at their own checkpoints. "
             "Each pick is graded against its stored bookmaker line; missing slots do not count as losses."
         )
         st.caption(
-            "Closing checkpoints use predictions available in the preceding 30 minutes. Live intermediate inputs must be within the preceding 30 minutes of their own checkpoint; publication may take up to 30 minutes after it. Details show the exact times."
+            "Live checkpoints select the nearest input within ±60 minutes; publication must also fall within that window. Inputs and publication can be after the checkpoint. Final live closing uses the last completed pre-game prediction. Details show the exact times."
         )
     if source == "Snapshot replay":
         st.info(
-            "Replay uses stored snapshots that may have been reconstructed after the game. Closing uses a historical replay at the checkpoint when available; otherwise it shows the live prediction."
+            "Closing and intermediate rows use stored, exact snapshots, which may have been reconstructed after the game. Closing replay uses T−8h, T−6h, T−4h and T−0 pregame inputs. Missing reconstructions remain unavailable."
         )
     try:
         with st.spinner("Reading predictions and results from Aiven…"):

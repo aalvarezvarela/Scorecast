@@ -6,9 +6,9 @@ finish is fine -- when every snapshot of every game is in the past: each slot
 then predicts exactly the row of its own horizon, the row it was trained on
 (``--intermediate-input own``), with no prediction across horizons.
 
-Only the intermediate model slots run. A closing slot reads the scheduled odds,
-which after tip-off are no longer the closing line, and the daytime runs
-already serve it.
+Closing slots also run on reconstructed T-8h, T-6h, T-4h and T-0 inputs.
+Their canonical feature builder reads historical pregame quotes, reports and
+rosters at each cutoff, rather than the odds page served after tipoff.
 
 The random and historical-average baselines run here once per slate, on the
 T-0 rows' pregame lines. The average excludes the evaluated date and later
@@ -35,6 +35,7 @@ import pandas as pd
 from nba_ou.config.dataset_versions import BASE_SCHEMA_VERSION
 from nba_ou.config.odds_columns import total_line_col
 from nba_ou.config.settings import SETTINGS
+from nba_ou.create_training_data.live_game_day import fetch_live_game_day
 from nba_ou.create_training_data.live_replay import replay_scheduled_games
 from nba_ou.data_processing.referees.process_refs_scheduled_game import (
     process_scheduled_referee_assignments,
@@ -49,6 +50,7 @@ from nba_ou.prediction.baseline_predictions import (
     build_random_line_error_baseline_predictions,
     load_baseline_history,
 )
+from nba_ou.prediction.closing_replay import closing_replay_frame
 from nba_ou.prediction.intermediate_frame import (
     PASSTHROUGH_COLUMNS,
     tonight_intermediate_frame,
@@ -212,7 +214,8 @@ def _predict_past_snapshots(
 ) -> None:
     game_date = game_date or default_game_date()
     print(f"\nPast-snapshot predictions for {game_date}")
-    slots = intermediate_slots(SETTINGS.prediction_model_slots)
+    all_slots = list(SETTINGS.prediction_model_slots)
+    slots = intermediate_slots(all_slots)
     print(f"  {len(slots)} intermediate slot(s), each on its own snapshot")
 
     if update_databases:
@@ -239,7 +242,18 @@ def _predict_past_snapshots(
 
     log.step("Preparing Intermediate Snapshot Rows")
     with timer.phase("intermediate snapshot rows"):
-        frame = tonight_intermediate_frame(scheduled_data, game_date=game_date)
+        live = None
+        if any(slot.horizon_minutes == 0 for slot in all_slots):
+            live = fetch_live_game_day(
+                game_date,
+                scheduled_games=scheduled,
+                df_referees_scheduled=scheduled_data.get("df_referees_scheduled"),
+                roster_snapshots=scheduled_data.get("roster_snapshots"),
+                line_source=scheduled_data.get("line_source"),
+            )
+        frame = tonight_intermediate_frame(
+            scheduled_data, game_date=game_date, live=live
+        )
         frame = keep_passed_snapshots(frame)
     if frame.empty:
         print_status("No snapshot has passed yet", ok=False)
@@ -267,7 +281,9 @@ def _predict_past_snapshots(
             {"intermediate_line": frame}, passthrough_columns=PASSTHROUGH_COLUMNS
         )
     with timer.phase("model reads"):
-        builds = read_slot_builds(s3_client=s3, bucket=SETTINGS.s3_bucket, slots=slots)
+        builds = read_slot_builds(
+            s3_client=s3, bucket=SETTINGS.s3_bucket, slots=all_slots
+        )
     predicted = 0
     for index, slot in enumerate(slots, start=1):
         label = slot.describe()
@@ -315,6 +331,78 @@ def _predict_past_snapshots(
         traceback.print_exc()
         failures.append(f"baselines: {exc}")
 
+    closing_slots = [slot for slot in all_slots if slot.horizon_minutes == 0]
+    if closing_slots:
+        log.step("Reconstructing Closing Inputs (T-8h, T-6h, T-4h, T-0)")
+        try:
+            from nba_ou.create_training_data.schema_layers import newest_version
+
+            version = newest_version(
+                [BASE_SCHEMA_VERSION, *(s.schema_version for s in closing_slots)]
+            )
+            with timer.phase("closing replay rows"):
+                closing = closing_replay_frame(
+                    scheduled,
+                    frame,
+                    game_date,
+                    frame_version=version,
+                    ticks=live.line_history.ticks,
+                    crews=scheduled_data.get("df_referees_scheduled"),
+                )
+            # Baseline closing inputs have no replay marker and retain mode 0.
+            baseline_frame = recorder.frames.get("closing_line", pd.DataFrame())
+            recorder.add_frame(
+                "closing_line",
+                pd.concat([baseline_frame, closing], ignore_index=True),
+                version=version,
+            )
+            passthrough = (*PASSTHROUGH_COLUMNS, "INPUT_MODE")
+            clean_closing = clean_prediction_frames(
+                {"closing_line": closing}, passthrough_columns=passthrough
+            )
+            for slot in closing_slots:
+                label = slot.describe() + " replay T-8h/6h/4h/0"
+                try:
+                    build = builds.get(slot)
+                    if isinstance(build, Exception):
+                        raise build
+                    if (
+                        build is not None
+                        and pd.Timestamp(build.fit.train_date_max).date()
+                        >= pd.Timestamp(game_date).date()
+                    ):
+                        raise ValueError(
+                            "Closing replay requires a model trained before the evaluated game date"
+                        )
+                    with timer.phase(label):
+                        predictions = load_registry_model_and_predict(
+                            s3_client=s3,
+                            bucket=SETTINGS.s3_bucket,
+                            slot=slot,
+                            df=None,
+                            prediction_datetime=started,
+                            frames={"closing_line": closing},
+                            frame_versions={"closing_line": version},
+                            passthrough_columns=passthrough,
+                            clean_frames=clean_closing,
+                            latest_input=False,
+                            resolved=build,
+                        )
+                    rejected = recorder.add_predictions(predictions, label=label)
+                    if rejected:
+                        failures.append(f"{label} (prediction store): {rejected}")
+                    elif predictions is not None and not predictions.empty:
+                        predicted += 1
+                        print_status(f"{len(predictions)} prediction(s) for {label}")
+                except Exception as exc:  # noqa: BLE001 -- retain other slots
+                    traceback.print_exc()
+                    failures.append(f"{label}: {exc}")
+                    recorder.record_slot(label, "failed", reason=str(exc))
+        except Exception as exc:  # noqa: BLE001 -- retain intermediate predictions
+            traceback.print_exc()
+            failures.append(f"closing replay: {exc}")
+            recorder.record_slot("closing replay", "failed", reason=str(exc))
+
     if persist:
         log.step("Storing Predictions")
         with timer.phase("storing"):
@@ -326,13 +414,13 @@ def _predict_past_snapshots(
             )
 
     log.step("Summary", group=False)
-    print_status(f"{predicted}/{len(slots)} slot(s) predicted")
+    print_status(f"{predicted}/{len(all_slots)} slot(s) predicted")
     print_status(f"{len(failures)} failure(s)", ok=not failures)
     for failure in failures:
         log.error(failure)
     log.summary(
         f"### Past snapshots for {game_date}\n\n"
-        f"{predicted}/{len(slots)} slot(s) predicted, {len(failures)} failure(s)"
+        f"{predicted}/{len(all_slots)} slot(s) predicted, {len(failures)} failure(s)"
         + ("" if persist else " (dry run: nothing stored)")
     )
     if failures:
