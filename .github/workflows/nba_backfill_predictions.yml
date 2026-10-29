@@ -67,7 +67,7 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v6
-      - name: Wait for the final scheduled prediction
+      - name: Wait for the final scheduled run and all active predictions
         shell: bash
         run: python scripts/cronjobs/wait_for_prediction_run.py --after "$AFTER_PREDICTION"
   prepare:

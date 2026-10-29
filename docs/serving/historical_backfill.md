@@ -69,6 +69,40 @@ Saved predictions use workflow 4 (`historical_backfill`) and appear in
 horizon, input timepoint and historical training end. Reruns retry missing rows.
 Independent local insertions should not overlap the same dates/specs.
 
+## One-off cron: October 30, 2026 at 06:20 Madrid
+
+`scripts/cronjobs/schedule_historical_backfill.py` prepares a single cron-job.org
+dispatch for **2026-10-30 06:20 Europe/Madrid (05:20 UTC)**. Its defaults fill
+**October 20–25 inclusive**, using all enabled XGBoost slots plus standard
+TabPFN for all three targets, intermediate and closing at T-240. The eventual
+workflow inserts missing predictions and archives its isolated models. It uses
+only saved retrain partitions; it never rebuilds the dataset.
+
+The last scheduled past-snapshot dispatch is October 30 at 06:00 Madrid. Before
+taking the NBA runner, the backfill waits on a GitHub-hosted runner for that run
+to finish and for all three prediction workflows to have no active or queued
+runs. If this takes more than two hours, it fails without starting the backfill.
+A completed prediction run can have any conclusion, including failure.
+
+Offline preview (no credentials, service calls, fitting or cron creation):
+
+```bash
+PYTHONPATH=.:src .venv/bin/python scripts/cronjobs/schedule_historical_backfill.py
+```
+
+Only when scheduling is authorized, append `--apply` to create/update the
+one-off cron. This books a future dispatch; it does not start the backfill
+immediately. It requires `CRONJOB_API_KEY`, `CRONJOB_GITHUB_DISPATCH_TOKEN`, and
+the backfill workflow published on `main`. The script checks that GitHub has
+registered the workflow before changing any cron, verifies the booked time,
+and refuses past times or re-arming a cron that has already fired. The cron
+expires at 05:20:59 UTC that day, so it cannot repeat the following year.
+
+`--dry-run-predictions` changes the eventual workflow to real fits with local
+reports only, without inserting predictions or archiving models. This is
+independent of the scheduler's default offline preview. Hosted TabPFN consumes
+credits if that workflow is later run, including in prediction dry run.
+
 ## Time assumptions
 
 Training stops at D-1, except snapshots before 06:00 Eastern, which require an

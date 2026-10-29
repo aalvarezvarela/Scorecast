@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Wait for the scheduled final prediction, without occupying the NBA runner."""
+"""Wait for the final scheduled run and all predictions to release the runner."""
 
 from __future__ import annotations
 
@@ -44,7 +44,7 @@ def matching_run(runs, after, *, branch="main"):
 
 def read_runs(repo, workflow, token):
     request = Request(
-        f"https://api.github.com/repos/{repo}/actions/workflows/{quote(workflow)}/runs?{urlencode({'per_page': 100, 'event': 'workflow_dispatch'})}",
+        f"https://api.github.com/repos/{repo}/actions/workflows/{quote(workflow)}/runs?{urlencode({'per_page': 100})}",
         headers={
             "Authorization": f"Bearer {token}",
             "Accept": "application/vnd.github+json",
@@ -60,15 +60,27 @@ def wait_for_run(
     workflow, after = parse_dependency(dependency)
     deadline = time.monotonic() + timeout_minutes * 60
     while time.monotonic() < deadline:
-        run = matching_run(read_runs(repo, workflow, token), after, branch=branch)
-        if run and run["status"] == "completed":
+        runs = {
+            name: read_runs(repo, name, token) for name in sorted(PREDICTION_WORKFLOWS)
+        }
+        run = matching_run(runs[workflow], after, branch=branch)
+        # Include queued runs and other branches too: they also need the runner.
+        active = [
+            item
+            for workflow_runs in runs.values()
+            for item in workflow_runs
+            if item["status"] != "completed"
+        ]
+        if run and run["status"] == "completed" and not active:
             print(
                 f"Final prediction completed ({run.get('conclusion')}): {run['html_url']}",
                 flush=True,
             )
             return run
         print(
-            f"Waiting for {workflow} scheduled at {after.isoformat()}: {run['status'] if run else 'not dispatched yet'}",
+            f"Waiting for {workflow} scheduled at {after.isoformat()}: "
+            f"{run['status'] if run else 'not dispatched yet'}; "
+            f"{len(active)} prediction runs still active",
             flush=True,
         )
         time.sleep(poll_seconds)
