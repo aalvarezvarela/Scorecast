@@ -282,3 +282,21 @@ def test_unrostered_players_are_not_on_a_league_roster(monkeypatch):
     assert rosters[TEAM].to_dict("records") == [
         {"PLAYER_ID": "1", "PLAYER_NAME": "A One", "POSITION": "G"}
     ]
+
+
+def test_replay_roster_cutoff_is_applied_per_game():
+    games = pd.concat(
+        [schedule(), schedule().assign(GAME_ID="0022600002")], ignore_index=True
+    )
+    snapshots = pd.concat(
+        [
+            players().assign(TEAM_ID=TEAM, SEASON=SEASON, FETCHED_AT_UTC=EARLY),
+            players(("2",)).assign(TEAM_ID=TEAM, SEASON=SEASON, FETCHED_AT_UTC=LATE),
+        ],
+        ignore_index=True,
+    )
+    result = live.roster_overrides(
+        games, snapshots, as_of={"0022600001": EARLY, "0022600002": LATE}
+    )
+    assert result[("0022600001", TEAM)] == {"1": "Player 1"}
+    assert result[("0022600002", TEAM)] == {"2": "Player 2"}

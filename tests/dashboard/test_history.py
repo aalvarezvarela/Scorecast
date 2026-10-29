@@ -34,7 +34,7 @@ def historical_slate():
         )
         for kind in (1, 3):
             for target in (1, 2, 3):
-                for horizon in (360, 240, 0):
+                for horizon in (480, 360, 240, 0):
                     published = tipoff - pd.Timedelta(
                         minutes=horizon + (5 if horizon else 10)
                     )
@@ -52,7 +52,7 @@ def historical_slate():
                         time_to_tipoff_seconds=int((tipoff - published).total_seconds())
                         + 120,
                         bet_line_x2=480
-                        if horizon == 360
+                        if horizon in (480, 360)
                         else 460
                         if horizon == 240
                         else 470,
@@ -61,6 +61,20 @@ def historical_slate():
                         run_id=1000 + kind * 100 + target * 10 + horizon,
                     )
                     predictions.append(row)
+                    if kind == 1:
+                        replay = row.copy()
+                        replay.update(
+                            workflow=2,
+                            input_mode=3,
+                            snapshot_horizon_minutes=horizon,
+                            input_at=tipoff - pd.Timedelta(minutes=horizon),
+                            predicted_at=tipoff + pd.Timedelta(hours=2),
+                            run_finished_at=tipoff + pd.Timedelta(hours=2, minutes=5),
+                            time_to_tipoff_seconds=-7200,
+                            prediction_value={1: 18, 2: 248, 3: -2}[target],
+                            run_id=row["run_id"] + 10000,
+                        )
+                        predictions.append(replay)
                 for horizon in (480, 360, 240):
                     cutoff = tipoff - pd.Timedelta(minutes=horizon)
                     row = make_prediction(
@@ -111,13 +125,17 @@ def selected(data, source="Live predictions", target=2):
     )
 
 
-def test_fixed_checkpoints_keep_live_and_replay_separate_with_same_live_closing():
+def test_fixed_checkpoints_keep_live_and_replay_separate_with_reconstructed_closing():
     data = historical_slate()
     live = selected(data)
     replay = selected(data, "Snapshot replay")
-    assert len(live) == len(replay) == 24
-    assert live["available"].all() and replay["available"].all()
+    assert len(live) == len(replay) == 28
+    assert live["available"].all()
+    assert replay.loc[
+        replay["kind"].eq(1) | replay["dataset_type"].eq(2), "available"
+    ].all()
     assert set(live["checkpoint"]) == {
+        "Closing · T−8h",
         "Closing · T−6h",
         "Closing · T−4h",
         "Closing · Final pre-game",
@@ -127,7 +145,11 @@ def test_fixed_checkpoints_keep_live_and_replay_separate_with_same_live_closing(
     }
     assert set(live["prediction_value"]) == {238}
     assert set(replay.loc[replay["dataset_type"].eq(2), "prediction_value"]) == {248}
-    assert set(replay.loc[replay["dataset_type"].eq(1), "prediction_value"]) == {238}
+    assert set(
+        replay.loc[
+            replay["kind"].eq(1) & replay["dataset_type"].eq(1), "prediction_value"
+        ]
+    ) == {248}
     assert live.loc[live["kind"].eq(1), "workflow"].eq(1).all()
     assert (
         replay.loc[replay["kind"].eq(1) & replay["dataset_type"].eq(2), "workflow"]
@@ -136,38 +158,48 @@ def test_fixed_checkpoints_keep_live_and_replay_separate_with_same_live_closing(
     )
 
 
-def test_closing_uses_completion_before_checkpoint_and_never_reuses_stale_row():
+def test_closing_selects_nearest_input_with_symmetric_one_hour_margin():
     data = historical_slate()
-    mask = (
-        data.predictions["game_id"].eq(1)
-        & data.predictions["kind"].eq(1)
-        & data.predictions["target"].eq(2)
-        & data.predictions["dataset_type"].eq(1)
-    )
-    # All closing outputs for this family except the one at T−6h are later.
-    row_index = data.predictions.loc[mask].index[0]
     cutoff = data.games.iloc[0]["tipoff_at"] - pd.Timedelta(hours=6)
-    data.predictions.loc[row_index, "run_finished_at"] = cutoff + pd.Timedelta(
-        seconds=1
+    mask = (
+        data.predictions.game_id.eq(1)
+        & data.predictions.kind.eq(1)
+        & data.predictions.target.eq(2)
+        & data.predictions.dataset_type.eq(1)
+        & data.predictions.workflow.eq(1)
     )
-    rows = selected(data)
-    slot = rows.loc[
-        rows["game_id"].eq(1)
-        & rows["kind"].eq(1)
-        & rows["checkpoint"].eq("Closing · T−6h")
-    ]
-    assert not slot.iloc[0]["available"]
-    data.predictions.loc[row_index, "run_finished_at"] = cutoff - pd.Timedelta(
-        minutes=31
+    index = data.predictions.loc[
+        mask
+        & data.predictions.input_at.between(cutoff - pd.Timedelta(minutes=30), cutoff)
+    ].index[0]
+
+    def slot():
+        rows = selected(data)
+        return rows.loc[
+            rows.game_id.eq(1) & rows.kind.eq(1) & rows.checkpoint.eq("Closing · T−6h")
+        ].iloc[0]
+
+    # An output after the checkpoint is allowed, with the real time disclosed.
+    for column in ("input_at", "predicted_at", "run_finished_at"):
+        data.predictions.loc[index, column] = cutoff + pd.Timedelta(minutes=23)
+    assert slot().available
+    # Boundary included; more than an hour on either side is unavailable.
+    for offset, available in [(60, True), (61, False), (-60, True), (-61, False)]:
+        for column in ("input_at", "predicted_at", "run_finished_at"):
+            data.predictions.loc[index, column] = cutoff + pd.Timedelta(minutes=offset)
+        assert bool(slot().available) == available
+    # Choose the closer input, not the last prediction in the window.
+    original = data.predictions.loc[index].copy()
+    for column in ("input_at", "predicted_at", "run_finished_at"):
+        data.predictions.loc[index, column] = cutoff - pd.Timedelta(minutes=10)
+        original[column] = cutoff + pd.Timedelta(minutes=45)
+    original["prediction_value"] = 999
+    data = TodayData(
+        data.games,
+        pd.concat([data.predictions, pd.DataFrame([original])]),
+        data.fetched_at,
     )
-    data.predictions.loc[row_index, "predicted_at"] = cutoff - pd.Timedelta(minutes=32)
-    data.predictions.loc[row_index, "input_at"] = cutoff - pd.Timedelta(minutes=33)
-    assert not selected(data).loc[slot.index[0], "available"]
-    # Finishing a long run just before the cutoff does not refresh an old output.
-    data.predictions.loc[row_index, "run_finished_at"] = cutoff - pd.Timedelta(
-        minutes=5
-    )
-    assert not selected(data).loc[slot.index[0], "available"]
+    assert slot().prediction_value == 238
 
 
 def test_final_pre_game_excludes_runs_finishing_after_tipoff():
@@ -240,7 +272,7 @@ def test_latest_refit_wins_once_per_game_family_and_checkpoint():
     extra["prediction_value"] = 239
     data = TodayData(data.games, pd.concat([data.predictions, extra]), data.fetched_at)
     rows = selected(data)
-    assert len(rows) == 24
+    assert len(rows) == 28
     assert rows.loc[rows["kind"].eq(1), "prediction_value"].eq(239).all()
 
 
@@ -249,9 +281,9 @@ def test_grading_uses_each_rows_line_and_pushes_are_not_losses():
     closing = rows.loc[
         rows["kind"].eq(1) & rows["game_id"].eq(1) & rows["dataset_type"].eq(1)
     ]
-    assert list(closing["reference_line"]) == [240, 230, 235]
-    assert list(closing["signal"]) == ["UNDER", "OVER", "OVER"]
-    assert list(closing["result"]) == ["WIN", "WIN", "PUSH"]
+    assert list(closing["reference_line"]) == [240, 240, 230, 235]
+    assert list(closing["signal"]) == ["UNDER", "UNDER", "OVER", "OVER"]
+    assert list(closing["result"]) == ["WIN", "WIN", "WIN", "PUSH"]
     assert rows["absolute_error"].eq(3).all()
 
 
@@ -307,10 +339,10 @@ def test_daily_summary_pools_checkpoints_per_model_and_excludes_pushes():
     assert len(summary) == 2
     assert "Checkpoint" not in summary
     assert summary["Pushes"].eq(2).all()
-    assert summary["Wins"].eq(10).all()
+    assert summary["Wins"].eq(12).all()
     assert summary["Win rate"].eq(100).all()
     assert summary["MAE (pts)"].eq(3).all()
-    assert summary["Scored predictions"].eq(12).all()
+    assert summary["Scored predictions"].eq(14).all()
 
 
 def test_daily_summary_uses_pooled_counts_and_errors_with_unequal_checkpoint_coverage():
@@ -340,6 +372,7 @@ def test_checkpoint_summary_separates_closing_times_and_counts_unique_games():
     ]
     summary = history_summary(xgb, by_checkpoint=True)
     assert list(summary["Checkpoint"]) == [
+        "Closing · T−8h",
         "Closing · T−6h",
         "Closing · T−4h",
         "Closing · Final pre-game",
@@ -352,7 +385,7 @@ def test_checkpoint_summary_separates_closing_times_and_counts_unique_games():
     assert four["Expected"] == 2
     pooled = history_summary(rows)
     assert pooled["Games"].eq(2).all()
-    assert pooled["Scored predictions"].eq(12).all()
+    assert pooled["Scored predictions"].eq(14).all()
 
 
 def test_unknown_source_is_rejected_and_empty_slate_is_supported():
@@ -362,3 +395,41 @@ def test_unknown_source_is_rejected_and_empty_slate_is_supported():
     assert select_history(pd.DataFrame(), data.games, 2, "Live predictions", NOW).empty
     assert grade_history(pd.DataFrame()).empty
     assert history_summary(pd.DataFrame()).empty
+
+
+def test_live_intermediate_selects_nearest_input_on_either_side_of_checkpoint():
+    data = historical_slate()
+    target = data.predictions.loc[
+        data.predictions.game_id.eq(1)
+        & data.predictions.kind.eq(1)
+        & data.predictions.target.eq(2)
+        & data.predictions.model_horizon_minutes.eq(480)
+        & data.predictions.workflow.eq(1)
+    ].index[0]
+    cutoff = data.predictions.loc[target, "input_at"]
+    data.predictions.loc[target, "input_at"] = cutoff + pd.Timedelta(minutes=23)
+    data.predictions.loc[target, "predicted_at"] = cutoff + pd.Timedelta(minutes=29)
+    data.predictions.loc[target, "run_finished_at"] = cutoff + pd.Timedelta(minutes=30)
+    row = (
+        selected(data)
+        .loc[
+            lambda f: (
+                f.game_id.eq(1) & f.kind.eq(1) & f.checkpoint.eq("Intermediate · T−8h")
+            )
+        ]
+        .iloc[0]
+    )
+    assert row.available
+    assert row.input_at == cutoff + pd.Timedelta(minutes=23)
+
+
+def test_replay_never_fills_missing_closing_reconstruction_with_live_output():
+    data = historical_slate()
+    data = TodayData(
+        data.games,
+        data.predictions.loc[~data.predictions.input_mode.eq(3)],
+        data.fetched_at,
+    )
+    rows = selected(data, "Snapshot replay")
+    assert not rows.loc[rows.dataset_type.eq(1), "available"].any()
+    assert rows.loc[rows.dataset_type.eq(2), "available"].all()

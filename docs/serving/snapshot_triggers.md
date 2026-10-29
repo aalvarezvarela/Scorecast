@@ -174,7 +174,7 @@ skips the snapshots that pass meanwhile.
 | last tip − 10 h, − 8 h, − 6 h | joined inside `nba_predictor_daily.yml` | TabPFN all three targets; every game at its own snapshot |
 | last tip − 10 h, − 8 h, − 6 h, in the same job | TabPFN closing | all three targets, eligible pending games; standard + thinking_high and alternate key at T-8, standard and normal key otherwise |
 | last tip − 4 h | joined inside `nba_predictor_daily.yml`, standalone fallback | TabPFN closing only, all three targets, standard mode, normal key, eligible pending games |
-| last end + 30 min | `nba_predict_past_snapshots.yml` | the date's intermediate slots on their own snapshots + random and historical-average baselines on T-0, once per game |
+| last end + 30 min | `nba_predict_past_snapshots.yml` | intermediate slots on their own snapshots; registry closing models on reconstructed T-8h/T-6h/T-4h/T-0; random and historical-average baselines on T-0 |
 | earlier of last end + 2 h and next morning 07:50 | `update_finished_matches_daily.yml` | final scores (prediction store), finished matches |
 | 11:11 every day | `update_finished_matches_daily.yml` | retry pending final scores and finished matches |
 
