@@ -48,6 +48,14 @@ details in [docs/intermediate/live_prediction.md](../intermediate/live_predictio
 | Daily predictor, `INTERMEDIATE_INPUT_MODE = latest` | Several times a day (planned: one run per grid time) | Tonight's closing frame, one row per game | Every slot reads each game's **latest** snapshot -- the run's own moment, off the grid in general (e.g. T−47) -- limited per model by `input_limits.limit_to_training_support` |
 | Past-snapshot run, `own` | Once, after the date's games have tipped | Not run (post-tip odds are not the closing line) | Every slot reads the row of **its own** horizon: the exact simulation of what it was trained on |
 
+The random and historical-average baselines run only in the final past-snapshot
+workflow, once per slate, using its reconstructed T-0 pregame lines. Both are
+stored as closing outputs (`kind=2`, `workflow=2`, `input_mode=0`), with their
+names in `variant`; filter `workflow` to distinguish these retrospective rows
+from live closing predictions. The mean excludes the evaluated day and later
+dates; random picks are stable per date and game, even when a rerun has different
+row order or coverage. A manual rerun is a separate stored run.
+
 Consequences for storage:
 
 - A run produces **at most one row per (game, model build)**: the latest
@@ -74,9 +82,9 @@ runs before tip (estimate; the cron schedule is not final):
 
 | Source | Rows per game |
 | --- | --- |
-| `latest` runs: (48 intermediate + 3 closing + 2 baselines) × ~17 runs | ~900 |
-| `own` run: 48 intermediate | 48 |
-| **Total** | **~950** |
+| `latest` runs: (48 intermediate + 3 closing) × ~17 runs | ~867 |
+| `own` run: 48 intermediate + 2 daily baselines | 50 |
+| **Total, excluding TabPFN** | **~917** |
 
 A regular season (1,230 games) is **~1.2M prediction rows**. With the
 narrow layout below (per-model values only, no B-tree key) that is an
@@ -581,8 +589,11 @@ Implemented (branch `feat/prediction-storage-aiven`, 2026-10-21):
   with the slot failures and the run exits non-zero.
 - Baselines: the historical average's fit id is `1.0-<last history date>`,
   a build per history window, so each value keeps the calculation that
-  produced it; the random baseline stays `1.0`. A baseline's inference time
-  is taken when it is added to the run.
+  produced it; the random baseline stays `1.0`. The mean loads complete games
+  from the current and previous season, excluding the evaluated date and later
+  dates, preseason and All-Star games. A baseline's inference time is taken
+  when it is added to the final past-snapshot run, after tip-off; it is not
+  backdated to the reconstructed line's pregame snapshot.
 - `predictions_full` also exposes `season_year`, `season_type`, the game's
   current `tipoff_at`, `tipoff_at_prediction`, and the run's `run_uuid`,
   `workflow`, `run_status`, `run_started_at`.

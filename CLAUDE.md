@@ -244,7 +244,12 @@ results. In short:
   predict each game's latest snapshot, the run's own moment, limited to what
   their training rows carried (`nba_ou.prediction.input_limits`); in `own`
   every slot reads the row of its own horizon. `scripts/predict_past_snapshots.py`
-  is the end-of-day `own` run. Details: `docs/intermediate/live_prediction.md`.
+  is the end-of-day `own` run. It also runs the random and historical-average
+  baselines once per slate on reconstructed T-0 lines; daytime runs do not
+  run baselines. Random picks are reproducible by date and game. The mean
+  uses completed games from the current and previous seasons, excluding
+  the evaluated date and later dates. Both are stored with `kind=2` and
+  `workflow=2` in Aiven. Details: `docs/intermediate/live_prediction.md`.
 - TabPFN runs on its own (`scripts/predict_tabpfn.py`, dispatch-only workflow
   `nba_predictor_daily_tabpfn_client.yml`): one or more targets (`--targets`)
   and one line per run (default `line_error`, `total_points` and `spread_error` at the closing line;

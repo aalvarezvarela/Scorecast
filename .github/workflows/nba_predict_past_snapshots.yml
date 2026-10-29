@@ -4,6 +4,8 @@ name: Predictions - Past Game Snapshots
 # finish is fine), every snapshot is in the past, so each intermediate slot
 # predicts exactly the row of its own horizon -- the row it was trained on, no
 # prediction across horizons. scripts/predict_past_snapshots.py.
+# Also runs the random and historical-average baselines once per slate on
+# reconstructed T-0 lines; the daily predictor no longer runs them.
 on:
     workflow_dispatch:
         inputs:
@@ -85,7 +87,7 @@ jobs:
               with:
                   requirements: requirements/predict-cuda.txt
 
-            - name: Predict every intermediate slot on its own snapshot
+            - name: Predict past snapshots and daily baselines
               env:
                   GAME_DATE: ${{ inputs.game_date }}
               run: |

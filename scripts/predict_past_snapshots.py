@@ -6,9 +6,14 @@ finish is fine -- when every snapshot of every game is in the past: each slot
 then predicts exactly the row of its own horizon, the row it was trained on
 (``--intermediate-input own``), with no prediction across horizons.
 
-Only the intermediate slots run. A closing slot reads the scheduled odds,
+Only the intermediate model slots run. A closing slot reads the scheduled odds,
 which after tip-off are no longer the closing line, and the daytime runs
 already serve it.
+
+The random and historical-average baselines run here once per slate, on the
+T-0 rows' pregame lines. The average excludes the evaluated date and later
+games; random picks are seeded by date and game so reruns agree. They are
+retrospective outputs of this workflow, never live pregame predictions.
 
 The schedule keeps the games already started or finished
 (``live_replay.replay_scheduled_games``: the scoreboard, with tip-off from the
@@ -28,6 +33,7 @@ from zoneinfo import ZoneInfo
 
 import pandas as pd
 from nba_ou.config.dataset_versions import BASE_SCHEMA_VERSION
+from nba_ou.config.odds_columns import total_line_col
 from nba_ou.config.settings import SETTINGS
 from nba_ou.create_training_data.live_replay import replay_scheduled_games
 from nba_ou.data_processing.referees.process_refs_scheduled_game import (
@@ -36,6 +42,13 @@ from nba_ou.data_processing.referees.process_refs_scheduled_game import (
 from nba_ou.fetch_data.live_rosters import load_live_rosters
 from nba_ou.postgre_db.predictions_aiven.schema import WORKFLOW_PAST_SNAPSHOTS
 from nba_ou.postgre_db.update_all.update_all_databases import update_all_databases
+from nba_ou.prediction.baseline_predictions import (
+    HISTORICAL_AVERAGE_LINE_ERROR_BASELINE_MODEL_NAME,
+    RANDOM_LINE_ERROR_BASELINE_MODEL_NAME,
+    build_historical_average_line_error_baseline_predictions,
+    build_random_line_error_baseline_predictions,
+    load_baseline_history,
+)
 from nba_ou.prediction.intermediate_frame import (
     PASSTHROUGH_COLUMNS,
     tonight_intermediate_frame,
@@ -113,6 +126,66 @@ def keep_passed_snapshots(frame: pd.DataFrame) -> pd.DataFrame:
     return frame.loc[passed].reset_index(drop=True)
 
 
+def add_past_baselines(
+    recorder: PredictionRunRecorder,
+    frame: pd.DataFrame,
+    game_date: str,
+    prediction_datetime: datetime,
+) -> list[str]:
+    """The two daily baselines, using the already built closing snapshot.
+
+    Each baseline is independent: a failed history read must not lose random
+    picks or the model slots. Missing T-0 lines are reported as incomplete
+    coverage rather than replaced with today's live odds or a later quote.
+    """
+    line_col = total_line_col()
+    closing = frame.loc[frame["TIME_TO_MATCH_MIN"].eq(0)].copy()
+    lines = closing.get(line_col, pd.Series(float("nan"), index=closing.index))
+    closing = closing.loc[pd.to_numeric(lines, errors="coerce").notna()]
+    covered = set(closing["GAME_ID"].astype(str))
+    missing = sorted(set(recorder.scheduled_games["GAME_ID"].astype(str)) - covered)
+    failures = (
+        [f"baselines: no T-0 total line for {', '.join(missing)}"] if missing else []
+    )
+    if closing.empty:
+        for name in (
+            RANDOM_LINE_ERROR_BASELINE_MODEL_NAME,
+            HISTORICAL_AVERAGE_LINE_ERROR_BASELINE_MODEL_NAME,
+        ):
+            recorder.record_slot(name, "skipped", reason="no T-0 total lines")
+        return failures
+    recorder.add_frame("closing_line", closing, version=BASE_SCHEMA_VERSION)
+    for name in (
+        RANDOM_LINE_ERROR_BASELINE_MODEL_NAME,
+        HISTORICAL_AVERAGE_LINE_ERROR_BASELINE_MODEL_NAME,
+    ):
+        try:
+            if name == RANDOM_LINE_ERROR_BASELINE_MODEL_NAME:
+                predictions = build_random_line_error_baseline_predictions(
+                    closing,
+                    prediction_datetime=prediction_datetime,
+                    random_seed=int(game_date.replace("-", "")),
+                )
+            else:
+                predictions = build_historical_average_line_error_baseline_predictions(
+                    closing,
+                    load_baseline_history(game_date),
+                    prediction_datetime=prediction_datetime,
+                )
+            rejected = recorder.add_baseline(
+                name, predictions, schema_version=BASE_SCHEMA_VERSION
+            )
+            if rejected:
+                failures.append(f"{name} (prediction store): {rejected}")
+            else:
+                print_status(f"{len(predictions)} prediction(s) for {name}")
+        except Exception as exc:  # noqa: BLE001 -- the other baseline still runs
+            traceback.print_exc()
+            failures.append(f"{name}: {exc}")
+            recorder.record_slot(name, "failed", reason=str(exc))
+    return failures
+
+
 def predict_past_snapshots(
     game_date: str | None = None,
     *,
@@ -123,8 +196,6 @@ def predict_past_snapshots(
     print(f"\nPast-snapshot predictions for {game_date}")
     slots = intermediate_slots(SETTINGS.prediction_model_slots)
     print(f"  {len(slots)} intermediate slot(s), each on its own snapshot")
-    if not slots:
-        return
 
     step = 1
     if update_databases:
@@ -164,6 +235,9 @@ def predict_past_snapshots(
         workflow=WORKFLOW_PAST_SNAPSHOTS, game_date=game_date
     )
     recorder.set_schedule(scheduled)
+    # Closing baselines reuse T-0's raw quotes in the prediction store. There
+    # is no live 'latest' input in this retrospective run.
+    frame["LATEST_INPUT"] = frame["TIME_TO_MATCH_MIN"].eq(0)
     recorder.add_frame("intermediate_line", frame, version=BASE_SCHEMA_VERSION)
 
     s3 = make_s3_client(profile=SETTINGS.s3_aws_profile, region=SETTINGS.s3_aws_region)
@@ -212,6 +286,14 @@ def predict_past_snapshots(
         if rejected:
             print_status(f"Prediction store rejected {label}: {rejected}", ok=False)
             failures.append(f"{label} (prediction store): {rejected}")
+
+    print_step_header(step, "Generating Daily Baselines (T-0)")
+    step += 1
+    try:
+        failures += add_past_baselines(recorder, frame, game_date, started)
+    except Exception as exc:  # noqa: BLE001 -- persist the model slots anyway
+        traceback.print_exc()
+        failures.append(f"baselines: {exc}")
 
     if persist:
         print_step_header(step, "Storing Predictions")

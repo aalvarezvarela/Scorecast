@@ -112,8 +112,8 @@ The database steps are taken from the runner's logs instead
 
 Seconds per stage of `predict_nba_games.py`. Step 2 covers the schedule,
 referees, rosters and reports. Step 3 covers the closing rows and the
-intermediate rows for every horizon, latest input. Step 4 is the 51 slots
-plus the baselines.
+intermediate rows for every horizon, latest input. Step 4 is the 51 slots.
+The measurements below predate moving the baselines to the final past-snapshot run.
 
 | Run | History memo | Local input cache | S3 input cache | Step 2 | Closing rows | Intermediate rows | 51 slots | **Total** |
 |---|---|---|---|---:|---:|---:|---:|---:|

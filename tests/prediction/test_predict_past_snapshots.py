@@ -112,6 +112,7 @@ def test_each_slot_reads_its_own_snapshot(monkeypatch):
 
     monkeypatch.setattr(job, "load_registry_model_and_predict", predict)
     monkeypatch.setattr(job, "PredictionRunRecorder", _NullRecorder)
+    monkeypatch.setattr(job, "add_past_baselines", lambda *a: [])
     monkeypatch.setattr(
         job,
         "persist_prediction_run",

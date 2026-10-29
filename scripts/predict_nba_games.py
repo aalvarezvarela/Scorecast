@@ -28,10 +28,6 @@ from nba_ou.fetch_data.scheduled_game.get_schedule_games import get_schedule_gam
 from nba_ou.postgre_db.config.connection_keep import kept_connections
 from nba_ou.postgre_db.predictions_aiven.schema import WORKFLOW_DAILY
 from nba_ou.postgre_db.update_all.update_all_databases import update_all_databases
-from nba_ou.prediction.baseline_predictions import (
-    baseline_history_window,
-    load_baseline_predictions_for_nba_games,
-)
 from nba_ou.prediction.input_limits import LATEST_INPUT_COLUMN
 from nba_ou.prediction.intermediate_frame import (
     PASSTHROUGH_COLUMNS,
@@ -160,7 +156,8 @@ def run_prediction_pipeline(
        slot predicts every game, an intermediate slot the row of its own
        horizon (passed or not; ``SNAPSHOT_PASSED`` tells them apart) -- or,
        in ``latest`` mode, each game's latest snapshot (``LATEST_INPUT_SLOTS``).
-    5. Runs the baselines.
+
+    The daily baselines run in predict_past_snapshots.py after the slate.
 
     ``intermediate_input`` (``latest`` or ``own``) overrides
     ``[PredictionModels] INTERMEDIATE_INPUT_MODE`` for this run.
@@ -197,7 +194,7 @@ def run_prediction_pipeline(
     configured_slots = SETTINGS.prediction_model_slots
     if not configured_slots:
         # A valid state, not an error: nothing has been promoted yet. The rest
-        # of the pipeline (database update, feature build, baselines) is still
+        # of the pipeline (database update, feature build, TabPFN) is still
         # worth running.
         print("  No model slots enabled in [PredictionModels] ENABLED_MODELS.")
     else:
@@ -279,8 +276,8 @@ def run_prediction_pipeline(
     frame_version = newest_version(slot.schema_version for slot in configured_slots)
     tonight_ids = scheduled_data["scheduled_games"]["GAME_ID"].astype(str).tolist()
     # A closing row needs both teams' injury report (games_not_updated). With
-    # none filed yet there is no closing row to build: the closing slots and
-    # the baselines skip, and the intermediate slots still predict.
+    # none filed yet there is no closing row to build: the closing slots skip
+    # and intermediate slots still predict.
     not_filed = {str(game) for game in scheduled_data.get("games_not_updated", [])}
     closing_ids = [game for game in tonight_ids if game not in not_filed]
     closing_kwargs = dict(
@@ -323,7 +320,7 @@ def run_prediction_pipeline(
         check_closing_rows(df_to_predict, closing_ids)
 
     # Everything that failed without stopping the run; non-empty means the run
-    # exits non-zero once every slot and the baselines have had their turn.
+    # exits non-zero once every slot has had its turn.
     failures: list[str] = []
 
     # Intermediate slots predict a fixed time before tip-off: tonight's rows
@@ -487,44 +484,6 @@ def run_prediction_pipeline(
             print_status(f"Prediction store rejected {label}: {rejected}", ok=False)
             failures.append(f"{label} (prediction store): {rejected}")
     timer.record(f"{len(configured_slots)} slots", time.perf_counter() - slots_started)
-
-    log.step("Generating Predictions (Baselines)")
-    if df_to_predict.empty:
-        # The baselines predict the closing rows; none was built.
-        print_status("No closing rows; baselines skipped")
-    else:
-        with timer.phase("baselines"):
-            try:
-                # The frame holds tonight's games only; the history is every built
-                # game's layer inputs (GAME_DATE, TOTAL_POINTS among them).
-                baseline_predictions = load_baseline_predictions_for_nba_games(
-                    df=df_to_predict,
-                    df_history=baseline_history_window(layer_inputs, date_to_predict),
-                    prediction_datetime=prediction_time,
-                )
-                print_status("Baseline predictions generated")
-                for (
-                    baseline_name,
-                    baseline_predictions_df,
-                ) in baseline_predictions.items():
-                    rejected = recorder.add_baseline(
-                        baseline_name,
-                        baseline_predictions_df,
-                        schema_version=frame_version,
-                    )
-                    if rejected:
-                        print_status(
-                            f"Prediction store rejected {baseline_name}: {rejected}",
-                            ok=False,
-                        )
-                        failures.append(
-                            f"{baseline_name} (prediction store): {rejected}"
-                        )
-
-            except Exception as e:  # noqa: BLE001 -- reported with the slot failures
-                traceback.print_exc()
-                print_status(f"Failed to generate baseline predictions: {e}", ok=False)
-                failures.append(f"baselines: {e}")
 
     if persist:
         log.step("Storing Predictions")
@@ -702,7 +661,7 @@ def timed_closing_rows(
             if not closing_ids:
                 print_status(
                     "No game has both injury reports filed yet: no closing rows, "
-                    "the closing slots and the baselines skip"
+                    "the closing slots skip"
                 )
                 return pd.DataFrame(), None
             df_to_predict, layer_inputs = closing_rows(scheduled_data, **closing_kwargs)
@@ -769,7 +728,7 @@ def closing_rows(
     null_extreme_spread_prices: bool,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Tonight's closing rows at ``frame_version``, and every built row's
-    layer inputs (the baselines' history)."""
+    layer inputs (used by newer schema layers)."""
     # Tonight's games only, on the training build's full history: every
     # row is exactly what a full build would give it, at a fraction of
     # the work (create_df_to_predict's target_game_ids).

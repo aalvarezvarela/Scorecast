@@ -97,7 +97,7 @@ day, `schedule_snapshot_triggers.yml` runs
 4. after the last game, whose end is estimated as its tip-off + 150 min
    (`GAME_LENGTH_MINUTES`), adds:
    - the date's past-snapshot predictions (`nba_predict_past_snapshots.yml`,
-     `game_date` passed) 30 min after that end;
+     `game_date` passed) and daily baselines 30 min after that end;
    - the final scores and finished matches
      (`update_finished_matches_daily.yml`) 2 h after it, **capped at 07:50
      the following morning** in `[Schedule] TIMEZONE`. An earlier dispatch
@@ -106,6 +106,19 @@ day, `schedule_snapshot_triggers.yml` runs
 
    A separate daily job retries final-score updates at **11:11**, including
    days without games or when the game-day scheduler fails.
+
+   The final prediction run computes `random_line_error_baseline` and
+   `historical_average_line_error_baseline` once per game, using the T-0
+   pregame snapshot already built for the whole slate. Daytime runs no longer
+   compute either baseline. Random OVER/UNDER picks are seeded by slate date
+   and game ID, so reruns, row reordering and partial coverage retain the same
+   choices. The mean uses complete games from the current and previous season,
+   strictly before the slate date, excluding preseason and All-Star games.
+   Both are saved as retrospective closing outputs (`kind=2`, `workflow=2`),
+   with their baseline names in `variant` and their actual inference times.
+   Missing T-0 lines or a failed baseline mark the run partial and fail it
+   after saving the available outputs. This remains one scheduled run per
+   slate; a manual rerun produces a separate run with reproducible random picks.
 5. books cron-job.org jobs that dispatch those workflows at those times.
 
 The TabPFN workflow's `target` input is a list separated by spaces or commas,
@@ -161,7 +174,7 @@ skips the snapshots that pass meanwhile.
 | last tip − 10 h, − 8 h, − 6 h | joined inside `nba_predictor_daily.yml` | TabPFN all three targets; every game at its own snapshot |
 | last tip − 10 h, − 8 h, − 6 h, in the same job | TabPFN closing | all three targets, eligible pending games; standard + thinking_high and alternate key at T-8, standard and normal key otherwise |
 | last tip − 4 h | joined inside `nba_predictor_daily.yml`, standalone fallback | TabPFN closing only, all three targets, standard mode, normal key, eligible pending games |
-| last end + 30 min | `nba_predict_past_snapshots.yml` | the date's intermediate slots on their own snapshots |
+| last end + 30 min | `nba_predict_past_snapshots.yml` | the date's intermediate slots on their own snapshots + random and historical-average baselines on T-0, once per game |
 | earlier of last end + 2 h and next morning 07:50 | `update_finished_matches_daily.yml` | final scores (prediction store), finished matches |
 | 11:11 every day | `update_finished_matches_daily.yml` | retry pending final scores and finished matches |
 
