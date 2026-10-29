@@ -30,6 +30,7 @@ from tests.prediction.test_historical_backfill import (
     schedule,
 )
 from tests.support.fake_s3 import FakeS3Client
+from tests.support.historical_predictions import quoted_frame, saved_store
 from tests.support.model_registry import make_spec
 from tests.support.paths import REPO_ROOT
 
@@ -69,18 +70,11 @@ def tabpfn_pipeline(monkeypatch, tmp_path):
         backfill, "backfill_dates", lambda start, end=None: dates(start, end, now=NOW)
     )
     monkeypatch.setattr(backfill, "historical_coverage", lambda *a: pd.DataFrame())
-    monkeypatch.setattr(
-        backfill,
-        "SeasonPartitions",
-        lambda **k: SimpleNamespace(prefix="train_data/2_5/seasons/intermediate_line/"),
-    )
     monkeypatch.setattr(backfill, "replay_scheduled_games", lambda day: schedule())
     monkeypatch.setattr(
         backfill,
-        "stored_day",
-        lambda *a: SimpleNamespace(
-            line_history=SimpleNamespace(games=pd.DataFrame({"game_id": [GAME]}))
-        ),
+        "fetch_games",
+        lambda *a: pd.DataFrame({"game_id": [GAME], "tipoff_utc": [TIP]}),
     )
     frame = prediction_frame().assign(
         TIME_TO_MATCH_MIN=240, SNAPSHOT_TS_UTC=TIP - pd.Timedelta(minutes=240)
@@ -88,13 +82,9 @@ def tabpfn_pipeline(monkeypatch, tmp_path):
     frame[spread_line_home_col()] = 3.5
     for column in COVERED_COLUMNS:
         frame[column] = 1
-    built = []
-
-    def build(live, horizon, ids):
-        built.append(horizon)
-        return frame.copy(), pd.Timestamp("2026-10-23")
-
-    monkeypatch.setattr(backfill, "build_horizon_frame", build)
+    frame = quoted_frame(frame)
+    partitions = saved_store(frame)
+    monkeypatch.setattr(backfill, "SeasonPartitions", lambda **k: partitions)
     history = pd.DataFrame(
         {
             "GAME_ID": [f"00226000{i:02}" for i in range(2, 8)],
@@ -169,7 +159,7 @@ def tabpfn_pipeline(monkeypatch, tmp_path):
         written=written,
         s3=s3,
         output=tmp_path,
-        built=built,
+        store=partitions,
         frame=frame,
     )
 
@@ -185,7 +175,7 @@ def test_all_targets_standard_at_only_four_hours_with_historical_training(
         )
         == 0
     )
-    assert p.built == [240]
+    assert p.store.read.call_count == 1
     assert len(p.fits) == 3
     assert {training.y.name for training, _, _ in p.fits} == {
         "LINE_ERROR",
@@ -308,8 +298,8 @@ def test_existing_standard_tabpfn_rows_skip_hosted_calls(tabpfn_pipeline, monkey
     monkeypatch.setattr(backfill, "historical_coverage", lambda *a: pd.DataFrame(rows))
     monkeypatch.setattr(
         backfill,
-        "stored_day",
-        lambda *a: pytest.fail("Covered TabPFN inputs were rebuilt"),
+        "fetch_games",
+        lambda *a: pytest.fail("Covered TabPFN inputs were read"),
     )
     assert (
         backfill.run_backfill(

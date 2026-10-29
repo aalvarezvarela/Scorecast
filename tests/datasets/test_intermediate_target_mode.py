@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from types import SimpleNamespace
-
 import pandas as pd
 import pytest
 from nba_ou.create_training_data import create_intermediate_line_df as builder
@@ -76,44 +74,3 @@ def test_without_a_schema_the_columns_follow_the_ticks():
     games = sorted(ticks["game_id"].unique())[:2]
     alone = _side(ticks[ticks["game_id"].isin(games) & ticks["book"].ne("betmgm")])
     assert not any("_BETMGM_" in column for column in alone.wide.columns)
-
-
-def test_replay_market_history_excludes_games_after_the_history_cutoff(monkeypatch):
-    monkeypatch.setattr(
-        builder.intermediate_history, "load_season_histories", lambda *a, **k: {}
-    )
-    monkeypatch.setattr(builder, "pregame_tick_fingerprints", lambda *a, **k: {})
-    monkeypatch.setattr(
-        builder.intermediate_history, "settings_key", lambda **k: "settings"
-    )
-
-    def assemble(histories, **kwargs):
-        assert kwargs["keep_game"](
-            pd.Series(["past", "overnight", "future", "target"])
-        ).tolist() == [True, False, False, False]
-        return "history"
-
-    monkeypatch.setattr(builder.intermediate_history, "assemble_history", assemble)
-    ticks = pd.DataFrame({"game_id": ["target"]})
-    games = pd.DataFrame({"game_id": ["past", "target"]})
-    monkeypatch.setattr(
-        builder, "append_live_line_history", lambda *a, **k: (ticks, games)
-    )
-    live = SimpleNamespace(line_history=SimpleNamespace(ticks=ticks))
-    _, _, history = builder._target_snapshot_inputs(
-        {"target"},
-        season_years=[2026],
-        lh_games=games,
-        live=live,
-        excluded_books=(),
-        combine_books=False,
-        side_settings={"anchor": "bet365"},
-        verbose=False,
-        history_game_ids={"past"},
-    )
-    assert history == "history"
-
-
-def test_strict_history_cutoff_requires_replay_before_any_external_reads():
-    with pytest.raises(ValueError, match="strict_history_cutoff requires"):
-        builder.create_intermediate_line_df(strict_history_cutoff=True)

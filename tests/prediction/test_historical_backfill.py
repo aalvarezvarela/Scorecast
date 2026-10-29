@@ -9,17 +9,16 @@ from unittest.mock import MagicMock
 import pandas as pd
 import pytest
 from nba_ou.config.odds_columns import total_line_col
-from nba_ou.create_training_data.live_game_day import LiveGameDay
 from nba_ou.modeling.refit import TrainingFrame
 from nba_ou.modeling.registry_models import SpecTraining
 from nba_ou.modeling.registry_paths import ModelSlot
-from nba_ou.postgre_db.line_history_aiven.live import LiveLineHistory
 from nba_ou.postgre_db.predictions_aiven import coverage as coverage_module
 from nba_ou.postgre_db.predictions_aiven.schema import WORKFLOW_HISTORICAL_BACKFILL
 from nba_ou.prediction import historical_backfill as backfill
 
 import scripts.backfill_past_predictions as cli
 from tests.support.fake_s3 import FakeS3Client
+from tests.support.historical_predictions import saved_store
 from tests.support.model_registry import make_spec
 
 GAME = "0022600001"
@@ -115,39 +114,6 @@ def test_early_snapshots_do_not_read_the_previous_overnight_slate():
     assert backfill.history_limit(
         "2026-11-01", pd.Series(["2026-11-01T10:30Z"])
     ) == pd.Timestamp("2026-10-30")
-
-
-def test_rosters_are_filtered_per_game_before_building_any_features():
-    games = pd.DataFrame(
-        {
-            "GAME_ID": ["a", "b"],
-            "HOME_TEAM_ID": ["h1", "h2"],
-            "VISITOR_TEAM_ID": ["a1", "a2"],
-        }
-    )
-    snapshots = pd.DataFrame(
-        {
-            "TEAM_ID": ["h1", "h1", "h2", "h2"],
-            "FETCHED_AT_UTC": pd.to_datetime(
-                [
-                    "2026-10-24T14:00Z",
-                    "2026-10-24T16:00Z",
-                    "2026-10-24T16:00Z",
-                    "2026-10-24T18:00Z",
-                ]
-            ),
-            "PLAYER_ID": ["before_a", "after_a", "before_b", "after_b"],
-        }
-    )
-    filtered = backfill.snapshot_rosters(
-        games,
-        snapshots,
-        {
-            "a": pd.Timestamp("2026-10-24T15:00Z"),
-            "b": pd.Timestamp("2026-10-24T17:00Z"),
-        },
-    )
-    assert filtered.PLAYER_ID.tolist() == ["before_a", "before_b"]
 
 
 def test_only_same_spec_exact_horizon_predictions_count_as_coverage():
@@ -252,20 +218,15 @@ def pipeline(monkeypatch, tmp_path):
     monkeypatch.setattr(backfill, "make_s3_client", lambda **_: s3)
     monkeypatch.setattr(backfill, "resolve_config_spec", lambda **_: spec)
     monkeypatch.setattr(backfill, "historical_coverage", lambda *a: pd.DataFrame())
-    monkeypatch.setattr(backfill, "SeasonPartitions", lambda **_: object())
+    monkeypatch.setattr(
+        backfill, "SeasonPartitions", lambda **_: saved_store(prediction_frame())
+    )
+    monkeypatch.setattr(
+        backfill,
+        "fetch_games",
+        lambda *a: pd.DataFrame({"game_id": [GAME], "tipoff_utc": [TIP]}),
+    )
     monkeypatch.setattr(backfill, "replay_scheduled_games", lambda day: schedule())
-    monkeypatch.setattr(
-        backfill,
-        "stored_day",
-        lambda *a: SimpleNamespace(
-            line_history=SimpleNamespace(games=pd.DataFrame({"game_id": [GAME]}))
-        ),
-    )
-    monkeypatch.setattr(
-        backfill,
-        "build_horizon_frame",
-        lambda *a: (prediction_frame(), pd.Timestamp("2026-10-23")),
-    )
     rows = pd.DataFrame(
         {
             "GAME_ID": [f"00226000{i:02}" for i in range(2, 8)],
@@ -392,8 +353,8 @@ def test_already_covered_slots_do_not_refit_or_insert(pipeline, monkeypatch):
     monkeypatch.setattr(backfill, "historical_coverage", lambda *a: pd.DataFrame([row]))
     monkeypatch.setattr(
         backfill,
-        "stored_day",
-        lambda *a: pytest.fail("Already covered date was rebuilt"),
+        "fetch_games",
+        lambda *a: pytest.fail("Already covered date read prediction metadata"),
     )
     assert backfill.run_backfill(DAY, persist=True, output_dir=pipeline.output) == 0
     assert not pipeline.s3.put_order and not pipeline.written
@@ -408,6 +369,9 @@ def test_cli_defaults_to_dry_run_and_modes_are_exclusive(monkeypatch, tmp_path):
     assert calls[-1]["persist"] is True
     with pytest.raises(SystemExit):
         cli.main(["--start-date", DAY, "--dry-run", "--persist"])
+    for removed_option in ["--stored-only", "--rebuild-inputs"]:
+        with pytest.raises(SystemExit):
+            cli.main(["--start-date", DAY, removed_option])
 
 
 def test_action_matrix_groups_slots_by_date_and_horizon_without_running_backfill(
@@ -450,28 +414,29 @@ def test_date_range_refits_each_cutoff_and_cannot_collide_with_same_second_fits(
         )
 
     monkeypatch.setattr(backfill, "replay_scheduled_games", daily_schedule)
+    schedules = [daily_schedule(day) for day in [DAY, "2026-10-25"]]
+    frames = [
+        prediction_frame().assign(
+            GAME_ID=games.GAME_ID.iloc[0],
+            GAME_DATE=pd.Timestamp(games.GAME_DATE_EST.iloc[0]),
+        )
+        for games in schedules
+    ]
+    store = saved_store(pd.concat(frames, ignore_index=True))
+    monkeypatch.setattr(backfill, "SeasonPartitions", lambda **k: store)
     monkeypatch.setattr(
         backfill,
-        "stored_day",
-        lambda day, games: SimpleNamespace(
-            game_date=day,
-            line_history=SimpleNamespace(
-                games=pd.DataFrame({"game_id": games.GAME_ID})
-            ),
+        "fetch_games",
+        lambda *a: pd.concat(
+            [
+                games.rename(columns={"GAME_ID": "game_id", "GAME_TIME": "tipoff_utc"})[
+                    ["game_id", "tipoff_utc"]
+                ]
+                for games in schedules
+            ],
+            ignore_index=True,
         ),
     )
-
-    def daily_frame(live, horizon, ids):
-        tip = pd.Timestamp(f"{live.game_date}T23:00Z")
-        frame = prediction_frame().assign(
-            GAME_ID=next(iter(ids)),
-            GAME_DATE=pd.Timestamp(live.game_date),
-            GAME_TIME=tip,
-            SNAPSHOT_TS_UTC=tip - pd.Timedelta(minutes=horizon),
-        )
-        return frame, pd.Timestamp(live.game_date) - pd.Timedelta(days=1)
-
-    monkeypatch.setattr(backfill, "build_horizon_frame", daily_frame)
     refit = backfill.refit_from_spec
 
     def same_second_refit(*a, **k):
@@ -492,55 +457,3 @@ def test_date_range_refits_each_cutoff_and_cannot_collide_with_same_second_fits(
     models = pd.concat([tables.model_builds for tables in pipeline.written])
     assert models.train_date_max.astype(str).tolist() == ["2026-10-23", DAY]
     assert models.fit_id.nunique() == 2
-
-
-def test_replay_passes_roster_and_history_cutoffs_to_feature_builder(monkeypatch):
-    games = schedule()
-    ticks = pd.DataFrame(
-        {
-            "game_id": [GAME, GAME],
-            "line_ts": pd.to_datetime(["2026-10-24T21:00Z", "2026-10-24T22:30Z"]),
-        }
-    )
-    snapshots = pd.DataFrame(
-        {
-            "TEAM_ID": [str(games.HOME_TEAM_ID.iloc[0])] * 2,
-            "FETCHED_AT_UTC": pd.to_datetime(
-                ["2026-10-24T21:00Z", "2026-10-24T22:30Z"]
-            ),
-            "PLAYER_ID": ["known", "future"],
-        }
-    )
-    live = LiveGameDay(
-        game_date=pd.Timestamp(DAY),
-        as_of=TIP,
-        scheduled_games=games,
-        line_history=LiveLineHistory(
-            ticks=ticks,
-            games=pd.DataFrame({"game_id": [GAME], "tipoff_utc": [TIP]}),
-            as_of=TIP,
-        ),
-        roster_snapshots=snapshots,
-    )
-
-    def build(**kwargs):
-        replay = kwargs["live"]
-        assert replay.roster_snapshots.PLAYER_ID.tolist() == ["known"]
-        assert replay.as_of == TIP - pd.Timedelta(minutes=60)
-        assert len(replay.line_history.ticks) == 1
-        assert kwargs["recent_limit_to_include"] == pd.Timestamp("2026-10-23")
-        assert kwargs["target_snapshots"] == {GAME: 60}
-        assert kwargs["strict_history_cutoff"] is True
-        frame = prediction_frame().drop(
-            columns=["SNAPSHOT_TS_UTC", "SNAPSHOT_PASSED", "GAME_TIME"]
-        )
-        return (
-            frame,
-            prediction_frame()[["GAME_ID", "TIME_TO_MATCH_MIN", "SNAPSHOT_TS_UTC"]],
-        )
-
-    monkeypatch.setattr(backfill, "create_intermediate_line_df", build)
-    frame, limit = backfill.build_horizon_frame(live, 60, {GAME})
-    assert frame.SNAPSHOT_PASSED.all()
-    assert frame.GAME_TIME.iloc[0] == TIP
-    assert limit == pd.Timestamp("2026-10-23")

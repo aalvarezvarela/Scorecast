@@ -732,7 +732,6 @@ def _target_snapshot_inputs(
     combine_books: bool,
     side_settings: dict,
     verbose: bool,
-    history_game_ids: set[str] | None = None,
 ) -> tuple[pd.DataFrame, pd.DataFrame, intermediate_history.SnapshotHistory]:
     """Tonight's ticks and games, and every other game's snapshot history.
 
@@ -776,8 +775,7 @@ def _target_snapshot_inputs(
     )
     snapshot_history = intermediate_history.assemble_history(
         histories,
-        keep_game=lambda ids: ~ids.isin(targets)
-        & (True if history_game_ids is None else ids.isin(history_game_ids)),
+        keep_game=lambda ids: ~ids.isin(targets),
         history_dtypes=_history_dtypes,
         # A live build sorts its ticks by game across seasons
         # (append_live_line_history); a stored one reads them season by season.
@@ -924,7 +922,6 @@ def create_intermediate_line_df(
     target_game_ids=None,
     extra_target_snapshots: Mapping[str, int] | None = None,
     target_snapshots: Mapping[str, int] | None = None,
-    strict_history_cutoff: bool = False,
     verbose: bool = True,
 ) -> pd.DataFrame | tuple[pd.DataFrame, pd.DataFrame]:
     """Build the (game, snapshot) dataset.
@@ -934,11 +931,6 @@ def create_intermediate_line_df(
     per-row snapshot weight and the raw timestamps -- everything that must stay
     out of the feature matrix. The default is the safe one: closing lines are
     absent unless explicitly asked for.
-
-    ``strict_history_cutoff`` is for historical replay with ``live`` and
-    explicit ``recent_limit_to_include``: prior-game market history and
-    injury-status box-score form respect that date too, including when it
-    deliberately leaves out the preceding overnight slate.
 
     ``base_lookback_seasons`` loads team history from before the first
     line-history season so that season's rolling features are warm. Those extra
@@ -1014,12 +1006,6 @@ def create_intermediate_line_df(
         if target_game_ids is None
         else set(normalize_game_ids([str(g) for g in target_game_ids]))
     )
-    if strict_history_cutoff and (
-        live is None or targets is None or recent_limit_to_include is None
-    ):
-        raise ValueError(
-            "strict_history_cutoff requires live replay, target games and an explicit history limit"
-        )
     extra_snapshots: dict[str, int] = {}
     if extra_target_snapshots:
         if targets is None:
@@ -1148,14 +1134,6 @@ def create_intermediate_line_df(
     else:
         stage("Snapshot history of the finished games ...")
         lh_games = fetch_games(season_years)
-        history_game_ids = None
-        if strict_history_cutoff:
-            permitted = pd.to_datetime(lh_games["game_date"]).le(
-                pd.Timestamp(recent_limit_to_include)
-            )
-            permitted |= lh_games["game_id"].astype(str).isin(targets)
-            lh_games = lh_games.loc[permitted].copy()
-            history_game_ids = set(lh_games["game_id"].astype(str)) - targets
         ticks, lh_games, snapshot_history = _target_snapshot_inputs(
             targets,
             season_years=season_years,
@@ -1165,7 +1143,6 @@ def create_intermediate_line_df(
             combine_books=combine_books,
             side_settings=side_settings,
             verbose=verbose,
-            history_game_ids=history_game_ids,
         )
     if ticks.empty:
         raise ValueError("No pre-game ticks returned for the requested seasons.")
@@ -1430,9 +1407,6 @@ def create_intermediate_line_df(
         target_game_ids=targets,
         history_cutoffs=history_rows,
         live_reports=live.injury_reports if live is not None else None,
-        history_limit=(
-            pd.Timestamp(recent_limit_to_include) if strict_history_cutoff else None
-        ),
         while_waiting=market_dynamics if include_market_dynamics else None,
         horizon_aliases={
             minutes: nearest_grid_horizon(minutes, snapshot_grid)

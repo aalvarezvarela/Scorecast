@@ -39,19 +39,39 @@ on:
         description: "Run even with PREDICTIONS_ENABLED set to false"
         type: boolean
         default: false
+      after_prediction:
+        description: "Optional dependency: workflow.yml@scheduled-UTC-timestamp"
+        type: string
+        default: ""
 
 permissions:
   contents: read
   id-token: write
+  actions: read
 
-# Shares the predictor queue, including other historical backfills: coverage
-# is checked before writing, so concurrent backfills must not race each other.
+# Serialize backfills, including their coverage checks. The dependency wait
+# runs on a hosted runner and must never hold the daily predictor's lock.
 concurrency:
-  group: daily-nba-predictor
+  group: historical-prediction-backfill
   cancel-in-progress: false
 
 jobs:
+  wait_for_predictions:
+    if: ${{ vars.PREDICTIONS_ENABLED != 'false' || inputs.force }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 125
+    env:
+      GITHUB_TOKEN: ${{ github.token }}
+      AFTER_PREDICTION: ${{ inputs.after_prediction }}
+      PYTHONUNBUFFERED: "1"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+      - name: Wait for the final scheduled prediction
+        shell: bash
+        run: python scripts/cronjobs/wait_for_prediction_run.py --after "$AFTER_PREDICTION"
   prepare:
+    needs: wait_for_predictions
     if: ${{ vars.PREDICTIONS_ENABLED != 'false' || inputs.force }}
     runs-on: self-hosted
     timeout-minutes: 15
@@ -97,6 +117,9 @@ jobs:
           echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
   backfill:
     needs: prepare
+    concurrency:
+      group: daily-nba-predictor
+      cancel-in-progress: false
     strategy:
       fail-fast: false
       max-parallel: 1

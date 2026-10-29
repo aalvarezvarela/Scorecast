@@ -79,7 +79,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--output-dir",
         type=Path,
         default=Path("data/backfill_predictions"),
-        help="Local CSV/JSON reports and feature cache",
+        help="Local CSV/JSON reports",
     )
     parser.add_argument(
         "--tabpfn",

@@ -1,4 +1,4 @@
-"""Refit current configurations on past-only data and replay missing snapshots.
+"""Refit on earlier saved rows and predict saved snapshots; never rebuild datasets.
 
 No production booster is read. Training partitions and source databases are
 read-only; builds are kept under a separate root and never promoted. Dates
@@ -11,10 +11,8 @@ from __future__ import annotations
 
 import hashlib
 import json
-import os
 import traceback
 import uuid
-from contextlib import contextmanager
 from dataclasses import replace
 from datetime import date
 from pathlib import Path
@@ -22,14 +20,9 @@ from pathlib import Path
 import pandas as pd
 from nba_ou.config.dataset_versions import BASE_SCHEMA_VERSION
 from nba_ou.config.settings import SETTINGS
-from nba_ou.create_training_data.create_intermediate_line_df import (
-    create_intermediate_line_df,
-)
-from nba_ou.create_training_data.live_game_day import LiveGameDay
-from nba_ou.create_training_data.live_replay import replay_scheduled_games, stored_crews
+from nba_ou.create_training_data.live_replay import replay_scheduled_games
 from nba_ou.create_training_data.season_partitions import SeasonPartitions
 from nba_ou.data_processing.line_history.snapshots import DEFAULT_SNAPSHOT_GRID
-from nba_ou.fetch_data.live_rosters import load_live_rosters
 from nba_ou.modeling.refit import (
     TrainingFrame,
     model_bytes_of,
@@ -46,8 +39,7 @@ from nba_ou.modeling.registry_store import (
     write_spec,
 )
 from nba_ou.postgre_db.config.connection_keep import kept_connections
-from nba_ou.postgre_db.line_history_aiven.fetch import fetch_games, fetch_pregame_ticks
-from nba_ou.postgre_db.line_history_aiven.live import LiveLineHistory
+from nba_ou.postgre_db.line_history_aiven.fetch import fetch_games
 from nba_ou.postgre_db.predictions_aiven.coverage import historical_coverage
 from nba_ou.postgre_db.predictions_aiven.schema import (
     KIND_REGISTRY,
@@ -57,8 +49,10 @@ from nba_ou.postgre_db.predictions_aiven.schema import (
     TARGET_CODES,
     WORKFLOW_HISTORICAL_BACKFILL,
 )
-from nba_ou.prediction.historical_closing import build_closing_frame
-from nba_ou.prediction.intermediate_frame import PASSTHROUGH_COLUMNS, mark_snapshots
+from nba_ou.prediction.historical_inputs import (
+    StoredPredictionInputs,
+)
+from nba_ou.prediction.intermediate_frame import PASSTHROUGH_COLUMNS
 from nba_ou.prediction.prediction import load_registry_model_and_predict
 from nba_ou.prediction.prediction_store import (
     PredictionRunRecorder,
@@ -75,7 +69,6 @@ from nba_ou.prediction.prediction_tabpfn_client import (
 )
 from nba_ou.prediction.report_requirement import reports_filed, requires_report
 from nba_ou.utils.general_utils import get_season_year_from_date
-from nba_ou.utils.history_cache import history_cache
 from nba_ou.utils.s3_models import make_s3_client
 
 EASTERN = "America/New_York"
@@ -199,115 +192,6 @@ def missing_games(
     return ids - {str(int(game)).zfill(10) for game in covered.loc[eligible, "game_id"]}
 
 
-def snapshot_rosters(scheduled, snapshots, cutoffs):
-    """Filter each team's observations to its own game's snapshot time."""
-    if snapshots.empty:
-        return snapshots
-    eligible = pd.Series(False, index=snapshots.index)
-    stamps = pd.to_datetime(snapshots.FETCHED_AT_UTC, utc=True)
-    for game in scheduled.itertuples():
-        cutoff = cutoffs[str(game.GAME_ID)]
-        teams = [str(game.HOME_TEAM_ID), str(game.VISITOR_TEAM_ID)]
-        eligible |= snapshots.TEAM_ID.astype(str).isin(teams) & stamps.le(cutoff)
-    return snapshots.loc[eligible].copy()
-
-
-def stored_day(game_date: str, scheduled: pd.DataFrame) -> LiveGameDay:
-    """Stored ticks, crews and rosters only: no live scrape or injury refresh."""
-    season = int(get_season_year_from_date(game_date))
-    ids = set(scheduled.GAME_ID.astype(str))
-    as_of = pd.to_datetime(scheduled.GAME_TIME, utc=True).max()
-    games = fetch_games([season])
-    games = games.loc[games.game_id.astype(str).isin(ids)].copy()
-    if games.empty:
-        raise ValueError(f"No stored line-history game metadata for {sorted(ids)}")
-    games["game_id"] = games.game_id.astype(str)
-    # A season read shares the existing local tick cache across horizons/dates.
-    ticks = fetch_pregame_ticks([season], use_cache=True)
-    ticks = ticks.loc[ticks.game_id.astype(str).isin(ids)].copy()
-    return LiveGameDay(
-        game_date=pd.Timestamp(game_date),
-        as_of=as_of,
-        scheduled_games=scheduled,
-        line_history=LiveLineHistory(ticks=ticks, games=games, as_of=as_of),
-        df_referees_scheduled=stored_crews(sorted(ids), season),
-        roster_snapshots=load_live_rosters(scheduled, as_of=as_of),
-    )
-
-
-def build_horizon_frame(live: LiveGameDay, horizon: int, ids: set[str]):
-    """Replay just the missing games, with roster cutoffs applied before features."""
-    scheduled = live.scheduled_games.loc[
-        live.scheduled_games.GAME_ID.astype(str).isin(ids)
-    ]
-    tipoffs = live.line_history.games.set_index("game_id").tipoff_utc
-    cutoffs = {
-        game: pd.Timestamp(tipoffs.loc[game]) - pd.Timedelta(minutes=horizon)
-        for game in ids
-    }
-    as_of = max(cutoffs.values())
-    limit = history_limit(live.game_date.date().isoformat(), pd.Series(cutoffs))
-    ticks = live.line_history.ticks
-    replay = replace(
-        live,
-        scheduled_games=scheduled,
-        as_of=as_of,
-        roster_snapshots=snapshot_rosters(scheduled, live.roster_snapshots, cutoffs),
-        line_history=replace(
-            live.line_history,
-            as_of=as_of,
-            ticks=ticks.loc[
-                ticks.game_id.astype(str).isin(ids)
-                & pd.to_datetime(ticks.line_ts, utc=True).le(as_of)
-            ],
-            games=live.line_history.games.loc[
-                live.line_history.games.game_id.astype(str).isin(ids)
-            ],
-        ),
-    )
-    frame, scoring = create_intermediate_line_df(
-        live=replay,
-        recent_limit_to_include=limit,
-        target_game_ids=sorted(ids),
-        target_snapshots=dict.fromkeys(ids, horizon),
-        strict_history_cutoff=True,
-        return_scoring=True,
-    )
-    frame = mark_snapshots(frame, scoring, as_of)
-    if (
-        frame.duplicated(["GAME_ID", "TIME_TO_MATCH_MIN"]).any()
-        or not frame.SNAPSHOT_PASSED.all()
-    ):
-        raise ValueError("Replayed rows are duplicated or have future snapshots")
-    if (
-        not frame.TIME_TO_MATCH_MIN.eq(horizon).all()
-        or set(frame.GAME_ID.astype(str)) - ids
-    ):
-        raise ValueError("Replay returned unexpected games or horizons")
-    frame = frame.drop(columns="GAME_TIME", errors="ignore").merge(
-        scheduled[["GAME_ID", "GAME_TIME"]],
-        on="GAME_ID",
-        how="left",
-        validate="one_to_one",
-    )
-    return frame, limit
-
-
-@contextmanager
-def local_history_cache(directory: Path):
-    """Prevent feature memo writes to S3, including during a dry run."""
-    key = "NBA_OU_HISTORY_MEMO_DIR"
-    previous = os.environ.get(key)
-    os.environ[key] = str(Path(previous or directory).expanduser().resolve())
-    try:
-        yield
-    finally:
-        if previous is None:
-            os.environ.pop(key, None)
-        else:
-            os.environ[key] = previous
-
-
 def run_backfill(
     start_date: str,
     end_date: str | None = None,
@@ -369,8 +253,12 @@ def run_backfill(
             dataset_type=dataset,
             schema_version=BASE_SCHEMA_VERSION,
         )
-        for dataset in {str(spec.identity.dataset_type) for spec in specs.values()}
+        for dataset in {
+            "intermediate_line",
+            *(str(spec.identity.dataset_type) for spec in specs.values()),
+        }
     }
+    stored_inputs = StoredPredictionInputs(stores, tipoff_loader=fetch_games)
     run_id = uuid.uuid4().hex
     destination = output_dir / run_id
     destination.mkdir(parents=True, exist_ok=True)
@@ -378,38 +266,39 @@ def run_backfill(
         f"Historical backfill: {dates[0]} to {dates[-1]}; {'PERSIST' if persist else 'DRY RUN'}; reports: {destination}"
     )
     failures = []
-    with local_history_cache(output_dir / "cache" / "history"):
-        for game_date in dates:
-            try:
-                with history_cache(), kept_connections():
-                    failures.extend(
-                        _backfill_date(
-                            game_date,
-                            slots,
-                            specs,
-                            coverage,
-                            stores,
-                            s3,
-                            bucket,
-                            persist,
-                            destination,
-                            run_id,
-                            tabpfn_slots=tabpfn_slots,
-                            snapshot_minutes=tabpfn_horizon_minutes,
-                        )
+    for game_date in dates:
+        try:
+            with kept_connections():
+                failures.extend(
+                    _backfill_date(
+                        game_date,
+                        slots,
+                        specs,
+                        coverage,
+                        stores,
+                        s3,
+                        bucket,
+                        persist,
+                        destination,
+                        run_id,
+                        tabpfn_slots=tabpfn_slots,
+                        snapshot_minutes=tabpfn_horizon_minutes,
+                        stored_inputs=stored_inputs,
                     )
-            except (
-                Exception
-            ) as exc:  # noqa: BLE001 -- retain other dates and the local report
-                traceback.print_exc()
-                failures.append(f"{game_date}: {exc}")
-                (destination / f"{game_date}.error.json").write_text(
-                    json.dumps({"error": str(exc)})
                 )
+        except (
+            Exception
+        ) as exc:  # noqa: BLE001 -- retain other dates and the local report
+            traceback.print_exc()
+            failures.append(f"{game_date}: {exc}")
+            (destination / f"{game_date}.error.json").write_text(
+                json.dumps({"error": str(exc)})
+            )
     (destination / "summary.json").write_text(
         json.dumps(
             {
                 "persist": persist,
+                "input_source": "stored",
                 "dates": dates,
                 "include_closing": include_closing,
                 "snapshot_minutes": tabpfn_horizon_minutes,
@@ -447,6 +336,7 @@ def _backfill_date(
     *,
     tabpfn_slots=(),
     snapshot_minutes=DEFAULT_TABPFN_BACKFILL_HORIZON,
+    stored_inputs=None,
 ):
     scheduled = replay_scheduled_games(game_date)
     if scheduled.empty:
@@ -486,11 +376,23 @@ def _backfill_date(
     if not wanted:
         print(f"{game_date}: all requested predictions already exist")
         return []
-    live = stored_day(
-        game_date, scheduled.loc[scheduled.GAME_ID.astype(str).isin(wanted)]
+    stored_inputs = stored_inputs or StoredPredictionInputs(
+        stores, tipoff_loader=fetch_games
     )
-    frames, limits, failures = {}, {}, []
-    available = set(live.line_history.games.game_id.astype(str))
+    frames, limits, failures, input_sources = {}, {}, [], {}
+
+    def prediction_frame(horizon, ids, *, required_features=()):
+        actual_horizon = snapshot_minutes if horizon == 0 else horizon
+        frame = stored_inputs.read(
+            game_date,
+            actual_horizon,
+            ids,
+            closing=horizon == 0,
+            required_features=required_features,
+        )
+        input_sources.setdefault(str(horizon), []).append(frame.attrs["input_source"])
+        return frame, history_limit(game_date, frame.SNAPSHOT_TS_UTC)
+
     for horizon in sorted({slot.horizon_minutes for slot in [*slots, *tabpfn_slots]}):
         ids = set().union(
             *(missing[slot] for slot in slots if slot.horizon_minutes == horizon),
@@ -502,24 +404,21 @@ def _backfill_date(
         )
         if not ids:
             continue
-        unavailable = ids - available
-        if unavailable:
-            failures.append(
-                f"{game_date} T-{horizon}: no stored line-history game metadata for {sorted(unavailable)}"
-            )
-        ids &= available
-        if not ids:
-            continue
         try:
-            frame, limits[horizon] = (
-                build_closing_frame(live, snapshot_minutes, ids)
-                if horizon == 0
-                else build_horizon_frame(live, horizon, ids)
+            features = set().union(
+                *(
+                    set(specs[slot].features.feature_names)
+                    for slot in [*slots, *tabpfn_slots]
+                    if slot.horizon_minutes == horizon
+                )
+            )
+            frame, limits[horizon] = prediction_frame(
+                horizon, ids, required_features=features
             )
             absent = ids - set(frame.GAME_ID.astype(str))
             if absent:
                 failures.append(
-                    f"{game_date} T-{horizon}: no historical snapshot for {sorted(absent)}"
+                    f"{game_date} T-{horizon}: missing or unsafe stored snapshot rows for {sorted(absent)}; dataset reconstruction is disabled"
                 )
             frames[horizon] = frame
         except Exception as exc:  # noqa: BLE001
@@ -542,13 +441,13 @@ def _backfill_date(
         )
         if extra:
             try:
-                quotes, _ = build_horizon_frame(live, snapshot_minutes, extra)
+                quotes, _ = prediction_frame(snapshot_minutes, extra)
                 quote_frames[snapshot_minutes] = pd.concat(
                     [existing, quotes], ignore_index=True
                 )
             except Exception as exc:  # noqa: BLE001
                 # No untimestamped/final-quote fallback for closing inputs.
-                failures.append(f"{game_date} closing quote snapshot: {exc}")
+                failures.append(f"{game_date} stored closing quote snapshot: {exc}")
                 frames.pop(0)
         if 0 in frames:
             recorder.add_frame("closing_line", frames[0], version=BASE_SCHEMA_VERSION)
@@ -703,6 +602,8 @@ def _backfill_date(
                 "game_date": game_date,
                 "persist": persist,
                 "slots": recorder.slots,
+                "input_source": "stored",
+                "input_sources": input_sources,
                 "training_limits": {
                     str(h): str(limit.date()) for h, limit in limits.items()
                 },
