@@ -436,9 +436,11 @@ def _one_horizon(
         row_cache=player_rows,
         prepared_players=prepared_players,
         current_rosters=current_rosters,
-        current_game_ids=set(context.scheduled_games.GAME_ID.astype(str))
-        if context.scheduled_games is not None
-        else None,
+        current_game_ids=(
+            set(context.scheduled_games.GAME_ID.astype(str))
+            if context.scheduled_games is not None
+            else None
+        ),
         injured_players=injured_players,
     )
     if target_game_ids is None:
@@ -961,6 +963,7 @@ def add_snapshot_injury_features(
     live_reports: LiveInjuryReports | None = None,
     while_waiting: Callable[[], None] | None = None,
     horizon_aliases: Mapping[int, int] | None = None,
+    history_limit: pd.Timestamp | None = None,
 ) -> pd.DataFrame:
     """Attach 2_5 injury features using the latest report before each snapshot.
 
@@ -987,6 +990,9 @@ def add_snapshot_injury_features(
     their own snapshot, and the earlier games (whose players, availability and
     effect fit they are calibrated on) are those of the grid horizon. The
     memos stay keyed on the grid, so nothing an alias reads is stored under it.
+
+    ``history_limit`` optionally bounds the box-score form source as well as
+    the caller's team/player history, for conservative historical replay.
     """
     aliases = {int(k): int(v) for k, v in (horizon_aliases or {}).items() if k != v}
     if aliases and target_game_ids is None:
@@ -1022,7 +1028,12 @@ def add_snapshot_injury_features(
     )
     injuries = get_injury_data_from_db(context.player_context_seasons)
     # Normalised and turned into player form once: the same for every horizon.
-    box = prepare_box_and_form(load_player_box_history())
+    box_history = load_player_box_history()
+    if history_limit is not None:
+        box_history = box_history.loc[
+            pd.to_datetime(box_history["game_date"]).le(history_limit)
+        ]
+    box = prepare_box_and_form(box_history)
     voting_years = sorted(
         {all_star_season_year_for_game_date(d) for d in context.team_games["GAME_DATE"]}
     )

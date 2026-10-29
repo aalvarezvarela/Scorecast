@@ -76,14 +76,14 @@ from nba_ou.data_processing.past_injuries.injury_effects import (
     add_top3_availability_effect_features_for_columns,
     availability_memo_name,
 )
+from nba_ou.data_processing.past_injuries.past_injuries import (
+    get_injured_players_dict,
+)
 from nba_ou.data_processing.players.attach_player_features import (
     add_player_history_features,
     clear_player_statistics,
     drop_player_identifier_columns,
     player_history_memo_name,
-)
-from nba_ou.data_processing.past_injuries.past_injuries import (
-    get_injured_players_dict,
 )
 from nba_ou.data_processing.players.live_roster import (
     game_day_rosters,
@@ -506,13 +506,17 @@ def process_player_statistics_for_training(
         target_game_ids=target_game_ids,
         history_memo=history_memo,
         current_rosters=current_rosters,
-        snapshot_game_ids=set(scheduled_games.GAME_ID.astype(str))
-        if scheduled_games is not None
-        else None,
+        snapshot_game_ids=(
+            set(scheduled_games.GAME_ID.astype(str))
+            if scheduled_games is not None
+            else None
+        ),
         snapshot_report_listed_players=report_listed_players,
-        current_game_ids=set(scheduled_games.GAME_ID.astype(str))
-        if scheduled_games is not None
-        else None,
+        current_game_ids=(
+            set(scheduled_games.GAME_ID.astype(str))
+            if scheduled_games is not None
+            else None
+        ),
     )
 
     if return_players:
@@ -539,6 +543,7 @@ def create_df_to_predict(
     include_same_season_referee_variants: bool = False,
     target_game_ids=None,
     return_layer_inputs: bool = False,
+    strict_history_cutoff: bool = False,
 ) -> pd.DataFrame:
     """
     Create prediction dataset for NBA over/under prediction models.
@@ -610,6 +615,9 @@ def create_df_to_predict(
             row (history rows included), the columns schema layers read
             (``schema_layers.registry.required_input_columns``): the layers
             calibrate on earlier games, so they need those rows too.
+        strict_history_cutoff (bool, optional): Also cap the raw referee and
+            injury form histories at recent_limit_to_include. Used for
+            historical replay, where the database already holds later games.
 
     Returns:
         pd.DataFrame: Complete training dataset with all features
@@ -713,6 +721,10 @@ def create_df_to_predict(
     # Raw box scores before any filtering or overtime normalisation: the
     # referee history computes its own per-regulation rates.
     df_games_for_referee_history = df.copy()
+    if strict_history_cutoff:
+        df_games_for_referee_history = df_games_for_referee_history.loc[
+            df_games_for_referee_history["GAME_DATE"].le(recent_limit_to_include)
+        ]
 
     # Preserve the extra season only as player/injury membership context. It is
     # excluded from team feature rows and therefore from the returned dataset.
@@ -904,10 +916,15 @@ def create_df_to_predict(
     pregame_injured_dict = apply_report_out_overrides(injured_dict, overrides)
     if injury_report_features:
         print("Adding injury report counters and listed-status features...")
+        box_history = load_player_box_history()
+        if strict_history_cutoff:
+            box_history = box_history.loc[
+                pd.to_datetime(box_history["game_date"]).le(recent_limit_to_include)
+            ]
         df = add_injury_report_features(
             df,
             injury_report_state,
-            load_player_box_history(),
+            box_history,
             status_top_n=status_top_n,
         )
         print("✓ Injury report features added")

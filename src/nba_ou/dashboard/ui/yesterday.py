@@ -154,7 +154,7 @@ def render_yesterday() -> None:
         )
     if source == "Snapshot replay":
         st.info(
-            "Intermediate rows use stored, exact own-horizon snapshots, which may have been reconstructed after the game. Closing rows remain live predictions in both modes."
+            "Replay uses stored snapshots that may have been reconstructed after the game. Closing uses a historical replay at the checkpoint when available; otherwise it shows the live prediction."
         )
     try:
         with st.spinner("Reading predictions and results from Aiven…"):

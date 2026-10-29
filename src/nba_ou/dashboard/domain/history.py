@@ -51,7 +51,9 @@ def select_history(
     if frame.empty or games.empty:
         return pd.DataFrame()
     work = displayed_models(frame)
-    work = work.loc[work["target"].eq(target) & work["workflow"].isin([1, 2, 3])].copy()
+    work = work.loc[
+        work["target"].eq(target) & work["workflow"].isin([1, 2, 3, 4])
+    ].copy()
     for column in ("predicted_at", "run_finished_at", "input_at", "tipoff_at"):
         work[column] = pd.to_datetime(work[column], utc=True, errors="coerce")
     current = utc_timestamp(now)
@@ -87,7 +89,15 @@ def select_history(
                     eligible = candidates.loc[
                         candidates["dataset_type"].eq(dataset_type)
                     ]
+                    closing_replay = pd.DataFrame()
                     if dataset_type == 1:
+                        if source == "Snapshot replay":
+                            closing_replay = eligible.loc[
+                                eligible["workflow"].eq(4)
+                                & eligible["input_mode"].eq(0)
+                                & eligible["model_horizon_minutes"].eq(0)
+                                & eligible["snapshot_horizon_minutes"].eq(horizon)
+                            ]
                         eligible = eligible.loc[
                             eligible["workflow"].isin([1, 3])
                             & eligible["input_mode"].eq(0)
@@ -114,7 +124,7 @@ def select_history(
                                 eligible["input_mode"].eq(1)
                                 & eligible["snapshot_horizon_minutes"].eq(horizon)
                                 & (
-                                    eligible["workflow"].eq(2)
+                                    eligible["workflow"].isin([2, 4])
                                     | (
                                         eligible["kind"].eq(3)
                                         & eligible["workflow"].eq(3)
@@ -135,6 +145,8 @@ def select_history(
                                     cutoff + CHECKPOINT_TOLERANCE,
                                 )
                             ]
+                    if not closing_replay.empty:
+                        eligible = closing_replay
                     label = (
                         "Closing · Final pre-game"
                         if dataset_type == 1 and not horizon
@@ -154,9 +166,11 @@ def select_history(
                             "checkpoint_at": cutoff,
                             "checkpoint_horizon_minutes": horizon,
                             "available": not eligible.empty,
-                            "source": "Live predictions"
-                            if dataset_type == 1
-                            else source,
+                            "source": (
+                                "Live predictions"
+                                if dataset_type == 1 and closing_replay.empty
+                                else source
+                            ),
                         }
                     )
                     for column in (
@@ -263,9 +277,9 @@ def history_summary(
                 "No line": int(counts.get("NO LINE", 0)),
                 "Pending": int(counts.get("PENDING", 0)),
                 "Void": int(counts.get("VOID", 0)),
-                "Win rate": 100 * wins / (wins + losses)
-                if wins + losses
-                else float("nan"),
+                "Win rate": (
+                    100 * wins / (wins + losses) if wins + losses else float("nan")
+                ),
                 "MAE (pts)": errors.mean(),
                 "Scored predictions": int(errors.notna().sum()),
             }

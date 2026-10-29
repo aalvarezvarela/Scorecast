@@ -36,7 +36,7 @@ METHOD_NOTES = """
 - **Availability:** live input, prediction and run completion must precede tip-off.
   Input-time buckets describe what the model knew, not when the output was ready to bet.
   Tooltips report the median publication delay. Each game/slot/source/bucket appears once.
-- **Sources:** live uses daily/TabPFN outputs; replay uses exact own-horizon reconstructions.
+- **Sources:** live uses daily/TabPFN outputs; replay uses reconstructed snapshots, including closing models evaluated at their stored input timepoint.
   TabPFN own-horizon rows can appear in both sources when genuinely available pre-game.
   Replay never fills a live gap. Reconstructed inputs may contain later corrections.
 - **Grading:** each output uses its own stored Bet365 line and the selected minimum edge.

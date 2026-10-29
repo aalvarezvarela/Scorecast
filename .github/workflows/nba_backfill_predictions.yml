@@ -1,0 +1,171 @@
+name: Predictions - Historical Backfill
+
+on:
+  workflow_dispatch:
+    inputs:
+      start_date:
+        description: "First past game date YYYY-MM-DD (Eastern), current season"
+        type: string
+        required: true
+      end_date:
+        description: "Last game date, inclusive (empty = start date)"
+        type: string
+        default: ""
+      slots:
+        description: "Space-separated intermediate slots; empty = all enabled"
+        type: string
+        default: ""
+      include_tabpfn:
+        description: "Include standard TabPFN for all targets at one horizon"
+        type: boolean
+        default: true
+      include_closing:
+        description: "Include closing models at the same snapshot (no final closing quotes)"
+        type: boolean
+        default: true
+      tabpfn_only:
+        description: "Only TabPFN (ignore registry slots)"
+        type: boolean
+        default: false
+      tabpfn_horizon_minutes:
+        description: "Shared closing/TabPFN snapshot in minutes (240 = 4 hours)"
+        type: number
+        default: 240
+      persist:
+        description: "Insert missing predictions and archive models/runs (off = real fits, local reports only)"
+        type: boolean
+        default: false
+      force:
+        description: "Run even with PREDICTIONS_ENABLED set to false"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+  id-token: write
+
+# Shares the predictor queue, including other historical backfills: coverage
+# is checked before writing, so concurrent backfills must not race each other.
+concurrency:
+  group: daily-nba-predictor
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    if: ${{ vars.PREDICTIONS_ENABLED != 'false' || inputs.force }}
+    runs-on: self-hosted
+    timeout-minutes: 15
+    outputs:
+      matrix: ${{ steps.matrix.outputs.matrix }}
+    env:
+      PYTHONPATH: ${{ github.workspace }}:${{ github.workspace }}/src
+      PYTHONUNBUFFERED: "1"
+      START_DATE: ${{ inputs.start_date }}
+      END_DATE: ${{ inputs.end_date }}
+      SLOTS: ${{ inputs.slots }}
+      INCLUDE_TABPFN: ${{ inputs.include_tabpfn }}
+      TABPFN_ONLY: ${{ inputs.tabpfn_only }}
+      TABPFN_HORIZON: ${{ inputs.tabpfn_horizon_minutes }}
+      INCLUDE_CLOSING: ${{ inputs.include_closing }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: Job venv
+        uses: ./.github/actions/job-venv
+        with:
+          requirements: requirements/predict-cuda.txt
+      - name: Plan date and horizon jobs
+        id: matrix
+        shell: bash
+        run: |
+          args=(--start-date "$START_DATE" --job-matrix)
+          if [[ -n "$END_DATE" ]]; then args+=(--end-date "$END_DATE"); fi
+          read -r -a slots <<< "$SLOTS"
+          if [[ "$TABPFN_ONLY" == "true" ]]; then
+            args+=(--tabpfn-only)
+          else
+            for slot in "${slots[@]}"; do args+=(--slot "$slot"); done
+            if [[ "$INCLUDE_TABPFN" == "true" ]]; then args+=(--tabpfn); fi
+          fi
+          args+=(--tabpfn-horizon-minutes "$TABPFN_HORIZON")
+          if [[ "$INCLUDE_CLOSING" == "true" ]]; then args+=(--include-closing); fi
+          matrix="$(python scripts/backfill_past_predictions.py "${args[@]}")"
+          echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
+  backfill:
+    needs: prepare
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix: ${{ fromJSON(needs.prepare.outputs.matrix) }}
+    runs-on: self-hosted
+    timeout-minutes: 120
+    env:
+      PYTHONPATH: ${{ github.workspace }}:${{ github.workspace }}/src
+      PYTHONUNBUFFERED: "1"
+      PYTHONHASHSEED: "0"
+      TQDM_DISABLE: "1"
+      DB_ENV: supabase
+      SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+      SUPABASE_DB_PASSWORD: ${{ secrets.SUPABASE_DB_PASSWORD }}
+      AIVEN_DB_URL: ${{ secrets.AIVEN_DB_URL }}
+      AIVEN_DB_PASSWORD: ${{ secrets.AIVEN_DB_PASSWORD }}
+      TABPFN_ACCESS_TOKEN: ${{ secrets.TABPFN_ACCESS_TOKEN }}
+      S3_AWS_PROFILE: ""
+      NBA_OU_INPUT_CACHE_DIR: ~/.cache/nba_ou/inputs
+      NBA_OU_PARTITION_CACHE_DIR: ~/.cache/nba_ou/season_partitions
+      NBA_OU_HISTORY_MEMO_DIR: ~/.cache/nba_ou/historical_backfill
+      TZ: UTC
+      START_DATE: ${{ matrix.game_date }}
+      SLOTS: ${{ matrix.slots }}
+      PERSIST: ${{ inputs.persist }}
+      INCLUDE_TABPFN: ${{ matrix.tabpfn }}
+      TABPFN_ONLY: ${{ matrix.tabpfn_only }}
+      TABPFN_HORIZON: ${{ inputs.tabpfn_horizon_minutes }}
+      INCLUDE_CLOSING: ${{ inputs.include_closing }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: Job venv
+        uses: ./.github/actions/job-venv
+        with:
+          requirements: requirements/predict-tabpfn-cuda.txt
+      # Each date/horizon gets fresh credentials; large ranges do not share
+      # one expiring AWS session. The expensive input caches survive checkout.
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_TO_ASSUME }}
+          aws-region: eu-west-1
+          role-duration-seconds: 3600
+      - name: Refit and replay past snapshots
+        shell: bash
+        run: |
+          args=(--start-date "$START_DATE" --output-dir data/backfill_predictions)
+          read -r -a slots <<< "$SLOTS"
+          if [[ "$TABPFN_ONLY" == "true" ]]; then
+            args+=(--tabpfn-only)
+          else
+            for slot in "${slots[@]}"; do args+=(--slot "$slot"); done
+            if [[ "$INCLUDE_TABPFN" == "true" ]]; then args+=(--tabpfn); fi
+          fi
+          args+=(--tabpfn-horizon-minutes "$TABPFN_HORIZON")
+          if [[ "$INCLUDE_CLOSING" == "true" ]]; then args+=(--include-closing); fi
+          if [[ "$PERSIST" == "true" ]]; then args+=(--persist); else args+=(--dry-run); fi
+          python scripts/backfill_past_predictions.py "${args[@]}"
+      - name: Upload local prediction reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: historical-backfill-${{ matrix.game_date }}-t${{ matrix.horizon }}
+          path: |
+            data/backfill_predictions/*/*.csv
+            data/backfill_predictions/*/*.json
+          if-no-files-found: ignore

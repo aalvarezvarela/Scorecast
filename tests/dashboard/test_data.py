@@ -54,7 +54,7 @@ def test_history_reads_scores_and_post_tip_replays_in_one_read_only_snapshot(
     games_query = cursor.execute.call_args_list[0].args[0]
     history_query, parameters = cursor.execute.call_args_list[1].args
     assert "home_points, away_points" in games_query
-    assert "workflow IN (1, 2, 3)" in history_query
+    assert "workflow IN (1, 2, 3, 4)" in history_query
     assert "time_to_tipoff_seconds >" not in history_query
     assert parameters[0] == NOW.date()
 

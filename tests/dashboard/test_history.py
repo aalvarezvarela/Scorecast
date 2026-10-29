@@ -51,11 +51,9 @@ def historical_slate():
                         input_at=published - pd.Timedelta(minutes=4),
                         time_to_tipoff_seconds=int((tipoff - published).total_seconds())
                         + 120,
-                        bet_line_x2=480
-                        if horizon == 360
-                        else 460
-                        if horizon == 240
-                        else 470,
+                        bet_line_x2=(
+                            480 if horizon == 360 else 460 if horizon == 240 else 470
+                        ),
                         model_line=230 if target != 3 else 3.5,
                         prediction_value={1: 8, 2: 238, 3: 2}[target],
                         run_id=1000 + kind * 100 + target * 10 + horizon,
@@ -87,15 +85,19 @@ def historical_slate():
                     replay.update(
                         workflow=2 if kind == 1 else 3,
                         input_mode=1,
-                        predicted_at=tipoff + pd.Timedelta(hours=2)
-                        if kind == 1
-                        else cutoff + pd.Timedelta(minutes=60),
-                        run_finished_at=tipoff + pd.Timedelta(hours=2, minutes=5)
-                        if kind == 1
-                        else cutoff + pd.Timedelta(minutes=65),
-                        time_to_tipoff_seconds=-7200
-                        if kind == 1
-                        else horizon * 60 - 3600,
+                        predicted_at=(
+                            tipoff + pd.Timedelta(hours=2)
+                            if kind == 1
+                            else cutoff + pd.Timedelta(minutes=60)
+                        ),
+                        run_finished_at=(
+                            tipoff + pd.Timedelta(hours=2, minutes=5)
+                            if kind == 1
+                            else cutoff + pd.Timedelta(minutes=65)
+                        ),
+                        time_to_tipoff_seconds=(
+                            -7200 if kind == 1 else horizon * 60 - 3600
+                        ),
                         prediction_value={1: 18, 2: 248, 3: -2}[target],
                         run_id=row["run_id"] + 10000,
                     )
@@ -134,6 +136,28 @@ def test_fixed_checkpoints_keep_live_and_replay_separate_with_same_live_closing(
         .eq(2)
         .all()
     )
+
+
+def test_historical_refits_are_available_only_in_snapshot_replay():
+    data = historical_slate()
+    mask = data.predictions["workflow"].eq(2)
+    data.predictions.loc[mask, "workflow"] = 4
+    replay = selected(data, "Snapshot replay")
+    reconstructed = replay.loc[replay["kind"].eq(1) & replay["dataset_type"].eq(2)]
+    assert reconstructed["available"].all()
+    assert reconstructed["workflow"].eq(4).all()
+    assert not selected(data)["workflow"].eq(4).any()
+
+
+def test_historical_tabpfn_fits_are_replay_and_never_live_predictions():
+    data = historical_slate()
+    mask = data.predictions["kind"].eq(3) & data.predictions["dataset_type"].eq(2)
+    data.predictions.loc[mask, "workflow"] = 4
+    replay = selected(data, "Snapshot replay")
+    tabpfn = replay.loc[replay["kind"].eq(3) & replay["dataset_type"].eq(2)]
+    assert tabpfn["available"].all()
+    assert tabpfn["workflow"].eq(4).all()
+    assert not selected(data)["workflow"].eq(4).any()
 
 
 def test_closing_uses_completion_before_checkpoint_and_never_reuses_stale_row():
@@ -362,3 +386,39 @@ def test_unknown_source_is_rejected_and_empty_slate_is_supported():
     assert select_history(pd.DataFrame(), data.games, 2, "Live predictions", NOW).empty
     assert grade_history(pd.DataFrame()).empty
     assert history_summary(pd.DataFrame()).empty
+
+
+@pytest.mark.parametrize("kind", [1, 3])
+def test_closing_backfill_is_replay_at_its_input_timepoint_and_never_live(kind):
+    data = historical_slate()
+    original = (
+        data.predictions.loc[
+            data.predictions.kind.eq(kind)
+            & data.predictions.dataset_type.eq(1)
+            & data.predictions.target.eq(2)
+        ]
+        .iloc[0]
+        .copy()
+    )
+    original.update(
+        pd.Series(
+            dict(
+                workflow=4,
+                input_mode=0,
+                model_horizon_minutes=0,
+                snapshot_horizon_minutes=240,
+                input_at=original.tipoff_at - pd.Timedelta(minutes=240),
+                predicted_at=NOW - pd.Timedelta(minutes=10),
+                run_finished_at=NOW - pd.Timedelta(minutes=5),
+                time_to_tipoff_seconds=-3600,
+                run_id=999999,
+            )
+        )
+    )
+    data.predictions.loc[len(data.predictions)] = original
+    replay = selected(data, "Snapshot replay")
+    backfill_rows = replay.loc[replay.run_id.eq(999999)]
+    assert len(backfill_rows) == 1
+    assert backfill_rows.checkpoint_horizon_minutes.tolist() == [240]
+    assert backfill_rows.source.tolist() == ["Snapshot replay"]
+    assert not selected(data).run_id.eq(999999).any()

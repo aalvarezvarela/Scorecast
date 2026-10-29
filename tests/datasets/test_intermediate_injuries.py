@@ -1,6 +1,7 @@
 """Snapshot injury features must use reports available at prediction time."""
 
 from contextlib import nullcontext
+from types import SimpleNamespace
 
 import pandas as pd
 import pytest
@@ -12,6 +13,46 @@ from nba_ou.data_processing.players.attach_player_features import (
     _restrict_snapshot_membership,
 )
 from nba_ou.postgre_db.injury_report_aiven import fetch
+
+
+def test_historical_replay_bounds_status_form_to_the_same_history_date(monkeypatch):
+    snapshots = pd.DataFrame(
+        {
+            "GAME_ID": ["g1"],
+            "TIME_TO_MATCH_MIN": [1080],
+            "SNAPSHOT_TS_UTC": [pd.Timestamp("2026-10-24T05:00Z")],
+        }
+    )
+    monkeypatch.setattr(injuries, "_states_at_snapshots", lambda *a, **k: {})
+    monkeypatch.setattr(injuries, "get_injury_data_from_db", lambda *a: pd.DataFrame())
+    monkeypatch.setattr(
+        injuries,
+        "load_player_box_history",
+        lambda: pd.DataFrame(
+            {"game_date": pd.to_datetime(["2026-10-22", "2026-10-23", "2026-10-24"])}
+        ),
+    )
+
+    class FormPrepared(Exception):
+        pass
+
+    def prepare(box):
+        # The last two dates may include outcomes after the early snapshot.
+        assert box.game_date.tolist() == [pd.Timestamp("2026-10-22")]
+        raise FormPrepared
+
+    monkeypatch.setattr(injuries, "prepare_box_and_form", prepare)
+    context = SimpleNamespace(
+        live_as_of=pd.Timestamp("2026-10-24T05:00Z"), player_context_seasons=["2026-27"]
+    )
+    with pytest.raises(FormPrepared):
+        injuries.add_snapshot_injury_features(
+            snapshots,
+            pd.DataFrame(),
+            context,
+            target_game_ids={"g1"},
+            history_limit=pd.Timestamp("2026-10-22"),
+        )
 
 
 def test_snapshot_report_queries_use_explicit_utc_cutoffs_and_strict_time(monkeypatch):
@@ -290,11 +331,22 @@ def test_horizons_in_processes_equal_the_horizons_in_turn(monkeypatch, tmp_path)
             )
         ]
         inputs = ii._HorizonInputs(
-            base=None, context=None, states={h: h // 30 for h in horizons},
-            cutoffs=cutoffs, injuries=None, box=None, voting=None,
-            player_rows=caches[0], all_star_rows=None, prepared_players=None,
-            prepared_all_star=None, effect_cache=caches[1], targets=None,
-            priors={}, first_current_season=2024, current_rosters=rosters,
+            base=None,
+            context=None,
+            states={h: h // 30 for h in horizons},
+            cutoffs=cutoffs,
+            injuries=None,
+            box=None,
+            voting=None,
+            player_rows=caches[0],
+            all_star_rows=None,
+            prepared_players=None,
+            prepared_all_star=None,
+            effect_cache=caches[1],
+            targets=None,
+            priors={},
+            first_current_season=2024,
+            current_rosters=rosters,
         )
         calls = []
         if workers > 1:
@@ -359,11 +411,22 @@ def test_a_subset_of_forked_horizons_equals_those_horizons_in_turn(
     def inputs_for(memo):
         players, effects = caches(memo)
         return ii._HorizonInputs(
-            base=None, context=None, states={h: h // 30 for h in horizons},
-            cutoffs=cutoffs, injuries=None, box=None, voting=None,
-            player_rows=players, all_star_rows=None, prepared_players=None,
-            prepared_all_star=None, effect_cache=effects, targets=None,
-            priors={}, first_current_season=None, current_rosters={},
+            base=None,
+            context=None,
+            states={h: h // 30 for h in horizons},
+            cutoffs=cutoffs,
+            injuries=None,
+            box=None,
+            voting=None,
+            player_rows=players,
+            all_star_rows=None,
+            prepared_players=None,
+            prepared_all_star=None,
+            effect_cache=effects,
+            targets=None,
+            priors={},
+            first_current_season=None,
+            current_rosters={},
         )
 
     memo = history_memo.HistoryMemo(

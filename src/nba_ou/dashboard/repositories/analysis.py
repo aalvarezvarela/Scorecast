@@ -41,12 +41,13 @@ ANALYSIS_QUERY = """
                v.home_points, v.away_points, v.status, v.predicted_at,
                v.tipoff_at, v.tipoff_at_prediction, v.time_to_tipoff_seconds,
                v.run_id, v.input_id, v.model_build_id,
-               CASE WHEN v.input_mode = 0 THEN v.run_started_at
+               CASE WHEN v.input_mode = 0 AND v.snapshot_horizon_minutes IS NULL
+                    THEN v.run_started_at
                     ELSE v.tipoff_at_prediction
                          - make_interval(mins => v.snapshot_horizon_minutes)
                END AS input_at,
                GREATEST(v.predicted_at, r.finished_at) AS available_at,
-               CASE WHEN v.dataset_type = 1
+               CASE WHEN v.dataset_type = 1 AND v.snapshot_horizon_minutes IS NULL
                     THEN EXTRACT(EPOCH FROM (v.tipoff_at_prediction - v.run_started_at)) / 60.0
                     ELSE v.snapshot_horizon_minutes END AS input_minutes
         FROM prediction.predictions_full v
@@ -54,7 +55,7 @@ ANALYSIS_QUERY = """
         WHERE v.game_date BETWEEN %s AND %s
           AND v.target = %s AND v.season_type = ANY(%s::smallint[])
           AND ((v.kind = 1 AND v.schema_version = %s) OR v.kind = 3)
-          AND v.workflow IN (1, 2, 3)
+          AND v.workflow IN (1, 2, 3, 4)
           AND (v.dataset_type = 1 AND v.model_horizon_minutes = 0
                OR v.dataset_type = 2 AND v.model_horizon_minutes > 0)
           AND v.predicted_at <= %s AND r.finished_at <= %s
@@ -69,9 +70,11 @@ ANALYSIS_QUERY = """
                 AND (dataset_type = 1 AND input_mode = 0
                      OR dataset_type = 2 AND input_mode IN (1, 2))),
             ('Snapshot replay',
-                dataset_type = 2 AND input_mode = 1
-                AND snapshot_horizon_minutes = model_horizon_minutes
-                AND (workflow = 2 OR kind = 3 AND workflow = 3))
+                (dataset_type = 2 AND input_mode = 1
+                 AND snapshot_horizon_minutes = model_horizon_minutes
+                 AND (workflow IN (2, 4) OR kind = 3 AND workflow = 3)
+                 OR dataset_type = 1 AND input_mode = 0 AND workflow = 4
+                    AND snapshot_horizon_minutes > 0))
         ) AS sources(source, eligible)
         WHERE sources.eligible AND input_minutes > 0 AND input_at <= predicted_at
     ), bucketed AS (
@@ -109,7 +112,11 @@ ANALYSIS_QUERY = """
         FROM final WHERE priority = 1
     )
     SELECT * FROM reduced LIMIT %s
-""".replace("BUCKET_CASE", _BUCKET_CASE).replace("SLOT", _SLOT)
+""".replace(
+    "BUCKET_CASE", _BUCKET_CASE
+).replace(
+    "SLOT", _SLOT
+)
 
 
 @dataclass(frozen=True)

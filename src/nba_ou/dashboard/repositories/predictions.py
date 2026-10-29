@@ -20,7 +20,8 @@ GAMES_QUERY = """
 
 PREDICTIONS_SELECT = """
     SELECT v.*, m.anchor_book, r.finished_at AS run_finished_at,
-           CASE WHEN v.input_mode = 0 THEN v.run_started_at
+           CASE WHEN v.input_mode = 0 AND v.snapshot_horizon_minutes IS NULL
+                    THEN v.run_started_at
                 ELSE v.tipoff_at_prediction
                      - make_interval(mins => v.snapshot_horizon_minutes)
            END AS input_at
@@ -46,7 +47,7 @@ HISTORY_QUERY = (
     PREDICTIONS_SELECT
     + """
     WHERE v.game_date = %s
-      AND v.workflow IN (1, 2, 3)
+      AND v.workflow IN (1, 2, 3, 4)
       AND v.kind IN (1, 3)
       AND (v.dataset_type = 1 OR v.model_horizon_minutes IN (240, 360, 480))
       AND v.predicted_at <= %s
