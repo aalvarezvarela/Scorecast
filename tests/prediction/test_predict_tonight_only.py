@@ -592,6 +592,35 @@ def test_tabpfn_jobs_run_once_the_predictions_are_stored(monkeypatch, capsys):
     assert "2 TabPFN model(s) predicted" in capsys.readouterr().out
 
 
+@pytest.mark.parametrize("horizon", [600, 480, 360])
+def test_intermediate_and_closing_tabpfn_follow_stored_xgboost_predictions(
+    monkeypatch,
+    horizon,
+):
+    from nba_ou.prediction.tabpfn_run import TabPFNJob
+
+    order = []
+    fetch, _, calls = _with_tabpfn(monkeypatch, order)
+    job.predict_nba_games(
+        persist=True,
+        tabpfn_jobs=[_tabpfn_job(horizon=horizon), TabPFNJob()],
+    )
+    assert order[-3:] == ["stored", f"TabPFN T-{horizon}", "TabPFN T-0"]
+    fetch.assert_called_once()
+    assert calls["fits"] == [True, True]
+
+
+def test_closing_only_tabpfn_follows_stored_xgboost_predictions(monkeypatch):
+    from nba_ou.prediction.tabpfn_run import TabPFNJob
+
+    order = []
+    fetch, _, calls = _with_tabpfn(monkeypatch, order)
+    job.predict_nba_games(persist=True, tabpfn_jobs=[TabPFNJob()])
+    assert order[-2:] == ["stored", "TabPFN T-0"]
+    fetch.assert_called_once()
+    assert calls["fits"] == [True]
+
+
 def test_refreshed_tabpfn_jobs_fetch_again_and_predict_at_this_moment(monkeypatch):
     order = []
     fetch, _, calls = _with_tabpfn(monkeypatch, order)

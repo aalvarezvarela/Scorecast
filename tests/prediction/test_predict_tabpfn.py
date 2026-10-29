@@ -30,6 +30,7 @@ from nba_ou.prediction import tabpfn_run
 from nba_ou.prediction.prediction_store import PredictionRunRecorder
 from nba_ou.prediction.prediction_tabpfn_client import (
     FittedTabPFN,
+    _authenticate,
     feature_slot_for,
     fit_tabpfn,
     model_variant,
@@ -104,6 +105,7 @@ def test_modes_are_parsed_once_each_in_order():
         parse_modes([" , "])
 
 
+@pytest.mark.parametrize("use_alt_key", [False, True])
 @pytest.mark.parametrize(
     ("mode", "overrides"),
     [
@@ -112,7 +114,9 @@ def test_modes_are_parsed_once_each_in_order():
         ("thinking_high", {"thinking_effort": "high"}),
     ],
 )
-def test_a_thinking_fit_asks_the_client_for_its_effort(monkeypatch, mode, overrides):
+def test_a_thinking_fit_asks_the_client_for_its_effort(
+    monkeypatch, mode, overrides, use_alt_key
+):
     """Nothing reaches the hosted service: the client module is a stand-in."""
     created = []
 
@@ -133,11 +137,28 @@ def test_a_thinking_fit_asks_the_client_for_its_effort(monkeypatch, mode, overri
     )
     monkeypatch.setitem(sys.modules, "tabpfn_client", client)
     monkeypatch.setenv("TABPFN_ACCESS_TOKEN", "token")
+    monkeypatch.setenv("TABPFN_API_KEY_ALT", "alternate-token")
+    monkeypatch.setenv("TABPFN_USE_ALT_KEY", str(use_alt_key).lower())
     training_set = tabpfn_training_set(_history(), _spec(), frame_key="k")
 
     model = fit_tabpfn(training_set, model_version="v3.5", mode=mode)
     assert created == [("v3.5", {"random_state": 0, **overrides})]
     assert model.mode == mode
+    client.set_access_token.assert_called_once_with(
+        "alternate-token" if use_alt_key else "token"
+    )
+    client.init.assert_not_called()
+
+
+def test_missing_alternate_key_never_falls_back_to_the_normal_account(monkeypatch):
+    monkeypatch.setenv("TABPFN_USE_ALT_KEY", "true")
+    monkeypatch.setenv("TABPFN_ACCESS_TOKEN", "normal-token")
+    monkeypatch.delenv("TABPFN_API_KEY_ALT", raising=False)
+    client = SimpleNamespace(set_access_token=Mock(), init=Mock())
+    with pytest.raises(ValueError, match="TABPFN_API_KEY_ALT is required"):
+        _authenticate(client)
+    client.set_access_token.assert_not_called()
+    client.init.assert_not_called()
 
 
 def _spec(
@@ -410,7 +431,7 @@ def test_an_intermediate_output_is_stored_at_its_horizon(monkeypatch):
 @pytest.mark.parametrize(
     "args, expected",
     [
-        ([], ["line_error", "total_points"]),
+        ([], ["line_error", "total_points", "spread_error"]),
         (["--targets", "line_error", "total_points"], ["line_error", "total_points"]),
         (["--targets", "line_error,total_points"], ["line_error", "total_points"]),
         (
@@ -473,6 +494,7 @@ def _run_dependencies(monkeypatch, *, horizon=0, total_schema="2_5"):
             horizon=horizon,
             schema_version=total_schema,
         ),
+        "spread_error": _spec(target="spread_error", horizon=horizon),
     }
     clock = Mock(wraps=datetime)
     clock.now.side_effect = lambda tz: PREDICTION_AT.astimezone(tz)
@@ -490,8 +512,10 @@ def _run_dependencies(monkeypatch, *, horizon=0, total_schema="2_5"):
             nba_injury_reports_url="unused",
         ),
     )
-    history = _history()
-    tonight = _tonight()
+    history = _history().assign(
+        HOME_MARGIN=np.arange(8, dtype=float), ODDS_SPREAD_LINE_HOME_bet365=-4.5
+    )
+    tonight = _tonight().assign(ODDS_SPREAD_LINE_HOME_bet365=-4.5)
     if horizon:
         history = _snapshots(history, horizons=(horizon, 60))
         tonight = _snapshots(
@@ -540,6 +564,7 @@ def _run_dependencies(monkeypatch, *, horizon=0, total_schema="2_5"):
         ),
         "tonight_closing_rows": Mock(return_value=tonight),
         "tonight_intermediate_frame": Mock(return_value=tonight),
+        "_slate_schedule": Mock(return_value=(_schedule(), pd.DataFrame())),
         "fit_tabpfn": Mock(side_effect=fit),
         "persist_prediction_run": Mock(return_value=[]),
     }
@@ -666,6 +691,40 @@ def test_each_mode_is_its_own_fit_and_variant(monkeypatch):
     assert [slot["status"] for slot in recorder.slots] == ["predicted"] * 4
 
 
+def test_t8_can_store_standard_and_high_thinking_for_all_three_targets(monkeypatch):
+    deps = _run_dependencies(monkeypatch, horizon=480)
+    cutoff = pd.to_datetime(_schedule()["GAME_TIME"], utc=True).max() - pd.Timedelta(
+        hours=8
+    )
+    job.predict_tabpfn(
+        line="intermediate",
+        horizon_minutes=480,
+        modes=["standard", "thinking_high"],
+        game_date="2026-10-21",
+        as_of=cutoff.isoformat(),
+        snapshot_game_ids=["0022600002"],
+        update_db=False,
+    )
+    deps["tonight_intermediate_frame"].assert_called_once()
+    assert [fit.kwargs["mode"] for fit in deps["fit_tabpfn"].call_args_list] == [
+        "standard",
+        "thinking_high",
+    ] * 3
+    tables = (
+        deps["persist_prediction_run"]
+        .call_args.args[0]
+        .tables(status=store_schema.RUN_STATUS_OK)
+    )
+    assert set(
+        zip(tables.model_builds["target"], tables.model_builds["variant"], strict=True)
+    ) == {
+        (target, variant)
+        for target in (1, 2, 3)
+        for variant in ("tabpfn_v3_5", "tabpfn_v3_5_thinking_high")
+    }
+    assert len(tables.predictions) == 12
+
+
 def test_the_cli_passes_modes_and_refuses_an_unknown_one(monkeypatch):
     predict = Mock()
     monkeypatch.setattr(job, "predict_tabpfn", predict)
@@ -737,7 +796,7 @@ def test_a_failed_latest_snapshot_build_only_loses_the_bet_line(monkeypatch):
     assert tables.inputs["total_bet_line_x2"].isna().all()
 
 
-@pytest.mark.parametrize("horizon", [720, 480, 360, 240])
+@pytest.mark.parametrize("horizon", [600, 480, 360])
 def test_scheduled_tabpfn_predicts_every_game_at_its_exact_snapshot_when_queued(
     monkeypatch, horizon
 ):
@@ -782,8 +841,8 @@ def test_scheduled_tabpfn_predicts_every_game_at_its_exact_snapshot_when_queued(
         .call_args.args[0]
         .tables(status=store_schema.RUN_STATUS_OK)
     )
-    assert len(tables.predictions) == 4
-    assert set(tables.model_builds["target"]) == {1, 2}
+    assert len(tables.predictions) == 6
+    assert set(tables.model_builds["target"]) == {1, 2, 3}
     assert set(tables.model_builds["horizon_minutes"]) == {horizon}
     assert set(tables.predictions["snapshot_horizon_minutes"]) == {horizon}
     assert set(tables.predictions["game_id"]) == {22600001, 22600002}
@@ -813,6 +872,77 @@ def test_explicit_game_date_survives_a_change_of_pacific_date(monkeypatch):
     )
 
 
+@pytest.mark.parametrize("horizon", [600, 480, 360])
+def test_last_game_jobs_reconstruct_and_store_already_finished_games(
+    monkeypatch, horizon
+):
+    deps = _run_dependencies(monkeypatch, horizon=horizon)
+    schedule = _schedule().assign(GAME_STATUS_ID=[3, 1])
+    schedule.loc[0, "GAME_TIME"] = pd.Timestamp(
+        "2026-10-21 09:00", tz="America/New_York"
+    )
+    cutoff = pd.Timestamp(schedule.iloc[-1]["GAME_TIME"]).tz_convert(
+        "UTC"
+    ) - pd.Timedelta(minutes=horizon)
+    assert schedule.iloc[0]["GAME_TIME"] < cutoff
+    # The normal predictor's live fetch contains only the still-pending game.
+    deps["get_all_info_for_scheduled_games"].return_value["scheduled_games"] = (
+        schedule.iloc[[1]].copy()
+    )
+    deps["_slate_schedule"].return_value = schedule, pd.DataFrame()
+    rows = deps["tonight_intermediate_frame"].return_value.copy()
+    rows.loc[rows["GAME_ID"].eq("0022600001"), "GAME_TIME"] = schedule.iloc[0][
+        "GAME_TIME"
+    ]
+    rows["SNAPSHOT_TS_UTC"] = pd.to_datetime(
+        rows["GAME_TIME"], utc=True
+    ) - pd.to_timedelta(rows["TIME_TO_MATCH_MIN"], unit="min")
+    deps["tonight_intermediate_frame"].return_value = rows
+
+    job.predict_tabpfn(
+        line="intermediate",
+        horizon_minutes=horizon,
+        game_date="2026-10-21",
+        as_of=cutoff.isoformat(),
+        snapshot_game_ids=["0022600002"],
+        update_db=False,
+    )
+
+    builder = deps["tonight_intermediate_frame"].call_args
+    assert builder.args[0]["scheduled_games"]["GAME_ID"].tolist() == [
+        "0022600001",
+        "0022600002",
+    ]
+    assert builder.args[0]["roster_snapshots"] is None
+    assert builder.kwargs["as_of"] == cutoff
+    assert builder.kwargs["horizon"] == horizon
+    assert (
+        rows.loc[rows["TIME_TO_MATCH_MIN"].eq(horizon), "SNAPSHOT_TS_UTC"] <= cutoff
+    ).all()
+    tables = (
+        deps["persist_prediction_run"]
+        .call_args.args[0]
+        .tables(status=store_schema.RUN_STATUS_OK)
+    )
+    assert set(tables.games["game_id"]) == {22600001, 22600002}
+    assert set(tables.predictions["game_id"]) == {22600001, 22600002}
+    assert set(tables.model_builds["target"]) == {1, 2, 3}
+    assert len(tables.predictions) == 6
+
+
+def test_whole_slate_loader_retains_finished_games(monkeypatch):
+    schedule = _schedule().assign(GAME_STATUS_ID=[3, 1])
+    replay = Mock(return_value=schedule)
+    refs = Mock(return_value=pd.DataFrame({"GAME_ID": schedule["GAME_ID"]}))
+    monkeypatch.setattr(tabpfn_run, "replay_scheduled_games", replay)
+    monkeypatch.setattr(tabpfn_run, "process_scheduled_referee_assignments", refs)
+    games, crews = tabpfn_run._slate_schedule("2026-10-21")
+    assert games["GAME_STATUS_ID"].tolist() == [3, 1]
+    assert crews["GAME_ID"].tolist() == games["GAME_ID"].tolist()
+    replay.assert_called_once_with("2026-10-21")
+    refs.assert_called_once_with(schedule)
+
+
 def test_unknown_requested_game_fails_instead_of_predicting_the_whole_slate(
     monkeypatch,
 ):
@@ -833,7 +963,7 @@ def test_snapshots_far_from_the_cutoff_are_predicted_as_built(monkeypatch):
     )
     deps["tonight_intermediate_frame"].assert_called_once()
     assert waited == []
-    assert deps["fit_tabpfn"].call_count == 2
+    assert deps["fit_tabpfn"].call_count == 3
 
 
 @pytest.mark.parametrize("as_of", ["2026-10-21T17:25:00Z", "2026-10-21T17:35:00Z"])
@@ -854,7 +984,7 @@ def test_page_tipoff_a_few_minutes_off_rebuilds_at_the_rows_own_snapshot(
     # Built at --as-of, then again at the snapshot the rows are labelled with.
     assert cutoffs == [pd.Timestamp(as_of), snapshot]
     assert waited == [snapshot]
-    assert deps["fit_tabpfn"].call_count == 2
+    assert deps["fit_tabpfn"].call_count == 3
 
 
 def _snapshot_rows(**snapshots: str) -> pd.DataFrame:
@@ -991,7 +1121,7 @@ def test_a_scheduled_job_reads_as_its_snapshot_and_games():
     for parsed in jobs:
         assert parsed.dataset_type == "intermediate_line"
         assert parsed.as_of == pd.Timestamp(at)
-        assert parsed.targets == ("line_error", "total_points")
+        assert parsed.targets == ("line_error", "total_points", "spread_error")
         assert parsed.modes == ("standard", "thinking_high")
         assert parsed.name == f"TabPFN t{parsed.horizon:04d}"
 

@@ -15,6 +15,7 @@ from datetime import datetime
 #: Separates the jobs, and the fields of each.
 JOB_SEPARATOR = ";"
 FIELD_SEPARATOR = "@"
+DEFAULT_TARGETS = ("line_error", "total_points", "spread_error")
 
 
 def format_job(horizon: int, as_of: datetime, game_ids: Collection[str]) -> str:

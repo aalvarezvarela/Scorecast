@@ -4,7 +4,8 @@ name: Predictions - Schedule Game Day Runs
 # times of every game (tip-off minus each enabled horizon), snapshots at most
 # 30 min apart sharing one run and T-30 always at its own time, leaving out
 # times already past or outside the predictor's US/Pacific date. Each run
-# predicts every enabled slot. Also books TabPFN at each game's T-720/480/360/240.
+# predicts every enabled slot. Also books TabPFN at the last game's T-600/480/360/240
+# (intermediate + closing at T-600/480/360; closing only at T-240).
 # Meant to be dispatched once a day by
 # cron-job.org itself (a row in scripts/cronjobs/setup_cronjobs.py).
 # scripts/cronjobs/schedule_snapshot_triggers.py, docs/serving/snapshot_triggers.md.
