@@ -97,7 +97,8 @@ jobs:
       # default to the current one, so this needs no yearly edit.
       - name: Update SBR line history
         run: |
-          python scripts/update_databases/update_line_history_database.py
+          python scripts/run_timed.py "Update SBR line history" -- \
+            python scripts/update_databases/update_line_history_database.py
 
       # Disabled 2026-10-24: OddsLogic and MoviOdds are too slow and unstable
       # for the value they add. Their implementations are retained for possible
@@ -125,14 +126,16 @@ jobs:
         continue-on-error: true
         timeout-minutes: 30
         run: |
-          python scripts/update_databases/update_covers_line_history.py
+          python scripts/run_timed.py "Update Covers line history" -- \
+            python scripts/update_databases/update_covers_line_history.py
 
       # Must run after the line-history update: SBR day pages store each
       # book's last (often live) number, and last night's pre-tip ticks are
       # what replace it.
       - name: Repair SBR closing lines from line history
         run: |
-          python scripts/update_databases/repair_sportsbook_closes.py
+          python scripts/run_timed.py "Repair SBR closing lines" -- \
+            python scripts/update_databases/repair_sportsbook_closes.py
 
       # The OIDC session from the first credentials step lasts 1 h, and the
       # steps above can take longer than that, so the S3 steps below take a
@@ -150,7 +153,8 @@ jobs:
       # played, so tonight's games are read live instead.
       - name: Store injury reports and finished games' spans
         run: |
-          python scripts/injury_reports/daily_injury_reports.py
+          python scripts/run_timed.py "Archive injury reports and game spans" -- \
+            python scripts/injury_reports/daily_injury_reports.py
 
       - name: Refresh AWS credentials for the input cache
         uses: aws-actions/configure-aws-credentials@v6
@@ -164,4 +168,5 @@ jobs:
       # so the prediction job can read them from S3.
       - name: Refresh the S3 input cache
         run: |
-          python scripts/refresh_input_cache.py
+          python scripts/run_timed.py "Refresh S3 input cache" -- \
+            python scripts/refresh_input_cache.py

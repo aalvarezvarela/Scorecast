@@ -56,7 +56,8 @@ from nba_ou.modeling.registry_store import (
     write_build,
 )
 from nba_ou.utils.ci import annotate
-from nba_ou.utils.phase_timer import duration, peak_rss
+from nba_ou.utils.phase_timer import PhaseTimer, duration, peak_rss
+from nba_ou.utils.run_log import RunLog
 from nba_ou.utils.s3_models import make_s3_client
 
 TODAY_TIMEZONE = ZoneInfo("Europe/Madrid")
@@ -74,39 +75,30 @@ def configure_tqdm_for_environment() -> None:
         os.environ.setdefault("TQDM_DISABLE", "1")
 
 
-class PhaseTimings:
+class PhaseTimings(PhaseTimer):
     """Wall time of each phase, printed as it ends and summed per dataset type.
 
     The summary gives each dataset's chain -- partition update, frame reads,
     fits -- on its own: what it would take on a runner of its own.
     """
 
-    PHASES = ("update", "frame", "fit")
+    PHASES = ("resolve", "device", "update", "frame", "fit", "stage")
 
     def __init__(self) -> None:
-        self.started = time.perf_counter()
+        super().__init__()
         # (dataset type, phase) -> [seconds per run, runs that raised]
         self.totals: dict[tuple[str, str], list] = defaultdict(lambda: [[], 0])
 
     @contextmanager
     def phase(self, dataset_type: str, phase: str, label: str) -> Iterator[None]:
-        started = time.perf_counter()
-        failed = False
         try:
-            yield
-        except BaseException:
-            failed = True
-            raise
+            with super().phase(label):
+                yield
         finally:
-            seconds = time.perf_counter() - started
+            _, seconds, failed = self.phases[-1]
             entry = self.totals[(dataset_type, phase)]
             entry[0].append(seconds)
             entry[1] += failed
-            print(
-                f"[time] {label}: {duration(seconds)}"
-                f"{' (did not finish)' if failed else ''}; peak RSS {peak_rss()}",
-                flush=True,
-            )
 
     def summary(self) -> str:
         lines = ["Timings (wall clock):"]
@@ -191,7 +183,16 @@ def _build_arg_parser() -> argparse.ArgumentParser:
 def main() -> int:
     configure_tqdm_for_environment()
     args = _build_arg_parser().parse_args()
+    timings = PhaseTimings()
+    log = RunLog()
+    with timings.report("Model refit"):
+        try:
+            return _retrain(args, timings, log)
+        finally:
+            log.end_group()
 
+
+def _retrain(args: argparse.Namespace, timings: PhaseTimings, log: RunLog) -> int:
     root = SETTINGS.s3_models_prefix or "models/"
     slots = (
         [_parse_slot(value, root=root) for value in args.slot]
@@ -208,7 +209,6 @@ def main() -> int:
         )
         return 0
 
-    timings = PhaseTimings()
     s3 = make_s3_client(profile=SETTINGS.s3_aws_profile, region=SETTINGS.s3_aws_region)
     bucket = SETTINGS.s3_bucket
     actor = _current_user()
@@ -217,25 +217,30 @@ def main() -> int:
     print(f"Refitting {len(slots)} slot(s) up to {limit_date} in {bucket}\n")
 
     specs = {}
+    log.step(f"Resolving specifications ({len(slots)} slots)")
     for slot in slots:
         try:
-            specs[slot.describe()] = resolve_config_spec(
-                s3_client=s3, bucket=bucket, slot=slot
-            )
+            with timings.phase("registry", "resolve", f"resolve {slot.describe()}"):
+                specs[slot.describe()] = resolve_config_spec(
+                    s3_client=s3, bucket=bucket, slot=slot
+                )
         except SlotNotPromotedError as exc:
             print(f"{slot.describe()}\n  skipped: {exc}\n")
 
     # Before the dataset updates, not after them: without a usable GPU
     # XGBoost would fit on CPU with only a warning.
     if not args.dry_run:
+        log.step("Checking training devices")
         for device in sorted({refit_device(spec) for spec in specs.values()}):
-            require_device(device)
+            with timings.phase("registry", "device", f"check device {device}"):
+                require_device(device)
 
     # Every schema version is the base plus layers, so the partitions are the
     # base version's; one per dataset type, brought up to today once.
     partitions: dict[str, SeasonPartitions] = {}
     unusable: dict[str, str] = {}
     for dataset_type in sorted({str(s.identity.dataset_type) for s in specs.values()}):
+        log.step(f"Updating {dataset_type} season partitions")
         try:
             store = SeasonPartitions(
                 s3_client=s3,
@@ -310,11 +315,14 @@ def main() -> int:
     failures = 0
     staged = 0
     unavailable = 0
+    processed = 0
     for (dataset_type, schema_version, horizon), group in sorted(
         by_frame.items(), key=lambda item: (item[0][0], item[0][1], item[0][2] or 0)
     ):
         label = f"{dataset_type} / schema {schema_version} / T-{horizon}"
+        log.step(f"Training {label} ({len(group)} slots)")
         if dataset_type in unusable:
+            processed += len(group)
             failures += len(group)
             print(f"[{label}] FAILED: {unusable[dataset_type]}\n", file=sys.stderr)
             continue
@@ -338,6 +346,7 @@ def main() -> int:
                 # workflow's smoke-test and promote steps (if: success()) then
                 # skipped EVERY slot.
                 unavailable += len(group)
+                processed += len(group)
                 print(
                     f"[{label}] no training frame: {exc}\n"
                     f"  keeping the current build for {len(group)} slot(s): "
@@ -351,8 +360,9 @@ def main() -> int:
             )
 
         for slot in group:
+            processed += 1
             spec = specs[slot.describe()]
-            print(slot.describe())
+            print(f"[slot {processed}/{len(specs)}] {slot.describe()}", flush=True)
             print(f"  spec       : {spec.spec_id}")
             for name, value, recorded in (
                 ("seed", refit_random_state(spec), spec.training.random_state),
@@ -368,14 +378,17 @@ def main() -> int:
                     result = refit_from_spec(
                         spec, slot=slot, frame=frame, fitted_by=actor
                     )
-                    window = spec.training.train_games
-                    if window is not None and result.fit.n_train_games < window:
-                        annotate(
-                            "warning",
-                            f"{slot.describe()}: fitted on {result.fit.n_train_games} "
-                            f"games, short of the spec's {window}.",
-                        )
-                    if not args.no_stage:
+                window = spec.training.train_games
+                if window is not None and result.fit.n_train_games < window:
+                    annotate(
+                        "warning",
+                        f"{slot.describe()}: fitted on {result.fit.n_train_games} "
+                        f"games, short of the spec's {window}.",
+                    )
+                if not args.no_stage:
+                    with timings.phase(
+                        dataset_type, "stage", f"stage {slot.describe()}"
+                    ):
                         write_build(
                             s3_client=s3,
                             bucket=bucket,
@@ -411,12 +424,12 @@ def main() -> int:
             )
         del frame
 
+    log.step("Refit results", group=False)
     print(
         f"{staged} build(s) {'fitted (not staged)' if args.no_stage else 'staged'}, "
         f"{failures} failure(s), {unavailable} slot(s) kept on their current "
         "build (no training frame)."
     )
-    print(timings.summary())
     if staged and not args.dry_run and not args.no_stage:
         print("Promote them with: python scripts/promote_build.py --execute")
     return 1 if failures else 0

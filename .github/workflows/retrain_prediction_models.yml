@@ -150,12 +150,18 @@ jobs:
       # there is no partially-moved state to wait out.
       - name: Smoke test the staged builds
         if: ${{ steps.games.outputs.refit == 'true' }}
-        run: python scripts/smoke_test_s3_model_load.py --channel staging ${{ steps.slots.outputs.args }}
+        run: >-
+          python scripts/run_timed.py "Validate staged models" --
+          python scripts/smoke_test_s3_model_load.py --channel staging ${{ steps.slots.outputs.args }}
 
       - name: Promote staged builds to production
         if: ${{ steps.games.outputs.refit == 'true' && inputs.promote }}
-        run: python scripts/promote_build.py --execute ${{ steps.slots.outputs.args }}
+        run: >-
+          python scripts/run_timed.py "Promote staged models" --
+          python scripts/promote_build.py --execute ${{ steps.slots.outputs.args }}
 
       - name: Show what promotion would do
         if: ${{ steps.games.outputs.refit == 'true' && !inputs.promote }}
-        run: python scripts/promote_build.py ${{ steps.slots.outputs.args }}
+        run: >-
+          python scripts/run_timed.py "Preview model promotion (dry run)" --
+          python scripts/promote_build.py ${{ steps.slots.outputs.args }}

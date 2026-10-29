@@ -46,7 +46,6 @@ from __future__ import annotations
 
 import argparse
 import os
-import time
 from collections.abc import Sequence
 from datetime import date, datetime
 from zoneinfo import ZoneInfo
@@ -105,16 +104,19 @@ def configure_tqdm_for_environment() -> None:
 def predict_tabpfn(**kwargs) -> None:
     """``run_tabpfn`` with its log in numbered steps (``nba_ou.utils.run_log``)."""
     log = RunLog()
-    try:
-        return run_tabpfn(log, **kwargs)
-    finally:
-        # An exception's traceback then prints outside the step's group.
-        log.end_group()
+    timer = PhaseTimer()
+    with timer.report("TabPFN phase timings"):
+        try:
+            return run_tabpfn(log, timer=timer, **kwargs)
+        finally:
+            # Timings and tracebacks stay outside the step's group.
+            log.end_group()
 
 
 def run_tabpfn(
     log: RunLog,
     *,
+    timer: PhaseTimer | None = None,
     targets: Sequence[str] = DEFAULT_TARGETS,
     line: str = "closing",
     horizon_minutes: int | None = None,
@@ -185,25 +187,26 @@ def run_tabpfn(
     )
 
     # Each phase prints a [time] line as it ends, the summary their list.
-    timer = PhaseTimer()
+    timer = timer if timer is not None else PhaseTimer()
 
     # Step 1: everything the fit needs from S3, before any other work.
     log.step("Loading the Feature Spec and Training Frame")
-    started = time.perf_counter()
-    s3 = make_s3_client(profile=SETTINGS.s3_aws_profile, region=SETTINGS.s3_aws_region)
-    bucket = SETTINGS.s3_bucket
-    try:
-        inputs = load_fit_inputs(
-            job,
-            s3_client=s3,
-            bucket=bucket,
-            slots=SETTINGS.prediction_model_slots,
-            date_to_predict=date_to_predict,
-            max_frame_age_days=max_frame_age_days,
+    with timer.phase("spec and training rows"):
+        s3 = make_s3_client(
+            profile=SETTINGS.s3_aws_profile, region=SETTINGS.s3_aws_region
         )
-    except TabPFNUnavailable as exc:
-        raise SystemExit(str(exc)) from None
-    timer.record("spec and training rows", time.perf_counter() - started)
+        bucket = SETTINGS.s3_bucket
+        try:
+            inputs = load_fit_inputs(
+                job,
+                s3_client=s3,
+                bucket=bucket,
+                slots=SETTINGS.prediction_model_slots,
+                date_to_predict=date_to_predict,
+                max_frame_age_days=max_frame_age_days,
+            )
+        except TabPFNUnavailable as exc:
+            raise SystemExit(str(exc)) from None
 
     # Step 2: tonight's rows, with the lines of this moment.
     if update_db:
@@ -241,16 +244,14 @@ def run_tabpfn(
     if job.wanted_games is not None:
         scheduled_data = restrict_to_games(scheduled_data, job.wanted_games)
 
-    started = time.perf_counter()
     # The build's two reads of the closing odds (base features, referees) load
     # once, and its reads share their connections.
-    with history_cache(), kept_connections():
+    with timer.phase("tonight's rows"), history_cache(), kept_connections():
         rows = tonight_rows(
             job, scheduled_data, inputs.specs, date_to_predict=date_to_predict, log=log
         )
     if rows is None:
         return
-    timer.record("tonight's rows", time.perf_counter() - started)
 
     outcome = fit_and_store(
         job,
@@ -266,7 +267,6 @@ def run_tabpfn(
     )
     failures = outcome.failures
     log.step("Summary", group=False)
-    print(timer.summary())
     print_status(f"{len(outcome.predicted)} of {outcome.n_fits} model(s) predicted")
     print_status(f"{len(failures)} failure(s)", ok=not failures)
     for failure in failures:
@@ -282,8 +282,6 @@ def run_tabpfn(
                 + ("" if persist else " (dry run: nothing stored)"),
                 "",
                 *(f"- ✖ {failure}" for failure in failures),
-                "",
-                timer.markdown(),
             ]
         )
     )

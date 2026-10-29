@@ -68,14 +68,15 @@ jobs:
 
             - name: Update finished matches
               run: |
-                  cd scripts
-                  cd update_databases
-                  python update_finished_matches.py
+                  python scripts/run_timed.py "Update finished matches" -- \
+                    python scripts/update_databases/update_finished_matches.py
 
             # The Aiven prediction store grades from its games table; every
             # game past tip-off without a final score is looked up again.
             - name: Update prediction store results
-              run: python scripts/prediction_store/update_game_results.py
+              run: >-
+                  python scripts/run_timed.py "Update prediction store results" --
+                  python scripts/prediction_store/update_game_results.py
 
             # The lineup stint update (scripts/lineups/update_lineups.py --s3)
             # is off while the lineup schemas (2_6, 2_7) are research only.

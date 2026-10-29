@@ -23,11 +23,20 @@ shopt -s nullglob
 LAYOUT=1
 PRUNE_DAYS=14
 
+venv_phase_started=$SECONDS
+log_timing() {
+    printf '[time] job venv %s: %ss\n' "$1" "$((SECONDS - venv_phase_started))"
+    venv_phase_started=$SECONDS
+}
+
+echo "[start] job venv: waiting for cache lock"
 root="${NBA_OU_VENV_DIR:-$HOME/.cache/nba_ou/venvs}/${RUNNER_NAME:-local}"
 mkdir -p "$root"
 exec 9>"$root/.lock"
 flock 9
+log_timing "cache lock"
 
+echo "[start] job venv: checking cache for $REQUIREMENTS"
 python_id="$(python -c 'import sys; print(sys.executable, sys.version)')"
 key="$(
     {
@@ -63,17 +72,21 @@ elif [[ -e "$venv" ]]; then
     echo "$name did not finish building; rebuilding"
     rm -rf "$venv"
 fi
+log_timing "cache validation and pruning"
 
 if [[ ! -e "$venv" ]]; then
+    echo "[start] job venv: installing $REQUIREMENTS"
     echo "Building $name"
     python -m venv "$venv"
     "$venv/bin/python" -m pip install --upgrade pip
     "$venv/bin/python" -m pip install -r "$REQUIREMENTS"
     freeze >"$venv/.freeze"
     touch "$venv/.complete"
+    log_timing "dependency installation"
 fi
 touch "$venv/.last-used"
 
+echo "[start] job venv: checking the editable repo install"
 editable="$(
     {
         echo "$GITHUB_WORKSPACE"
@@ -86,5 +99,6 @@ if [[ "$(cat "$venv/.editable" 2>/dev/null)" != "$editable" ]]; then
 else
     echo "The repo is already installed in $name"
 fi
+log_timing "editable repo installation"
 
 echo "$venv/bin" >>"$GITHUB_PATH"
