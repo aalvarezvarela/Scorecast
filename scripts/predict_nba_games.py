@@ -123,12 +123,14 @@ def predict_nba_games(**kwargs) -> None:
     history (``nba_ou.utils.history_cache``) and its database connections
     (``connection_keep``)."""
     log = RunLog()
-    try:
-        with history_cache.history_cache(), kept_connections():
-            return run_prediction_pipeline(log, **kwargs)
-    finally:
-        # An exception's traceback then prints outside the step's group.
-        log.end_group()
+    timer = PhaseTimer()
+    with timer.report("Prediction phase timings"):
+        try:
+            with history_cache.history_cache(), kept_connections():
+                return run_prediction_pipeline(log, timer=timer, **kwargs)
+        finally:
+            # Timings and tracebacks stay outside the step's group.
+            log.end_group()
 
 
 def run_prediction_pipeline(
@@ -144,6 +146,7 @@ def run_prediction_pipeline(
     parallel_builds: bool | None = None,
     tabpfn_jobs: Sequence[TabPFNJob] = (),
     tabpfn_refresh: bool = False,
+    timer: PhaseTimer | None = None,
 ) -> None:
     """
     Main execution function for the NBA prediction pipeline.
@@ -214,7 +217,7 @@ def run_prediction_pipeline(
         )
 
     # Each phase prints a [time] line as it ends, the summary their list.
-    timer = PhaseTimer()
+    timer = timer if timer is not None else PhaseTimer()
 
     # Step 1: Update the database
     log.step("Updating All Databases")
@@ -439,8 +442,9 @@ def run_prediction_pipeline(
     skipped: list[str] = []
     log.step(f"Generating Predictions ({len(configured_slots)} slots)")
     slots_started = time.perf_counter()
-    for slot in configured_slots:
+    for index, slot in enumerate(configured_slots, start=1):
         label = slot.describe()
+        print(f"[slot {index}/{len(configured_slots)}] {label}", flush=True)
         slot_started = time.perf_counter()
         try:
             build = builds.get(slot)
@@ -516,7 +520,6 @@ def run_prediction_pipeline(
         failures += tabpfn_failures
 
     log.step("Summary", group=False)
-    print(timer.summary())
     print_status(f"{len(predicted)} slot(s) predicted")
     print_status(f"{len(skipped)} slot(s) skipped", ok=not skipped)
     for label in skipped:
@@ -542,8 +545,6 @@ def run_prediction_pipeline(
                 "",
                 *(f"- ✖ {failure}" for failure in failures),
                 *(f"- skipped: {label}" for label in skipped),
-                "",
-                timer.markdown(),
             ]
         )
     )

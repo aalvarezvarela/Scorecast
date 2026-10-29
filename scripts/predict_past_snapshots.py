@@ -64,16 +64,11 @@ from nba_ou.prediction.prediction_store import (
     persist_prediction_run,
 )
 from nba_ou.utils.general_utils import get_season_year_from_date
+from nba_ou.utils.phase_timer import PhaseTimer
+from nba_ou.utils.run_log import RunLog
 from nba_ou.utils.s3_models import make_s3_client
 
 EASTERN = ZoneInfo("America/New_York")
-
-
-def print_step_header(step_number: int, title: str) -> None:
-    clock = datetime.now(ZoneInfo("UTC")).strftime("%H:%M:%S")
-    print("-" * 70)
-    print(f" STEP {step_number} — {title} [{clock} UTC] ".center(70))
-    print("-" * 70)
 
 
 def print_status(message: str, ok: bool = True) -> None:
@@ -192,38 +187,60 @@ def predict_past_snapshots(
     persist: bool = True,
     update_databases: bool = True,
 ) -> None:
+    timer = PhaseTimer()
+    log = RunLog()
+    with timer.report("Past-snapshot prediction phase timings"):
+        try:
+            return _predict_past_snapshots(
+                game_date,
+                persist=persist,
+                update_databases=update_databases,
+                timer=timer,
+                log=log,
+            )
+        finally:
+            log.end_group()
+
+
+def _predict_past_snapshots(
+    game_date: str | None,
+    *,
+    persist: bool,
+    update_databases: bool,
+    timer: PhaseTimer,
+    log: RunLog,
+) -> None:
     game_date = game_date or default_game_date()
     print(f"\nPast-snapshot predictions for {game_date}")
     slots = intermediate_slots(SETTINGS.prediction_model_slots)
     print(f"  {len(slots)} intermediate slot(s), each on its own snapshot")
 
-    step = 1
     if update_databases:
-        print_step_header(step, "Updating All Databases")
+        log.step("Updating All Databases")
         season = int(get_season_year_from_date(game_date))
-        update_all_databases(
-            start_season_year=season,
-            end_season_year=season,
-            only_new_games=True,
-            headless=SETTINGS.headless,
-            exclude_game_date=game_date,
-        )
+        with timer.phase("database update"):
+            update_all_databases(
+                start_season_year=season,
+                end_season_year=season,
+                only_new_games=True,
+                headless=SETTINGS.headless,
+                exclude_game_date=game_date,
+            )
         print_status("Databases updated")
-        step += 1
 
-    print_step_header(step, "Fetching the Date's Games")
-    step += 1
-    scheduled_data = past_scheduled_data(game_date)
+    log.step("Fetching the Date's Games")
+    with timer.phase("games and reports"):
+        scheduled_data = past_scheduled_data(game_date)
     scheduled = scheduled_data["scheduled_games"]
     if scheduled.empty:
         print_status(f"No games on {game_date}", ok=False)
         return
     print_status(f"{len(scheduled)} game(s) on {game_date}")
 
-    print_step_header(step, "Preparing Intermediate Snapshot Rows")
-    step += 1
-    frame = tonight_intermediate_frame(scheduled_data, game_date=game_date)
-    frame = keep_passed_snapshots(frame)
+    log.step("Preparing Intermediate Snapshot Rows")
+    with timer.phase("intermediate snapshot rows"):
+        frame = tonight_intermediate_frame(scheduled_data, game_date=game_date)
+        frame = keep_passed_snapshots(frame)
     if frame.empty:
         print_status("No snapshot has passed yet", ok=False)
         raise SystemExit(1)
@@ -244,33 +261,36 @@ def predict_past_snapshots(
     started = datetime.now(ZoneInfo("Europe/Madrid"))
     failures: list[str] = []
     # Cleaned once here, not once per slot: each slot reads its rows from it.
-    clean_frames = clean_prediction_frames(
-        {"intermediate_line": frame}, passthrough_columns=PASSTHROUGH_COLUMNS
-    )
-    builds = read_slot_builds(s3_client=s3, bucket=SETTINGS.s3_bucket, slots=slots)
+    log.step("Cleaning Rows and Reading Models")
+    with timer.phase("cleaning"):
+        clean_frames = clean_prediction_frames(
+            {"intermediate_line": frame}, passthrough_columns=PASSTHROUGH_COLUMNS
+        )
+    with timer.phase("model reads"):
+        builds = read_slot_builds(s3_client=s3, bucket=SETTINGS.s3_bucket, slots=slots)
     predicted = 0
-    for slot in slots:
+    for index, slot in enumerate(slots, start=1):
         label = slot.describe()
-        print_step_header(step, f"Generating Predictions ({label})")
-        step += 1
+        log.step(f"Generating Predictions ({index}/{len(slots)}: {label})")
         try:
             build = builds.get(slot)
             if isinstance(build, Exception):
                 raise build
-            predictions = load_registry_model_and_predict(
-                s3_client=s3,
-                bucket=SETTINGS.s3_bucket,
-                slot=slot,
-                df=None,
-                prediction_datetime=started,
-                frames={"intermediate_line": frame},
-                frame_versions={"intermediate_line": BASE_SCHEMA_VERSION},
-                passthrough_columns=PASSTHROUGH_COLUMNS,
-                latest_input=False,
-                report_required_max_horizon=SETTINGS.report_required_max_horizon,
-                clean_frames=clean_frames,
-                resolved=build,
-            )
+            with timer.phase(label):
+                predictions = load_registry_model_and_predict(
+                    s3_client=s3,
+                    bucket=SETTINGS.s3_bucket,
+                    slot=slot,
+                    df=None,
+                    prediction_datetime=started,
+                    frames={"intermediate_line": frame},
+                    frame_versions={"intermediate_line": BASE_SCHEMA_VERSION},
+                    passthrough_columns=PASSTHROUGH_COLUMNS,
+                    latest_input=False,
+                    report_required_max_horizon=SETTINGS.report_required_max_horizon,
+                    clean_frames=clean_frames,
+                    resolved=build,
+                )
         except Exception as exc:  # noqa: BLE001 -- the other slots still run
             traceback.print_exc()
             print_status(f"Failed for {label}: {exc}", ok=False)
@@ -287,29 +307,34 @@ def predict_past_snapshots(
             print_status(f"Prediction store rejected {label}: {rejected}", ok=False)
             failures.append(f"{label} (prediction store): {rejected}")
 
-    print_step_header(step, "Generating Daily Baselines (T-0)")
-    step += 1
+    log.step("Generating Daily Baselines (T-0)")
     try:
-        failures += add_past_baselines(recorder, frame, game_date, started)
+        with timer.phase("daily baselines"):
+            failures += add_past_baselines(recorder, frame, game_date, started)
     except Exception as exc:  # noqa: BLE001 -- persist the model slots anyway
         traceback.print_exc()
         failures.append(f"baselines: {exc}")
 
     if persist:
-        print_step_header(step, "Storing Predictions")
-        step += 1
-        failures += persist_prediction_run(
-            recorder,
-            s3_client=s3,
-            bucket=SETTINGS.s3_bucket,
-            partial=bool(failures),
-        )
+        log.step("Storing Predictions")
+        with timer.phase("storing"):
+            failures += persist_prediction_run(
+                recorder,
+                s3_client=s3,
+                bucket=SETTINGS.s3_bucket,
+                partial=bool(failures),
+            )
 
-    print_step_header(step, "Summary")
+    log.step("Summary", group=False)
     print_status(f"{predicted}/{len(slots)} slot(s) predicted")
     print_status(f"{len(failures)} failure(s)", ok=not failures)
     for failure in failures:
-        print(f"      - {failure}")
+        log.error(failure)
+    log.summary(
+        f"### Past snapshots for {game_date}\n\n"
+        f"{predicted}/{len(slots)} slot(s) predicted, {len(failures)} failure(s)"
+        + ("" if persist else " (dry run: nothing stored)")
+    )
     if failures:
         raise SystemExit(1)
 

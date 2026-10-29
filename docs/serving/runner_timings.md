@@ -10,6 +10,58 @@ sized. The measurements run the workflows' own scripts on the runner machine
 with every write to shared systems blocked, plus the real step durations of
 the 09:00 database update from the runner's own logs.
 
+## Reading the Actions logs
+
+The prediction, TabPFN, past-snapshot and refit scripts log numbered steps
+as collapsible Actions groups. Timed operations print their start immediately,
+then an elapsed-time heartbeat every minute in Actions, and their duration and
+peak memory when they finish:
+
+```text
+[start] closing rows
+[progress] closing rows: still running, 1m 00s elapsed
+[time] closing rows: 1m 23s; peak RSS 2.1 GB
+```
+
+The heartbeat confirms which operation remains active; it is elapsed time,
+not an estimate of completion. Local runs print the boundaries without the
+minute-by-minute heartbeat. Prediction and refit loops also show slot counts.
+
+The database update times live-game exclusion and each season's games/player
+logs, sportsbook odds, Yahoo odds, and referee/injury updates. Every odds retry
+has its own attempt number and duration. A failed attempt stays marked
+`did not finish` even if a later retry succeeds. Refits time specification
+reads, device checks, partition updates, training-frame reads, GPU fits and S3
+staging separately; their console summary still aggregates by dataset type.
+
+Timing tables are appended to the Actions **Summary** tab even on exceptions
+or early returns. A hard kill or runner loss cannot publish a final summary.
+Script totals cover that script's elapsed wall time; nested phases and
+side-by-side builds overlap, so do not add all rows together. Checkout,
+credentials and environment setup remain visible as native Actions steps.
+The shared venv action additionally logs cache-lock waiting, cache validation,
+dependency installation when needed, and editable repo installation.
+
+Data ingestion steps, staged-model validation and promotion use
+`scripts/run_timed.py` for streaming output, a heartbeat, a timing table and
+the original command's failure exit code. A Covers ingestion failure remains
+non-blocking (`continue-on-error`); timing it does not change that policy.
+
+The standalone, manual-only `s3_model_smoke_test.yml` workflow was removed.
+The retrain workflow still runs `smoke_test_s3_model_load.py --channel staging`
+before promotion. For a separate production check, the script remains usable
+locally with ambient AWS credentials (or the configured profile):
+
+```bash
+python scripts/smoke_test_s3_model_load.py --channel production
+# Limit the check to one slot if needed:
+python scripts/smoke_test_s3_model_load.py --slot 2_5/line_error/t0000/main
+```
+
+`requirements/retrain-cpu.txt` remains available for manual checks on a machine
+without a GPU. Removing the workflow removes its separate hosted-runner check;
+it does not remove validation from the retrain-and-promote path.
+
 ## Summary
 
 | Workflow | Typical (warm) | Cold | Biggest single cost |

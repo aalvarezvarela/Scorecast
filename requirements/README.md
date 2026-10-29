@@ -29,7 +29,7 @@ match the project pins. See `docs/serving/streamlit_dashboard.md`.
 | `predict-tabpfn-cuda.txt` | main, cuda, scrape, tabpfn | `nba_predictor_daily_tabpfn_client` |
 | `predict-tabpfn-cpu.txt` | main, cpu, scrape, tabpfn | not used yet |
 | `retrain-cuda.txt` | main, cuda | `retrain_prediction_models` |
-| `retrain-cpu.txt` | main, cpu | `s3_model_smoke_test` |
+| `retrain-cpu.txt` | main, cpu | manual model checks on a CPU-only machine |
 | `tests-cpu.txt` | main, cpu, scrape, train, dashboard, dev | `tests` |
 
 The groups are defined and commented in `pyproject.toml`. `retrain-*` leaves
@@ -55,8 +55,8 @@ XGBoost ships as two distributions with the same `xgboost` import:
   GPU. The specs are fitted with it, so jobs that fit models use it.
 - `cpu`: `xgboost-cpu`, the CPU-only build of the same version, with Linux and
   Windows wheels only. It is a much smaller install, for hosted runners. It
-  loads GPU-fitted boosters and predicts the same values; the S3 smoke test
-  runs on it. A spec that asks for `device=cuda` cannot be refitted on it
+  loads GPU-fitted boosters and predicts the same values; manual S3 model
+  checks can use it. A spec that asks for `device=cuda` cannot be refitted on it
   (`refit.require_device` fails).
 
 The `cpu` group is optional, so `poetry install` installs `cuda` only. Never
