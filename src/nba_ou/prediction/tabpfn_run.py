@@ -79,6 +79,8 @@ from nba_ou.scheduling.tabpfn_jobs import (
     DEFAULT_TARGETS,
     FIELD_SEPARATOR,
     JOB_SEPARATOR,
+    MODE_SEPARATOR,
+    Fits,
 )
 from nba_ou.utils.history_cache import cached
 from nba_ou.utils.phase_timer import PhaseTimer
@@ -136,6 +138,29 @@ def parse_game_ids(values: Sequence[str]) -> list[str]:
     return ids
 
 
+def parse_fits(text: str) -> tuple[tuple[str, ...], tuple[str, ...], Fits]:
+    """``(targets, modes, mode_targets)`` of ``MODE=TARGET[,TARGET]`` items
+    separated by spaces (``nba_ou.scheduling.tabpfn_jobs``): the targets in
+    order of first mention, the modes in order, and each mode's targets."""
+    plan: dict[str, tuple[str, ...]] = {}
+    for item in text.split():
+        mode, separator, targets = item.partition(MODE_SEPARATOR)
+        if not separator:
+            raise ValueError(
+                f"TabPFN fits {item!r}: expected MODE{MODE_SEPARATOR}TARGET[,TARGET]."
+            )
+        (mode,) = parse_modes([mode])
+        if mode in plan:
+            raise ValueError(f"TabPFN fits: mode {mode} named twice.")
+        plan[mode] = tuple(parse_targets([targets]))
+    if not plan:
+        raise ValueError(
+            f"Provide at least one TabPFN fit, MODE{MODE_SEPARATOR}TARGET[,TARGET]."
+        )
+    targets = tuple(dict.fromkeys(t for items in plan.values() for t in items))
+    return targets, tuple(plan), tuple(plan.items())
+
+
 @dataclass(frozen=True)
 class TabPFNJob:
     """One TabPFN prediction: its targets and modes at one line.
@@ -145,12 +170,15 @@ class TabPFNJob:
     snapshot it is (metadata, not a filter: ``_rebuild_at_row_snapshot``).
     ``wanted_games`` keeps only those games (manual runs). ``feature_slot``
     (one target only) replaces each target's enabled slot at the line.
+    ``mode_targets`` limits a mode to some of the targets (``parse_fits``);
+    a mode it does not name fits every target.
     """
 
     targets: tuple[str, ...] = DEFAULT_TARGETS
     dataset_type: str = CLOSING_LINE
     horizon: int = 0
     modes: tuple[str, ...] = DEFAULT_MODES
+    mode_targets: Fits = ()
     as_of: pd.Timestamp | None = None
     snapshot_games: tuple[str, ...] | None = None
     wanted_games: frozenset[str] | None = None
@@ -173,6 +201,39 @@ class TabPFNJob:
             )
         if self.feature_slot is not None and len(self.targets) != 1:
             raise ValueError("--feature-slot requires exactly one target.")
+        unknown = {t for _, items in self.mode_targets for t in items} - set(
+            self.targets
+        )
+        if unknown:
+            raise ValueError(
+                f"TabPFN fits name target(s) {', '.join(sorted(unknown))} "
+                "not among the job's targets."
+            )
+        fitted = {target for target, _ in self.fits}
+        unfitted = [target for target in self.targets if target not in fitted]
+        if unfitted:
+            raise ValueError(f"No TabPFN mode fits {', '.join(unfitted)}.")
+
+    @property
+    def fits(self) -> list[tuple[str, str]]:
+        """``(target, mode)`` per fit: each target in each mode that fits it."""
+        only = dict(self.mode_targets)
+        return [
+            (target, mode)
+            for target in self.targets
+            for mode in self.modes
+            if target in only.get(mode, (target,))
+        ]
+
+    @property
+    def plan(self) -> str:
+        """``standard: line_error, total_points; thinking_high: line_error``."""
+        return "; ".join(
+            f"{mode}: "
+            + ", ".join(target for target, fit_mode in self.fits if fit_mode == mode)
+            for mode in self.modes
+            if any(fit_mode == mode for _, fit_mode in self.fits)
+        )
 
     @property
     def name(self) -> str:
@@ -186,18 +247,22 @@ def parse_jobs(
     targets: Sequence[str] = DEFAULT_TARGETS,
     modes: Sequence[str] = DEFAULT_MODES,
 ) -> list[TabPFNJob]:
-    """The jobs of ``HORIZON[@AS_OF[@GAME_IDS]]`` items separated by ``;``
-    (``nba_ou.scheduling.tabpfn_jobs``).
+    """The jobs of ``HORIZON[@AS_OF[@GAME_IDS[@FITS]]]`` items separated by
+    ``;`` (``nba_ou.scheduling.tabpfn_jobs``).
 
     ``720@2026-10-28T23:00:00+00:00@0022600131 0022600132`` is the T-720 job
     of that snapshot, booked for those games; ``0`` the closing-line job (no
-    ``AS_OF``). Every job fits ``targets`` in ``modes``.
+    ``AS_OF``). A job with ``FITS`` (``parse_fits``) fits those targets in
+    those modes; the others fit ``targets`` in ``modes``.
     """
     targets = tuple(parse_targets(targets))
     modes = tuple(parse_modes(modes))
     jobs = []
     for item in filter(None, (part.strip() for part in text.split(JOB_SEPARATOR))):
-        horizon, as_of, games = (item.split(FIELD_SEPARATOR, 2) + ["", ""])[:3]
+        horizon, as_of, games, fits = (item.split(FIELD_SEPARATOR, 3) + [""] * 3)[:4]
+        job_targets, job_modes, mode_targets = (
+            parse_fits(fits) if fits.strip() else (targets, modes, ())
+        )
         try:
             horizon = int(horizon)
         except ValueError:
@@ -208,10 +273,11 @@ def parse_jobs(
             raise ValueError(f"TabPFN job {item!r}: a negative horizon.")
         jobs.append(
             TabPFNJob(
-                targets=targets,
+                targets=job_targets,
                 dataset_type=INTERMEDIATE_LINE if horizon else CLOSING_LINE,
                 horizon=horizon,
-                modes=modes,
+                modes=job_modes,
+                mode_targets=mode_targets,
                 as_of=pd.Timestamp(as_of) if as_of.strip() else None,
                 snapshot_games=(
                     tuple(parse_game_ids([games])) if games.strip() else None
@@ -557,14 +623,15 @@ def fit_and_store(
     clean_rows = clean_prediction_frames(
         {job.dataset_type: rows.df}, passthrough_columns=passthrough
     ).get(job.dataset_type)
-    # Each target in each mode: a fit and a variant of its own.
-    fits = [
-        (target, spec, training_set, mode)
-        for target, spec, training_set in zip(
-            job.targets, inputs.specs, inputs.training_sets, strict=True
+    # Each target in each mode that fits it: a fit and a variant of its own.
+    target_inputs = dict(
+        zip(
+            job.targets,
+            zip(inputs.specs, inputs.training_sets, strict=True),
+            strict=True,
         )
-        for mode in job.modes
-    ]
+    )
+    fits = [(target, *target_inputs[target], mode) for target, mode in job.fits]
     for target, spec, training_set, mode in fits:
         label = (
             f"{spec.identity.schema_version}/{target}/{format_horizon(job.horizon)}/"

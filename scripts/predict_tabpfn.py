@@ -2,6 +2,7 @@
 
     python scripts/predict_tabpfn.py [--targets line_error total_points spread_error] [--no-persist]
     python scripts/predict_tabpfn.py --modes standard thinking_high
+    python scripts/predict_tabpfn.py --fits "standard=line_error,total_points,spread_error thinking_high=line_error,total_points"
     python scripts/predict_tabpfn.py --line intermediate [--horizon-minutes 360]
     python scripts/predict_tabpfn.py --line intermediate --horizon-minutes 720 \
         --game-date 2026-10-26 --as-of 2026-10-26T11:00:00Z
@@ -29,7 +30,8 @@ rows and columns of that slot's production build
    snapshots; only that horizon's rows are built.
 3. TabPFN is fitted separately for each target and mode (``--modes``: the
    standard model by default, or thinking at medium or high effort, each
-   stored as a variant of its own) on its spec's rows and features. Tonight's
+   stored as a variant of its own) on its spec's rows and features; ``--fits``
+   limits each mode to some targets. Tonight's
    rows are prepared once and all outputs share one prediction run.
    The run goes to the prediction store (S3 run archive + Aiven) with
    ``runs.workflow`` 3 and ``model_builds.kind`` 3.
@@ -76,6 +78,7 @@ from nba_ou.prediction.tabpfn_run import (
     TabPFNUnavailable,
     fit_and_store,
     load_fit_inputs,
+    parse_fits,
     parse_game_ids,
     parse_targets,
     restrict_to_games,
@@ -127,6 +130,7 @@ def run_tabpfn(
     feature_slot: ModelSlot | None = None,
     model_version: str = DEFAULT_MODEL_VERSION,
     modes: Sequence[str] = DEFAULT_MODES,
+    mode_targets: Sequence[tuple[str, Sequence[str]]] = (),
     train_games: int | None = None,
     max_frame_age_days: int = DEFAULT_MAX_FRAME_AGE_DAYS,
     update_db: bool = True,
@@ -140,7 +144,8 @@ def run_tabpfn(
     ``DEFAULT_INTERMEDIATE_HORIZON``). ``feature_slot`` defaults to the enabled
     slot of each target at that line. An explicit ``feature_slot`` requires
     one target. ``modes`` are the fits of each target (``MODES``; the standard
-    model by default), each stored as its own variant. ``persist=False``
+    model by default), each stored as its own variant; ``mode_targets``
+    limits a mode to some targets (``parse_fits``). ``persist=False``
     stores nothing (the database update still writes).
     ``game_date`` pins a scheduled run to its slate and ``as_of`` the
     intermediate input cutoff, even when the runner is busy.
@@ -162,6 +167,9 @@ def run_tabpfn(
         dataset_type=dataset_type,
         horizon=horizon,
         modes=tuple(parse_modes(modes)),
+        mode_targets=tuple(
+            (mode, tuple(targets_of_mode)) for mode, targets_of_mode in mode_targets
+        ),
         as_of=None if as_of is None else pd.Timestamp(as_of),
         snapshot_games=(
             None
@@ -182,7 +190,7 @@ def run_tabpfn(
         else datetime.now(ZoneInfo("US/Pacific")).strftime("%Y-%m-%d")
     )
     print(
-        f"TabPFN {model_version} ({', '.join(job.modes)}), {', '.join(job.targets)} "
+        f"TabPFN {model_version} ({job.plan}) "
         f"at {format_horizon(horizon)}, for {date_to_predict}"
     )
 
@@ -274,7 +282,7 @@ def run_tabpfn(
     log.summary(
         "\n".join(
             [
-                f"### TabPFN {model_version} ({', '.join(job.modes)}) for "
+                f"### TabPFN {model_version} ({job.plan}) for "
                 f"{date_to_predict}, {format_horizon(horizon)}",
                 "",
                 f"{len(outcome.predicted)} of {outcome.n_fits} model(s) predicted, "
@@ -299,7 +307,6 @@ def main(argv: Sequence[str] | None = None) -> None:
         "--targets",
         "--target",
         nargs="+",
-        default=list(DEFAULT_TARGETS),
         help=(
             "Targets separated by spaces or commas "
             f"(default: {' '.join(DEFAULT_TARGETS)})."
@@ -364,11 +371,19 @@ def main(argv: Sequence[str] | None = None) -> None:
     parser.add_argument(
         "--modes",
         nargs="+",
-        default=list(DEFAULT_MODES),
         help=(
             "TabPFN modes separated by spaces or commas, each fitted and stored "
             f"as its own variant: {', '.join(MODES)} "
             f"(default: {' '.join(DEFAULT_MODES)})."
+        ),
+    )
+    parser.add_argument(
+        "--fits",
+        nargs="+",
+        metavar="MODE=TARGET[,TARGET]",
+        help=(
+            "Each mode with the targets it fits, instead of --targets and --modes, "
+            "e.g. 'standard=line_error,total_points thinking_high=line_error'."
         ),
     )
     parser.add_argument(
@@ -399,8 +414,15 @@ def main(argv: Sequence[str] | None = None) -> None:
     )
     args = parser.parse_args(argv)
     try:
-        targets = parse_targets(args.targets)
-        modes = parse_modes(args.modes)
+        if args.fits is not None:
+            if args.targets is not None or args.modes is not None:
+                raise ValueError("--fits replaces --targets and --modes.")
+            targets, modes, mode_targets = parse_fits(" ".join(args.fits))
+            targets, modes = list(targets), list(modes)
+        else:
+            targets = parse_targets(args.targets or DEFAULT_TARGETS)
+            modes = parse_modes(args.modes or DEFAULT_MODES)
+            mode_targets = ()
         game_ids = None if args.game_ids is None else parse_game_ids(args.game_ids)
         snapshot_game_ids = (
             None
@@ -431,6 +453,7 @@ def main(argv: Sequence[str] | None = None) -> None:
         feature_slot=args.feature_slot,
         model_version=args.model_version,
         modes=modes,
+        mode_targets=mode_targets,
         train_games=args.train_games,
         max_frame_age_days=args.max_frame_age_days,
         update_db=not args.skip_db_update,

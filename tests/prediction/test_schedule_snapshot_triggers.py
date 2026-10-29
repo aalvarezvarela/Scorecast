@@ -526,7 +526,37 @@ def _snapshot_games(dispatch) -> list[str]:
     return games
 
 
-def test_tabpfn_runs_four_times_from_the_last_tip_with_all_targets():
+_TOTALS = [("line_error", "standard"), ("total_points", "standard")]
+_ALL = [*_TOTALS, ("spread_error", "standard")]
+#: Lead time -> ``(target, mode)`` fits of its intermediate and closing lines:
+#: no spread at T-600/T-360, thinking_high for the totals on T-480's
+#: intermediate line only, closing only at T-240.
+EXPECTED_TABPFN_FITS = {
+    600: (_TOTALS, _TOTALS),
+    480: (
+        [
+            ("line_error", "standard"),
+            ("line_error", "thinking_high"),
+            ("total_points", "standard"),
+            ("total_points", "thinking_high"),
+            ("spread_error", "standard"),
+        ],
+        _ALL,
+    ),
+    360: (_TOTALS, _TOTALS),
+    240: (None, _ALL),
+}
+
+
+def _fits(text: str) -> list[tuple[str, str]]:
+    """The ``(target, mode)`` fits of a ``fits`` input."""
+    from nba_ou.prediction.tabpfn_run import TabPFNJob, parse_fits
+
+    targets, modes, mode_targets = parse_fits(text)
+    return TabPFNJob(targets=targets, modes=modes, mode_targets=mode_targets).fits
+
+
+def test_tabpfn_runs_four_times_from_the_last_tip_with_their_fits():
     games = _tabpfn_games()
     runs = job.tabpfn_runs(games, "2026-10-22", _utc("2026-10-22 08:00"))
     assert len(runs) == 4
@@ -539,18 +569,29 @@ def test_tabpfn_runs_four_times_from_the_last_tip_with_all_targets():
     for at, dispatch in runs:
         inputs = dict(dispatch.inputs)
         assert dispatch.workflow_file == job.TABPFN_WORKFLOW
-        assert inputs["target"] == "line_error total_points spread_error"
+        assert not {"target", "modes"} & inputs.keys()
         assert inputs["update_db"] == "false"
         assert inputs["game_date"] == "2026-10-22"
         assert "game_ids" not in inputs
         if inputs["line"] == "closing":
-            assert not {"horizon_minutes", "as_of", "snapshot_game_ids"} & inputs.keys()
+            assert (
+                not {
+                    "horizon_minutes",
+                    "as_of",
+                    "snapshot_game_ids",
+                    "closing_fits",
+                }
+                & inputs.keys()
+            )
             assert inputs["include_closing"] == "false"
-            assert inputs["modes"] == "standard"
-            assert inputs["use_alt_key"] == "false"
+            assert _fits(inputs["fits"]) == EXPECTED_TABPFN_FITS[240][1]
+            assert inputs["use_alt_key"] == "true"
             continue
         assert _snapshot_games(dispatch) == ["0022600003"]
         horizon = int(inputs["horizon_minutes"])
+        inter, closing = EXPECTED_TABPFN_FITS[horizon]
+        assert _fits(inputs["fits"]) == inter
+        assert _fits(inputs["closing_fits"]) == closing
         cutoff = datetime.fromisoformat(inputs["as_of"])
         assert cutoff == _utc("2026-10-23 01:00") - timedelta(minutes=horizon)
         assert at == cutoff + timedelta(minutes=job.TABPFN_DELAY_MINUTES)
@@ -575,35 +616,36 @@ def test_nearby_tipoffs_do_not_book_extra_tabpfn_runs():
     assert all(dispatch.label == "C@D" for _, dispatch in runs)
 
 
-def test_only_t8_adds_high_thinking_in_both_booking_modes():
+def test_each_tabpfn_run_has_its_fits_in_both_booking_modes():
     from nba_ou.prediction.tabpfn_run import parse_jobs
 
     games = _tabpfn_games()
     now = _utc("2026-10-22 08:00")
-    expected = {
-        600: ("standard",),
-        480: ("standard", "thinking_high"),
-        360: ("standard",),
-    }
-    separate = job.tabpfn_runs(games, "2026-10-22", now)
-    assert {
-        int(dict(dispatch.inputs)["horizon_minutes"]): tuple(
-            dict(dispatch.inputs)["modes"].split()
-        )
-        for _, dispatch in separate
-        if dict(dispatch.inputs)["line"] == "intermediate"
-    } == expected
+    separate = {}
+    for _, dispatch in job.tabpfn_runs(games, "2026-10-22", now):
+        inputs = dict(dispatch.inputs)
+        if inputs["line"] == "closing":
+            separate[240] = (None, _fits(inputs["fits"]))
+        else:
+            separate[int(inputs["horizon_minutes"])] = (
+                _fits(inputs["fits"]),
+                _fits(inputs["closing_fits"]),
+            )
+    assert separate == EXPECTED_TABPFN_FITS
 
     _, joined, alone = _joined(games, now)
     assert alone == []
     actual = {}
-    for dispatch in joined.values():
-        inputs = dict(dispatch.inputs)
-        jobs = parse_jobs(inputs["tabpfn"], modes=inputs["tabpfn_modes"].split())
-        for item in jobs:
-            assert item.targets == ("line_error", "total_points", "spread_error")
-            actual[item.horizon] = item.modes
-    assert actual == {**expected, 0: ("standard",)}
+    for at, dispatch in joined.items():
+        horizon = int((_utc("2026-10-23 01:00") - at).total_seconds() / 60)
+        # The run's default targets and modes would fit every target: each
+        # job's own fits must override them.
+        jobs = parse_jobs(
+            dict(dispatch.inputs)["tabpfn"], modes=["standard", "thinking_high"]
+        )
+        by_line = {item.horizon: item.fits for item in jobs}
+        actual[horizon] = (by_line.get(horizon), by_line[0])
+    assert actual == EXPECTED_TABPFN_FITS
 
 
 def test_tabpfn_follows_the_covering_predictor_but_keeps_the_last_games_cutoff():
@@ -618,7 +660,7 @@ def test_tabpfn_follows_the_covering_predictor_but_keeps_the_last_games_cutoff()
     assert dict(dispatch.inputs)["as_of"] == "2026-10-22T13:00:00+00:00"
 
 
-def test_all_tabpfn_times_book_closing_and_only_t8_selects_the_alternate_key():
+def test_all_tabpfn_times_book_closing_and_t8_and_t4_select_the_alternate_key():
     from nba_ou.prediction.tabpfn_run import parse_jobs
 
     games = _tabpfn_games()
@@ -627,24 +669,23 @@ def test_all_tabpfn_times_book_closing_and_only_t8_selects_the_alternate_key():
     assert len(joined) == 4 and not alone
     for at, dispatch in joined.items():
         inputs = dict(dispatch.inputs)
-        jobs = parse_jobs(inputs["tabpfn"], modes=inputs["tabpfn_modes"].split())
+        jobs = parse_jobs(inputs["tabpfn"])
         horizon = int((_utc("2026-10-23 01:00") - at).total_seconds() / 60)
         assert [item.horizon for item in jobs] == (
             [horizon, 0] if horizon != 240 else [0]
         )
-        assert inputs["tabpfn_use_alt_key"] == str(horizon == 480).lower()
+        assert inputs["tabpfn_use_alt_key"] == str(horizon in (480, 240)).lower()
         closing = jobs[-1]
         assert closing.dataset_type == "closing_line"
         assert closing.as_of is None
         assert closing.snapshot_games is None
-        assert closing.modes == (
-            ("standard", "thinking_high") if horizon == 480 else ("standard",)
-        )
+        assert closing.fits == EXPECTED_TABPFN_FITS[horizon][1]
 
     for _, dispatch in job.tabpfn_runs(games, "2026-10-22", now):
         inputs = dict(dispatch.inputs)
         if inputs["line"] == "closing":
             assert inputs["include_closing"] == "false"
+            assert inputs["use_alt_key"] == "true"
             continue
         horizon = int(inputs["horizon_minutes"])
         assert inputs["include_closing"] == "true"
@@ -725,14 +766,14 @@ def test_tabpfn_payload_carries_date_horizon_cutoff_and_anchor_games_only():
     assert json.loads(payload["extendedData"]["body"]) == {
         "ref": "main",
         "inputs": {
-            "target": "line_error total_points spread_error",
+            "fits": "standard=line_error,total_points",
             "line": "intermediate",
-            "horizon_minutes": "600",
-            "modes": "standard",
             "use_alt_key": "false",
             "include_closing": "true",
             "update_db": "false",
             "game_date": "2026-10-22",
+            "closing_fits": "standard=line_error,total_points",
+            "horizon_minutes": "600",
             "as_of": "2026-10-22T15:00:00+00:00",
             "snapshot_game_ids": "0022600003",
         },
@@ -832,6 +873,7 @@ def test_booked_tabpfn_inputs_match_the_workflow_and_cli(monkeypatch, tmp_path):
     from pathlib import Path
 
     import yaml
+    from nba_ou.prediction import tabpfn_run
 
     from scripts import predict_tabpfn as predictor
 
@@ -840,36 +882,34 @@ def test_booked_tabpfn_inputs_match_the_workflow_and_cli(monkeypatch, tmp_path):
         Loader=yaml.BaseLoader,
     )
     supported = workflow["on"]["workflow_dispatch"]["inputs"]
-    step = next(
-        s
+    steps = {
+        s.get("name"): s
         for s in workflow["jobs"]["run"]["steps"]
-        if s.get("name") == "Run TabPFN predictor"
-    )
+        if s.get("name")
+        in ("Run TabPFN predictor", "Run additional TabPFN closing line")
+    }
     capture = tmp_path / "args"
-    script = 'python() { printf "%s\\n" "$@" > "$CAPTURE_ARGS"; }\n' + step["run"]
-    script = script.replace(
-        "${{ !inputs.update_db && '--skip-db-update' || '' }}", "--skip-db-update"
-    ).replace("${{ !inputs.persist && '--no-persist' || '' }}", "")
-    predict = Mock()
-    monkeypatch.setattr(predictor, "predict_tabpfn", predict)
-    for at, dispatch in job.tabpfn_runs(
-        _tabpfn_games(), "2026-10-22", _utc("2026-10-22 08:00")
-    ):
-        inputs = dict(dispatch.inputs)
-        assert inputs.keys() <= supported.keys()
+
+    def script(name):
+        text = (
+            'python() { printf "%s\\n" "$@" > "$CAPTURE_ARGS"; }\n' + steps[name]["run"]
+        )
+        return text.replace(
+            "${{ !inputs.update_db && '--skip-db-update' || '' }}", "--skip-db-update"
+        ).replace("${{ !inputs.persist && '--no-persist' || '' }}", "")
+
+    def run_step(name, env):
         subprocess.run(
-            ["bash", "-c", script],
+            ["bash", "-c", script(name)],
             env={
                 **os.environ,
                 "CAPTURE_ARGS": str(capture),
-                "TABPFN_TARGETS": inputs["target"],
-                "TABPFN_LINE": inputs["line"],
-                "TABPFN_HORIZON": inputs.get("horizon_minutes", "360"),
-                "TABPFN_MODES": inputs["modes"],
+                # The workflow's defaults, which fits replaces.
+                "TABPFN_TARGETS": supported["target"]["default"],
+                "TABPFN_MODES": supported["modes"]["default"],
                 "TABPFN_GAME_DATE": inputs["game_date"],
                 "TABPFN_GAME_IDS": "",
-                "TABPFN_AS_OF": inputs.get("as_of", ""),
-                "TABPFN_SNAPSHOT_GAME_IDS": inputs.get("snapshot_game_ids", ""),
+                **env,
             },
             check=True,
             capture_output=True,
@@ -878,9 +918,36 @@ def test_booked_tabpfn_inputs_match_the_workflow_and_cli(monkeypatch, tmp_path):
         assert args[0] == "scripts/predict_tabpfn.py"
         predictor.main(args[1:])
         options = predict.call_args.kwargs
-        assert options["targets"] == ["line_error", "total_points", "spread_error"]
+        return (
+            options,
+            tabpfn_run.TabPFNJob(
+                targets=tuple(options["targets"]),
+                modes=tuple(options["modes"]),
+                mode_targets=options["mode_targets"],
+            ).fits,
+        )
+
+    predict = Mock()
+    monkeypatch.setattr(predictor, "predict_tabpfn", predict)
+    for at, dispatch in job.tabpfn_runs(
+        _tabpfn_games(), "2026-10-22", _utc("2026-10-22 08:00")
+    ):
+        inputs = dict(dispatch.inputs)
+        assert inputs.keys() <= supported.keys()
+        options, fits = run_step(
+            "Run TabPFN predictor",
+            {
+                "TABPFN_LINE": inputs["line"],
+                "TABPFN_HORIZON": inputs.get("horizon_minutes", "360"),
+                "TABPFN_FITS": inputs["fits"],
+                "TABPFN_AS_OF": inputs.get("as_of", ""),
+                "TABPFN_SNAPSHOT_GAME_IDS": inputs.get("snapshot_game_ids", ""),
+            },
+        )
+        horizon = int(inputs.get("horizon_minutes", "240"))
+        inter, closing = EXPECTED_TABPFN_FITS[horizon]
+        assert fits == (closing if inputs["line"] == "closing" else inter)
         assert options["line"] == inputs["line"]
-        assert options["modes"] == inputs["modes"].split()
         assert options["game_ids"] is None
         assert options["game_date"] == "2026-10-22"
         assert options["update_db"] is False
@@ -888,13 +955,23 @@ def test_booked_tabpfn_inputs_match_the_workflow_and_cli(monkeypatch, tmp_path):
             assert options["horizon_minutes"] is None
             assert options["as_of"] is None
             assert options["snapshot_game_ids"] is None
-        else:
-            assert options["horizon_minutes"] == int(inputs["horizon_minutes"])
-            assert options["snapshot_game_ids"] == inputs["snapshot_game_ids"].split()
-            assert pd.Timestamp(options["as_of"]) == pd.Timestamp(inputs["as_of"])
-            assert pd.Timestamp(options["as_of"]) <= at - timedelta(
-                minutes=job.TABPFN_DELAY_MINUTES
-            )
+            continue
+        assert options["horizon_minutes"] == int(inputs["horizon_minutes"])
+        assert options["snapshot_game_ids"] == inputs["snapshot_game_ids"].split()
+        assert pd.Timestamp(options["as_of"]) == pd.Timestamp(inputs["as_of"])
+        assert pd.Timestamp(options["as_of"]) <= at - timedelta(
+            minutes=job.TABPFN_DELAY_MINUTES
+        )
+        # The closing step reads closing_fits (inputs.closing_fits || inputs.fits).
+        assert "inputs.closing_fits" in str(
+            steps["Run additional TabPFN closing line"]["env"]["TABPFN_FITS"]
+        )
+        options, fits = run_step(
+            "Run additional TabPFN closing line",
+            {"TABPFN_FITS": inputs["closing_fits"]},
+        )
+        assert options["line"] == "closing"
+        assert fits == closing
 
 
 def _joined(games, now):
@@ -923,10 +1000,8 @@ def test_joined_tabpfn_jobs_ride_in_the_predictor_run_covering_their_snapshot():
     for run, dispatch in joined.items():
         assert dispatch.workflow_file == job.PREDICTOR.workflow_file
         inputs = dict(dispatch.inputs)
-        assert inputs.keys() == {"tabpfn", "tabpfn_modes", "tabpfn_use_alt_key"}
-        for tabpfn_job in parse_jobs(
-            inputs["tabpfn"], modes=inputs["tabpfn_modes"].split()
-        ):
+        assert inputs.keys() == {"tabpfn", "tabpfn_use_alt_key"}
+        for tabpfn_job in parse_jobs(inputs["tabpfn"]):
             if tabpfn_job.horizon == 0:
                 assert tabpfn_job.as_of is None
                 assert tabpfn_job.snapshot_games is None

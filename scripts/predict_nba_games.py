@@ -555,14 +555,14 @@ def run_prediction_pipeline(
 
 
 def describe_tabpfn_job(job: TabPFNJob) -> str:
-    """``TabPFN t0720 (line_error, total_points; standard) at the snapshot of
+    """``TabPFN t0720 (standard: line_error, total_points) at the snapshot of
     2026-10-28 23:00 UTC``."""
     at = (
         "now"
         if job.as_of is None
         else f"the snapshot of {job.as_of.tz_convert('UTC'):%Y-%m-%d %H:%M} UTC"
     )
-    return f"{job.name} ({', '.join(job.targets)}; {', '.join(job.modes)}) at {at}"
+    return f"{job.name} ({job.plan}) at {at}"
 
 
 def tabpfn_after_predictions(
@@ -848,8 +848,10 @@ if __name__ == "__main__":
         metavar="JOBS",
         help=(
             "TabPFN jobs to run once the predictions are stored, separated by ';': "
-            "HORIZON[@AS_OF[@GAME_IDS]], e.g. "
+            "HORIZON[@AS_OF[@GAME_IDS[@FITS]]], e.g. "
             "'720@2026-10-28T23:00:00+00:00@0022600131' (0: the closing line). "
+            "FITS ('standard=line_error,total_points thinking_high=line_error') "
+            "replaces --tabpfn-targets and --tabpfn-modes for that job. "
             "Each is a TabPFN run of its own (scripts/predict_tabpfn.py)."
         ),
     )

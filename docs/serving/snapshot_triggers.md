@@ -36,7 +36,8 @@ day, `schedule_snapshot_triggers.yml` runs
    and TBD games do not select the last tip-off. Games sharing the last tip-off
    share its anchor metadata; earlier tip-offs do not book extra jobs.
 
-   Each job predicts `line_error total_points spread_error`. The first three
+   Each job predicts the targets and modes of `TABPFN_FITS`
+   (`schedule_snapshot_triggers.py`), table below. The first three
    run intermediate, using each target's production spec and training rows
    of that exact horizon. Intermediate
    reconstructs **every game of the slate, including started/final games**, at
@@ -45,9 +46,23 @@ day, `schedule_snapshot_triggers.yml` runs
    Only the selected horizon is built. The full slate and crews are read for
    TabPFN alone; normal predictions retain their live schedule.
 
-   **T-600, T-480 and T-360 also predict the closing line**, for all three targets,
-   inside the same GitHub job, with that job's modes and API key.
+   **T-600, T-480 and T-360 also predict the closing line**,
+   inside the same GitHub job, with that job's API key.
    **T-240 runs closing only**, without an intermediate T-240 prediction.
+
+   | Run | Intermediate fits | Closing fits | Key |
+   |---|---|---|---|
+   | T-600 | standard: `line_error`, `total_points` | standard: `line_error`, `total_points` | normal |
+   | T-480 | standard: all three; `thinking_high`: `line_error`, `total_points` | standard: all three | `TABPFN_API_KEY_ALT` |
+   | T-360 | standard: `line_error`, `total_points` | standard: `line_error`, `total_points` | normal |
+   | T-240 | — | standard: all three | `TABPFN_API_KEY_ALT` |
+
+   Since 2026-10-29 `spread_error` is left out of T-600 and T-360, and
+   `thinking_high` runs only for the totals targets on T-480's intermediate line.
+   Each job carries its own fits, `MODE=TARGET[,TARGET]` items separated by
+   spaces (`nba_ou.scheduling.tabpfn_jobs`, `--fits` of `predict_tabpfn.py`):
+   a joined job as the `FITS` field of its `tabpfn` item, a standalone
+   dispatch as its `fits` and `closing_fits` inputs.
    Joined dispatches append a `0` closing
    job after the intermediate job; standalone dispatches set `include_closing`
    and run a second script step, without repeating the database update.
@@ -77,16 +92,14 @@ day, `schedule_snapshot_triggers.yml` runs
    - `none` / `--no-tabpfn`: no TabPFN jobs.
 
    A joined job gets a pool job with its own `tabpfn` input
-   (`HORIZON@AS_OF@GAME_IDS`); a snapshot without a covering predictor run
+   (`HORIZON@AS_OF@GAME_IDS@FITS`); a snapshot without a covering predictor run
    retains a standalone dispatch. Normal predictor times do not change.
-   T-600, T-360 and T-240 use `standard`. **T-480 uses `standard thinking_high`**
-   for all three targets and both lines, keeping both variants. The scheduler sets
-   `tabpfn_modes` on joined dispatches and `modes` on standalone ones; both
-   execute the same policy. **T-480 uses the repository secret
-   `TABPFN_API_KEY_ALT` for both modes, both lines and all three targets**;
-   T-600, T-360 and T-240 use the normal `TABPFN_ACCESS_TOKEN`.
-   The scheduler sets `tabpfn_use_alt_key=true` on the joined T-480 dispatch,
-   or `use_alt_key=true` on its standalone fallback. The workflow exposes
+   The fits are those of the table above, the same in both booking modes.
+   **T-480 and T-240 use the repository secret
+   `TABPFN_API_KEY_ALT` for every fit**;
+   T-600 and T-360 use the normal `TABPFN_ACCESS_TOKEN`.
+   The scheduler sets `tabpfn_use_alt_key=true` on the joined T-480 and T-240
+   dispatches, or `use_alt_key=true` on their standalone fallbacks. The workflow exposes
    `TABPFN_USE_ALT_KEY=true` and the client selects the alternate secret.
    A missing alternate key fails explicitly, without falling back to the
    normal account. Add `TABPFN_API_KEY_ALT` before enabling this policy.
@@ -137,10 +150,13 @@ modes are TabPFN's thinking at medium or high effort (`thinking_medium`,
 `thinking_high`): the server searches the fit within its default time budget,
 which costs more time and inference. Each mode is stored as its own variant
 (`tabpfn_v3_5`, `tabpfn_v3_5_thinking_high`), so a run with
-`modes="standard thinking_high"` stores both side by side. The scheduled
-T-480 job uses both modes for all three targets and both lines (six intermediate
-and six closing fits); T-600 and T-360 use standard only (three intermediate
-and three closing fits each). T-240 uses standard for closing only (three fits).
+`modes="standard thinking_high"` stores both side by side. `fits` (`--fits`)
+gives each mode its own targets instead of `target` and `modes`, e.g.
+`standard=line_error,total_points,spread_error thinking_high=line_error,total_points`.
+The scheduled runs fit (table in "What it does"): T-600 and T-360 two standard
+intermediate and two standard closing fits each; T-480 five intermediate fits
+(three standard, two high-thinking) and three standard closing fits; T-240
+three standard closing fits.
 Closing fits run only when games are eligible. All fits of a line share its preparation
 and are stored in the same TabPFN run, with a variant per target and mode.
 
@@ -171,9 +187,9 @@ skips the snapshots that pass meanwhile.
 | 08:00 | `retrain_prediction_models.yml` (`update_database`, `promote`) | database update; on a game day, then refit, smoke test, promotion |
 | 09:35 | `schedule_snapshot_triggers.yml` | books everything below |
 | each snapshot | `nba_predictor_daily.yml` | every enabled slot |
-| last tip − 10 h, − 8 h, − 6 h | joined inside `nba_predictor_daily.yml` | TabPFN all three targets; every game at its own snapshot |
-| last tip − 10 h, − 8 h, − 6 h, in the same job | TabPFN closing | all three targets, eligible pending games; standard + thinking_high and alternate key at T-8, standard and normal key otherwise |
-| last tip − 4 h | joined inside `nba_predictor_daily.yml`, standalone fallback | TabPFN closing only, all three targets, standard mode, normal key, eligible pending games |
+| last tip − 10 h, − 8 h, − 6 h | joined inside `nba_predictor_daily.yml` | TabPFN intermediate: `line_error` + `total_points` at T-10/T-6; all three + `thinking_high` for the totals at T-8; every game at its own snapshot |
+| last tip − 10 h, − 8 h, − 6 h, in the same job | TabPFN closing | standard, eligible pending games: `line_error` + `total_points` at T-10/T-6, all three at T-8; alternate key at T-8, normal key otherwise |
+| last tip − 4 h | joined inside `nba_predictor_daily.yml`, standalone fallback | TabPFN closing only, all three targets, standard mode, alternate key, eligible pending games |
 | last end + 30 min | `nba_predict_past_snapshots.yml` | intermediate slots on their own snapshots; registry closing models on reconstructed T-8h/T-6h/T-4h/T-0; random and historical-average baselines on T-0 |
 | earlier of last end + 2 h and next morning 07:50 | `update_finished_matches_daily.yml` | final scores (prediction store), finished matches |
 | 11:11 every day | `update_finished_matches_daily.yml` | retry pending final scores and finished matches |
@@ -362,9 +378,9 @@ T-1080 and T-960 of a 19:00 ET game.
   2 min after the predictor run covering its snapshot so that one is queued first,
   but cross-workflow execution order is not guaranteed. See [GitHub's concurrency reference](https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax#concurrency).
 - More TabPFN runs increase runner time and inference usage: the slate
-  needs three standard intermediate fits at T-600, T-480 and T-360, plus three
-  high-thinking intermediate fits at T-480. Closing adds three standard fits
-  at all four times and three high-thinking fits at T-480 when games are eligible. Queuing
+  needs two standard intermediate fits at T-600 and T-360, and three standard
+  plus two high-thinking intermediate fits at T-480. Closing adds two standard
+  fits at T-600 and T-360 and three at T-480 and T-240 when games are eligible. Queuing
   preserves work but does not guarantee execution at the trigger's minute.
 - The T−30 run can finish close to tip-off. The predictor never
   stores a game that is in progress.

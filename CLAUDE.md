@@ -270,8 +270,13 @@ results. In short:
   run intermediate and closing at T-600, T-480 and T-360 of the last tip-off,
   plus closing only at T-240. Intermediate reconstructs every game at its own
   snapshot; closing predicts eligible pending games using current inputs.
-  T-600, T-360 and T-240 use `standard` and the normal key. T-480 uses
-  `standard thinking_high` with `TABPFN_API_KEY_ALT` for both lines.
+  Each job carries its own fits (`MODE=TARGET[,TARGET]`, `--fits`;
+  `TABPFN_FITS` in the scheduler): T-600 and T-360 fit `line_error` and
+  `total_points`, standard, on both lines; T-480 fits all three standard on
+  both lines plus `thinking_high` for `line_error` and `total_points` on the
+  intermediate line only, all with `TABPFN_API_KEY_ALT`; T-240 fits all three
+  standard at closing, also with `TABPFN_API_KEY_ALT`. T-600 and T-360 use the
+  normal key.
 
 ## Adding or changing features
 
