@@ -12,13 +12,17 @@ on:
                 type: boolean
                 default: false
             tabpfn:
-                description: "TabPFN jobs after the predictions, ';'-separated HORIZON@AS_OF@GAME_IDS (empty = none; the scheduler fills it)"
+                description: "TabPFN jobs after the predictions, ';'-separated HORIZON[@AS_OF[@GAME_IDS]] (0 = closing; empty = none; the scheduler fills it)"
                 type: string
                 default: ""
             tabpfn_modes:
                 description: "TabPFN modes of those jobs: standard, thinking_medium, thinking_high"
                 type: string
                 default: standard
+            tabpfn_use_alt_key:
+                description: "Use TABPFN_API_KEY_ALT for every TabPFN fit in this run (required at T-8)"
+                type: boolean
+                default: false
             tabpfn_refresh:
                 description: "Fetch reports and odds again before the TabPFN jobs and predict at that moment, not at their snapshot"
                 type: boolean
@@ -72,6 +76,8 @@ jobs:
             ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
             # The TabPFN jobs a run carries (--tabpfn) fit on the hosted API.
             TABPFN_ACCESS_TOKEN: ${{ secrets.TABPFN_ACCESS_TOKEN }}
+            TABPFN_API_KEY_ALT: ${{ secrets.TABPFN_API_KEY_ALT }}
+            TABPFN_USE_ALT_KEY: ${{ inputs.tabpfn_use_alt_key && 'true' || 'false' }}
             S3_AWS_PROFILE: ""
             # Local copies of the season partitions the TabPFN jobs fit on,
             # outside the checkout: finished seasons download once.

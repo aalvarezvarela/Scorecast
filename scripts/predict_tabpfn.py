@@ -1,12 +1,12 @@
 """Predict tonight's games with TabPFN, on its own.
 
-    python scripts/predict_tabpfn.py [--targets line_error total_points] [--no-persist]
+    python scripts/predict_tabpfn.py [--targets line_error total_points spread_error] [--no-persist]
     python scripts/predict_tabpfn.py --modes standard thinking_high
     python scripts/predict_tabpfn.py --line intermediate [--horizon-minutes 360]
     python scripts/predict_tabpfn.py --line intermediate --horizon-minutes 720 \
         --game-date 2026-10-26 --as-of 2026-10-26T11:00:00Z
 
-One or more targets and one line per run (``line_error`` and ``total_points``
+One or more targets and one line per run (``line_error``, ``total_points`` and ``spread_error``
 at the closing line by default; ``--line intermediate`` follows the slot of a fixed time before
 tip-off, T-360 by default). TabPFN keeps no model, so each run fits it on the
 rows and columns of that slot's production build
@@ -23,8 +23,10 @@ rows and columns of that slot's production build
    rows are built from them, so they carry the lines of this moment: the
    closing rows, or the intermediate row of the horizon -- built from the
    ticks so far when the snapshot is still ahead (``SNAPSHOT_PASSED`` False),
-   as the daily predictor does. Every game of the slate that has not started
-   is predicted, at either line; only that horizon's rows are built.
+   as the daily predictor does. Live/manual runs predict games not yet
+   started. Scheduled intermediate jobs (as_of and snapshot_game_ids) rebuild
+   the whole slate, including started/final games, at their own pregame
+   snapshots; only that horizon's rows are built.
 3. TabPFN is fitted separately for each target and mode (``--modes``: the
    standard model by default, or thinking at medium or high effort, each
    stored as a variant of its own) on its spec's rows and features. Tonight's
@@ -139,10 +141,11 @@ def run_tabpfn(
     model by default), each stored as its own variant. ``persist=False``
     stores nothing (the database update still writes).
     ``game_date`` pins a scheduled run to its slate and ``as_of`` the
-    intermediate input cutoff, even when the runner is busy; every game of the
-    slate not started when the run reads the schedule is predicted.
-    ``snapshot_game_ids`` names the games whose snapshot ``as_of`` is
-    (metadata, not a filter: ``tabpfn_run._rebuild_at_row_snapshot``).
+    intermediate input cutoff, even when the runner is busy.
+    ``snapshot_game_ids`` names the last-tip games whose snapshot ``as_of``
+    anchors (metadata, not a filter): these scheduled jobs reconstruct the
+    whole slate, including started/final games. Without it, the live schedule
+    keeps only games not yet started.
     ``game_ids`` (manual runs) keeps only those games.
     """
     dataset_type = LINES[line]

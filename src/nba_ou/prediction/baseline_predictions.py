@@ -4,7 +4,12 @@ from zoneinfo import ZoneInfo
 import numpy as np
 import pandas as pd
 from nba_ou.config.odds_columns import total_line_over_col_raw
+from nba_ou.data_processing.team.cleaning_teams import clean_team_data
+from nba_ou.postgre_db.games.fetch_data_from_db.fetch_data_from_games_db import (
+    load_games_from_db,
+)
 from nba_ou.utils.general_utils import get_season_year_from_date
+from nba_ou.utils.seasons import drop_exhibition_games
 
 PREDICTION_VALUE_TYPE_LINE_ERROR = "DIFF_FROM_LINE"
 
@@ -116,6 +121,29 @@ def baseline_history_window(
     return history[(game_dates >= start) & (game_dates < date_to_predict)]
 
 
+def load_baseline_history(game_date: str) -> pd.DataFrame:
+    """One total per completed game in the current and previous season.
+
+    Only dates before the evaluated slate are used, even when the database
+    already contains that slate's final scores. No feature build is needed.
+    """
+    season = int(get_season_year_from_date(game_date))
+    seasons = [f"{year}-{str(year + 1)[-2:]}" for year in (season - 1, season)]
+    games = load_games_from_db(seasons=seasons)
+    if games is None or games.empty:
+        raise ValueError("No historical games available for the average baseline.")
+    games = games.rename(columns=str.upper).copy()
+    games["PTS"] = pd.to_numeric(games["PTS"], errors="coerce")
+    games = clean_team_data(drop_exhibition_games(games))
+    history = games.groupby("GAME_ID", as_index=False).agg(
+        GAME_DATE=("GAME_DATE", "first"),
+        TOTAL_POINTS=("PTS", lambda points: points.sum(min_count=2)),
+        TEAM_COUNT=("TEAM_ID", "nunique"),
+    )
+    history = history.loc[history["TEAM_COUNT"].eq(2)].drop(columns="TEAM_COUNT")
+    return baseline_history_window(history, game_date)
+
+
 def _base_prediction_summary(
     df: pd.DataFrame,
     *,
@@ -213,8 +241,19 @@ def build_random_line_error_baseline_predictions(
         total_points_pick_line_col=total_points_pick_line_col,
     )
 
-    rng = np.random.default_rng(random_seed)
-    picks = rng.choice(["OVER", "UNDER"], size=len(df_summary))
+    if random_seed is None:
+        picks = np.random.default_rng().choice(["OVER", "UNDER"], size=len(df_summary))
+    else:
+        # A date seed plus game id makes replay/rerun picks independent of
+        # the row order and of another game's missing line-history coverage.
+        picks = np.array(
+            [
+                np.random.default_rng([random_seed, *str(game).encode()]).choice(
+                    ["OVER", "UNDER"]
+                )
+                for game in df_summary["GAME_ID"]
+            ]
+        )
     pred_line_error = pd.Series(
         np.where(picks == "OVER", 1.0, -1.0),
         index=df_summary.index,

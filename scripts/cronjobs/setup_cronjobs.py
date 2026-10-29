@@ -16,17 +16,20 @@ patched, a missing one is created. Add a workflow to the jobs of
 disables (a job left on cron-job.org would keep firing).
 
 The day, on the one self-hosted runner, at the times of ``[Schedule]`` in
-``config.ini`` (08:00 and 09:30 Madrid by default):
+``config.ini`` (08:00, 09:35 and 11:11 Madrid by default):
 
     UPDATE_AND_RETRAIN_AT    database update, then -- on a game day -- refit,
                              smoke test and promotion
     SCHEDULE_PREDICTIONS_AT  booking of the day's runs
                              (schedule_snapshot_triggers.py): the predictor at
-                             every snapshot time, TabPFN line_error and
-                             total_points at each game's T-720/480/360/240,
+                             every snapshot time, TabPFN for all three targets
+                             intermediate + closing at T-600/480/360 of the
+                             last game and closing only at T-240,
                              and after the last game's
                              estimated end the past-snapshot predictions
-                             (+30 min) and final scores (+2 h)
+                             (+30 min) and final scores (+2 h, capped at
+                             FINISHED_MATCHES_LATEST_AT the following morning)
+    FINISHED_MATCHES_RETRY_AT independent daily final-score retry
 
 A changed time reaches cron-job.org only with ``--apply``. The repository
 variables ``DAILY_UPDATE_ENABLED`` and ``PREDICTIONS_ENABLED`` switch the
@@ -118,6 +121,9 @@ def read_schedule(config: ConfigParser) -> tuple[str, list[WorkflowJob]]:
     ZoneInfo(timezone)  # fails on a misspelt zone
     update = parse_clock(config.get("Schedule", "UPDATE_AND_RETRAIN_AT"))
     booking = parse_clock(config.get("Schedule", "SCHEDULE_PREDICTIONS_AT"))
+    retry = parse_clock(
+        config.get("Schedule", "FINISHED_MATCHES_RETRY_AT", fallback="11:11")
+    )
     jobs = [
         # The database update runs as the retrain workflow's first job, so the
         # refit never reads a half-updated database; the refit then promotes
@@ -137,6 +143,12 @@ def read_schedule(config: ConfigParser) -> tuple[str, list[WorkflowJob]]:
             workflow_file="schedule_snapshot_triggers.yml",
             hour=booking[0],
             minute=booking[1],
+        ),
+        WorkflowJob(
+            title="Scorecast - retry final scores",
+            workflow_file="update_finished_matches_daily.yml",
+            hour=retry[0],
+            minute=retry[1],
         ),
     ]
     return timezone, jobs

@@ -199,8 +199,16 @@ def tabpfn_training_set(
 
 
 def _authenticate(tabpfn_client) -> None:
-    """``TABPFN_ACCESS_TOKEN``, else whatever ``init`` finds (``TABPFN_TOKEN``)."""
-    token = os.getenv("TABPFN_ACCESS_TOKEN")
+    """Use the explicitly selected alternate key, or the normal credentials.
+
+    An alternate-key run must never fall back to the normal account.
+    """
+    if os.getenv("TABPFN_USE_ALT_KEY", "").strip().lower() == "true":
+        token = os.getenv("TABPFN_API_KEY_ALT", "").strip()
+        if not token:
+            raise ValueError("TABPFN_API_KEY_ALT is required for this TabPFN run.")
+    else:
+        token = os.getenv("TABPFN_ACCESS_TOKEN")
     if token:
         tabpfn_client.set_access_token(token)
     else:

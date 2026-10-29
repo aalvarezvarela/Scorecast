@@ -18,7 +18,7 @@ on:
             target:
                 description: "Targets separated by spaces or commas: line_error, total_points, spread_error"
                 type: string
-                default: line_error total_points
+                default: line_error total_points spread_error
             line:
                 description: "Follow the closing slot, or the slot at a fixed time before tip-off"
                 type: choice
@@ -34,6 +34,14 @@ on:
                 description: "TabPFN modes, each fitted and stored as its own variant: standard, thinking_medium, thinking_high"
                 type: string
                 default: standard
+            use_alt_key:
+                description: "Use TABPFN_API_KEY_ALT for every fit (required at T-8)"
+                type: boolean
+                default: false
+            include_closing:
+                description: "Also predict the closing line in this job after the intermediate run (T-10, T-8 and T-6)"
+                type: boolean
+                default: false
             game_date:
                 description: "Game date YYYY-MM-DD (empty = today's Pacific date)"
                 type: string
@@ -98,6 +106,8 @@ jobs:
             AIVEN_DB_PASSWORD: ${{ secrets.AIVEN_DB_PASSWORD }}
             ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
             TABPFN_ACCESS_TOKEN: ${{ secrets.TABPFN_ACCESS_TOKEN }}
+            TABPFN_API_KEY_ALT: ${{ secrets.TABPFN_API_KEY_ALT }}
+            TABPFN_USE_ALT_KEY: ${{ inputs.use_alt_key && 'true' || 'false' }}
             S3_AWS_PROFILE: ""
             # Local copies of the season partitions, outside the checkout
             # (actions/checkout cleans it): finished seasons download once.
@@ -158,4 +168,21 @@ jobs:
                       --modes "$TABPFN_MODES" \
                       --line "$TABPFN_LINE" "${args[@]}" \
                       ${{ !inputs.update_db && '--skip-db-update' || '' }} \
+                      ${{ !inputs.persist && '--no-persist' || '' }}
+
+            # Fallback when no normal predictor run covers T-10, T-8 or T-6.
+            # Both lines share this job's modes and selected API key.
+            - name: Run additional TabPFN closing line
+              if: ${{ !cancelled() && inputs.include_closing && inputs.line == 'intermediate' }}
+              env:
+                  TABPFN_TARGETS: ${{ inputs.target }}
+                  TABPFN_MODES: ${{ inputs.modes || 'standard' }}
+                  TABPFN_GAME_DATE: ${{ inputs.game_date }}
+                  TABPFN_GAME_IDS: ${{ inputs.game_ids }}
+              run: |
+                  args=()
+                  if [[ -n "$TABPFN_GAME_DATE" ]]; then args+=(--game-date "$TABPFN_GAME_DATE"); fi
+                  if [[ -n "$TABPFN_GAME_IDS" ]]; then args+=(--game-ids "$TABPFN_GAME_IDS"); fi
+                  python scripts/predict_tabpfn.py --targets "$TABPFN_TARGETS" \
+                      --modes "$TABPFN_MODES" --line closing --skip-db-update "${args[@]}" \
                       ${{ !inputs.persist && '--no-persist' || '' }}

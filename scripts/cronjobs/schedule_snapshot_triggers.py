@@ -12,23 +12,24 @@ apart share one run, fired at the last of them, so every snapshot of the group
 has passed. The T-30 snapshot (``EXACT_HORIZONS``) always gets a run at its own
 time.
 
-Also TabPFN runs for each game's T-720, T-480, T-360 and T-240 snapshots,
-predicting line_error and total_points with the corresponding production
-slots, fired ``TABPFN_DELAY_MINUTES`` after the predictor run that covers the
-snapshot (a grouped run can fire up to ``GROUP_MINUTES`` after it), so that
-run is queued first. Coinciding TabPFN dispatches are spaced at least one
-minute apart, preserving their snapshot cutoffs. Games sharing a tip-off share each
-horizon's run. Each run predicts every game of the slate not yet started, at
-that horizon: the triggering games at their snapshot, the later ones from the
-lines so far, as the daily predictor does. Each dispatch carries its game date
-and snapshot cutoff, so queuing cannot change which slate or timepoint it
-predicts. Snapshots before the daily booking are left out. ``--no-tabpfn``
-leaves these out.
+Also four TabPFN runs at T-600, T-480, T-360 and T-240 of the date's last
+scheduled tip-off, predicting line_error, total_points and spread_error.
+T-480 uses standard and thinking_high; the other horizons use standard only.
+T-480 uses the alternate API key. T-600, T-480 and T-360 predict intermediate
+and closing in the same GitHub job; T-240 predicts closing only, always using
+the currently available closing inputs for eligible pending games.
+Intermediate reconstructs every game at its own snapshot of that horizon,
+including games already started or finished. In joined mode these jobs run
+inside their covering predictor runs; standalone dispatches fire
+TABPFN_DELAY_MINUTES after the covering run (or the snapshot if none covers
+it). Each job retains its snapshot cutoff. Snapshots before the daily booking
+are left out. ``--no-tabpfn`` leaves these out.
 
-And, after the last game, whose end is estimated as its tip-off plus
-``GAME_LENGTH_MINUTES``: the past-snapshot predictions of the date
-(``nba_predict_past_snapshots.yml``, ``game_date`` passed) 30 min after it, and
-the final scores (``update_finished_matches_daily.yml``) two hours after it.
+After the last game, whose end is estimated as its tip-off plus
+GAME_LENGTH_MINUTES: the date's past-snapshot predictions fire 30 min after
+that end, and final scores two hours after it, capped at
+[Schedule] FINISHED_MATCHES_LATEST_AT the following morning (07:50 by default).
+setup_cronjobs.py also books an independent daily final-score retry at 11:11.
 
 Left out: times already past, and times outside the game date in US/Pacific --
 the predictor predicts the slate of its run's Pacific date, so a trigger before
@@ -62,6 +63,7 @@ from collections import defaultdict
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
+from datetime import time as clock_time
 from zoneinfo import ZoneInfo
 
 import pandas as pd
@@ -75,7 +77,7 @@ from nba_ou.scheduling.cronjob_org import (
     github_headers,
     read_secret,
 )
-from nba_ou.scheduling.tabpfn_jobs import JOB_SEPARATOR, format_job
+from nba_ou.scheduling.tabpfn_jobs import DEFAULT_TARGETS, JOB_SEPARATOR, format_job
 
 
 @dataclass(frozen=True)
@@ -91,7 +93,7 @@ class Dispatch:
 # Every enabled slot.
 PREDICTOR = Dispatch("nba_predictor_daily.yml")
 TABPFN_WORKFLOW = "nba_predictor_daily_tabpfn_client.yml"
-TABPFN_HORIZONS = (720, 480, 360, 240)
+TABPFN_HORIZONS = (600, 480, 360, 240)
 # Every TabPFN snapshot is also a predictor snapshot: TabPFN fires this long
 # after the predictor run that covers it, so that run enters the runner's queue
 # first. ``as_of`` keeps the snapshot.
@@ -178,11 +180,15 @@ def pool_title(index: int, group: ScheduleGroup | None = None) -> str:
     dispatch = group.dispatch
     inputs = dict(dispatch.inputs)
     if dispatch.workflow_file == TABPFN_WORKFLOW:
-        snapshot = datetime.fromisoformat(inputs["as_of"]).astimezone(MADRID)
-        purpose = (
-            f"TabPFN T-{inputs['horizon_minutes']} {dispatch.label} | "
-            f"snapshot {snapshot:%d/%m %H:%M} Madrid"
-        )
+        if inputs["line"] == "closing":
+            at = group.fire_times()[0].astimezone(MADRID)
+            purpose = f"TabPFN closing {dispatch.label} | run {at:%d/%m %H:%M} Madrid"
+        else:
+            snapshot = datetime.fromisoformat(inputs["as_of"]).astimezone(MADRID)
+            purpose = (
+                f"TabPFN T-{inputs['horizon_minutes']} {dispatch.label} | "
+                f"snapshot {snapshot:%d/%m %H:%M} Madrid"
+            )
     elif dispatch.workflow_file == PREDICTOR.workflow_file:
         times = ", ".join(f"{at.astimezone(MADRID):%H:%M}" for at in group.fire_times())
         purpose = f"Predictor {times} Madrid"
@@ -284,9 +290,10 @@ def trigger_times(
 
 @dataclass(frozen=True)
 class TabPFNSnapshot:
-    """The TabPFN run of one (snapshot minute, horizon): the games whose
-    snapshot it is, and the predictor run that covers them (None when none
-    does)."""
+    """One TabPFN run anchored before the last tip-off, with its anchor games
+    and covering predictor run (None when none does). ``horizon`` is the
+    dispatch lead time; T-240 runs closing rather than an intermediate slot.
+    """
 
     at: datetime
     horizon: int
@@ -294,18 +301,37 @@ class TabPFNSnapshot:
     label: str
     covered_by: datetime | None
 
+    @property
+    def modes(self) -> tuple[str, ...]:
+        """Keep the standard fit; add high-effort thinking at T-8 only."""
+        return ("standard", "thinking_high") if self.horizon == 480 else ("standard",)
+
+    @property
+    def intermediate(self) -> bool:
+        """T-4 runs only closing; earlier runs also reconstruct intermediate."""
+        return self.horizon != 240
+
     def dispatch(self, game_date: str) -> Dispatch:
         """The TabPFN workflow's dispatch of this snapshot."""
         return Dispatch(
             TABPFN_WORKFLOW,
             (
-                ("target", "line_error total_points"),
-                ("line", "intermediate"),
-                ("horizon_minutes", str(self.horizon)),
+                ("target", " ".join(DEFAULT_TARGETS)),
+                ("line", "intermediate" if self.intermediate else "closing"),
+                ("modes", " ".join(self.modes)),
+                ("use_alt_key", str(self.horizon == 480).lower()),
+                ("include_closing", str(self.intermediate).lower()),
                 ("update_db", "false"),
                 ("game_date", game_date),
-                ("as_of", self.at.isoformat()),
-                ("snapshot_game_ids", " ".join(self.game_ids)),
+            )
+            + (
+                (
+                    ("horizon_minutes", str(self.horizon)),
+                    ("as_of", self.at.isoformat()),
+                    ("snapshot_game_ids", " ".join(self.game_ids)),
+                )
+                if self.intermediate
+                else ()
             ),
             label=self.label,
         )
@@ -315,49 +341,59 @@ def tabpfn_snapshots(
     games: pd.DataFrame,
     predictor_runs: Mapping[datetime, tuple[str, ...]] | None = None,
 ) -> list[TabPFNSnapshot]:
-    """One per (snapshot minute, horizon) of ``TABPFN_HORIZONS``, in order.
+    """One per horizon of the date's last tip-off, in snapshot order.
 
     ``predictor_runs`` is ``trigger_times``' plan: it groups snapshots and fires
     each group at its last one, so a snapshot's predictor run can be up to
     ``GROUP_MINUTES`` after it. Games sharing a tip-off share each horizon's
-    snapshot.
+    snapshot. Intermediate predicts earlier games at their own, already passed
+    snapshot of the same horizon; closing uses current eligible pending games.
+    Earlier games do not book extra runs.
     """
+    valid = games.loc[
+        ~games["game_status"]
+        .fillna("")
+        .astype(str)
+        .str.upper()
+        .map(lambda status: any(skip in status for skip in SKIP_STATUSES))
+        & games["tipoff_utc"].notna()
+    ]
+    if valid.empty:
+        return []
+    games = valid.loc[valid["tipoff_utc"].eq(valid["tipoff_utc"].max())]
     covering = {
         reason: run
         for run, reasons in (predictor_runs or {}).items()
         for reason in reasons
     }
-    snapshots: dict[tuple[datetime, int], set[str]] = defaultdict(set)
-    covered: dict[tuple[datetime, int], datetime | None] = {}
-    game_labels: dict[str, str] = {}
-    for game in games.itertuples(index=False):
-        status = str(game.game_status or "").upper()
-        if any(skip in status for skip in SKIP_STATUSES):
-            continue
-        tipoff = pd.Timestamp(game.tipoff_utc)
-        if pd.isna(tipoff):
-            continue
-        label = f"{game.team_away}@{game.team_home}"
-        game_labels[str(game.game_id)] = label
-        for horizon in TABPFN_HORIZONS:
-            at = (tipoff - timedelta(minutes=horizon)).to_pydatetime()
-            at = at.astimezone(UTC).replace(second=0, microsecond=0)
-            run = covering.get(f"{label} T-{horizon}")
-            snapshots[(at, horizon)].add(str(game.game_id))
-            previous = covered.get((at, horizon))
-            covered[(at, horizon)] = max(filter(None, (previous, run)), default=None)
+    tipoff = pd.Timestamp(games["tipoff_utc"].max())
+    anchors = {
+        str(game.game_id): f"{game.team_away}@{game.team_home}"
+        for game in games.itertuples(index=False)
+    }
+    game_ids = tuple(sorted(anchors))
+    label = ", ".join(anchors[game] for game in game_ids[:2])
+    if len(game_ids) > 2:
+        label += f" +{len(game_ids) - 2}"
     return [
         TabPFNSnapshot(
-            at=at,
+            at=(tipoff - timedelta(minutes=horizon))
+            .to_pydatetime()
+            .astimezone(UTC)
+            .replace(second=0, microsecond=0),
             horizon=horizon,
-            game_ids=tuple(sorted(game_ids)),
-            label=", ".join(game_labels[game] for game in sorted(game_ids)[:2])
-            + (f" +{len(game_ids) - 2}" if len(game_ids) > 2 else ""),
-            covered_by=covered[(at, horizon)],
+            game_ids=game_ids,
+            label=label,
+            covered_by=max(
+                (
+                    covering[f"{matchup} T-{horizon}"]
+                    for matchup in anchors.values()
+                    if f"{matchup} T-{horizon}" in covering
+                ),
+                default=None,
+            ),
         )
-        for (at, horizon), game_ids in sorted(
-            snapshots.items(), key=lambda item: (item[0][0], -item[0][1])
-        )
+        for horizon in TABPFN_HORIZONS
     ]
 
 
@@ -369,8 +405,8 @@ def _spaced(runs: list[tuple[datetime, Dispatch]], now: datetime):
         ((fire, dispatch) for fire, dispatch in runs if fire > now + MIN_LEAD),
         key=lambda run: (
             run[0],
-            dict(run[1].inputs)["as_of"],
-            -int(dict(run[1].inputs)["horizon_minutes"]),
+            dict(run[1].inputs).get("as_of", ""),
+            -int(dict(run[1].inputs).get("horizon_minutes", "0")),
             run[1].label,
         ),
     )
@@ -389,9 +425,9 @@ def tabpfn_runs(
     predictor_runs: Mapping[datetime, tuple[str, ...]] | None = None,
 ) -> list[tuple[datetime, Dispatch]]:
     """Runs per (snapshot minute, horizon), fired ``TABPFN_DELAY_MINUTES``
-    after the predictor run that covers the snapshot. Each predicts every game
-    not started when it runs; ``snapshot_game_ids`` (metadata, not a filter)
-    and the label name the games whose snapshot it is.
+    after the predictor run that covers the snapshot. Intermediate reconstructs
+    every game of the slate, including started/final games; ``snapshot_game_ids``
+    is anchor metadata, not a filter. T-240 runs closing on eligible pending games.
 
     A snapshot no predictor run covers fires after the snapshot itself.
     Coinciding dispatches are spaced at least one minute apart without
@@ -435,10 +471,18 @@ def joined_tabpfn_runs(
                 (
                     "tabpfn",
                     JOB_SEPARATOR.join(
-                        format_job(snap.horizon, snap.at, snap.game_ids)
-                        for snap in snaps
+                        [
+                            format_job(snap.horizon, snap.at, snap.game_ids)
+                            for snap in snaps
+                            if snap.intermediate
+                        ]
+                        + ["0"]
                     ),
                 ),
+                # The four slate horizons are two hours apart, so their
+                # covering predictor runs (grouped by <=30 min) are distinct.
+                ("tabpfn_modes", " ".join(snaps[0].modes)),
+                ("tabpfn_use_alt_key", str(snaps[0].horizon == 480).lower()),
             ),
             label="; ".join(f"T-{snap.horizon} {snap.label}" for snap in snaps),
         )
@@ -452,18 +496,33 @@ def post_game_runs(
     tipoffs: Iterable[tuple[str, datetime]], game_date: str, now: datetime
 ) -> list[tuple[datetime, Dispatch]]:
     """The runs after the last game's estimated end: the date's past-snapshot
-    predictions, then the final scores. Empty without games; a time already
-    past is left out."""
+    predictions, then the final scores, capped at the next morning's
+    FINISHED_MATCHES_LATEST_AT in the configured timezone. Empty without
+    games; a time already past is left out."""
     tips = [tipoff for _, tipoff in tipoffs]
     if not tips:
         return []
     end = max(tips) + timedelta(minutes=GAME_LENGTH_MINUTES)
+    latest = datetime.combine(
+        date.fromisoformat(game_date) + timedelta(days=1),
+        clock_time.fromisoformat(
+            SETTINGS.config.get(
+                "Schedule", "FINISHED_MATCHES_LATEST_AT", fallback="07:50"
+            ).strip()
+        ),
+        tzinfo=ZoneInfo(
+            SETTINGS.config.get("Schedule", "TIMEZONE", fallback="Europe/Madrid")
+        ),
+    ).astimezone(UTC)
     runs = [
         (
             end + timedelta(minutes=PAST_SNAPSHOTS_AFTER_END_MINUTES),
             Dispatch(PAST_SNAPSHOTS_WORKFLOW, (("game_date", game_date),)),
         ),
-        (end + timedelta(minutes=FINISHED_MATCHES_AFTER_END_MINUTES), FINISHED_MATCHES),
+        (
+            min(end + timedelta(minutes=FINISHED_MATCHES_AFTER_END_MINUTES), latest),
+            FINISHED_MATCHES,
+        ),
     ]
     kept = []
     for at, dispatch in runs:
@@ -658,11 +717,17 @@ def main() -> None:
     print(f"{len(tabpfn)} TabPFN run(s) still ahead:")
     for at, dispatch in tabpfn:
         inputs = dict(dispatch.inputs)
+        if inputs["line"] == "closing":
+            print(
+                f"  {_clock(at)}  TabPFN closing {' + '.join(DEFAULT_TARGETS)}: "
+                f"eligible pending games (game date {inputs['game_date']})"
+            )
+            continue
         print(
-            f"  {_clock(at)}  TabPFN line_error + total_points "
+            f"  {_clock(at)}  TabPFN {' + '.join(DEFAULT_TARGETS)} "
             f"T-{inputs['horizon_minutes']} (snapshot "
             f"{_clock(datetime.fromisoformat(inputs['as_of']))} of "
-            f"{dispatch.label}): every game not started "
+            f"{dispatch.label}): every game of the slate "
             f"(game date {inputs['game_date']})"
         )
     for at, dispatch in after_games:

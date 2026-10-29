@@ -1,8 +1,7 @@
 """The prediction job on a tonight-only feature frame.
 
-``create_df_to_predict(target_game_ids=...)`` returns tonight's rows alone, so
-nothing downstream may read history from that frame: the historical-average
-baseline takes it from the build's layer inputs instead.
+``create_df_to_predict(target_game_ids=...)`` returns tonight's rows alone.
+Baselines run only in the retrospective end-of-day workflow.
 """
 
 from __future__ import annotations
@@ -12,10 +11,7 @@ from types import SimpleNamespace
 import numpy as np
 import pandas as pd
 import pytest
-from nba_ou.prediction.baseline_predictions import (
-    HISTORICAL_AVERAGE_LINE_ERROR_BASELINE_MODEL_NAME,
-    baseline_history_window,
-)
+from nba_ou.prediction.baseline_predictions import baseline_history_window
 from nba_ou.prediction.line_source import LineSource
 
 import scripts.predict_nba_games as job
@@ -41,7 +37,7 @@ class _NullRecorder:
         self.outputs.append(predictions)
 
     def add_baseline(self, name, predictions, **_):
-        self.outputs.append(predictions)
+        pytest.fail("a daytime run generated baseline predictions")
 
 
 def _sbr_lines(game_date, **_):
@@ -77,7 +73,7 @@ def test_window_is_this_season_and_the_one_before_until_tonight():
     assert opener["GAME_ID"].tolist() == ["g1", "g2"]
 
 
-def test_baselines_read_history_from_the_layer_inputs(monkeypatch):
+def test_daily_run_does_not_generate_baselines(monkeypatch):
     tonight = pd.DataFrame(
         {
             "GAME_ID": ["g5"],
@@ -138,14 +134,11 @@ def test_baselines_read_history_from_the_layer_inputs(monkeypatch):
     job.predict_nba_games()
 
     assert built["target_game_ids"] == ["g5"]
-    average = stored[HISTORICAL_AVERAGE_LINE_ERROR_BASELINE_MODEL_NAME]
-    assert average["PRED_TOTAL_POINTS"].tolist() == [
-        np.mean([210.0, 220.0, 230.0, 240.0])
-    ]
+    assert stored == {}
 
 
 def test_a_failing_slot_does_not_stop_the_others(monkeypatch, capsys):
-    """Every slot and the baselines get their turn; the run then exits 1."""
+    """Every slot gets its turn; the run then exits 1."""
     from nba_ou.modeling.registry_paths import ModelSlot
 
     tonight = pd.DataFrame(
@@ -220,12 +213,12 @@ def test_a_failing_slot_does_not_stop_the_others(monkeypatch, capsys):
     out = capsys.readouterr().out
     assert "1 slot(s) predicted" in out
     assert "booster unreadable" in out
-    assert "Baseline predictions generated" in out
+    assert "Generating Predictions (Baselines)" not in out
 
 
-def test_a_run_stores_every_slot_and_baseline_in_the_prediction_store(monkeypatch):
+def test_a_run_stores_every_slot_in_the_prediction_store(monkeypatch):
     """The prediction store (Aiven and its S3 archive) is the only place a run
-    writes predictions: it gets the slot and both baselines, in one run."""
+    writes predictions: it gets the slot without the daily baselines."""
     from nba_ou.modeling.registry_paths import ModelSlot
 
     tonight = pd.DataFrame(
@@ -294,13 +287,13 @@ def test_a_run_stores_every_slot_and_baseline_in_the_prediction_store(monkeypatc
     monkeypatch.setattr(job, "datetime", _Now)
     job.predict_nba_games()
 
-    assert len(stored["outputs"]) == 3
+    assert len(stored["outputs"]) == 1
     assert stored["partial"] is False
 
 
 def test_no_filed_report_skips_the_closing_rows_not_the_run(monkeypatch, capsys):
     """Before any team has filed, no closing row is built: the closing slots
-    and the baselines skip, and the intermediate slots still predict."""
+    skip, and the intermediate slots still predict."""
     from nba_ou.modeling.registry_paths import ModelSlot
 
     slots = [
@@ -351,11 +344,6 @@ def test_no_filed_report_skips_the_closing_rows_not_the_run(monkeypatch, capsys)
     # Every build is read in the slot's turn, by the stubbed predictor.
     monkeypatch.setattr(job, "read_slot_builds", lambda **_: {})
     monkeypatch.setattr(job, "PredictionRunRecorder", _NullRecorder)
-    monkeypatch.setattr(
-        job,
-        "load_baseline_predictions_for_nba_games",
-        lambda **_: pytest.fail("baselines run without closing rows"),
-    )
     served = {}
 
     def serve(*, slot, frames, report_required_max_horizon, **_):
@@ -377,7 +365,7 @@ def test_no_filed_report_skips_the_closing_rows_not_the_run(monkeypatch, capsys)
     assert served == {0: (["intermediate_line"], 300), 60: (["intermediate_line"], 300)}
     out = capsys.readouterr().out
     assert "1 slot(s) predicted" in out
-    assert "baselines skipped" in out
+    assert "the closing slots skip" in out
     assert "0 failure(s)" in out
 
 
@@ -442,7 +430,6 @@ def _side_by_side_job(monkeypatch, *, parallel_builds: bool, order: list):
     monkeypatch.setattr(job, "make_s3_client", lambda **_: object())
     monkeypatch.setattr(job, "read_slot_builds", lambda **_: {})
     monkeypatch.setattr(job, "PredictionRunRecorder", _NullRecorder)
-    monkeypatch.setattr(job, "load_baseline_predictions_for_nba_games", lambda **_: {})
     served = {}
 
     def serve(*, slot, frames, df, **_):
@@ -590,6 +577,35 @@ def test_tabpfn_jobs_run_once_the_predictions_are_stored(monkeypatch, capsys):
     ]
     assert calls["fits"] == [True, True]
     assert "2 TabPFN model(s) predicted" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("horizon", [600, 480, 360])
+def test_intermediate_and_closing_tabpfn_follow_stored_xgboost_predictions(
+    monkeypatch,
+    horizon,
+):
+    from nba_ou.prediction.tabpfn_run import TabPFNJob
+
+    order = []
+    fetch, _, calls = _with_tabpfn(monkeypatch, order)
+    job.predict_nba_games(
+        persist=True,
+        tabpfn_jobs=[_tabpfn_job(horizon=horizon), TabPFNJob()],
+    )
+    assert order[-3:] == ["stored", f"TabPFN T-{horizon}", "TabPFN T-0"]
+    fetch.assert_called_once()
+    assert calls["fits"] == [True, True]
+
+
+def test_closing_only_tabpfn_follows_stored_xgboost_predictions(monkeypatch):
+    from nba_ou.prediction.tabpfn_run import TabPFNJob
+
+    order = []
+    fetch, _, calls = _with_tabpfn(monkeypatch, order)
+    job.predict_nba_games(persist=True, tabpfn_jobs=[TabPFNJob()])
+    assert order[-2:] == ["stored", "TabPFN T-0"]
+    fetch.assert_called_once()
+    assert calls["fits"] == [True]
 
 
 def test_refreshed_tabpfn_jobs_fetch_again_and_predict_at_this_moment(monkeypatch):

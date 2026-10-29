@@ -27,6 +27,7 @@ from zoneinfo import ZoneInfo
 import pandas as pd
 from nba_ou.config.dataset_versions import BASE_SCHEMA_VERSION
 from nba_ou.create_training_data.create_df_to_predict import create_df_to_predict
+from nba_ou.create_training_data.live_replay import replay_scheduled_games
 from nba_ou.create_training_data.schema_layers import (
     CLOSING_LINE,
     LayerContext,
@@ -36,6 +37,9 @@ from nba_ou.create_training_data.schema_layers import (
     parse_version,
 )
 from nba_ou.create_training_data.season_partitions import SeasonPartitions
+from nba_ou.data_processing.referees.process_refs_scheduled_game import (
+    process_scheduled_referee_assignments,
+)
 from nba_ou.modeling.refit import resolve_training_frame
 from nba_ou.modeling.registry_models import ModelSpec
 from nba_ou.modeling.registry_paths import (
@@ -71,14 +75,17 @@ from nba_ou.prediction.prediction_tabpfn_client import (
     rows_of_horizon,
     tabpfn_training_set,
 )
-from nba_ou.scheduling.tabpfn_jobs import FIELD_SEPARATOR, JOB_SEPARATOR
+from nba_ou.scheduling.tabpfn_jobs import (
+    DEFAULT_TARGETS,
+    FIELD_SEPARATOR,
+    JOB_SEPARATOR,
+)
+from nba_ou.utils.history_cache import cached
 from nba_ou.utils.phase_timer import PhaseTimer
 from nba_ou.utils.run_log import RunLog
 
 #: Partitions older than this many days mean the daily refit has stopped.
 DEFAULT_MAX_FRAME_AGE_DAYS = 2
-#: The targets of a job when none are given.
-DEFAULT_TARGETS = ("line_error", "total_points")
 #: The prediction column of each target, shown as the job predicts it.
 VALUE_COLUMNS = {
     "line_error": "PRED_LINE_ERROR",
@@ -390,6 +397,23 @@ class TonightRows:
     df: pd.DataFrame
     frame_version: str
     latest_quotes: pd.DataFrame | None = None
+    scheduled_games: pd.DataFrame | None = None
+
+
+@cached()
+def _slate_schedule(game_date: str) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """The whole slate, including started/final games, and its referee crews.
+
+    A scheduled TabPFN run is anchored on the last game: earlier games must
+    remain available for reconstruction at their own pregame snapshots.
+    """
+    games = replay_scheduled_games(game_date)
+    refs = (
+        process_scheduled_referee_assignments(games)
+        if not games.empty
+        else pd.DataFrame()
+    )
+    return games, refs
 
 
 def tonight_rows(
@@ -403,6 +427,14 @@ def tonight_rows(
 ) -> TonightRows | None:
     """Tonight's rows of the job's line; None (with the reason printed) when
     there is nothing to predict."""
+    if job.as_of is not None and job.snapshot_games is not None:
+        games, refs = _slate_schedule(date_to_predict)
+        scheduled_data = dict(
+            scheduled_data,
+            scheduled_games=games,
+            df_referees_scheduled=refs,
+            roster_snapshots=None,
+        )
     if scheduled_data["scheduled_games"].empty:
         _status("No scheduled games for this date; nothing to predict.")
         return None
@@ -471,7 +503,9 @@ def tonight_rows(
         f"{len(df)} game(s) to predict; T-{horizon} passed for "
         f"{passed}, the rest from the lines so far"
     )
-    return TonightRows(df, BASE_SCHEMA_VERSION)
+    return TonightRows(
+        df, BASE_SCHEMA_VERSION, scheduled_games=scheduled_data["scheduled_games"]
+    )
 
 
 @dataclass
@@ -507,7 +541,11 @@ def fit_and_store(
     recorder = PredictionRunRecorder(
         workflow=WORKFLOW_TABPFN, game_date=date_to_predict
     )
-    recorder.set_schedule(scheduled_data["scheduled_games"])
+    recorder.set_schedule(
+        rows.scheduled_games
+        if rows.scheduled_games is not None
+        else scheduled_data["scheduled_games"]
+    )
     recorder.add_frame(job.dataset_type, rows.df, version=rows.frame_version)
     if rows.latest_quotes is not None:
         recorder.add_frame(

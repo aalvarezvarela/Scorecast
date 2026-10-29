@@ -225,8 +225,8 @@ results. In short:
   The predictor and TabPFN log numbered steps (`utils/run_log.py`): in GitHub
   Actions each step is a collapsible group, warnings and failures are
   annotations, and the timings go to the job summary.
-- Scheduling: cron-job.org dispatches the workflows. The two daily times
-  (update + retrain, booking of the day's runs) are `[Schedule]` in
+- Scheduling: cron-job.org dispatches the workflows. The three daily times
+  (update + retrain, booking of the day's runs, final-score retry) are `[Schedule]` in
   `config.ini`, applied with `scripts/cronjobs/setup_cronjobs.py --apply`. The
   repository variables `DAILY_UPDATE_ENABLED` and `PREDICTIONS_ENABLED`
   (`false` = off) skip the update/refit and the prediction workflows.
@@ -244,10 +244,15 @@ results. In short:
   predict each game's latest snapshot, the run's own moment, limited to what
   their training rows carried (`nba_ou.prediction.input_limits`); in `own`
   every slot reads the row of its own horizon. `scripts/predict_past_snapshots.py`
-  is the end-of-day `own` run. Details: `docs/intermediate/live_prediction.md`.
+  is the end-of-day `own` run. It also runs the random and historical-average
+  baselines once per slate on reconstructed T-0 lines; daytime runs do not
+  run baselines. Random picks are reproducible by date and game. The mean
+  uses completed games from the current and previous seasons, excluding
+  the evaluated date and later dates. Both are stored with `kind=2` and
+  `workflow=2` in Aiven. Details: `docs/intermediate/live_prediction.md`.
 - TabPFN runs on its own (`scripts/predict_tabpfn.py`, dispatch-only workflow
   `nba_predictor_daily_tabpfn_client.yml`): one or more targets (`--targets`)
-  and one line per run (default `line_error` and `total_points` at the closing line;
+  and one line per run (default `line_error`, `total_points` and `spread_error` at the closing line;
   `--line intermediate` follows a fixed horizon, T-360 by default); the targets
   share the database update, tonight's rows and the stored run, and each gets
   its own fit. TabPFN keeps no model, so each run fits it
@@ -255,13 +260,18 @@ results. In short:
   slot's production spec, read from the season partitions, and predicts
   tonight's rows. Stored as `model_builds.kind` 3 / `runs.workflow` 3.
   `--modes` (workflow input `modes`) fits each target in one or more modes:
-  `standard` (the default, the only one scheduled) or thinking
+  `standard` (the default) or thinking
   (`thinking_medium`, `thinking_high`), each its own variant
   (`tabpfn_v3_5_thinking_high`). The predictor can also carry TabPFN jobs
   (`--tabpfn`, workflow input `tabpfn`), run once its own predictions are
   stored, each stored as a TabPFN run (`prediction/tabpfn_run.py`, shared with
   `predict_tabpfn.py`); `[Schedule] TABPFN_RUNS` (`separate` / `joined` /
-  `none`, now `joined`) decides how the scheduler books them.
+  `none`, now `joined`) decides how the scheduler books them. Scheduled jobs
+  run intermediate and closing at T-600, T-480 and T-360 of the last tip-off,
+  plus closing only at T-240. Intermediate reconstructs every game at its own
+  snapshot; closing predicts eligible pending games using current inputs.
+  T-600, T-360 and T-240 use `standard` and the normal key. T-480 uses
+  `standard thinking_high` with `TABPFN_API_KEY_ALT` for both lines.
 
 ## Adding or changing features
 
