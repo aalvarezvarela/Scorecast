@@ -723,7 +723,8 @@ def test_scheduler_books_exact_tabpfn_payloads_and_verifies_the_pool(
             "--apply",
             "--game-date",
             "2026-10-22",
-            *([] if include_tabpfn else ["--no-tabpfn"]),
+            # Separate dispatches, whatever [Schedule] TABPFN_RUNS says.
+            *(["--tabpfn", "separate"] if include_tabpfn else ["--no-tabpfn"]),
         ],
     )
     groups = []

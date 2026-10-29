@@ -57,6 +57,7 @@ from nba_ou.create_training_data.get_all_info_for_scheduled_games import (
 from nba_ou.create_training_data.schema_layers import CLOSING_LINE
 from nba_ou.fetch_data.scheduled_game.get_schedule_games import get_schedule_games
 from nba_ou.modeling.registry_paths import ModelSlot, format_horizon
+from nba_ou.postgre_db.config.connection_keep import kept_connections
 from nba_ou.postgre_db.update_all.update_all_databases import update_all_databases
 from nba_ou.prediction.line_source import check_line_feed
 from nba_ou.prediction.prediction_tabpfn_client import (
@@ -238,8 +239,9 @@ def run_tabpfn(
         scheduled_data = restrict_to_games(scheduled_data, job.wanted_games)
 
     started = time.perf_counter()
-    # The build's two reads of the closing odds (base features, referees) load once.
-    with history_cache():
+    # The build's two reads of the closing odds (base features, referees) load
+    # once, and its reads share their connections.
+    with history_cache(), kept_connections():
         rows = tonight_rows(
             job, scheduled_data, inputs.specs, date_to_predict=date_to_predict, log=log
         )

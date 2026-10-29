@@ -66,7 +66,7 @@ day, `schedule_snapshot_triggers.yml` runs
    `snapshot_game_ids` takes the snapshot nearest the cutoff as its own. A
    moved game is just another row from the lines so far.
    `[Schedule] TABPFN_RUNS` (`--tabpfn` per booking) decides how they are
-   booked: `separate` (the default) as above; `joined` as jobs of the
+   booked: `separate` as above; `joined` (the setting since 2026-10-29) as jobs of the
    predictor run that covers their snapshot, in its `tabpfn` input
    (`HORIZON@AS_OF@GAME_IDS`, `;`-separated, `nba_ou.scheduling.tabpfn_jobs`),
    run once that run's own predictions are stored, each stored as a TabPFN run

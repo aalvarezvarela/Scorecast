@@ -261,7 +261,7 @@ results. In short:
   (`--tabpfn`, workflow input `tabpfn`), run once its own predictions are
   stored, each stored as a TabPFN run (`prediction/tabpfn_run.py`, shared with
   `predict_tabpfn.py`); `[Schedule] TABPFN_RUNS` (`separate` / `joined` /
-  `none`) decides how the scheduler books them.
+  `none`, now `joined`) decides how the scheduler books them.
 
 ## Adding or changing features
 

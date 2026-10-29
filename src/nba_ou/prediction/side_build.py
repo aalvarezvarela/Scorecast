@@ -32,6 +32,7 @@ from nba_ou.create_training_data.history_memo import (
     default_backend,
     history_memo_rebuild,
 )
+from nba_ou.postgre_db.config.connection_keep import kept_connections
 from nba_ou.utils import warm_gate
 from nba_ou.utils.phase_timer import duration, peak_rss
 
@@ -75,7 +76,8 @@ def _run(fn, args, kwargs, workdir: str, current_season: int, label: str) -> Non
     warm_gate.install(gate)
     started = time.perf_counter()
     try:
-        outcome = ("ok", fn(*args, **kwargs))
+        with kept_connections():
+            outcome = ("ok", fn(*args, **kwargs))
     except BaseException:  # noqa: BLE001 -- handed to the parent to raise
         traceback.print_exc()
         outcome = ("error", traceback.format_exc())
