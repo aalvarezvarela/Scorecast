@@ -145,7 +145,7 @@ Ordered by saving.
 | P6 · Runner hardware | depends on the result | low to measure | — | open |
 | P7 · Streamlit on Aiven | — (unblocks the Supabase clean-up) | medium | dashboard history | open |
 | P8 · Step 2 (schedule, referees, injury reports, odds) | ≈15–25 s per run | low | low | **done** (`perf/prediction-loop`), to confirm on the runner |
-| P9 · TabPFN inside the predictor run | ≈2.5–3 min and a queue slot per TabPFN run (phase 1); most of its ~6:42 rebuild with phase 2 | medium | medium | phase 1 **done** (PR #89), not booked; phase 2 levels 1–2 **done** (PR #92), validated on the runner; not booked |
+| P9 · TabPFN inside the predictor run | ≈2.5–3 min and a queue slot per TabPFN run (phase 1); most of its ~6:42 rebuild with phase 2 | medium | medium | phases 1 (PR #89) and 2 levels 1–2 (PR #92) **done**, validated; booked `joined` from 2026-10-29 |
 
 ### P0 · Measure before optimizing — done
 
@@ -461,7 +461,7 @@ injury report sync` line.
 - Loading less history: it changes feature values, and no optimization may.
 - More workers in the injury step: under 1 min on normal runs.
 
-### P9 · TabPFN inside the predictor run — phase 1 done, not booked yet
+### P9 · TabPFN inside the predictor run — phases 1–2 done, booked `joined`
 
 A TabPFN run (`scripts/predict_tabpfn.py`, about 11:30 of runner time at
 T-720 on 2026-10-28) repeats most of the predictor run that fired two minutes
@@ -481,7 +481,7 @@ fetched later changes nothing, except a report stamped before the snapshot and
 published after the step-2 sync. `--tabpfn-refresh` (workflow
 `tabpfn_refresh`, off by default) fetches step 2 again and builds the rows at
 that moment instead, for predicting on the latest data. The scheduler books it
-with `[Schedule] TABPFN_RUNS = joined` (default `separate`, today's runs). The
+with `[Schedule] TABPFN_RUNS = joined`, the setting since 2026-10-29. The
 predictor workflow now installs `requirements/predict-tabpfn-cuda.txt`, has
 `TABPFN_ACCESS_TOKEN`, and takes its OIDC session right before the run.
 
@@ -528,9 +528,9 @@ two or three times), the memo fingerprints (~10 s) and games and players
   frames identical bit for bit; peak 5.3 GB.
 - Level 3 (open): reused database connections, ~15–20 s more.
 
-**Validation (to do before booking `joined`).** A manual predictor dispatch
-with one `tabpfn` job and `persist` off, compared with a separate TabPFN run
-at the same `as_of`: same rows bit for bit, and the phase times.
+**Validation (done 2026-10-28).** A manual predictor dispatch with one
+`tabpfn` job and `persist` off, compared with a separate TabPFN run at the
+same `as_of`: same predictions to the last digit (progress log).
 
 ## Expected result
 
@@ -561,10 +561,9 @@ caches miss.
 6. P7: Streamlit on Aiven, then the Supabase clean-up.
 7. ~~P8: step 2 in parallel.~~ Done (`perf/prediction-logging`, left out of
    PR #87); confirm the `[time] step 2 ...` lines on the runner.
-8. P9: TabPFN inside the predictor run. Phase 1 done on
-   `feat/tabpfn-thinking` (not booked: `TABPFN_RUNS = separate`); phase 2
-   levels 1–2 merged (PR #92) and validated on the runner; next: book
-   `joined` or level 3.
+8. P9: TabPFN inside the predictor run. Phases 1 (PR #89) and 2 levels 1–2
+   (PR #92) done and validated on the runner; booked `joined` from
+   2026-10-29. Confirm the first full day's run times; level 3 open.
 
 ## Progress log
 
@@ -625,6 +624,10 @@ caches miss.
   rows 4:27). Both differ from the 15:36Z runs in NOP@DEN and DAL@OKC (and
   SAS@UTA from the 14:46Z one): the stored data changed during the day, not
   the cache.
+- 2026-10-29 — `[Schedule] TABPFN_RUNS = joined`: from the next booking the
+  TabPFN runs ride in the predictor runs covering their snapshots (dry run
+  for 2026-10-29: 6 predictor runs carry jobs, up to two each, no separate
+  TabPFN run left).
 
 ## Sources
 
