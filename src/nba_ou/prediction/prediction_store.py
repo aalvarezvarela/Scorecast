@@ -77,6 +77,7 @@ from nba_ou.postgre_db.predictions_aiven.schema import (
     RUN_STATUS_PARTIAL,
     RUN_STATUS_S3_FAILED,
     TARGET_CODES,
+    WORKFLOW_HISTORICAL_BACKFILL,
     WORKFLOW_PAST_SNAPSHOTS,
 )
 from nba_ou.prediction.line_source import LINE_SOURCE_COLUMN
@@ -391,7 +392,7 @@ class PredictionRunRecorder:
     """Everything one run predicted, ready for ``persist_prediction_run``.
 
     ``workflow`` is ``schema.WORKFLOW_DAILY``, ``WORKFLOW_PAST_SNAPSHOTS`` or
-    ``WORKFLOW_TABPFN``.
+    ``WORKFLOW_TABPFN`` or ``WORKFLOW_HISTORICAL_BACKFILL``.
     Call ``set_schedule`` and ``add_frame`` before adding outputs: an output is
     validated against them as it arrives.
     """
@@ -436,18 +437,26 @@ class PredictionRunRecorder:
         if version is not None:
             self.frame_versions[dataset_type] = str(version)
         try:
-            self._frame_keys[dataset_type] = self._keys(dataset_type, frame)
+            self._frame_keys[dataset_type] = self._keys(
+                dataset_type,
+                frame,
+                snapshot_closing=self.workflow == WORKFLOW_HISTORICAL_BACKFILL,
+            )
         except Exception as exc:  # noqa: BLE001 -- rejects outputs, not the run
             self.setup_errors[dataset_type] = f"{type(exc).__name__}: {exc}"
             self._frame_keys.pop(dataset_type, None)
 
     @staticmethod
-    def _keys(dataset_type: str, frame: pd.DataFrame) -> pd.DataFrame:
+    def _keys(
+        dataset_type: str, frame: pd.DataFrame, *, snapshot_closing=False
+    ) -> pd.DataFrame:
         """Per frame row, its (game id, snapshot horizon) input key."""
         keys = pd.DataFrame(
             {"game_id": game_id_int(frame["GAME_ID"]).to_numpy()}, index=frame.index
         )
-        if dataset_type == INTERMEDIATE_LINE:
+        if dataset_type == INTERMEDIATE_LINE or (
+            snapshot_closing and "TIME_TO_MATCH_MIN" in frame
+        ):
             keys["snapshot_horizon_minutes"] = pd.to_numeric(
                 frame["TIME_TO_MATCH_MIN"]
             ).astype("Int64")
@@ -613,7 +622,7 @@ class PredictionRunRecorder:
             raise OutputRejected("an intermediate output without INPUT_MODE own/latest")
         snapshot = (
             pd.to_numeric(_optional(out, "TIME_TO_MATCH_MIN"), errors="coerce")
-            .where(~closing | replay)
+            .where(~closing | replay | (self.workflow == WORKFLOW_HISTORICAL_BACKFILL))
             .astype("Int64")
         )
         if snapshot[~closing | replay].isna().any():
@@ -784,6 +793,17 @@ class PredictionRunRecorder:
                 bets = bet_line_columns(frame, dataset_type, self.book)
             else:
                 tipoff = located["game_id"].map(tipoffs)
+                if (
+                    self.workflow == WORKFLOW_HISTORICAL_BACKFILL
+                    and "SNAPSHOT_TS_UTC" in frame
+                ):
+                    # Preserve the actual archived snapshot even when the
+                    # schedule feed and stored line-history tipoff differ.
+                    tipoff = pd.to_datetime(
+                        frame["SNAPSHOT_TS_UTC"], utc=True
+                    ) + pd.to_timedelta(
+                        located["snapshot_horizon_minutes"].astype(float), unit="m"
+                    )
                 bets = self._latest_quotes().reindex(located["game_id"].to_numpy())
                 bets.index = located.index
                 replay = located["input_mode"].eq(INPUT_MODE_REPLAY)

@@ -51,7 +51,9 @@ def select_history(
     if frame.empty or games.empty:
         return pd.DataFrame()
     work = displayed_models(frame)
-    work = work.loc[work["target"].eq(target) & work["workflow"].isin([1, 2, 3])].copy()
+    work = work.loc[
+        work["target"].eq(target) & work["workflow"].isin([1, 2, 3, 4])
+    ].copy()
     for column in ("predicted_at", "run_finished_at", "input_at", "tipoff_at"):
         work[column] = pd.to_datetime(work[column], utc=True, errors="coerce")
     current = utc_timestamp(now)
@@ -88,9 +90,19 @@ def select_history(
                         candidates["dataset_type"].eq(dataset_type)
                     ]
                     if dataset_type == 1 and source == "Snapshot replay":
+                        # Past-snapshot reconstructions (replay mode) and
+                        # historical backfill refits, never live outputs.
                         eligible = eligible.loc[
-                            eligible["workflow"].eq(2)
-                            & eligible["input_mode"].eq(3)
+                            (
+                                (
+                                    eligible["workflow"].eq(2)
+                                    & eligible["input_mode"].eq(3)
+                                )
+                                | (
+                                    eligible["workflow"].eq(4)
+                                    & eligible["input_mode"].eq(0)
+                                )
+                            )
                             & eligible["model_horizon_minutes"].eq(0)
                             & eligible["snapshot_horizon_minutes"].eq(horizon)
                         ]
@@ -111,7 +123,7 @@ def select_history(
                                 eligible["input_mode"].eq(1)
                                 & eligible["snapshot_horizon_minutes"].eq(horizon)
                                 & (
-                                    eligible["workflow"].eq(2)
+                                    eligible["workflow"].isin([2, 4])
                                     | (
                                         eligible["kind"].eq(3)
                                         & eligible["workflow"].eq(3)
@@ -275,9 +287,9 @@ def history_summary(
                 "No line": int(counts.get("NO LINE", 0)),
                 "Pending": int(counts.get("PENDING", 0)),
                 "Void": int(counts.get("VOID", 0)),
-                "Win rate": 100 * wins / (wins + losses)
-                if wins + losses
-                else float("nan"),
+                "Win rate": (
+                    100 * wins / (wins + losses) if wins + losses else float("nan")
+                ),
                 "MAE (pts)": errors.mean(),
                 "Scored predictions": int(errors.notna().sum()),
             }
