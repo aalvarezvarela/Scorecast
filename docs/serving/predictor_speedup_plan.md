@@ -526,7 +526,17 @@ two or three times), the memo fingerprints (~10 s) and games and players
   after the predictor's 138 → 93 s (base features 52 → 24 s, injuries 64 →
   47 s); the predictor build 162–173 s across runs (database latency); both
   frames identical bit for bit; peak 5.3 GB.
-- Level 3 (open): reused database connections, ~15–20 s more.
+- Level 3 (**done**, `feat/tabpfn-joined-booking`, to validate on the runner):
+  `nba_ou.postgre_db.config.connection_keep`. Inside `kept_connections()`
+  closing a connection from `connect_nba_db` / `connect_schema_db` (or
+  leaving `with conn:`) ends its transaction and keeps it, one per thread and
+  database; the next caller gets it back after `RESET ALL` and its own
+  `search_path`, in one round trip. Only closed connections are kept: a
+  caller nesting a second gets a new one, and one dropped unclosed is freed as
+  before. One that fails its reset is replaced. Held by the predictor run, the
+  closing side process and the TabPFN build. Measured locally: an open costs
+  0.3–0.5 s (Supabase, Aiven), a reuse 35–50 ms; the run's total saving is
+  to be read on the runner.
 
 **Validation (done 2026-10-28).** A manual predictor dispatch with one
 `tabpfn` job and `persist` off, compared with a separate TabPFN run at the
@@ -563,7 +573,8 @@ caches miss.
    PR #87); confirm the `[time] step 2 ...` lines on the runner.
 8. P9: TabPFN inside the predictor run. Phases 1 (PR #89) and 2 levels 1–2
    (PR #92) done and validated on the runner; booked `joined` from
-   2026-10-29. Confirm the first full day's run times; level 3 open.
+   2026-10-29. Level 3 done, to validate on the runner; then confirm the
+   first full day's run times.
 
 ## Progress log
 
@@ -628,6 +639,11 @@ caches miss.
   TabPFN runs ride in the predictor runs covering their snapshots (dry run
   for 2026-10-29: 6 predictor runs carry jobs, up to two each, no separate
   TabPFN run left).
+- 2026-10-29 — P9 phase 2 level 3 (`connection_keep`): the run keeps one
+  connection per thread and database, reset for each caller. Tests with fake
+  connections; checked read-only against Supabase and Aiven (session reset,
+  `search_path` per schema, closed at the end). The local timing was stopped
+  (the local memo was cold); measured on the runner instead.
 
 ## Sources
 

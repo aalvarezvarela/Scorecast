@@ -25,6 +25,7 @@ from nba_ou.create_training_data.schema_layers import (
     newest_version,
 )
 from nba_ou.fetch_data.scheduled_game.get_schedule_games import get_schedule_games
+from nba_ou.postgre_db.config.connection_keep import kept_connections
 from nba_ou.postgre_db.predictions_aiven.schema import WORKFLOW_DAILY
 from nba_ou.postgre_db.update_all.update_all_databases import update_all_databases
 from nba_ou.prediction.baseline_predictions import (
@@ -123,10 +124,11 @@ def slot_overview(slots: list) -> list[str]:
 def predict_nba_games(**kwargs) -> None:
     """``run_prediction_pipeline`` with its log in numbered steps
     (``nba_ou.utils.run_log``), its builds sharing their loads of stored
-    history (``nba_ou.utils.history_cache``)."""
+    history (``nba_ou.utils.history_cache``) and its database connections
+    (``connection_keep``)."""
     log = RunLog()
     try:
-        with history_cache.history_cache():
+        with history_cache.history_cache(), kept_connections():
             return run_prediction_pipeline(log, **kwargs)
     finally:
         # An exception's traceback then prints outside the step's group.

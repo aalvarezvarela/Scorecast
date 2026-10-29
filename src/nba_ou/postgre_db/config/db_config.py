@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any
 
 import psycopg
-from psycopg import sql
+from nba_ou.postgre_db.config import connection_keep
 
 _CURRENT_DIR = Path(__file__).resolve().parent
 _PROJECT_ROOT = _CURRENT_DIR.parent.parent
@@ -217,10 +217,16 @@ def connect_nba_db(env: str | None = None) -> psycopg.Connection:
 
     ``env`` overrides the process-wide ``DB_ENV`` for this connection only, so a
     single process can read one environment and write another -- which the
-    line-history load needs (read games from Supabase, write to Aiven).
+    line-history load needs (read games from Supabase, write to Aiven). Inside
+    ``connection_keep.kept_connections()`` the thread's connection is reused.
     """
     resolved_env = (env or get_db_env()).strip().lower()
+    return connection_keep.connection(
+        resolved_env, None, lambda: _open_nba_db(resolved_env)
+    )
 
+
+def _open_nba_db(resolved_env: str) -> psycopg.Connection:
     # Prefer DSN where one is configured (Supabase pooler/session mode, Aiven
     # service URI). This also fixes IPv6 issues in GitHub runners.
     dsn = get_db_dsn(resolved_env)
@@ -248,13 +254,10 @@ def connect_line_history_db() -> psycopg.Connection:
 
 def connect_schema_db(schema: str) -> psycopg.Connection:
     """Connect and set search_path to the given schema."""
-    conn = connect_nba_db()
-    with conn.cursor() as cur:
-        cur.execute(
-            sql.SQL("SET search_path TO {}, public;").format(sql.Identifier(schema))
-        )
-    conn.commit()
-    return conn
+    resolved_env = get_db_env().strip().lower()
+    return connection_keep.connection(
+        resolved_env, schema, lambda: _open_nba_db(resolved_env)
+    )
 
 
 def connect_games_db() -> psycopg.Connection:
