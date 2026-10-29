@@ -76,14 +76,14 @@ from nba_ou.data_processing.past_injuries.injury_effects import (
     add_top3_availability_effect_features_for_columns,
     availability_memo_name,
 )
+from nba_ou.data_processing.past_injuries.past_injuries import (
+    get_injured_players_dict,
+)
 from nba_ou.data_processing.players.attach_player_features import (
     add_player_history_features,
     clear_player_statistics,
     drop_player_identifier_columns,
     player_history_memo_name,
-)
-from nba_ou.data_processing.past_injuries.past_injuries import (
-    get_injured_players_dict,
 )
 from nba_ou.data_processing.players.live_roster import (
     game_day_rosters,
@@ -839,7 +839,9 @@ def create_df_to_predict(
         official = roster_overrides(
             scheduled_games,
             roster_snapshots,
-            as_of=scheduled_data.get("injury_as_of_utc"),
+            as_of=scheduled_data.get(
+                "roster_as_of_utc", scheduled_data.get("injury_as_of_utc")
+            ),
         )
         # A team whose official roster could not be fetched takes its previous
         # game's roster, box score plus inactive list: what training reads for

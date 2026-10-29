@@ -72,7 +72,8 @@ T-47 reads the T-47 row as if it were its T-360 row. The two modes, per run:
   own snapshot. Run once after the last tip-off, every snapshot is the past,
   so each slot predicts exactly its training row. That run is
   `scripts/predict_past_snapshots.py` (workflow "NBA Past-Snapshot
-  Predictions", on dispatch): the intermediate slots only, on a schedule that
+  Predictions", on dispatch): intermediate slots plus registry closing models
+  reconstructed at T−8h, T−6h, T−4h and T−0, on a schedule that
   keeps started and finished games (the live one drops them), snapshot rows
   still ahead left out. Its default date is the Eastern date 12 hours ago, so
   it can run from the last game's tip-off until noon ET the next day; after

@@ -59,13 +59,13 @@ class _NullRecorder:
     tests in test_prediction_store.py)."""
 
     def __init__(self, **_):
-        pass
+        self.frames = {}
 
     def set_schedule(self, *_):
         pass
 
-    def add_frame(self, *_, **__):
-        pass
+    def add_frame(self, name, frame, **_):
+        self.frames[name] = frame
 
     def record_slot(self, *_, **__):
         pass
@@ -74,7 +74,8 @@ class _NullRecorder:
         return None
 
 
-def test_each_slot_reads_its_own_snapshot(monkeypatch):
+@pytest.mark.parametrize("trained_on_evaluated_date", [False, True])
+def test_each_slot_reads_its_own_snapshot(monkeypatch, trained_on_evaluated_date):
     frame = pd.DataFrame(
         {
             "GAME_ID": ["g1", "g1"],
@@ -100,24 +101,57 @@ def test_each_slot_reads_its_own_snapshot(monkeypatch):
         lambda date: {"scheduled_games": pd.DataFrame({"GAME_ID": ["g1"]})},
     )
     monkeypatch.setattr(job, "tonight_intermediate_frame", lambda *a, **k: frame)
+    live = SimpleNamespace(line_history=SimpleNamespace(ticks=pd.DataFrame()))
+    monkeypatch.setattr(job, "fetch_live_game_day", lambda *a, **kw: live)
     monkeypatch.setattr(job, "make_s3_client", lambda **_: object())
     # Every build is read in the slot's turn, by the stubbed predictor.
-    monkeypatch.setattr(job, "read_slot_builds", lambda **_: {})
+    monkeypatch.setattr(
+        job,
+        "read_slot_builds",
+        lambda **_: {
+            _slot(0): SimpleNamespace(fit=SimpleNamespace(train_date_max="2026-10-21"))
+            if trained_on_evaluated_date
+            else None
+        },
+    )
     calls = []
 
     def predict(*, slot, frames, latest_input, **_):
         calls.append((slot.horizon_minutes, latest_input))
-        assert set(frames) == {"intermediate_line"}
-        return frames["intermediate_line"].iloc[:1]
+        if slot.horizon_minutes:
+            assert set(frames) == {"intermediate_line"}
+            return frames["intermediate_line"].iloc[:1]
+        assert frames["closing_line"].TIME_TO_MATCH_MIN.tolist() == [480, 360, 240, 0]
+        assert frames["closing_line"].INPUT_MODE.eq("replay").all()
+        return frames["closing_line"]
 
     monkeypatch.setattr(job, "load_registry_model_and_predict", predict)
     monkeypatch.setattr(job, "PredictionRunRecorder", _NullRecorder)
     monkeypatch.setattr(job, "add_past_baselines", lambda *a: [])
     monkeypatch.setattr(
         job,
+        "closing_replay_frame",
+        lambda *a, **kw: pd.DataFrame(
+            {
+                "GAME_ID": ["g1"] * 4,
+                "TIME_TO_MATCH_MIN": [480, 360, 240, 0],
+                "INPUT_MODE": "replay",
+            }
+        ),
+    )
+    monkeypatch.setattr(
+        job,
         "persist_prediction_run",
         lambda *_, **__: pytest.fail("a dry run stored predictions"),
     )
-    job.predict_past_snapshots("2026-10-21", persist=False, update_databases=False)
-    # The closing slot is left out; no slot reads the latest snapshot.
-    assert calls == [(30, False), (60, False)]
+    if trained_on_evaluated_date:
+        with pytest.raises(SystemExit) as exc:
+            job.predict_past_snapshots(
+                "2026-10-21", persist=False, update_databases=False
+            )
+        assert exc.value.code == 1
+        assert calls == [(30, False), (60, False)]
+    else:
+        job.predict_past_snapshots("2026-10-21", persist=False, update_databases=False)
+        # No intermediate slot reads the latest snapshot.
+        assert calls == [(30, False), (60, False), (0, False)]

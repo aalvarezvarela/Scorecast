@@ -46,7 +46,32 @@ details in [docs/intermediate/live_prediction.md](../intermediate/live_predictio
 | Run | When | Closing slots | Intermediate slots |
 | --- | --- | --- | --- |
 | Daily predictor, `INTERMEDIATE_INPUT_MODE = latest` | Several times a day (planned: one run per grid time) | Tonight's closing frame, one row per game | Every slot reads each game's **latest** snapshot -- the run's own moment, off the grid in general (e.g. T−47) -- limited per model by `input_limits.limit_to_training_support` |
-| Past-snapshot run, `own` | Once, after the date's games have tipped | Not run (post-tip odds are not the closing line) | Every slot reads the row of **its own** horizon: the exact simulation of what it was trained on |
+| Past-snapshot run, `own` | Once, after the date's games have tipped | Registry closing models on reconstructed T−8h, T−6h, T−4h and T−0 inputs | Every slot reads the row of **its own** horizon: the exact simulation of what it was trained on |
+
+Closing replay uses the canonical closing feature builder with the same pregame
+ticks loaded for the intermediate replay, and injury reports cut at each game's
+checkpoint. It does not wait for the evaluated date's ticks to be ingested into
+Aiven; standalone callers can also use stored history. Rosters are selected
+from archived observations at that cutoff; referee features are masked before
+their release. Yahoo/public pick percentages without historical timestamps
+remain missing. These are new retrospective inferences, not outputs published
+live. Both teams must have filed an injury report at the checkpoint, as in
+live closing; the scheduled injury dictionary contains that cutoff's
+Out/Doubtful players for the evaluated games only. This filing requirement
+does not apply to intermediate models. Missing reports, quotes or excessive
+missing model features can still reduce coverage. T−0 uses the last safe
+pregame quote in the history, respecting the
+line-history reader's five-minute safety filter.
+
+In Yesterday, live fixed checkpoints select the nearest input within **±60
+minutes**, with publication also inside that window and before tipoff. This
+allows inputs and publication after the nominal checkpoint; exact times are
+shown in details. Final live closing remains the last completed pregame
+prediction. Snapshot replay selects exact intermediate and closing snapshots;
+it never substitutes a live closing prediction for a missing reconstruction.
+Existing dates need a new past-snapshot run to acquire closing replay rows.
+Historical analysis retains its separate live-closing and intermediate-replay
+views.
 
 The random and historical-average baselines run only in the final past-snapshot
 workflow, once per slate, using its reconstructed T-0 pregame lines. Both are
@@ -58,10 +83,9 @@ row order or coverage. A manual rerun is a separate stored run.
 
 Consequences for storage:
 
-- A run produces **at most one row per (game, model build)**: the latest
-  row, the own row, or the closing row. No run re-predicts a snapshot an
-  earlier run already predicted, so no "first prediction wins" rule is
-  needed.
+- A run produces **at most one row per (game, input mode, snapshot, model
+  build)**. Closing replay has four input snapshots per closing build; daily
+  closing still has one row per game. Reruns are separate stored runs.
 - In `latest` mode the 48 intermediate models read the same base row, but
   each sees its own limited copy: referees masked at the model's nominal
   snapshot `tip − H`, unsupported news columns set to 0. The limits are a
@@ -83,8 +107,8 @@ runs before tip (estimate; the cron schedule is not final):
 | Source | Rows per game |
 | --- | --- |
 | `latest` runs: (48 intermediate + 3 closing) × ~17 runs | ~867 |
-| `own` run: 48 intermediate + 2 daily baselines | 50 |
-| **Total, excluding TabPFN** | **~917** |
+| `own` run: 48 intermediate + 12 closing replay + 2 daily baselines | 62 |
+| **Total, excluding TabPFN** | **~929** |
 
 A regular season (1,230 games) is **~1.2M prediction rows**. With the
 narrow layout below (per-model values only, no B-tree key) that is an
@@ -276,8 +300,8 @@ game read the same row.
 | `run_id` | `INTEGER` → `runs` | |
 | `game_id` | `INTEGER` → `games` | |
 | `tipoff_at` | `TIMESTAMPTZ` | Tip-off known at prediction time (`games.tipoff_at` may change later). |
-| `input_mode` | `SMALLINT` | `0 = closing` (closing frame), `1 = own` (each model's own snapshot: exact horizon simulation), `2 = latest` (the game's latest snapshot, read by every model: cross-snapshot). |
-| `snapshot_horizon_minutes` | `SMALLINT`, nullable | `TIME_TO_MATCH_MIN` of the row; off the grid for `latest`; null for closing. |
+| `input_mode` | `SMALLINT` | `0 = closing` (live closing or baseline frame), `1 = own` (intermediate model's own snapshot), `2 = latest` (latest intermediate input), `3 = replay` (registry closing model reconstructed at an explicit checkpoint, workflow 2 only). |
+| `snapshot_horizon_minutes` | `SMALLINT`, nullable | `TIME_TO_MATCH_MIN` of the row; off the grid for `latest`; null for mode 0; 0/240/360/480 for closing replay. The closing model's trained horizon remains 0. |
 | `total_model_line`, `spread_model_line` | `REAL`, nullable | Anchor the outputs are relative to: the normalized line for intermediate rows, the main-book line for closing rows. Spread as implied home margin. |
 | `total_bet_line_x2`, `spread_bet_line_x2` | `SMALLINT`, nullable | **The line being bet**: raw quoted main-book line × 2 (224.5 → 449). Spread as implied home margin. |
 | `total_price_over`, `total_price_under` | `SMALLINT`, nullable | American odds at `total_bet_line_x2`, same quote. |

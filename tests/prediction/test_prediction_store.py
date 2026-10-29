@@ -873,3 +873,61 @@ def test_persist_writes_s3_then_the_store(conn):
         store_schema.RUN_STATUS_PARTIAL
     )
     assert any(key.endswith("manifest.json") for key in s3.store)
+
+
+def test_closing_replay_stores_four_snapshots_and_keeps_baseline_input_separate():
+    raw = intermediate_frame().groupby("GAME_ID").head(1)
+    frames = []
+    for horizon in (0, 240, 360, 480):
+        rows = raw.copy()
+        rows["TIME_TO_MATCH_MIN"] = horizon
+        tipoffs = schedule().set_index("GAME_ID").GAME_TIME
+        rows["SNAPSHOT_TS_UTC"] = pd.to_datetime(
+            rows.GAME_ID.map(tipoffs), utc=True
+        ) - pd.Timedelta(minutes=horizon)
+        rows["INPUT_MODE"] = "replay"
+        frames.append(rows)
+    replay = pd.concat(frames, ignore_index=True)
+    recorder = PredictionRunRecorder(workflow=2, game_date="2026-10-21", book=BOOK)
+    recorder.set_schedule(schedule())
+    recorder.add_frame("intermediate_line", intermediate_frame(), version="2_5")
+    recorder.add_frame(
+        "closing_line",
+        pd.concat([closing_frame(), replay], ignore_index=True),
+        version="2_5",
+    )
+    predictions = output(
+        replay, dataset_type="closing_line", target="line_error", horizon=0
+    )
+    predictions["TIME_TO_MATCH_MIN"] = replay.TIME_TO_MATCH_MIN
+    predictions["INPUT_MODE"] = "replay"
+    predictions["PREDICTED_AT_UTC"] = TIPOFF_2 + pd.Timedelta(hours=3)
+    assert recorder.add_predictions(predictions, label="closing replay") is None
+    assert (
+        recorder.add_baseline(
+            "random_line_error", baseline_output(), schema_version="2_5"
+        )
+        is None
+    )
+    tables = recorder.tables(status=1)
+    inputs = tables.inputs.loc[tables.inputs.input_mode.eq(3)]
+    assert len(inputs) == 8
+    assert set(inputs.snapshot_horizon_minutes) == {0, 240, 360, 480}
+    assert inputs.total_bet_line_x2.eq(451).all()
+    assert inputs.total_price_over.eq(-115).all()
+    assert inputs.spread_bet_line_x2.eq(-7).all()
+    assert tables.inputs.input_mode.eq(0).sum() == 2
+    assert tables.predictions.time_to_tipoff_seconds.lt(0).all()
+    assert len(recorder.input_frames()["closing_line"]) == 10
+
+
+def test_closing_replay_marker_is_rejected_in_live_run():
+    recorder = new_recorder()
+    predictions = output(
+        closing_frame(), dataset_type="closing_line", target="line_error", horizon=0
+    )
+    predictions["INPUT_MODE"] = "replay"
+    predictions["TIME_TO_MATCH_MIN"] = 240
+    assert "past-snapshot" in recorder.add_predictions(
+        predictions, label="bad live replay"
+    )

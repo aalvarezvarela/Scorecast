@@ -4,6 +4,8 @@ name: Predictions - Past Game Snapshots
 # finish is fine), every snapshot is in the past, so each intermediate slot
 # predicts exactly the row of its own horizon -- the row it was trained on, no
 # prediction across horizons. scripts/predict_past_snapshots.py.
+# Registry closing models also run on reconstructed T-8h/T-6h/T-4h/T-0
+# pregame inputs, including the historical quotes and injury-report cutoffs.
 # Also runs the random and historical-average baselines once per slate on
 # reconstructed T-0 lines; the daily predictor no longer runs them.
 on:

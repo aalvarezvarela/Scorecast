@@ -73,7 +73,7 @@ def test_yesterday_defaults_to_live_with_final_scores_and_fixed_checkpoints(
     assert any("28 Oct 2026, 03:00 Madrid" in text.value for text in app.caption)
     cards = tables(app)
     assert len(cards) == 2
-    assert all(len(card.select("tbody tr")) == 12 for card in cards)
+    assert all(len(card.select("tbody tr")) == 14 for card in cards)
     assert all("Closing · Final pre-game" in card.get_text() for card in cards)
     assert all("Intermediate · T−8h" in card.get_text() for card in cards)
     assert any("PUSH" in card.get_text() for card in cards)
@@ -100,7 +100,7 @@ def test_source_and_targets_change_without_another_aiven_read(yesterday_setup):
         for card in tables(app)
         for cell in card.select(".prediction strong")
     ]
-    assert set(values) == {"238.0", "248.0"}
+    assert set(values) == {"248.0"}
     app.session_state["yesterday_target"] = 2
     app.run()
     assert not app.exception
@@ -185,7 +185,7 @@ def test_table_and_details_show_scores_original_outputs_and_madrid_timestamps(
     app.run()
     assert not app.exception
     detail = app.dataframe[0].value
-    assert len(detail) == 24
+    assert len(detail) == 28
     assert set(detail["Final score (away–home)"]) == {"114–121"}
     assert {
         "Original model line",
@@ -199,7 +199,7 @@ def test_table_and_details_show_scores_original_outputs_and_madrid_timestamps(
     app.run()
     app.toggle(key="yesterday_details_1").set_value(True).run()
     assert not app.exception
-    assert len(app.dataframe[0].value) == 12
+    assert len(app.dataframe[0].value) == 14
 
 
 def test_changing_threshold_regrades_picks_and_keeps_predictions(yesterday_setup):
@@ -240,6 +240,7 @@ def test_daily_summary_shows_win_rate_and_mae_per_model_before_all_cards(
     assert len(app.table) == 2
     checkpoint_summary = app.table[0].value
     assert list(checkpoint_summary.index) == [
+        "Closing at 8h",
         "Closing at 6h",
         "Closing at 4h",
         "Closing at closing",
@@ -259,9 +260,11 @@ def test_daily_summary_shows_win_rate_and_mae_per_model_before_all_cards(
     app.run()
     assert not app.exception
     assert not app.metric
-    for table in app.table:
+    for index, table in enumerate(app.table):
         checkpoint_summary = table.value
-        assert checkpoint_summary.loc["Closing at 6h", "MAE"] == "3.00 pts"
+        assert checkpoint_summary.loc["Closing at 6h", "MAE"] == (
+            "13.00 pts" if index == 0 else "—"
+        )
         assert checkpoint_summary.loc["Intermediate at 6h", "MAE"] == "13.00 pts"
         assert checkpoint_summary.loc["Intermediate at 6h", "Win rate"] == "0.0%"
 

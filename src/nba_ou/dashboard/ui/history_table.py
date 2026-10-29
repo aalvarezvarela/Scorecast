@@ -17,6 +17,7 @@ def checkpoint_summary_table(summary: pd.DataFrame, total_games: int) -> pd.Data
     display = pd.DataFrame(index=summary.index)
     display["Snapshot"] = summary["Checkpoint"].map(
         {
+            "Closing · T−8h": "Closing at 8h",
             "Closing · T−6h": "Closing at 6h",
             "Closing · T−4h": "Closing at 4h",
             "Closing · Final pre-game": "Closing at closing",
