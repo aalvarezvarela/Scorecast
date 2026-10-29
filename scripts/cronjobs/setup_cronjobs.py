@@ -22,7 +22,7 @@ The day, on the one self-hosted runner, at the times of ``[Schedule]`` in
                              smoke test and promotion
     SCHEDULE_PREDICTIONS_AT  booking of the day's runs
                              (schedule_snapshot_triggers.py): the predictor at
-                             every snapshot time, TabPFN for all three targets
+                             every snapshot time, TabPFN (TABPFN_FITS)
                              intermediate + closing at T-600/480/360 of the
                              last game and closing only at T-240,
                              and after the last game's

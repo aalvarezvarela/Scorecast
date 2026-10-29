@@ -12,6 +12,8 @@ name: Predictions - Upcoming Games with TabPFN
 #         -f line=intermediate -f horizon_minutes=360
 #     gh workflow run nba_predictor_daily_tabpfn_client.yml \
 #         -f modes="standard thinking_high"
+#     gh workflow run nba_predictor_daily_tabpfn_client.yml \
+#         -f fits="standard=line_error,total_points thinking_high=line_error"
 on:
     workflow_dispatch:
         inputs:
@@ -34,8 +36,16 @@ on:
                 description: "TabPFN modes, each fitted and stored as its own variant: standard, thinking_medium, thinking_high"
                 type: string
                 default: standard
+            fits:
+                description: "Each mode with its targets, MODE=TARGET[,TARGET] separated by spaces; replaces target and modes (the scheduler fills it)"
+                type: string
+                default: ""
+            closing_fits:
+                description: "With include_closing: the closing line's fits, as fits (empty = the same as the first line)"
+                type: string
+                default: ""
             use_alt_key:
-                description: "Use TABPFN_API_KEY_ALT for every fit (required at T-8)"
+                description: "Use TABPFN_API_KEY_ALT for every fit (the scheduler sets it at T-8 and T-4)"
                 type: boolean
                 default: false
             include_closing:
@@ -151,6 +161,7 @@ jobs:
                   TABPFN_HORIZON: ${{ inputs.horizon_minutes }}
                   # Empty (a dispatch from before the input existed): standard.
                   TABPFN_MODES: ${{ inputs.modes || 'standard' }}
+                  TABPFN_FITS: ${{ inputs.fits }}
                   TABPFN_GAME_DATE: ${{ inputs.game_date }}
                   TABPFN_GAME_IDS: ${{ inputs.game_ids }}
                   TABPFN_AS_OF: ${{ inputs.as_of }}
@@ -164,25 +175,36 @@ jobs:
                   if [[ -n "$TABPFN_GAME_IDS" ]]; then args+=(--game-ids "$TABPFN_GAME_IDS"); fi
                   if [[ -n "$TABPFN_AS_OF" ]]; then args+=(--as-of "$TABPFN_AS_OF"); fi
                   if [[ -n "$TABPFN_SNAPSHOT_GAME_IDS" ]]; then args+=(--snapshot-game-ids "$TABPFN_SNAPSHOT_GAME_IDS"); fi
-                  python scripts/predict_tabpfn.py --targets "$TABPFN_TARGETS" \
-                      --modes "$TABPFN_MODES" \
+                  if [[ -n "$TABPFN_FITS" ]]; then
+                      args+=(--fits "$TABPFN_FITS")
+                  else
+                      args+=(--targets "$TABPFN_TARGETS" --modes "$TABPFN_MODES")
+                  fi
+                  python scripts/predict_tabpfn.py \
                       --line "$TABPFN_LINE" "${args[@]}" \
                       ${{ !inputs.update_db && '--skip-db-update' || '' }} \
                       ${{ !inputs.persist && '--no-persist' || '' }}
 
             # Fallback when no normal predictor run covers T-10, T-8 or T-6.
-            # Both lines share this job's modes and selected API key.
+            # Both lines share this job's API key; closing_fits (else fits,
+            # else target and modes) gives the closing line's fits.
             - name: Run additional TabPFN closing line
               if: ${{ !cancelled() && inputs.include_closing && inputs.line == 'intermediate' }}
               env:
                   TABPFN_TARGETS: ${{ inputs.target }}
                   TABPFN_MODES: ${{ inputs.modes || 'standard' }}
+                  TABPFN_FITS: ${{ inputs.closing_fits || inputs.fits }}
                   TABPFN_GAME_DATE: ${{ inputs.game_date }}
                   TABPFN_GAME_IDS: ${{ inputs.game_ids }}
               run: |
                   args=()
                   if [[ -n "$TABPFN_GAME_DATE" ]]; then args+=(--game-date "$TABPFN_GAME_DATE"); fi
                   if [[ -n "$TABPFN_GAME_IDS" ]]; then args+=(--game-ids "$TABPFN_GAME_IDS"); fi
-                  python scripts/predict_tabpfn.py --targets "$TABPFN_TARGETS" \
-                      --modes "$TABPFN_MODES" --line closing --skip-db-update "${args[@]}" \
+                  if [[ -n "$TABPFN_FITS" ]]; then
+                      args+=(--fits "$TABPFN_FITS")
+                  else
+                      args+=(--targets "$TABPFN_TARGETS" --modes "$TABPFN_MODES")
+                  fi
+                  python scripts/predict_tabpfn.py \
+                      --line closing --skip-db-update "${args[@]}" \
                       ${{ !inputs.persist && '--no-persist' || '' }}

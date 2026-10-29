@@ -13,9 +13,11 @@ has passed. The T-30 snapshot (``EXACT_HORIZONS``) always gets a run at its own
 time.
 
 Also four TabPFN runs at T-600, T-480, T-360 and T-240 of the date's last
-scheduled tip-off, predicting line_error, total_points and spread_error.
-T-480 uses standard and thinking_high; the other horizons use standard only.
-T-480 uses the alternate API key. T-600, T-480 and T-360 predict intermediate
+scheduled tip-off, with the fits of ``TABPFN_FITS``: T-600 and T-360 predict
+line_error and total_points, standard only; T-480 adds spread_error and, on
+the intermediate line only, thinking_high for line_error and total_points;
+T-240 predicts all three targets, standard only.
+T-480 and T-240 use the alternate API key. T-600, T-480 and T-360 predict intermediate
 and closing in the same GitHub job; T-240 predicts closing only, always using
 the currently available closing inputs for eligible pending games.
 Intermediate reconstructs every game at its own snapshot of that horizon,
@@ -77,7 +79,13 @@ from nba_ou.scheduling.cronjob_org import (
     github_headers,
     read_secret,
 )
-from nba_ou.scheduling.tabpfn_jobs import DEFAULT_TARGETS, JOB_SEPARATOR, format_job
+from nba_ou.scheduling.tabpfn_jobs import (
+    DEFAULT_TARGETS,
+    JOB_SEPARATOR,
+    Fits,
+    format_fits,
+    format_job,
+)
 
 
 @dataclass(frozen=True)
@@ -93,7 +101,40 @@ class Dispatch:
 # Every enabled slot.
 PREDICTOR = Dispatch("nba_predictor_daily.yml")
 TABPFN_WORKFLOW = "nba_predictor_daily_tabpfn_client.yml"
-TABPFN_HORIZONS = (600, 480, 360, 240)
+TOTALS_TARGETS = ("line_error", "total_points")
+
+
+@dataclass(frozen=True)
+class TabPFNFits:
+    """The fits of one TabPFN run: ``(mode, targets)`` per mode on each line;
+    no intermediate fits means a closing-only run."""
+
+    intermediate: Fits
+    closing: Fits
+
+
+#: Lead time before the last tip-off -> that run's fits.
+TABPFN_FITS = {
+    600: TabPFNFits(
+        intermediate=(("standard", TOTALS_TARGETS),),
+        closing=(("standard", TOTALS_TARGETS),),
+    ),
+    480: TabPFNFits(
+        intermediate=(
+            ("standard", DEFAULT_TARGETS),
+            ("thinking_high", TOTALS_TARGETS),
+        ),
+        closing=(("standard", DEFAULT_TARGETS),),
+    ),
+    360: TabPFNFits(
+        intermediate=(("standard", TOTALS_TARGETS),),
+        closing=(("standard", TOTALS_TARGETS),),
+    ),
+    240: TabPFNFits(intermediate=(), closing=(("standard", DEFAULT_TARGETS),)),
+}
+TABPFN_HORIZONS = tuple(TABPFN_FITS)
+#: The runs whose fits use TABPFN_API_KEY_ALT.
+TABPFN_ALT_KEY_HORIZONS = (480, 240)
 # Every TabPFN snapshot is also a predictor snapshot: TabPFN fires this long
 # after the predictor run that covers it, so that run enters the runner's queue
 # first. ``as_of`` keeps the snapshot.
@@ -302,30 +343,46 @@ class TabPFNSnapshot:
     covered_by: datetime | None
 
     @property
-    def modes(self) -> tuple[str, ...]:
-        """Keep the standard fit; add high-effort thinking at T-8 only."""
-        return ("standard", "thinking_high") if self.horizon == 480 else ("standard",)
+    def fits(self) -> TabPFNFits:
+        """This run's fits (``TABPFN_FITS``)."""
+        return TABPFN_FITS[self.horizon]
+
+    @property
+    def alt_key(self) -> bool:
+        """T-8 and T-4 fit with TABPFN_API_KEY_ALT."""
+        return self.horizon in TABPFN_ALT_KEY_HORIZONS
 
     @property
     def intermediate(self) -> bool:
         """T-4 runs only closing; earlier runs also reconstruct intermediate."""
-        return self.horizon != 240
+        return bool(self.fits.intermediate)
+
+    def jobs(self) -> list[str]:
+        """This run's jobs, as a predictor run carries them (``--tabpfn``)."""
+        closing = format_job(0, fits=self.fits.closing)
+        if not self.intermediate:
+            return [closing]
+        return [
+            format_job(self.horizon, self.at, self.game_ids, self.fits.intermediate),
+            closing,
+        ]
 
     def dispatch(self, game_date: str) -> Dispatch:
         """The TabPFN workflow's dispatch of this snapshot."""
+        first = self.fits.intermediate or self.fits.closing
         return Dispatch(
             TABPFN_WORKFLOW,
             (
-                ("target", " ".join(DEFAULT_TARGETS)),
+                ("fits", format_fits(first)),
                 ("line", "intermediate" if self.intermediate else "closing"),
-                ("modes", " ".join(self.modes)),
-                ("use_alt_key", str(self.horizon == 480).lower()),
+                ("use_alt_key", str(self.alt_key).lower()),
                 ("include_closing", str(self.intermediate).lower()),
                 ("update_db", "false"),
                 ("game_date", game_date),
             )
             + (
                 (
+                    ("closing_fits", format_fits(self.fits.closing)),
                     ("horizon_minutes", str(self.horizon)),
                     ("as_of", self.at.isoformat()),
                     ("snapshot_game_ids", " ".join(self.game_ids)),
@@ -470,19 +527,12 @@ def joined_tabpfn_runs(
             (
                 (
                     "tabpfn",
-                    JOB_SEPARATOR.join(
-                        [
-                            format_job(snap.horizon, snap.at, snap.game_ids)
-                            for snap in snaps
-                            if snap.intermediate
-                        ]
-                        + ["0"]
-                    ),
+                    # Each job names its own fits (FITS of its ``tabpfn`` item).
+                    JOB_SEPARATOR.join(job for snap in snaps for job in snap.jobs()),
                 ),
                 # The four slate horizons are two hours apart, so their
                 # covering predictor runs (grouped by <=30 min) are distinct.
-                ("tabpfn_modes", " ".join(snaps[0].modes)),
-                ("tabpfn_use_alt_key", str(snaps[0].horizon == 480).lower()),
+                ("tabpfn_use_alt_key", str(snaps[0].alt_key).lower()),
             ),
             label="; ".join(f"T-{snap.horizon} {snap.label}" for snap in snaps),
         )
@@ -719,16 +769,17 @@ def main() -> None:
         inputs = dict(dispatch.inputs)
         if inputs["line"] == "closing":
             print(
-                f"  {_clock(at)}  TabPFN closing {' + '.join(DEFAULT_TARGETS)}: "
+                f"  {_clock(at)}  TabPFN closing ({inputs['fits']}): "
                 f"eligible pending games (game date {inputs['game_date']})"
             )
             continue
         print(
-            f"  {_clock(at)}  TabPFN {' + '.join(DEFAULT_TARGETS)} "
+            f"  {_clock(at)}  TabPFN ({inputs['fits']}) "
             f"T-{inputs['horizon_minutes']} (snapshot "
             f"{_clock(datetime.fromisoformat(inputs['as_of']))} of "
             f"{dispatch.label}): every game of the slate "
-            f"(game date {inputs['game_date']})"
+            f"(game date {inputs['game_date']}), then closing "
+            f"({inputs['closing_fits']})"
         )
     for at, dispatch in after_games:
         print(f"After the last game: {dispatch.workflow_file} at {_clock(at)}")

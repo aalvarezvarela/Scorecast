@@ -730,6 +730,7 @@ def test_the_cli_passes_modes_and_refuses_an_unknown_one(monkeypatch):
     monkeypatch.setattr(job, "predict_tabpfn", predict)
     job.main([])
     assert predict.call_args.kwargs["modes"] == ["standard"]
+    assert predict.call_args.kwargs["mode_targets"] == ()
     job.main(["--modes", "standard thinking_high"])
     assert predict.call_args.kwargs["modes"] == ["standard", "thinking_high"]
     predict.reset_mock()
@@ -737,6 +738,73 @@ def test_the_cli_passes_modes_and_refuses_an_unknown_one(monkeypatch):
         job.main(["--modes", "thinking"])
     assert exc.value.code == 2
     predict.assert_not_called()
+
+
+def test_fits_limit_a_mode_to_some_targets(monkeypatch):
+    """T-8's intermediate plan: standard for every target, high thinking for
+    the totals only."""
+    deps = _run_dependencies(monkeypatch)
+    targets, modes, mode_targets = tabpfn_run.parse_fits(
+        "standard=line_error,total_points thinking_high=line_error"
+    )
+    job.predict_tabpfn(targets=targets, modes=modes, mode_targets=mode_targets)
+    fits = deps["fit_tabpfn"].call_args_list
+    assert [(fit.args[0].n_games, fit.kwargs["mode"]) for fit in fits] == [
+        (4, "standard"),
+        (4, "thinking_high"),
+        (6, "standard"),
+    ]
+    builds = (
+        deps["persist_prediction_run"]
+        .call_args.args[0]
+        .tables(status=store_schema.RUN_STATUS_OK)
+        .model_builds
+    )
+    assert sorted(builds["variant"]) == [
+        "tabpfn_v3_5",
+        "tabpfn_v3_5",
+        "tabpfn_v3_5_thinking_high",
+    ]
+
+
+def test_the_cli_reads_fits_instead_of_targets_and_modes(monkeypatch):
+    predict = Mock()
+    monkeypatch.setattr(job, "predict_tabpfn", predict)
+    job.main(["--fits", "standard=line_error,total_points thinking_high=total_points"])
+    options = predict.call_args.kwargs
+    assert options["targets"] == ["line_error", "total_points"]
+    assert options["modes"] == ["standard", "thinking_high"]
+    assert options["mode_targets"] == (
+        ("standard", ("line_error", "total_points")),
+        ("thinking_high", ("total_points",)),
+    )
+    predict.reset_mock()
+    for args in (
+        ["--fits", "standard=line_error", "--targets", "line_error"],
+        ["--fits", "standard=line_error", "--modes", "standard"],
+        ["--fits", "standard"],
+        ["--fits", "standard=line_error standard=total_points"],
+        ["--fits", "thinking=line_error"],
+        ["--fits", "standard=spread"],
+    ):
+        with pytest.raises(SystemExit) as exc:
+            job.main(args)
+        assert exc.value.code == 2
+    predict.assert_not_called()
+
+
+def test_a_job_refuses_a_target_no_mode_fits():
+    with pytest.raises(ValueError, match="No TabPFN mode fits spread_error"):
+        tabpfn_run.TabPFNJob(
+            targets=("line_error", "spread_error"),
+            modes=("standard",),
+            mode_targets=(("standard", ("line_error",)),),
+        )
+    with pytest.raises(ValueError, match="not among the job's targets"):
+        tabpfn_run.TabPFNJob(
+            targets=("line_error",),
+            mode_targets=(("standard", ("line_error", "total_points")),),
+        )
 
 
 def test_mixed_closing_schemas_use_one_frame_at_the_newest_version(monkeypatch):
@@ -1133,6 +1201,52 @@ def test_a_job_without_cutoff_is_live_and_horizon_zero_is_the_closing_line():
     assert tabpfn_run.parse_jobs("") == []
 
 
+def test_a_jobs_fits_replace_the_runs_targets_and_modes():
+    from nba_ou.scheduling.tabpfn_jobs import format_job
+
+    at = datetime(2026, 10, 28, 23, 0, tzinfo=ZoneInfo("UTC"))
+    inter_fits = (
+        ("standard", ("line_error", "total_points", "spread_error")),
+        ("thinking_high", ("line_error", "total_points")),
+    )
+    text = ";".join(
+        [
+            format_job(480, at, ["0022600131"], inter_fits),
+            format_job(0, fits=(("standard", ("line_error", "total_points")),)),
+            "0",
+        ]
+    )
+    assert text.split(";")[1] == "0@@@standard=line_error,total_points"
+    inter, closing, default = tabpfn_run.parse_jobs(text, targets=["spread_error"])
+    assert (inter.horizon, inter.as_of, inter.snapshot_games) == (
+        480,
+        pd.Timestamp(at),
+        ("0022600131",),
+    )
+    assert inter.fits == [
+        ("line_error", "standard"),
+        ("line_error", "thinking_high"),
+        ("total_points", "standard"),
+        ("total_points", "thinking_high"),
+        ("spread_error", "standard"),
+    ]
+    assert inter.plan == (
+        "standard: line_error, total_points, spread_error; "
+        "thinking_high: line_error, total_points"
+    )
+    assert (closing.dataset_type, closing.as_of, closing.snapshot_games) == (
+        "closing_line",
+        None,
+        None,
+    )
+    assert closing.fits == [("line_error", "standard"), ("total_points", "standard")]
+    assert default.fits == [("spread_error", "standard")]
+    assert format_job(720, at, ["0022600131"]) == (
+        "720@2026-10-28T23:00:00+00:00@0022600131"
+    )
+    assert format_job(0) == "0"
+
+
 @pytest.mark.parametrize(
     ("text", "message"),
     [
@@ -1141,6 +1255,8 @@ def test_a_job_without_cutoff_is_live_and_horizon_zero_is_the_closing_line():
         ("0@2026-10-28T23:00:00+00:00", "--line intermediate"),
         ("720@2026-10-28T23:00:00", "timezone"),
         ("720@2026-10-28T23:00:00+00:00@123", "10-digit"),
+        ("0@@@standard", "MODE=TARGET"),
+        ("0@@@thinking=line_error", "Unknown TabPFN mode"),
     ],
 )
 def test_a_malformed_job_is_refused(text, message):

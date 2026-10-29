@@ -12,15 +12,15 @@ on:
                 type: boolean
                 default: false
             tabpfn:
-                description: "TabPFN jobs after the predictions, ';'-separated HORIZON[@AS_OF[@GAME_IDS]] (0 = closing; empty = none; the scheduler fills it)"
+                description: "TabPFN jobs after the predictions, ';'-separated HORIZON[@AS_OF[@GAME_IDS[@FITS]]] (0 = closing; FITS = MODE=TARGET[,TARGET] ...; empty = none; the scheduler fills it)"
                 type: string
                 default: ""
             tabpfn_modes:
-                description: "TabPFN modes of those jobs: standard, thinking_medium, thinking_high"
+                description: "TabPFN modes of the jobs without FITS: standard, thinking_medium, thinking_high"
                 type: string
                 default: standard
             tabpfn_use_alt_key:
-                description: "Use TABPFN_API_KEY_ALT for every TabPFN fit in this run (required at T-8)"
+                description: "Use TABPFN_API_KEY_ALT for every TabPFN fit in this run (the scheduler sets it at T-8 and T-4)"
                 type: boolean
                 default: false
             tabpfn_refresh:
