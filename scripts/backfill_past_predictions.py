@@ -5,7 +5,9 @@
 
 Dry run is the default: real historical fits and predictions, local reports,
 no Aiven or S3 writes. --persist archives the historical models and inserts
-the missing predictions. No production or staging pointer is changed.
+the missing predictions. --overwrite recomputes covered games and, with
+--persist, replaces matching older historical backfill outputs atomically.
+No production or staging pointer is changed.
 """
 
 from __future__ import annotations
@@ -76,6 +78,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="Also archive historical models/runs in S3 and insert missing Aiven predictions",
     )
     parser.add_argument(
+        "--overwrite",
+        action="store_true",
+        help="Recompute covered games; with --persist replace matching historical backfill predictions",
+    )
+    parser.add_argument(
         "--output-dir",
         type=Path,
         default=Path("data/backfill_predictions"),
@@ -124,8 +131,10 @@ def main(argv=None) -> int:
         if args.tabpfn_only and args.slot:
             parser.error("--tabpfn-only cannot be combined with --slot")
         if args.job_matrix:
-            if args.persist:
-                parser.error("--job-matrix cannot be combined with --persist")
+            if args.persist or args.overwrite:
+                parser.error(
+                    "--job-matrix cannot be combined with --persist or --overwrite"
+                )
             dates = backfill_dates(args.start_date, args.end_date)
             slots = (
                 []
@@ -194,6 +203,7 @@ def main(argv=None) -> int:
             args.end_date,
             slots=[] if args.tabpfn_only else args.slot,
             persist=args.persist,
+            overwrite=args.overwrite,
             output_dir=args.output_dir,
             include_tabpfn=include_tabpfn,
             include_closing=args.include_closing,

@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Prepare the one-off October 20–25 backfill for October 30 at 06:20 Madrid.
+"""Prepare the one-off October 20–25 backfill for October 31 at 06:20 Madrid.
 
 Default: print an offline preview, without credentials or network access.
 --apply books the cron on cron-job.org; it never dispatches a workflow now.
-The eventual workflow inserts predictions unless --dry-run-predictions is set.
+--overwrite replaces covered historical predictions after successful refits.
 """
 
 from __future__ import annotations
@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import json
 from datetime import UTC, date, datetime
+from urllib.parse import quote
 from zoneinfo import ZoneInfo
 
 import requests
@@ -30,8 +31,8 @@ MADRID = ZoneInfo("Europe/Madrid")
 EASTERN = ZoneInfo("America/New_York")
 WORKFLOW = "nba_backfill_predictions.yml"
 TITLE_PREFIX = "Scorecast - historical backfill "
-RUN_AT = "2026-10-30T06:20:00+01:00"
-LAST_PREDICTION = "nba_predict_past_snapshots.yml@2026-10-30T05:00:00+00:00"
+RUN_AT = "2026-10-31T06:20:00+01:00"
+LAST_PREDICTION = "nba_predict_past_snapshots.yml@2026-10-31T05:00:00+00:00"
 
 
 def make_plan(
@@ -42,6 +43,8 @@ def make_plan(
     run_at=RUN_AT,
     after_prediction=LAST_PREDICTION,
     persist=True,
+    overwrite=False,
+    ref=GITHUB_REF,
 ):
     start, end = date.fromisoformat(start_date), date.fromisoformat(end_date)
     if start > end or end >= now.astimezone(EASTERN).date():
@@ -59,7 +62,7 @@ def make_plan(
         "run_at": at.isoformat(),
         "run_at_madrid": at.astimezone(MADRID).isoformat(),
         "workflow": WORKFLOW,
-        "ref": GITHUB_REF,
+        "ref": ref,
         "inputs": {
             "start_date": start.isoformat(),
             "end_date": end.isoformat(),
@@ -68,6 +71,7 @@ def make_plan(
             "tabpfn_only": "false",
             "tabpfn_horizon_minutes": "240",
             "persist": str(persist).lower(),
+            "overwrite": str(overwrite).lower(),
             "after_prediction": after_prediction,
         },
     }
@@ -77,7 +81,11 @@ def job_payload(plan, token):
     at = datetime.fromisoformat(plan["run_at"])
     inputs = plan["inputs"]
     return {
-        "title": f"{TITLE_PREFIX}{inputs['start_date']}..{inputs['end_date']}",
+        "title": (
+            f"{TITLE_PREFIX}{inputs['start_date']}..{inputs['end_date']}"
+            f" @ {plan['run_at']}"
+            + (" overwrite" if inputs["overwrite"] == "true" else "")
+        ),
         "url": dispatch_url(WORKFLOW),
         "enabled": True,
         "saveResponses": True,
@@ -105,7 +113,7 @@ def job_payload(plan, token):
     }
 
 
-def check_workflow(token):
+def check_workflow(token, *, ref=GITHUB_REF):
     response = requests.get(
         f"https://api.github.com/repos/{GITHUB_REPO}/actions/workflows/{WORKFLOW}",
         headers=github_headers(token),
@@ -116,10 +124,21 @@ def check_workflow(token):
             f"GitHub has not registered an active {WORKFLOW}. Publish the workflow "
             "on the default branch before --apply; no cron changes made"
         )
+    # workflow_dispatch is registered on main, but executes the selected ref.
+    response = requests.get(
+        f"https://api.github.com/repos/{GITHUB_REPO}/contents/"
+        f".github/workflows/{WORKFLOW}?ref={quote(ref, safe='')}",
+        headers=github_headers(token),
+        timeout=30,
+    )
+    if response.status_code != 200:
+        raise ValueError(
+            f"Publish {WORKFLOW} on ref {ref} before --apply; no cron changes made"
+        )
 
 
 def apply_plan(plan, *, api_key, token):
-    check_workflow(token)
+    check_workflow(token, ref=plan["ref"])
     payload = job_payload(plan, token)
     jobs = cronjob_request("GET", "/jobs", api_key)["jobs"]
     existing = [job for job in jobs if job.get("title") == payload["title"]]
@@ -154,6 +173,14 @@ def main(argv=None):
     parser.add_argument("--run-at", default=RUN_AT, help="ISO timestamp with timezone")
     parser.add_argument("--after-prediction", default=LAST_PREDICTION)
     parser.add_argument(
+        "--ref", default=GITHUB_REF, help="Published GitHub branch/tag to execute"
+    )
+    parser.add_argument(
+        "--overwrite",
+        action="store_true",
+        help="Recompute and replace existing historical backfill predictions",
+    )
+    parser.add_argument(
         "--dry-run-predictions",
         action="store_true",
         help="Eventual workflow fits models but does not insert/archive predictions",
@@ -170,6 +197,8 @@ def main(argv=None):
             run_at=args.run_at,
             after_prediction=args.after_prediction,
             persist=not args.dry_run_predictions,
+            overwrite=args.overwrite,
+            ref=args.ref,
         )
         print(json.dumps(plan, indent=2))
         if args.apply:

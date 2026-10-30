@@ -1,5 +1,6 @@
 """The overnight backfill is previewed offline and booked only explicitly."""
 
+import json
 from datetime import UTC, datetime
 from pathlib import Path
 from unittest.mock import Mock, call
@@ -11,13 +12,13 @@ import scripts.cronjobs.schedule_historical_backfill as job
 import scripts.cronjobs.wait_for_prediction_run as wait
 
 NOW = datetime(2026, 10, 29, 18, tzinfo=UTC)
-FINAL = datetime(2026, 10, 30, 5, tzinfo=UTC)
+FINAL = datetime(2026, 10, 31, 5, tzinfo=UTC)
 
 
 def test_plan_uses_requested_dates_models_and_madrid_time():
     plan = job.make_plan(now=NOW)
-    assert plan["run_at_madrid"] == "2026-10-30T06:20:00+01:00"
-    assert plan["run_at"] == "2026-10-30T05:20:00+00:00"
+    assert plan["run_at_madrid"] == "2026-10-31T06:20:00+01:00"
+    assert plan["run_at"] == "2026-10-31T05:20:00+00:00"
     inputs = plan["inputs"]
     assert inputs["start_date"] == "2026-10-20"
     assert inputs["end_date"] == "2026-10-25"
@@ -25,31 +26,59 @@ def test_plan_uses_requested_dates_models_and_madrid_time():
     assert inputs["tabpfn_only"] == "false"
     assert inputs["tabpfn_horizon_minutes"] == "240"
     assert inputs["persist"] == "true"
+    assert inputs["overwrite"] == "false"
     assert "slots" not in inputs  # All enabled registry slots.
     assert wait.parse_dependency(inputs["after_prediction"])[1] == FINAL
     payload = job.job_payload(plan, "test-token")
     assert payload["schedule"] == {
         "timezone": "UTC",
-        "expiresAt": 20261030052059,
+        "expiresAt": 20261031052059,
         "hours": [5],
         "minutes": [20],
-        "mdays": [30],
+        "mdays": [31],
         "months": [10],
         "wdays": [-1],
     }
+
+
+def test_overwrite_repeat_has_new_title_and_executes_requested_branch():
+    plan = job.make_plan(
+        now=NOW, overwrite=True, ref="fix/historical-backfill-overwrite"
+    )
+    payload = job.job_payload(plan, "test-token")
+    body = json.loads(payload["extendedData"]["body"])
+    assert body["ref"] == "fix/historical-backfill-overwrite"
+    assert body["inputs"]["overwrite"] == "true"
+    assert "2026-10-31T05:20:00+00:00" in payload["title"]
+    assert payload["title"].endswith(" overwrite")
+
+
+def test_unpublished_ref_cannot_book_cron(monkeypatch):
+    registered = Mock(status_code=200)
+    registered.json.return_value = {"state": "active"}
+    monkeypatch.setattr(
+        job.requests, "get", Mock(side_effect=[registered, Mock(status_code=404)])
+    )
+    api = Mock()
+    monkeypatch.setattr(job, "cronjob_request", api)
+    with pytest.raises(ValueError, match="Publish.*ref feature"):
+        job.apply_plan(
+            job.make_plan(now=NOW, ref="feature"), api_key="key", token="token"
+        )
+    api.assert_not_called()
 
 
 @pytest.mark.parametrize(
     "overrides",
     [
         {"run_at": "2026-10-29T06:20:00+01:00"},
-        {"run_at": "2026-10-30T06:20:00"},
-        {"run_at": "2026-10-30T06:20:01+01:00"},
-        {"run_at": "2026-10-30T05:59:00+01:00"},
+        {"run_at": "2026-10-31T06:20:00"},
+        {"run_at": "2026-10-31T06:20:01+01:00"},
+        {"run_at": "2026-10-31T05:59:00+01:00"},
         {"start_date": "2026-10-26", "end_date": "2026-10-20"},
         {"end_date": "2026-10-29"},
-        {"after_prediction": "unknown.yml@2026-10-30T05:00:00Z"},
-        {"after_prediction": "nba_predict_past_snapshots.yml@2026-10-30T05:00:00"},
+        {"after_prediction": "unknown.yml@2026-10-31T05:00:00Z"},
+        {"after_prediction": "nba_predict_past_snapshots.yml@2026-10-31T05:00:00"},
     ],
 )
 def test_invalid_plans_cannot_be_booked(overrides):
@@ -95,7 +124,7 @@ def test_apply_books_once_and_verifies_time(booking):
         ("PUT", "/jobs"),
         ("GET", "/jobs/42"),
     ]
-    job.check_workflow.assert_called_once_with("test-token")
+    job.check_workflow.assert_called_once_with("test-token", ref="main")
 
 
 def test_apply_updates_matching_cron_and_leaves_other_jobs_alone(booking):
@@ -191,9 +220,9 @@ def test_gate_waits_for_other_predictions_even_after_final_run(monkeypatch, stat
     [
         [],
         [run("in_progress")],
-        [run(created_at="2026-10-30T04:59:59Z")],
+        [run(created_at="2026-10-31T04:59:59Z")],
         [run(head_branch="feature")],
-        [run(created_at="2026-10-31T05:00:00Z")],
+        [run(created_at="2026-11-01T05:00:00Z")],
     ],
 )
 def test_missing_or_unfinished_final_run_times_out(monkeypatch, final_runs):
@@ -243,3 +272,19 @@ def test_backfill_updates_scores_after_persisted_matrix_even_with_partial_failur
         in step.get("run", "")
         for step in results["steps"]
     )
+
+
+def test_workflow_forwards_overwrite_only_to_backfill():
+    workflow = yaml.load(
+        Path(".github/workflows/nba_backfill_predictions.yml").read_text(),
+        Loader=yaml.BaseLoader,
+    )
+    assert (
+        workflow["on"]["workflow_dispatch"]["inputs"]["overwrite"]["default"] == "false"
+    )
+    backfill = workflow["jobs"]["backfill"]
+    assert backfill["env"]["OVERWRITE"] == "${{ inputs.overwrite }}"
+    assert any(
+        "args+=(--overwrite)" in step.get("run", "") for step in backfill["steps"]
+    )
+    assert "OVERWRITE" not in workflow["jobs"]["prepare"]["env"]

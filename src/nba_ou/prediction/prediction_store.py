@@ -880,11 +880,14 @@ def persist_prediction_run(
     bucket: str,
     partial: bool,
     conn=None,
+    replace_historical: bool = False,
 ) -> list[str]:
     """Store a run: S3 archive first, then the Aiven rows. Returns the failures.
 
     ``partial`` says some slot failed (``runs.status`` 2). ``conn`` defaults to
-    a new Aiven connection, closed afterwards.
+    a new Aiven connection, closed afterwards. ``replace_historical`` replaces
+    older backfill outputs for the successfully computed game/model/input slots
+    in the same transaction as the new Aiven rows.
     """
     from nba_ou.postgre_db.predictions_aiven.store import write_run
     from nba_ou.utils.s3_prediction_runs import upload_prediction_run
@@ -921,7 +924,11 @@ def persist_prediction_run(
             from nba_ou.postgre_db.config.db_config import connect_nba_db
 
             conn = connect_nba_db(env="aiven")
-        written = write_run(conn, tables)
+        written = (
+            write_run(conn, tables, replace_historical=True)
+            if replace_historical
+            else write_run(conn, tables)
+        )
     except Exception as exc:  # noqa: BLE001 -- reported with the run's failures
         print(f"  ✖ Aiven prediction store write failed: {exc}")
         failures.append(f"Aiven prediction store: {exc}")

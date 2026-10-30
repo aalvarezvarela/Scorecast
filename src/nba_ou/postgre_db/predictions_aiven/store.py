@@ -15,7 +15,12 @@ import pandas as pd
 import psycopg
 from psycopg import sql
 
-from .schema import GAME_STATUS_FINAL, GAME_STATUS_SCHEDULED, SCHEMA
+from .schema import (
+    GAME_STATUS_FINAL,
+    GAME_STATUS_SCHEDULED,
+    SCHEMA,
+    WORKFLOW_HISTORICAL_BACKFILL,
+)
 
 if TYPE_CHECKING:
     from nba_ou.prediction.prediction_store import RunTables
@@ -147,9 +152,57 @@ def _model_build_ids(cur: psycopg.Cursor, builds: pd.DataFrame) -> pd.DataFrame:
     return builds.assign(model_build_id=ids)
 
 
-def write_run(conn: psycopg.Connection, tables: RunTables) -> bool:
-    """Store one run in one transaction. False when it was already stored."""
+def _replace_historical_predictions(cur: psycopg.Cursor, run_id: int) -> None:
+    """Remove older backfill outputs only where this run has a replacement.
+
+    Inputs, run metadata and S3 archives remain available for audit. Failed or
+    unselected games/slots and all other workflows retain their predictions.
+    The insert and replacement share write_run's transaction.
+    """
+    cur.execute(
+        sql.SQL(
+            """
+            DELETE FROM {predictions} old
+            USING {inputs} oi, {runs} orun, {builds} om,
+                  {predictions} new, {inputs} ni, {runs} nrun, {builds} nm
+            WHERE old.input_id = oi.input_id
+              AND oi.run_id = orun.run_id
+              AND old.model_build_id = om.model_build_id
+              AND new.input_id = ni.input_id
+              AND ni.run_id = nrun.run_id AND nrun.run_id = %s
+              AND new.model_build_id = nm.model_build_id
+              AND orun.workflow = %s AND nrun.workflow = %s
+              AND orun.run_id <> nrun.run_id
+              AND orun.started_at <= nrun.started_at
+              AND oi.game_id = ni.game_id
+              AND oi.input_mode = ni.input_mode
+              AND oi.snapshot_horizon_minutes IS NOT DISTINCT FROM ni.snapshot_horizon_minutes
+              AND om.kind = nm.kind AND om.schema_version = nm.schema_version
+              AND om.dataset_type = nm.dataset_type AND om.target = nm.target
+              AND om.horizon_minutes IS NOT DISTINCT FROM nm.horizon_minutes
+              AND om.variant = nm.variant
+        """
+        ).format(
+            predictions=_table("predictions"),
+            inputs=_table("inputs"),
+            runs=_table("runs"),
+            builds=_table("model_builds"),
+        ),
+        (run_id, WORKFLOW_HISTORICAL_BACKFILL, WORKFLOW_HISTORICAL_BACKFILL),
+    )
+
+
+def write_run(
+    conn: psycopg.Connection, tables: RunTables, *, replace_historical: bool = False
+) -> bool:
+    """Store one run atomically, optionally replacing its older backfill outputs.
+
+    False when already stored. Replacement matches successful game/model/input
+    slots, across spec/fit revisions, and is restricted to historical backfills.
+    """
     run = tables.run
+    if replace_historical and run["workflow"] != WORKFLOW_HISTORICAL_BACKFILL:
+        raise ValueError("Only historical backfills can replace historical predictions")
     try:
         with conn.cursor() as cur:
             cur.execute(
@@ -218,6 +271,8 @@ def write_run(conn: psycopg.Connection, tables: RunTables) -> bool:
             ) as copy:
                 for record in _records(predictions, PREDICTION_COLUMNS):
                     copy.write_row(record)
+            if replace_historical:
+                _replace_historical_predictions(cur, run_id)
         conn.commit()
     except BaseException:
         conn.rollback()
