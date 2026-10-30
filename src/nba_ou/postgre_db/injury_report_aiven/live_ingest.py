@@ -14,6 +14,7 @@ from nba_api.stats.static import players as nba_players
 
 from nba_ou.postgre_db.injury_report_aiven import documents, load
 from nba_ou.postgre_db.injury_report_aiven import resolve as R
+from nba_ou.postgre_db.injury_report_aiven.ids import as_player_ids
 from nba_ou.postgre_db.injury_report_aiven.ingest import (
     _Read,
     _stack,
@@ -108,6 +109,8 @@ def resolve_live_players(
             pending["player_id"] = pending.player_id.astype("int64")
         pending["method"] = "nba_exact_name"
         resolved = pd.concat([resolved, pending], ignore_index=True)
+    # Live roster and exact-name ids are integers, historical roster ids text.
+    resolved["player_id"] = as_player_ids(resolved["player_id"])
     return resolved
 
 
@@ -165,6 +168,8 @@ def read_existing_observations(conn, game_ids: list[str], end):
         conn,
         params=params,
     )
+    if not observations.empty:
+        observations["player_id"] = as_player_ids(observations["player_id"])
     return observations, listed, not_filed
 
 

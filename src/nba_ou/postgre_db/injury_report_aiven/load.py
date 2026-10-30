@@ -13,8 +13,13 @@ import pandas as pd
 import psycopg
 from psycopg import sql
 
+from .ids import require_unique
 from .schema import SCHEMA
 from .spans import FILING_COLUMNS, SPAN_COLUMNS
+
+#: The tables' primary keys (schema.py).
+SPAN_PRIMARY_KEY = ("game_id", "player_id", "valid_from", "season_year")
+FILING_PRIMARY_KEY = ("game_id", "team_id", "valid_from", "season_year")
 
 
 def _q(statement: str) -> sql.Composed:
@@ -50,12 +55,16 @@ CLEAR_SEASON_STATEMENTS: tuple[tuple[str, str], ...] = (
 )
 
 
-def clear_season(conn: psycopg.Connection, season_year: int) -> dict[str, int]:
+def clear_season(
+    conn: psycopg.Connection, season_year: int, *, commit: bool = True
+) -> dict[str, int]:
     """Remove one season's loaded facts so it can be rebuilt from scratch.
 
     One transaction: either every table is cleared or none is. ``ir_unresolved``
     is cleared because a reload re-counts occurrences, and ``ir_report`` rows
     still referenced by another season's spans are left in place.
+    ``commit=False`` leaves the delete to the caller's transaction, so the
+    rebuild that follows can roll it back.
     """
     deleted: dict[str, int] = {}
     try:
@@ -63,9 +72,11 @@ def clear_season(conn: psycopg.Connection, season_year: int) -> dict[str, int]:
             for table, statement in CLEAR_SEASON_STATEMENTS:
                 cur.execute(_q(statement), (int(season_year),))
                 deleted[table] = cur.rowcount
-        conn.commit()
+        if commit:
+            conn.commit()
     except Exception:
-        conn.rollback()
+        if commit:
+            conn.rollback()
         raise
     return deleted
 
@@ -190,11 +201,14 @@ def upsert_reports(
     return mapping
 
 
-def clear_games(conn: psycopg.Connection, game_ids: list[str]) -> dict[str, int]:
+def clear_games(
+    conn: psycopg.Connection, game_ids: list[str], *, commit: bool = True
+) -> dict[str, int]:
     """Remove these games' spans and filing spans, so they can be rebuilt.
 
-    One transaction, like ``clear_season``. Reports stay: they are shared by
-    every game they list, and re-inserting them is idempotent.
+    One transaction, like ``clear_season`` (``commit=False`` likewise). Reports
+    stay: they are shared by every game they list, and re-inserting them is
+    idempotent.
     """
     deleted: dict[str, int] = {}
     if not game_ids:
@@ -207,9 +221,11 @@ def clear_games(conn: psycopg.Connection, game_ids: list[str]) -> dict[str, int]
                     (list(game_ids),),
                 )
                 deleted[table] = cur.rowcount
-        conn.commit()
+        if commit:
+            conn.commit()
     except Exception:
-        conn.rollback()
+        if commit:
+            conn.rollback()
         raise
     return deleted
 
@@ -217,9 +233,14 @@ def clear_games(conn: psycopg.Connection, game_ids: list[str]) -> dict[str, int]
 def insert_spans(
     conn: psycopg.Connection, spans: pd.DataFrame, *, commit: bool = True
 ) -> int:
-    """Insert status spans; idempotent on the primary key."""
+    """Insert status spans; idempotent on the primary key.
+
+    A key repeated within ``spans`` raises instead: ``ON CONFLICT DO NOTHING``
+    is for rows already in the table, never for two versions of one span.
+    """
     if spans.empty:
         return 0
+    require_unique(spans, list(SPAN_PRIMARY_KEY), "ir_status_span")
     columns = sql.SQL(", ").join(sql.Identifier(c) for c in SPAN_COLUMNS)
     placeholders = sql.SQL(", ").join(sql.Placeholder() for _ in SPAN_COLUMNS)
     statement = sql.SQL(
@@ -246,6 +267,7 @@ def insert_filing_spans(
 ) -> int:
     if spans.empty:
         return 0
+    require_unique(spans, list(FILING_PRIMARY_KEY), "ir_filing_span")
     columns = sql.SQL(", ").join(sql.Identifier(c) for c in FILING_COLUMNS)
     placeholders = sql.SQL(", ").join(sql.Placeholder() for _ in FILING_COLUMNS)
     statement = sql.SQL(
@@ -300,7 +322,9 @@ def record_unresolved(
     return len(counts)
 
 
-def record_aliases(conn: psycopg.Connection, resolved: pd.DataFrame) -> int:
+def record_aliases(
+    conn: psycopg.Connection, resolved: pd.DataFrame, *, commit: bool = True
+) -> int:
     """Persist name -> player_id decisions so they are reviewable and stable."""
     if resolved.empty:
         return 0
@@ -324,5 +348,6 @@ def record_aliases(conn: psycopg.Connection, resolved: pd.DataFrame) -> int:
                     row.method,
                 ),
             )
-    conn.commit()
+    if commit:
+        conn.commit()
     return len(frame)

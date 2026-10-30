@@ -35,8 +35,12 @@ import pandas as pd
 from nba_ou.config.dataset_versions import BASE_SCHEMA_VERSION
 from nba_ou.config.odds_columns import total_line_col
 from nba_ou.config.settings import SETTINGS
+from nba_ou.create_training_data.get_all_info_for_scheduled_games import (
+    get_sportsbook_opener_data,
+)
 from nba_ou.create_training_data.live_game_day import fetch_live_game_day
 from nba_ou.create_training_data.live_replay import replay_scheduled_games
+from nba_ou.data_processing.odds.scheduled_opener import OPENER_COLUMNS
 from nba_ou.data_processing.referees.process_refs_scheduled_game import (
     process_scheduled_referee_assignments,
 )
@@ -102,11 +106,27 @@ def past_scheduled_data(game_date: str) -> dict:
     scheduled = replay_scheduled_games(game_date)
     if scheduled.empty:
         return {"scheduled_games": scheduled}
+    lines = LineSource(pd.Timestamp(game_date).date())
+    try:
+        openers = get_sportsbook_opener_data(game_date, scheduled)
+    except Exception as exc:
+        # A temporary opener outage must not discard the entire slate or
+        # silently use a later historical row as the prediction observation.
+        print_status(
+            f"SBR opening totals unavailable; leaving them missing: {exc}", ok=False
+        )
+        openers = pd.DataFrame(columns=["game_id", *OPENER_COLUMNS])
     return {
         "scheduled_games": scheduled,
         "df_referees_scheduled": process_scheduled_referee_assignments(scheduled),
         "roster_snapshots": load_live_rosters(scheduled),
-        "line_source": LineSource(pd.Timestamp(game_date).date()),
+        # The historical odds row may not be stored until the next day's
+        # update. Read the same day-page opener as live prediction; the
+        # intermediate builder imports only that quote, never postgame prices
+        # or public percentages. This is a replay of the published opener,
+        # not an archive of revisions to the day page.
+        "df_odds_sportsbook_opener_scheduled": openers,
+        "line_source": lines,
     }
 
 

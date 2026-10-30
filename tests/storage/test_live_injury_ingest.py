@@ -30,11 +30,12 @@ GAMES = pd.DataFrame(
         "team_away": ["NYK"],
     }
 )
+#: As ``resolve.load_rosters`` reads it: Supabase stores the ids as text.
 ROSTER = pd.DataFrame(
     {
         "game_id": ["past"],
-        "nba_team_id": [1610612738],
-        "player_id": [2544],
+        "nba_team_id": ["1610612738"],
+        "player_id": ["2544"],
         "season_year": [2026],
         "norm_name": ["james|lebron"],
         "norm_initial": ["james|l"],
@@ -143,7 +144,10 @@ class MemoryConnection:
 
 
 def project_history(conn, ids, end):
-    """Same event-time expansion as the SQL reader, evaluated in memory."""
+    """Same event-time expansion as the SQL reader, evaluated in memory.
+
+    Ids come back as integers, as the BIGINT column reads.
+    """
     observations, listed, nys = [], [], []
     common = dict(
         game_id=GAME,
@@ -189,7 +193,7 @@ def project_history(conn, ids, end):
                         nba_team_id=str(team.nba_team_id),
                         raw_team=team.report_name,
                         raw_name="",
-                        player_id=row.player_id,
+                        player_id=int(row.player_id),
                         status_id=row.status_id,
                         reason_category=label,
                         reason_detail=detail,
@@ -407,3 +411,79 @@ def test_empty_game_between_listings_is_a_removal_even_in_one_batch(conn):
     assert spans.iloc[0].valid_to == pd.Timestamp("2026-10-16T14:15Z")
     assert pd.isna(spans.iloc[1].status_id)
     assert spans.iloc[2].status_id == 3
+
+
+def test_unchanged_out_player_stays_one_span_across_batches(conn):
+    # Stored spans read back as integers while text roster ids resolve the new
+    # report: one player must not become two (Out / not listed / Out flicker).
+    for clock in ("14:00", "14:15", "14:30", "14:45"):
+        ingest(conn, report(clock, 5))
+    spans = conn.state["spans"]
+    assert spans.status_id.tolist() == [5]
+    assert spans.player_id.tolist() == [2544]
+    assert spans.player_id.dtype == "int64"
+
+
+SEQUENCE = (
+    ("14:00", 5, False),
+    ("14:15", 5, False),
+    ("14:30", 3, False),
+    ("14:45", None, True),
+    ("15:00", 4, False),
+    ("15:15", 4, False),
+)
+
+
+@pytest.mark.parametrize(
+    "batches",
+    [
+        [[0, 1, 2, 3, 4, 5]],
+        [[0], [1], [2], [3], [4], [5]],
+        [[0, 1], [2, 3, 4], [5]],
+        [[0, 2], [1], [5], [3, 4]],
+    ],
+    ids=["one-batch", "one-per-report", "uneven", "late-arrivals"],
+)
+def test_batches_build_the_same_spans_as_one_ingest(conn, batches):
+    def run(target, groups):
+        for group in groups:
+            ingest(
+                target,
+                *(
+                    report(SEQUENCE[i][0], SEQUENCE[i][1], vanished=SEQUENCE[i][2])
+                    for i in group
+                ),
+            )
+        columns = [c for c in SPAN_COLUMNS if c != "first_report_id"]
+        return (
+            target.state["spans"][columns]
+            .sort_values(["player_id", "valid_from"])
+            .reset_index(drop=True)
+        )
+
+    expected = run(MemoryConnection(), [list(range(len(SEQUENCE)))])
+    assert expected.status_id.astype("Float64").tolist() == [5, 3, pd.NA, 4]
+    pd.testing.assert_frame_equal(run(conn, batches), expected)
+
+
+def test_live_resolution_returns_one_integer_id_type():
+    rows = pd.DataFrame(
+        {
+            "game_id": [GAME, GAME],
+            "raw_team": ["Boston Celtics"] * 2,
+            "raw_name": ["James, LeBron", "Rookie, New"],
+            "observed_at": [pd.Timestamp("2026-10-16T14:00Z")] * 2,
+            "nba_team_id": [1610612738] * 2,
+            "season_year": [2026] * 2,
+        }
+    )
+    # The rookie resolves through the live roster (integer), LeBron through
+    # the historical roster (text).
+    resolved = live.resolve_live_players(
+        rows,
+        ROSTER,
+        live.R.ResolutionReport(),
+        {(GAME, "1610612738"): {"9999999": "New Rookie"}},
+    )
+    assert resolved.player_id.dtype == "int64"
+    assert sorted(resolved.player_id) == [2544, 9999999]

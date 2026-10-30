@@ -74,6 +74,7 @@ from nba_ou.data_processing.merged_home_away_data.select_train_columns import (
 from nba_ou.data_processing.merged_home_away_data.team_one_hot_features import (
     add_team_one_hot_features,
 )
+from nba_ou.data_processing.odds.scheduled_opener import merge_scheduled_opener
 from nba_ou.data_processing.odds.yahoo_features import select_yahoo_features
 from nba_ou.data_processing.past_injuries.past_injuries import get_injured_players_dict
 from nba_ou.data_processing.players.attach_player_features import (
@@ -315,6 +316,7 @@ def create_base_game_features(
     combine_fanatics_and_caesars: bool | None = None,
     return_injury_context: bool = False,
     scheduled_games: pd.DataFrame | None = None,
+    scheduled_odds_sportsbook: pd.DataFrame | None = None,
     roster_snapshots: pd.DataFrame | None = None,
     live_as_of: pd.Timestamp | None = None,
     target_game_ids=None,
@@ -358,6 +360,11 @@ def create_base_game_features(
     the lagged roster report reaches them. Every feature they get is built from
     earlier games; their outcome columns are NaN. ``recent_limit_to_include``
     must then be the day before, so history stops where tonight begins.
+
+    ``scheduled_odds_sportsbook`` supplies the same raw day-page frame closing
+    prediction reads. Only its scheduled opening totals and their prices are
+    merged, using training's normalization. Current-game public percentages and
+    closing markets are not imported into the intermediate dataset.
 
     ``target_game_ids`` builds every row but computes the per-row stages
     (all-star, roster continuity, the rolling trend slopes) only for these
@@ -435,6 +442,15 @@ def create_base_game_features(
         exclude_caesars=exclude_caesars,
         combine_fanatics_and_caesars=combine_fanatics_and_caesars,
     )
+    if scheduled_odds_sportsbook is not None:
+        if scheduled_games is None:
+            raise ValueError("Scheduled openers require scheduled_games")
+        df_odds = merge_scheduled_opener(
+            df_odds,
+            scheduled_odds_sportsbook,
+            scheduled_games["GAME_ID"],
+            normalize_total_lines=normalize_total_lines,
+        )
 
     if verbose:
         print("Processing team statistics...")

@@ -5,6 +5,7 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 
 import pandas as pd
+import requests
 
 from nba_ou.config.constants import TEAM_ID_MAP, TEAM_NAME_STANDARDIZATION
 from nba_ou.config.odds_columns import (
@@ -17,13 +18,24 @@ from nba_ou.data_processing.injury_status.report_state import (
     nested_status_dict,
     report_out_overrides,
 )
+from nba_ou.data_processing.odds.scheduled_opener import OPENER_COLUMNS
 from nba_ou.data_processing.referees.process_refs_scheduled_game import (
     process_scheduled_referee_assignments,
 )
 from nba_ou.fetch_data.injury_reports.sync import synchronize_injury_reports
 from nba_ou.fetch_data.live_rosters import load_live_rosters
 from nba_ou.fetch_data.odds_covers.day_odds import covers_day_odds
-from nba_ou.fetch_data.odds_sportsbook.scrape_sportsbook import scrape_sportsbook_days
+from nba_ou.fetch_data.odds_sportsbook.process_total_lines_data import (
+    load_one_day_totals_csv,
+)
+from nba_ou.fetch_data.odds_sportsbook.scrape_sportsbook import (
+    build_sbr_totals_url,
+    fetch_sbr_page,
+    parse_sbr_odds_table,
+    parse_sbr_totals_rows,
+    scrape_sportsbook_days,
+    season_year_for_date,
+)
 from nba_ou.fetch_data.odds_yahoo.scrape_yahoo import scrape_yahoo_days
 from nba_ou.fetch_data.scheduled_game.get_schedule_games import get_schedule_games
 from nba_ou.prediction.line_source import (
@@ -234,6 +246,36 @@ def _day_odds_with_game_id(
     )
     # drop NA rows on game ID as they are not scheduled games
     return df_sportsbook_with_game_id.dropna(subset=["game_id"])
+
+
+def get_sportsbook_opener_data(
+    date_to_predict: str, scheduled_games: pd.DataFrame
+) -> pd.DataFrame:
+    """Read only the opening total from SBR's main totals page.
+
+    A frozen current-price feed can still publish the opener training reads.
+    This read is independent of the source chosen for current quotes; no history
+    popup or synthetic first-book quote is used. Return canonical NBA game IDs
+    and raw American opening prices, ready for training's normalization.
+    """
+    day = datetime.strptime(date_to_predict, "%Y-%m-%d").date()
+    with requests.Session() as session:
+        model = parse_sbr_odds_table(fetch_sbr_page(session, build_sbr_totals_url(day)))
+    if model is None:
+        return pd.DataFrame(columns=["game_id", *OPENER_COLUMNS])
+    raw = parse_sbr_totals_rows(model, day)
+    raw.insert(1, "season", season_year_for_date(day))
+    odds = load_one_day_totals_csv(raw)
+    games = scheduled_games.copy()
+    if not {"game_id", "game_date", "team_home", "team_away"} <= set(games):
+        names = {team_id: name for name, team_id in TEAM_ID_MAP.items()}
+        games["game_id"] = games["GAME_ID"].astype(str)
+        games["game_date"] = pd.to_datetime(games["GAME_DATE_EST"]).dt.date
+        games["team_home"] = games["HOME_TEAM_ID"].astype(str).map(names)
+        games["team_away"] = games["VISITOR_TEAM_ID"].astype(str).map(names)
+    return _day_odds_with_game_id(odds, games).reindex(
+        columns=["game_id", *OPENER_COLUMNS]
+    )
 
 
 def get_sportsbook_prediction_data(

@@ -466,10 +466,21 @@ silently mis-parsed into the modern column order.
   hyphens. Ambiguity — two players normalising identically on one roster — is an
   **error, not a coin flip**, and also goes to `ir_unresolved`.
 
+  Resolution returns `player_id` as **int64**, whatever matched it
+  (`ids.as_player_ids`): Supabase roster ids are text, live-roster, exact-name
+  and curated-alias ids are integers, and spans read back from Aiven are
+  BIGINT. pandas keys `2544` and `"2544"` apart, so a mixed column splits one
+  player in two. The incremental ingest did exactly that until 2026-10-30:
+  every reconstructed player read as removed at the next batch, so unchanged
+  `Out` players flickered `Out` / not listed / `Out` in the live store.
+  `build_spans` and `build_removal_observations` now refuse any other dtype.
+
 **Phase C — load.** Sort each (game_id, player_id) by `observed_at`, emit a span
 whenever the (status, reason) pair changes, close the previous span, compute
 `mins_to_tip` against `tipoff_utc`. Idempotent: `ON CONFLICT DO NOTHING` on the
-primary key, so a re-run of an overlapping window is safe.
+primary key, so a re-run of an overlapping window is safe. A key repeated
+*within* one insert raises instead (`ids.require_unique`): both writers delete a
+game's rows first, so it can only be two versions of one span.
 
 Ordering rule, inherited from archive plan §8.4: **order and join on
 `observed_at` (UTC) only.** Never an ET wall-clock string, never an ET date.

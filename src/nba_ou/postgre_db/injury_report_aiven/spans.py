@@ -13,6 +13,8 @@ from __future__ import annotations
 
 import pandas as pd
 
+from .ids import require_player_ids
+
 #: Columns a span carries into the loader.
 SPAN_COLUMNS = [
     "game_id",
@@ -49,6 +51,7 @@ def build_spans(observations: pd.DataFrame) -> pd.DataFrame:
     """
     if observations.empty:
         return pd.DataFrame(columns=SPAN_COLUMNS)
+    require_player_ids(observations, "build_spans")
 
     frame = observations.sort_values(["game_id", "player_id", "observed_at"]).copy()
     keys = ["game_id", "player_id"]

@@ -29,16 +29,21 @@ a full pass over the history for no prediction.
 
 from __future__ import annotations
 
+import logging
 import math
 
 import pandas as pd
 from nba_ou.create_training_data.create_intermediate_line_df import (
     create_intermediate_line_df,
 )
+from nba_ou.create_training_data.get_all_info_for_scheduled_games import (
+    get_sportsbook_opener_data,
+)
 from nba_ou.create_training_data.live_game_day import LiveGameDay, fetch_live_game_day
 from nba_ou.data_processing.line_history.snapshots import DEFAULT_SNAPSHOT_GRID
+from nba_ou.data_processing.odds.scheduled_opener import OPENER_COLUMNS
 from nba_ou.prediction.input_limits import LATEST_INPUT_COLUMN, LIMITED_COUNT_COLUMN
-from nba_ou.prediction.line_source import LINE_SOURCE_COLUMN
+from nba_ou.prediction.line_source import LINE_SOURCE_COLUMN, SBR
 
 #: The display columns the prediction summary reads, from tonight's schedule.
 SCHEDULE_COLUMNS = ("GAME_TIME",)
@@ -160,8 +165,37 @@ def tonight_intermediate_frame(
                 if minutes not in DEFAULT_SNAPSHOT_GRID
             }
         }
+    day_odds = scheduled_data.get(
+        "df_odds_sportsbook_opener_scheduled",
+        scheduled_data.get("df_odds_sportsbook_scheduled"),
+    )
+    if (
+        "df_odds_sportsbook_opener_scheduled" not in scheduled_data
+        and line_source is not None
+        and (
+            line_source.uses_covers
+            or any(s != SBR for s in line_source.closing_sources.values())
+        )
+    ):
+        # Training prefers SBR's published opener even when Covers supplies
+        # current prices. Its first BetMGM quote need not equal SBR's opener.
+        try:
+            main = get_sportsbook_opener_data(
+                str(pd.Timestamp(game_date).date()), scheduled
+            )
+            complete = main[list(OPENER_COLUMNS)].notna().all(axis=1)
+            complete &= main["total_consensus_opener_line_over"].gt(0)
+            complete &= main["total_consensus_opener_line_under"].gt(0)
+            day_odds = pd.concat(
+                [main[complete], day_odds], ignore_index=True
+            ).drop_duplicates("game_id")
+        except Exception as exc:
+            logging.getLogger(__name__).warning(
+                "SBR opener unavailable; retaining fallback opening quotes: %s", exc
+            )
     frame, scoring = create_intermediate_line_df(
         live=live,
+        scheduled_odds_sportsbook=day_odds,
         target_game_ids=live.game_ids,
         return_scoring=True,
         verbose=verbose,
