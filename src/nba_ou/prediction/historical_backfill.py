@@ -113,18 +113,9 @@ def backfill_dates(start: str, end: str | None = None, *, now=None) -> list[str]
     return [day.date().isoformat() for day in pd.date_range(first, last)]
 
 
-def history_limit(game_date: str, snapshots: pd.Series) -> pd.Timestamp:
-    """At most D-1; before 06:00 ET leave the preceding slate out too.
-
-    The stores have game dates, not reliable final-buzzer timestamps. Early
-    horizons must not see the West Coast games still running after midnight.
-    Using an extra day's lag before 06:00 is deliberately conservative.
-    """
-    earliest = pd.to_datetime(snapshots, utc=True).min().tz_convert(EASTERN)
-    available_day = (earliest.tz_localize(None) - pd.Timedelta(hours=6)).date()
-    return min(pd.Timestamp(game_date), pd.Timestamp(available_day)) - pd.Timedelta(
-        days=1
-    )
+def history_limit(game_date: str) -> pd.Timestamp:
+    """Use history through D-1 for every snapshot, regardless of tipoff time."""
+    return pd.Timestamp(game_date) - pd.Timedelta(days=1)
 
 
 def past_training_frame(frame: TrainingFrame, limit: pd.Timestamp) -> TrainingFrame:
@@ -182,9 +173,6 @@ def missing_games(
     limits = {
         int(game.GAME_ID): history_limit(
             pd.Timestamp(game.GAME_DATE_EST).date().isoformat(),
-            pd.Series(
-                [pd.Timestamp(game.GAME_TIME) - pd.Timedelta(minutes=input_horizon)]
-            ),
         )
         for game in scheduled.itertuples()
     }
@@ -391,7 +379,7 @@ def _backfill_date(
             required_features=required_features,
         )
         input_sources.setdefault(str(horizon), []).append(frame.attrs["input_source"])
-        return frame, history_limit(game_date, frame.SNAPSHOT_TS_UTC)
+        return frame, history_limit(game_date)
 
     for horizon in sorted({slot.horizon_minutes for slot in [*slots, *tabpfn_slots]}):
         ids = set().union(

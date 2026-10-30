@@ -108,11 +108,12 @@ credits if that workflow is later run, including in prediction dry run.
 
 ## Time assumptions
 
-Training stops at D-1, except snapshots before 06:00 Eastern, which require an
-extra overnight lag. Saved daily-history rows cannot guarantee that stricter
-feature cutoff, so those inputs are reported as unavailable; they are never
-rebuilt. Injury information comes from the saved snapshot, not the final injury
-state. Reports record the input partition checksum/file and training cutoff.
+Training stops at D-1 for every snapshot, including those before 06:00 Eastern.
+Saved daily-history rows are used as stored, without checking whether games
+from the preceding date had finished at the snapshot time. No extra overnight
+lag is applied and inputs are never rebuilt. Injury information comes from the
+saved snapshot, not the final injury state. Reports record the input partition
+checksum/file and training cutoff.
 
 The partitions are today's stored historical version. Filtering dates does not
 undo later corrections or change their original point-in-time conventions.

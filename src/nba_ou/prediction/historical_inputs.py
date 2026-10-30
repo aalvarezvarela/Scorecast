@@ -155,8 +155,6 @@ class StoredPredictionInputs:
         self.tipoffs = {}
 
     def read(self, game_date, horizon, ids, *, closing=False, required_features=()):
-        from nba_ou.prediction.historical_backfill import history_limit
-
         if self.store is None or not hasattr(self.store, "read"):
             raise StoredInputsUnavailable("No readable intermediate season partitions")
         season = int(get_season_year_from_date(game_date))
@@ -198,17 +196,10 @@ class StoredPredictionInputs:
             frame.GAME_ID.astype(str).map(self.tipoffs[season]), utc=True
         )
         frame["SNAPSHOT_TS_UTC"] = tips - pd.Timedelta(minutes=horizon)
-        # Saved daily-history rows read the preceding date. Before 06:00 ET,
-        # replay needs the extra overnight lag and cannot safely reuse them.
-        safe = frame.SNAPSHOT_TS_UTC.map(
-            lambda stamp: pd.notna(stamp)
-            and history_limit(game_date, pd.Series([stamp]))
-            == pd.Timestamp(game_date) - pd.Timedelta(days=1)
-        )
-        frame = frame.loc[safe].copy()
+        frame = frame.loc[frame.SNAPSHOT_TS_UTC.notna()].copy()
         if frame.empty:
             raise StoredInputsUnavailable(
-                "Stored history cannot honor this early snapshot's overnight cutoff"
+                "Stored snapshot has no known tipoff timestamp"
             )
         if closing:
             try:
