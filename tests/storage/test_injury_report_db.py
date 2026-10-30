@@ -527,3 +527,234 @@ def test_a_roster_match_wins_over_a_curated_alias():
     out = resolve_players(_listing("Jones, David"), rosters, ResolutionReport())
     assert out["player_id"].tolist() == [999]
     assert out["method"].tolist() != [METHOD_CURATED_ALIAS]
+
+
+# --------------------------------------------------------------------------------
+# One player_id type: a mixed key splits one player into two
+# --------------------------------------------------------------------------------
+
+from nba_ou.postgre_db.injury_report_aiven.ids import as_player_ids  # noqa: E402
+
+
+def test_text_roster_ids_resolve_to_integers():
+    # Supabase stores roster ids as text; the store and its readers use BIGINT.
+    rosters = _roster([("0022400001", _HOU, "999", 2024, "Jones, David")])
+    rosters["nba_team_id"] = rosters["nba_team_id"].astype(str)
+    listing = _listing("Jones, David")
+    listing["nba_team_id"] = listing["nba_team_id"].astype(str)
+    out = resolve_players(listing, rosters, ResolutionReport())
+    assert out["player_id"].dtype == "int64"
+    assert out["player_id"].tolist() == [999]
+
+
+def test_roster_and_curated_alias_matches_share_one_type():
+    rosters = _roster(
+        [
+            ("0022400001", _HOU, "1630224", 2024, "Green, J"),
+            ("0022400001", _HOU, "201145", 2024, "Green, J"),
+            ("0022400001", _HOU, "999", 2024, "Jones, David"),
+        ]
+    )
+    listing = pd.concat(
+        [_listing("Green, Jalen"), _listing("Jones, David")], ignore_index=True
+    )
+    out = resolve_players(listing, rosters, ResolutionReport())
+    assert out["player_id"].dtype == "int64"
+    assert sorted(out["player_id"]) == [999, 1630224]
+
+
+@pytest.mark.parametrize("bad", [[2544, None], ["2544", "x"], [2544.5]])
+def test_player_ids_reject_missing_or_malformed_values(bad):
+    with pytest.raises((ValueError, TypeError)):
+        as_player_ids(pd.Series(bad, dtype=object))
+
+
+def test_spans_refuse_a_mixed_player_id_key():
+    frame = pd.concat([_obs([180], [5]), _obs([60], [5])], ignore_index=True)
+    frame["player_id"] = pd.Series([201939, "201939"], dtype=object)
+    with pytest.raises(TypeError, match="player_id must be int64"):
+        build_spans(frame)
+
+
+def test_removals_refuse_a_mixed_player_id_key():
+    obs = _player_obs([180, 120])
+    obs["player_id"] = pd.Series([201939, "201939"], dtype=object)
+    listed = _listed([180, 120, 60])
+    with pytest.raises(TypeError, match="player_id must be int64"):
+        build_removal_observations(obs, listed, pd.DataFrame(), listed["observed_at"])
+
+
+class _NoWrites:
+    def cursor(self):
+        raise AssertionError("a repeated key must fail before any write")
+
+
+def test_insert_refuses_two_versions_of_one_span():
+    spans = build_spans(_obs([180, 60], [3, 5]))
+    twice = pd.concat([spans, spans.assign(reason_id=99)], ignore_index=True)
+    with pytest.raises(ValueError, match="repeat a ir_status_span primary key"):
+        load_module.insert_spans(_NoWrites(), twice, commit=False)
+
+
+# --------------------------------------------------------------------------------
+# ingest_season replaces a game's rows in one transaction
+# --------------------------------------------------------------------------------
+
+from nba_ou.postgre_db.injury_report_aiven.ingest import _Read  # noqa: E402
+
+_GAME_DAY = pd.Timestamp("2026-10-16").date()
+_GAME_TIP = pd.Timestamp("2026-10-16T23:00:00Z")
+
+
+class _TxConn:
+    """Logs statements, commits and rollbacks in order."""
+
+    def __init__(self):
+        self.events: list[str] = []
+
+    def cursor(self):
+        return self
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def execute(self, statement, params=None):
+        text = statement.as_string(None)
+        self.events.append(text.split()[0].upper())
+        self.rowcount = 1
+
+    def executemany(self, statement, rows):
+        self.events.append("INSERT_MANY")
+
+    def commit(self):
+        self.events.append("COMMIT")
+
+    def rollback(self):
+        self.events.append("ROLLBACK")
+
+
+def _season_report(clock: str) -> _Read:
+    keys = {"game_date": _GAME_DAY, "team_home": "BOS", "team_away": "NYK"}
+    players = pd.DataFrame(
+        [
+            dict(
+                **keys,
+                raw_team="Boston Celtics",
+                raw_name="James, LeBron",
+                status_id=5,
+                reason_category="Injury/Illness",
+                reason_detail="Knee",
+            )
+        ]
+    )
+    games = pd.DataFrame([dict(**keys, game_time_raw="07:00 (ET)")])
+    at = pd.Timestamp(f"2026-10-16T{clock}:00Z").to_pydatetime()
+    return _Read(ParsedReport(at, players, pd.DataFrame(), games), 4, 2026)
+
+
+@pytest.fixture
+def season_ingest(monkeypatch):
+    reads = [_season_report("14:00"), _season_report("14:15")]
+    teams = pd.DataFrame(
+        {
+            "report_name": ["Boston Celtics", "New York Knicks"],
+            "nba_team_id": ["1610612738", "1610612752"],
+            "tricode": ["BOS", "NYK"],
+        }
+    )
+    games = pd.DataFrame(
+        {
+            "game_id": ["0022600001"],
+            "game_date": [_GAME_DAY],
+            "season_year": [2026],
+            "tipoff_utc": [_GAME_TIP],
+            "team_home": ["BOS"],
+            "team_away": ["NYK"],
+        }
+    )
+    rosters = pd.DataFrame(
+        {
+            "game_id": ["0022600001"],
+            "nba_team_id": ["1610612738"],
+            "player_id": ["2544"],
+            "season_year": [2026],
+            "norm_name": ["james|lebron"],
+            "norm_initial": ["james|l"],
+        }
+    )
+    R = ingest_module.R
+    monkeypatch.setattr(ingest_module, "read_reports", lambda *a, **k: (reads, 0, 0))
+    monkeypatch.setattr(R, "load_team_dimension", lambda source: teams)
+    monkeypatch.setattr(R, "load_game_dimension", lambda seasons, source: games)
+    monkeypatch.setattr(
+        R,
+        "load_unscheduled_games",
+        lambda *a: pd.DataFrame(
+            columns=["game_id", "game_date", "team_away", "team_home"]
+        ),
+    )
+    monkeypatch.setattr(
+        R, "tipoffs_from_reports", lambda *a: pd.DataFrame(columns=["game_id"])
+    )
+    monkeypatch.setattr(R, "load_rosters", lambda source, seasons: rosters)
+    loader_module = ingest_module.loader
+    monkeypatch.setattr(
+        loader_module,
+        "upsert_teams",
+        lambda conn, teams: {"Boston Celtics": 1, "New York Knicks": 2},
+    )
+    monkeypatch.setattr(loader_module, "upsert_games", lambda *a, **k: 0)
+    monkeypatch.setattr(ingest_module, "create_season_partition", lambda *a: None)
+    monkeypatch.setattr(
+        loader_module,
+        "upsert_reports",
+        lambda conn, reports, *, commit: {
+            at: i for i, at in enumerate(reports["observed_at"], 1)
+        },
+    )
+    monkeypatch.setattr(
+        loader_module,
+        "upsert_reasons",
+        lambda conn, pairs: {(code, detail): 1 for code, _, detail in pairs},
+    )
+
+    def run(conn):
+        return ingest_module.ingest_season(
+            "2026-27",
+            manifest=pd.DataFrame(),
+            storage=None,
+            aiven=conn,
+            source=None,
+            quiet=True,
+            write_game_dates=(_GAME_DAY, _GAME_DAY),
+        )
+
+    return run
+
+
+def test_season_ingest_commits_the_replacement_once_after_every_write(
+    season_ingest,
+):
+    conn = _TxConn()
+    summary = season_ingest(conn)
+    assert summary.spans == 1
+    assert conn.events.count("COMMIT") == 1
+    assert conn.events[-1] == "COMMIT"
+    assert conn.events.index("DELETE") < conn.events.index("INSERT_MANY")
+    assert "ROLLBACK" not in conn.events
+
+
+def test_failed_rebuild_rolls_back_the_delete(season_ingest, monkeypatch):
+    real = ingest_module.build_spans
+    monkeypatch.setattr(
+        ingest_module, "build_spans", lambda obs: pd.concat([real(obs)] * 2)
+    )
+    conn = _TxConn()
+    with pytest.raises(ValueError, match="repeat a ir_status_span primary key"):
+        season_ingest(conn)
+    assert "DELETE" in conn.events
+    assert "COMMIT" not in conn.events
+    assert conn.events[-1] == "ROLLBACK"

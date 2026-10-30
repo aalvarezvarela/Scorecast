@@ -37,6 +37,7 @@ from nba_ou.fetch_data.injury_reports.archive import manifest as mf
 
 from . import load as loader
 from . import resolve as R
+from .ids import require_player_ids
 from .parse import LegacyLayoutError, ParsedReport, category_code, parse_report
 from .schema import ERAS, NOT_LISTED_CATEGORY, create_season_partition
 from .spans import build_filing_spans, build_spans
@@ -212,6 +213,7 @@ def build_removal_observations(
     """
     if observations.empty or listed.empty:
         return observations.iloc[0:0]
+    require_player_ids(observations, "build_removal_observations")
 
     carry = [
         "game_id",
@@ -384,6 +386,10 @@ def ingest_season(
     ``ON CONFLICT DO NOTHING``, so a reload over old rows would keep each old
     span's ``valid_to`` and leave it overlapping the new, shorter spans. The
     delete runs only after every report has been parsed and resolved.
+
+    The delete (``replace`` or ``write_game_dates``) and every write after it
+    are one transaction: a failure anywhere in between -- a repeated key, a
+    constraint, a lost connection -- rolls back to the rows already stored.
     """
     summary = IngestSummary(season=season)
     parsed, summary.reports_legacy, summary.reports_failed = read_reports(
@@ -494,16 +500,67 @@ def ingest_season(
         observations = pd.concat([observations, removals], ignore_index=True)
 
     # --- reports, reasons, ids ------------------------------------------------
-    if written_games is not None and not dry_run:
-        summary.replaced = loader.clear_games(aiven, sorted(written_games))
-    elif replace and not dry_run:
-        # Only the season being reloaded. Listings can reach into a neighbouring
-        # season, whose rows this run does not rebuild and must not delete.
-        summary.replaced = loader.clear_season(aiven, int(season.split("-")[0]))
+    if dry_run:
+        spans, filing_spans = _build_timelines(
+            None, observations, listed, not_filed, reports, tricode_to_team_id
+        )
+    else:
+        try:
+            if written_games is not None:
+                summary.replaced = loader.clear_games(
+                    aiven, sorted(written_games), commit=False
+                )
+            elif replace:
+                # Only the season being reloaded. Listings can reach into a
+                # neighbouring season, whose rows this run does not rebuild and
+                # must not delete.
+                summary.replaced = loader.clear_season(
+                    aiven, int(season.split("-")[0]), commit=False
+                )
+            spans, filing_spans = _build_timelines(
+                aiven, observations, listed, not_filed, reports, tricode_to_team_id
+            )
+            loader.insert_spans(aiven, spans, commit=False)
+            loader.insert_filing_spans(aiven, filing_spans, commit=False)
+            if not observations.empty:
+                resolved = observations.loc[observations["status_id"].notna()]
+                loader.record_aliases(aiven, resolved, commit=False)
+            loader.record_unresolved(aiven, summary.resolution.unresolved, commit=False)
+            aiven.commit()
+        except Exception:
+            aiven.rollback()
+            raise
+    summary.spans = len(spans)
+    summary.filing_spans = len(filing_spans)
+
+    if collect is not None:
+        collect.update(
+            reports=reports,
+            spans=spans,
+            filing_spans=filing_spans,
+            teams=teams,
+            games=games,
+        )
+    return summary
+
+
+def _build_timelines(
+    aiven: psycopg.Connection | None,
+    observations: pd.DataFrame,
+    listed: pd.DataFrame,
+    not_filed: pd.DataFrame,
+    reports: pd.DataFrame,
+    tricode_to_team_id: dict[str, int],
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Status and filing spans; ``aiven`` None is a dry run with stand-in ids.
+
+    With a connection, reports and reasons are upserted without committing:
+    the caller's transaction owns them, after any delete it ran.
+    """
     report_map = (
         dict(zip(reports["observed_at"], reports["observed_at"], strict=True))
-        if dry_run
-        else loader.upsert_reports(aiven, reports)
+        if aiven is None
+        else loader.upsert_reports(aiven, reports, commit=False)
     )
 
     spans = pd.DataFrame()
@@ -517,7 +574,7 @@ def ingest_season(
                 strict=True,
             )
         }
-        if dry_run:
+        if aiven is None:
             observations["reason_id"] = (
                 observations["reason_category"].map(category_code)
                 + "|"
@@ -534,26 +591,8 @@ def ingest_season(
                 )
             ]
         spans = build_spans(observations)
-    summary.spans = len(spans)
 
     filings = build_filing_observations(
         listed, not_filed, reports["observed_at"], tricode_to_team_id
     )
-    filing_spans = build_filing_spans(filings)
-    summary.filing_spans = len(filing_spans)
-
-    if collect is not None:
-        collect.update(
-            reports=reports,
-            spans=spans,
-            filing_spans=filing_spans,
-            teams=teams,
-            games=games,
-        )
-    if not dry_run:
-        loader.insert_spans(aiven, spans)
-        loader.insert_filing_spans(aiven, filing_spans)
-        resolved = observations.loc[observations["status_id"].notna()]
-        loader.record_aliases(aiven, resolved)
-        loader.record_unresolved(aiven, summary.resolution.unresolved)
-    return summary
+    return spans, build_filing_spans(filings)

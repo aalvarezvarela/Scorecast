@@ -37,6 +37,8 @@ from dataclasses import dataclass, field
 import pandas as pd
 import psycopg
 
+from .ids import as_player_ids
+
 TIPOFF_SCHEDULE = "schedule"
 TIPOFF_GAME_TIME_INDEX = "game_time_index"
 TIPOFF_INJURY_REPORT = "injury_report"
@@ -514,6 +516,9 @@ def resolve_players(
     team's whole season. The widening exists because a G League assignee or a
     just-signed player can appear on the report without being on either list for
     that specific game.
+
+    ``player_id`` comes back as int64 whatever tier matched: the roster tiers
+    read Supabase text ids, the curated aliases are integers.
     """
     if rows.empty:
         return rows.assign(player_id=None, method=None)
@@ -555,6 +560,7 @@ def resolve_players(
         return pending.assign(player_id=None, method=None).iloc[0:0]
 
     resolved = pd.concat(matched_frames, ignore_index=True)
+    resolved["player_id"] = as_player_ids(resolved["player_id"])
     report.resolved += len(resolved)
     for method, count in resolved["method"].value_counts().items():
         report.by_method[method] = report.by_method.get(method, 0) + int(count)
