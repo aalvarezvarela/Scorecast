@@ -35,6 +35,10 @@ on:
         description: "Insert missing predictions and archive models/runs (off = real fits, local reports only)"
         type: boolean
         default: false
+      overwrite:
+        description: "Recompute existing predictions; with persist replace matching historical backfill rows"
+        type: boolean
+        default: false
       force:
         description: "Run even with PREDICTIONS_ENABLED set to false"
         type: boolean
@@ -145,6 +149,7 @@ jobs:
       START_DATE: ${{ matrix.game_date }}
       SLOTS: ${{ matrix.slots }}
       PERSIST: ${{ inputs.persist }}
+      OVERWRITE: ${{ inputs.overwrite }}
       INCLUDE_TABPFN: ${{ matrix.tabpfn }}
       TABPFN_ONLY: ${{ matrix.tabpfn_only }}
       TABPFN_HORIZON: ${{ inputs.tabpfn_horizon_minutes }}
@@ -182,6 +187,7 @@ jobs:
           args+=(--tabpfn-horizon-minutes "$TABPFN_HORIZON")
           if [[ "$INCLUDE_CLOSING" == "true" ]]; then args+=(--include-closing); fi
           if [[ "$PERSIST" == "true" ]]; then args+=(--persist); else args+=(--dry-run); fi
+          if [[ "$OVERWRITE" == "true" ]]; then args+=(--overwrite); fi
           python scripts/backfill_past_predictions.py "${args[@]}"
       - name: Upload local prediction reports
         if: always()

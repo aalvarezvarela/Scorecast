@@ -350,6 +350,38 @@ def test_already_covered_slots_do_not_refit_or_insert(pipeline, monkeypatch):
     assert not pipeline.s3.put_order and not pipeline.written
 
 
+@pytest.mark.parametrize("persist", [False, True])
+def test_overwrite_refits_covered_games_and_only_persists_when_requested(
+    pipeline, monkeypatch, persist
+):
+    from nba_ou.postgre_db.predictions_aiven import store
+
+    monkeypatch.setattr(
+        backfill,
+        "historical_coverage",
+        lambda *a: pytest.fail("Overwrite must ignore coverage"),
+    )
+    modes = []
+
+    def write(conn, tables, *, replace_historical=False):
+        modes.append(replace_historical)
+        pipeline.written.append(tables)
+        return True
+
+    monkeypatch.setattr(store, "write_run", write)
+    assert (
+        backfill.run_backfill(
+            DAY, persist=persist, overwrite=True, output_dir=pipeline.output
+        )
+        == 0
+    )
+    assert modes == ([True] if persist else [])
+    predictions = pd.read_csv(next(pipeline.output.glob("*/*.predictions.csv")))
+    assert predictions.game_id.tolist() == [int(GAME)]
+    if not persist:
+        assert not pipeline.s3.put_order
+
+
 def test_cli_defaults_to_dry_run_and_modes_are_exclusive(monkeypatch, tmp_path):
     calls = []
     monkeypatch.setattr(cli, "run_backfill", lambda *a, **k: calls.append(k) or 0)
@@ -357,6 +389,8 @@ def test_cli_defaults_to_dry_run_and_modes_are_exclusive(monkeypatch, tmp_path):
     assert calls[-1]["persist"] is False
     assert cli.main(["--start-date", DAY, "--persist"]) == 0
     assert calls[-1]["persist"] is True
+    assert cli.main(["--start-date", DAY, "--persist", "--overwrite"]) == 0
+    assert calls[-1]["overwrite"] is True
     with pytest.raises(SystemExit):
         cli.main(["--start-date", DAY, "--dry-run", "--persist"])
     for removed_option in ["--stored-only", "--rebuild-inputs"]:

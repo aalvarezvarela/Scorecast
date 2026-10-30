@@ -767,6 +767,122 @@ def test_writer_stores_single_market_and_empty_runs(conn):
     assert _scalar(conn, "SELECT count(*) FROM prediction.predictions") == 2
 
 
+def historical_recorder(
+    *, game=None, value=1.5, fit_id="old-fit", target="line_error", horizon=360
+):
+    recorder = PredictionRunRecorder(workflow=4, game_date="2026-10-21", book=BOOK)
+    recorder.set_schedule(schedule())
+    frame = intermediate_frame()
+    frame = frame.loc[frame.TIME_TO_MATCH_MIN.eq(360)].copy()
+    frame["TIME_TO_MATCH_MIN"] = horizon
+    frame["SNAPSHOT_TS_UTC"] = frame.GAME_ID.map(
+        schedule().set_index("GAME_ID").GAME_TIME
+    ) - pd.Timedelta(minutes=horizon)
+    if game:
+        frame = frame.loc[frame.GAME_ID.eq(game)]
+    recorder.add_frame("intermediate_line", frame, version="2_5")
+    assert (
+        recorder.add_predictions(
+            output(
+                frame,
+                dataset_type="intermediate_line",
+                target=target,
+                horizon=horizon,
+                mode="own",
+                value=value,
+                fit_id=fit_id,
+            ),
+            label=target,
+        )
+        is None
+    )
+    return recorder
+
+
+@pytest.mark.postgres
+@needs_db
+@pytest.mark.parametrize("kind", [1, 3])
+def test_overwrite_replaces_only_successfully_recomputed_backfill_slots(conn, kind):
+    from nba_ou.postgre_db.predictions_aiven.store import write_run
+
+    def tables(**kwargs):
+        result = historical_recorder(**kwargs).tables(status=1)
+        result.model_builds["kind"] = kind
+        result.predictions["kind"] = kind
+        return result
+
+    old = tables()
+    assert write_run(conn, old)
+    # Preserve other horizons, targets, workflows, kinds and game dates.
+    assert write_run(conn, tables(horizon=240))
+    assert write_run(conn, tables(target="spread_error"))
+    other_kind = tables(fit_id="other-kind")
+    other_kind.model_builds["kind"] = 3 if kind == 1 else 1
+    other_kind.predictions["kind"] = 3 if kind == 1 else 1
+    assert write_run(conn, other_kind)
+    live = tables()
+    live.run["workflow"] = 1
+    assert write_run(conn, live)
+    other_date = tables()
+    other_date.games["game_id"] += 100
+    other_date.games["game_date"] = pd.Timestamp("2026-10-22").date()
+    other_date.inputs["game_id"] += 100
+    other_date.predictions["game_id"] += 100
+    assert write_run(conn, other_date)
+    before = _scalar(conn, "SELECT count(*) FROM prediction.predictions")
+    replacement = tables(game=GAME_1, value=9.0, fit_id="new-fit")
+    replacement.model_builds["spec_id"] = "corrected-spec"
+    assert write_run(conn, replacement, replace_historical=True)
+    assert _scalar(conn, "SELECT count(*) FROM prediction.predictions") == before
+    rows = _rows(
+        conn,
+        "SELECT * FROM prediction.predictions_full WHERE workflow = 4 AND model_horizon_minutes = 360 AND target = 1",
+    )
+    replaced = rows.loc[rows.game_id.eq(int(GAME_1)) & rows.kind.eq(kind)]
+    assert len(replaced) == 1
+    assert replaced.prediction_value.tolist() == [9.0]
+    # The game absent from the successful output retains the previous value.
+    assert rows.loc[
+        rows.game_id.eq(int(GAME_2)) & rows.kind.eq(kind), "prediction_value"
+    ].tolist() == [1.5]
+    assert write_run(conn, replacement, replace_historical=True) is False
+    assert _scalar(conn, "SELECT count(*) FROM prediction.predictions") == before
+
+
+@pytest.mark.postgres
+@needs_db
+def test_failed_overwrite_transaction_retains_previous_predictions(conn, monkeypatch):
+    from nba_ou.postgre_db.predictions_aiven import store
+
+    assert store.write_run(conn, historical_recorder().tables(status=1))
+    before = _scalar(conn, "SELECT count(*) FROM prediction.predictions")
+    real_replace = store._replace_historical_predictions
+
+    def fail_after_delete(cur, run_id):
+        real_replace(cur, run_id)
+        raise RuntimeError("Simulated failure after replacement")
+
+    monkeypatch.setattr(store, "_replace_historical_predictions", fail_after_delete)
+    with pytest.raises(RuntimeError, match="Simulated failure"):
+        store.write_run(
+            conn,
+            historical_recorder(value=9, fit_id="new-fit").tables(status=1),
+            replace_historical=True,
+        )
+    assert _scalar(conn, "SELECT count(*) FROM prediction.predictions") == before
+    assert _scalar(conn, "SELECT count(*) FROM prediction.runs") == 1
+    assert (
+        _scalar(conn, "SELECT max(prediction_value) FROM prediction.predictions") == 1.5
+    )
+
+
+def test_non_historical_run_cannot_overwrite():
+    from nba_ou.postgre_db.predictions_aiven.store import write_run
+
+    with pytest.raises(ValueError, match="Only historical backfills"):
+        write_run(None, daily_recorder().tables(status=1), replace_historical=True)
+
+
 @pytest.mark.postgres
 @needs_db
 def test_view_grades_against_the_bet_line(conn):

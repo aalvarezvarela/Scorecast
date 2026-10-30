@@ -56,6 +56,15 @@ predictions into Aiven and archive runs/isolated XGBoost builds in S3. Builds
 live under `models/historical_backfills/<execution-id>/<game-date>/<slot>/`;
 production/staging pointers and training partitions are unchanged.
 
+Add `--overwrite` to recompute every selected game even when already covered.
+With `--persist`, each successful output replaces older **historical backfill**
+predictions for the same game, kind, schema, dataset, target, variant, model
+horizon and input snapshot, across spec/fit revisions. Replacement and insertion
+share one Aiven transaction: failures retain the previous predictions. Other
+dates, unselected/failed slots and other workflows are preserved. Run metadata,
+inputs and S3 archives remain available for audit. With `--dry-run`, overwrite
+only recomputes and writes local reports.
+
 The manual **Predictions - Historical Backfill** Action uses this same stored-
 data path. It defaults to all XGBoost slots, standard TabPFN and closing at
 T-240, with persistence off. Jobs run sequentially by date/horizon with fresh
@@ -72,16 +81,16 @@ the later output is shown. TabPFN uses kind 3 and the standard
 horizon, input timepoint and historical training end. Reruns retry missing rows.
 Independent local insertions should not overlap the same dates/specs.
 
-## One-off cron: October 30, 2026 at 06:20 Madrid
+## One-off cron: October 31, 2026 at 06:20 Madrid
 
 `scripts/cronjobs/schedule_historical_backfill.py` prepares a single cron-job.org
-dispatch for **2026-10-30 06:20 Europe/Madrid (05:20 UTC)**. Its defaults fill
+dispatch for **2026-10-31 06:20 Europe/Madrid (05:20 UTC)**. Its defaults fill
 **October 20–25 inclusive**, using all enabled XGBoost slots plus standard
 TabPFN for all three targets, intermediate and closing at T-240. The eventual
 workflow inserts missing predictions and archives its isolated models. It uses
 only saved retrain partitions; it never rebuilds the dataset.
 
-The last scheduled past-snapshot dispatch is October 30 at 06:00 Madrid. Before
+The last scheduled past-snapshot dispatch is October 31 at 06:00 Madrid. Before
 taking the NBA runner, the backfill waits on a GitHub-hosted runner for that run
 to finish and for all three prediction workflows to have no active or queued
 runs. If this takes more than two hours, it fails without starting the backfill.
@@ -93,13 +102,22 @@ Offline preview (no credentials, service calls, fitting or cron creation):
 PYTHONPATH=.:src .venv/bin/python scripts/cronjobs/schedule_historical_backfill.py
 ```
 
+To preview the corrected repeat from its dedicated branch, with Aiven replacement:
+
+```bash
+PYTHONPATH=.:src .venv/bin/python scripts/cronjobs/schedule_historical_backfill.py \
+  --overwrite --ref fix/historical-backfill-overwrite
+```
+
 Only when scheduling is authorized, append `--apply` to create/update the
 one-off cron. This books a future dispatch; it does not start the backfill
 immediately. It requires `CRONJOB_API_KEY`, `CRONJOB_GITHUB_DISPATCH_TOKEN`, and
-the backfill workflow published on `main`. The script checks that GitHub has
-registered the workflow before changing any cron, verifies the booked time,
+the backfill workflow registered on `main` and published on the selected `--ref`
+(default `main`). The script checks publication before changing any cron, verifies the booked time,
 and refuses past times or re-arming a cron that has already fired. The cron
 expires at 05:20:59 UTC that day, so it cannot repeat the following year.
+Titles include the dispatch time and overwrite mode, allowing a new one-off
+repeat while keeping the earlier fired cron intact.
 
 `--dry-run-predictions` changes the eventual workflow to real fits with local
 reports only, without inserting predictions or archiving models. This is

@@ -186,6 +186,7 @@ def run_backfill(
     *,
     slots=None,
     persist: bool = False,
+    overwrite: bool = False,
     output_dir: Path = Path("data/backfill_predictions"),
     include_tabpfn: bool = False,
     include_closing: bool = False,
@@ -233,7 +234,7 @@ def run_backfill(
             raise ValueError(f"Unsupported historical dataset: {slot.describe()}")
     for device in sorted({refit_device(specs[slot]) for slot in slots}):
         require_device(device)
-    coverage = historical_coverage(dates[0], dates[-1])
+    coverage = pd.DataFrame() if overwrite else historical_coverage(dates[0], dates[-1])
     stores = {
         dataset: SeasonPartitions(
             s3_client=s3,
@@ -272,6 +273,7 @@ def run_backfill(
                         tabpfn_slots=tabpfn_slots,
                         snapshot_minutes=tabpfn_horizon_minutes,
                         stored_inputs=stored_inputs,
+                        overwrite=overwrite,
                     )
                 )
         except (
@@ -286,6 +288,7 @@ def run_backfill(
         json.dumps(
             {
                 "persist": persist,
+                "overwrite": overwrite,
                 "input_source": "stored",
                 "dates": dates,
                 "include_closing": include_closing,
@@ -325,6 +328,7 @@ def _backfill_date(
     tabpfn_slots=(),
     snapshot_minutes=DEFAULT_TABPFN_BACKFILL_HORIZON,
     stored_inputs=None,
+    overwrite=False,
 ):
     scheduled = replay_scheduled_games(game_date)
     if scheduled.empty:
@@ -589,6 +593,7 @@ def _backfill_date(
             {
                 "game_date": game_date,
                 "persist": persist,
+                "overwrite": overwrite,
                 "slots": recorder.slots,
                 "input_source": "stored",
                 "input_sources": input_sources,
@@ -604,7 +609,11 @@ def _backfill_date(
     if persist:
         failures.extend(
             persist_prediction_run(
-                recorder, s3_client=s3, bucket=bucket, partial=bool(failures)
+                recorder,
+                s3_client=s3,
+                bucket=bucket,
+                partial=bool(failures),
+                replace_historical=overwrite,
             )
         )
     return failures
