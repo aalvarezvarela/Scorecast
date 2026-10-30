@@ -239,7 +239,6 @@ def test_empty_yahoo_feed_does_not_break_scheduled_odds_validation():
         historical,
         pd.DataFrame(),
         sportsbook,
-        strict_mode=0,
         normalize_total_lines=False,
         normalize_spread_lines=False,
     )

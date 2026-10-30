@@ -736,7 +736,6 @@ def closing_rows(
     df_to_predict_total, layer_inputs = create_df_to_predict(
         todays_prediction=True,
         scheduled_data=scheduled_data,
-        strict_mode=30,
         normalize_total_lines=normalize_total_lines,
         normalize_spread_lines=normalize_spread_lines,
         null_extreme_spread_prices=null_extreme_spread_prices,

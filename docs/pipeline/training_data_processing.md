@@ -52,7 +52,6 @@ scheduled_data = get_all_info_for_scheduled_games(
 df_to_predict = create_df_to_predict(
     todays_prediction=True,
     scheduled_data=scheduled_data,
-    strict_mode=30,
     normalize_total_lines=True,
 )
 ```
@@ -188,8 +187,9 @@ cumulative features can be computed consistently for future games.
 The scheduled odds data is merged with historical odds by
 `merge_and_validate_scheduled_odds()`. That function checks that scheduled odds
 columns are compatible with historical odds columns, drops extra scheduled-only
-columns, logs null-count diagnostics when `strict_mode >= 0`, then concatenates
-historical and scheduled odds.
+columns, then concatenates historical and scheduled odds. Missing quotes are
+preserved: prediction applies each model's own `max_na_per_row` over its
+required features, so admission does not depend on the other scheduled games.
 
 For scheduled games, the pipeline may also include extra historical game IDs for
 the exact home/away matchups being predicted. These are discovered through

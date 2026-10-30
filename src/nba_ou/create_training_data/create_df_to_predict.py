@@ -525,7 +525,6 @@ def create_df_to_predict(
     scheduled_data: dict = None,
     recent_limit_to_include: str = None,
     older_season_limit: int = None,
-    strict_mode: int = 2,
     categorical_team_encoding: bool = False,
     normalize_total_lines: bool = True,
     normalize_spread_lines: bool = True,
@@ -557,8 +556,6 @@ def create_df_to_predict(
         older_season_limit (int, optional): Number of seasons to include.
             For todays_prediction=True, defaults to 2 (current + previous season).
             For todays_prediction=False, defaults to all seasons from 2017-18.
-        strict_mode (int, optional): Maximum number of columns allowed to have NaN/None values
-            when validating scheduled odds. Use a negative value to disable the check. Default is 2.
         categorical_team_encoding (bool, optional): If True, encode home/away team identity as two
             pandas Categorical columns for native categorical handling in gradient-boosted models.
             If False (default), add 60 binary one-hot columns.
@@ -747,7 +744,6 @@ def create_df_to_predict(
             df_odds,
             df_odds_yahoo,
             df_odds_sportsbook,
-            strict_mode=strict_mode,
             normalize_total_lines=normalize_total_lines,
             normalize_spread_lines=normalize_spread_lines,
             null_extreme_spread_prices=null_extreme_spread_prices,
