@@ -29,10 +29,15 @@ snapshots" fill just the model-horizon = time diagonal. No predictor changes.
   slots normally read `input_mode 2` (`latest`: every model reads the run's
   current snapshot, so **every intermediate model predicts at every run time**).
   Already-passed own inputs (`input_mode 1`) can also enter the live sample.
-- **Replay** = workflow 2, `input_mode 1`: each model on its own snapshot only,
+- **Replay intermediate** = workflows 2/4, `input_mode 1`: each model on its own snapshot only,
   rebuilt after the games (late ticks or reports can differ from live). TabPFN
   own-snapshot rows (workflow 3, `input_mode 1`) count in both only when
   genuinely available before tip-off, as Yesterday does.
+- **Replay closing** = workflow 2 with `input_mode 3`, or Historical Backfill
+  (workflow 4) with `input_mode 0`, using the explicit stored snapshot horizon.
+  These have a separate closing replay KPI, timeline and data table. An exact
+  T−0 input maps to replay Final; a T−4h input stays at T−4h. Refits and reruns
+  reduce to one output per game/slot/snapshot, independently of live outputs.
 - Runs fire at every game's `tip − h` (clustered ≤30 min, `snapshot_triggers.md`),
   and every run predicts every game still to start. A game therefore gets many
   runs (roughly 40 × 51 slots ≈ 2k rows, ~2.5M per season). The page must
@@ -43,7 +48,7 @@ snapshots" fill just the model-horizon = time diagonal. No predictor changes.
 | Concept | Definition |
 | --- | --- |
 | Slot | `(kind, schema_version, target, dataset_type, model_horizon_minutes, variant)`. A refit replaces the build in the same slot; never group by `fit_id`. |
-| Input time to tip `r` | Intermediate: `snapshot_horizon_minutes`. Closing: `tipoff_at_prediction − run_started_at`. This measures what the model knew. The publication lag (`available_at − input_at`, ~20 min on a warm runner) is shown, not bucketed. |
+| Input time to tip `r` | Intermediate and reconstructed closing: `snapshot_horizon_minutes`. Live closing: `tipoff_at_prediction − run_started_at`. This measures what the model knew. The publication lag (`available_at − input_at`, ~20 min on a warm runner) is shown, not bucketed. |
 | Time bucket | Snapshot grid `G = 30, 60, 120 … 720, 840, 960, 1080` plus `T−18h+`. `bucket(r) = min{h ∈ G : h ≥ r}`, the last snapshot that had passed, covering `(previous h, h]`. Closing also gets a **Final** column: the last output available before tip, the same rule as Yesterday. |
 | One row per cell | Per `(game, slot, source, bucket)` keep the prediction with `r` closest to `h` (right after the snapshot passed). This makes the live diagonal comparable to replay. |
 | Grading | Same as `grade_history` (`domain/history.py`): the signal requires \|edge\| > per-kind min edge, measured against **that row's stored Bet365 quote**. Results are WIN/LOSS/PUSH/NO BET/NO LINE/VOID. |
@@ -51,7 +56,7 @@ snapshots" fill just the model-horizon = time diagonal. No predictor changes.
 
 ## 3. Page layout
 
-A shared filter bar: date range (default 2026-10-27 through today's NBA slate), season type
+A shared filter bar: date range (default current season's 1 October through today's NBA slate), season type
 (regular), model family (XGBoost 2.5 / TabPFN), per-kind min edge
 (`minimum_edge_select`), and a metric switch (Win % / Bets / MAE / ROI).
 Below it, a **target selector**: Line error | Total points | Spread error.
@@ -65,6 +70,10 @@ where it has outputs (no spread).
    break-even rule and bet-count labels. The table goes in an expander. Pooled
    KPI cards do not show a CI, because their repeated game observations are
    correlated.
+   **Closing by input time · Replay** adds a separate chart and detail table
+   for reconstructed closing outputs, including Historical Backfill. The
+   overview's Closing · Replay metric pools these outputs; it never enters
+   Closing · Final or any live metric.
 3. **Model × time heatmap: live** (the main answer). Rows are Closing plus the
    16 intermediate horizons (longest at the top). Columns are the time
    buckets, far to near. The **diagonal is outlined**: cells to its left are
@@ -180,17 +189,20 @@ refreshed by the finished-games job. That is out of scope until measured.
 Implemented:
 
 - The Historical analysis navigation page now renders the actual dashboard.
-- Inclusive date range (2026-10-27 through today by default), season type (regular
+- Inclusive date range (current season's 1 October through today by default), season type (regular
   by default), model family, three targets, per-kind minimum edges and the
   Win % / Bets / MAE / ROI switch. Family, metric and edge changes reuse source
   data; range, target and season type are cache keys. Refresh evicts that key.
-  Earlier days had dataset errors and are excluded by default, not prohibited
-  from manual selection. The end follows the current Pacific NBA slate date.
+  Historical backfills are included in the default range, and reconstructed
+  outputs remain separate from live. The end follows the current Pacific NBA slate date.
 - Final-game and pooled win-rate KPIs, closing input-time timeline with Final,
   confidence bands and bet counts, live slot/time heatmap with outlined
   diagonal and low-sample shading, and own-horizon live/replay intervals.
 - Closing-style intermediate replay timeline: one aggregate point per model
   family and trained horizon, using cached own-snapshot replay predictions.
+- Closing replay KPI, timeline and counts for workflows 2/4, including exact
+  T−0 snapshots. Past games awaiting scores are disclosed and cannot contribute
+  wins/losses or MAE until their final results are stored.
 - Matched-game win-rate deltas and pick disagreements, cell detail tables,
   pooled row/column margins without misleading confidence intervals, and
   visible method/sample-size notes.

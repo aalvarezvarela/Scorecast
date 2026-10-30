@@ -49,6 +49,17 @@ def closing_timeline(cells: pd.DataFrame, metric: str):
     )
 
 
+def closing_replay_timeline(cells: pd.DataFrame, metric: str):
+    replay = cells.loc[
+        cells["dataset_type"].eq(1) & cells["source"].eq("Snapshot replay")
+    ]
+    return _prediction_timeline(
+        replay,
+        metric,
+        x_title="Reconstructed closing input before tip-off (Final = T−0 snapshot)",
+    )
+
+
 def intermediate_replay_timeline(cells: pd.DataFrame, metric: str):
     own_replay = cells.loc[
         cells["dataset_type"].eq(2)

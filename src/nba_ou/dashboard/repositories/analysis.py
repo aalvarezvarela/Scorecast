@@ -19,7 +19,7 @@ ANALYSIS_TIMEOUT_MS = 45_000
 # are bound parameters. Keep raw outputs/build identity off the network until
 # refits and clustered runs have been reduced to one row per cell in PostgreSQL.
 _BUCKET_CASE = (
-    "CASE "
+    "CASE WHEN input_minutes = 0 THEN 0 "
     + " ".join(f"WHEN input_minutes <= {h} THEN {h}" for h in TIME_GRID)
     + f" ELSE {EARLY_BUCKET} END"
 )
@@ -73,10 +73,14 @@ ANALYSIS_QUERY = """
                 (dataset_type = 2 AND input_mode = 1
                  AND snapshot_horizon_minutes = model_horizon_minutes
                  AND (workflow IN (2, 4) OR kind = 3 AND workflow = 3)
-                 OR dataset_type = 1 AND input_mode = 0 AND workflow = 4
-                    AND snapshot_horizon_minutes > 0))
+                 OR dataset_type = 1 AND model_horizon_minutes = 0
+                    AND snapshot_horizon_minutes >= 0
+                    AND (workflow = 4 AND input_mode = 0
+                         OR workflow = 2 AND input_mode = 3)))
         ) AS sources(source, eligible)
-        WHERE sources.eligible AND input_minutes > 0 AND input_at <= predicted_at
+        WHERE sources.eligible AND input_at <= predicted_at
+          AND (input_minutes > 0 OR source = 'Snapshot replay'
+               AND dataset_type = 1 AND input_minutes = 0)
     ), bucketed AS (
         SELECT sources.*, BUCKET_CASE AS bucket FROM sources
     ), ranked AS (
@@ -112,11 +116,7 @@ ANALYSIS_QUERY = """
         FROM final WHERE priority = 1
     )
     SELECT * FROM reduced LIMIT %s
-""".replace(
-    "BUCKET_CASE", _BUCKET_CASE
-).replace(
-    "SLOT", _SLOT
-)
+""".replace("BUCKET_CASE", _BUCKET_CASE).replace("SLOT", _SLOT)
 
 
 @dataclass(frozen=True)

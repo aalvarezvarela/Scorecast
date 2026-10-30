@@ -200,25 +200,24 @@ The selected date controls the games, prediction checkpoints and daily summary.
 The target selector separates Line error, Total points and Spread. Model
 selection remains registry schema `2_5` plus available TabPFN families.
 
-The default source is **Live predictions**. **Snapshot replay** switches
-intermediate rows to stored exact own-horizon outputs; it does not rerun any
-model. Both choices share the same recorded live closing predictions.
+The default source is **Live predictions**. **Snapshot replay** uses stored
+exact intermediate and closing reconstructions, including Historical Backfill;
+it does not rerun any model or substitute live outputs for missing replays.
 
 Selection is independent for every game, model family and target:
 
 | Model type | Checkpoints | Selection |
 | --- | --- | --- |
-| Closing | T−6h, T−4h | Latest live output fully available by the checkpoint, at most 30 minutes old. |
+| Closing, live | T−8h, T−6h, T−4h | Nearest input within ±60 minutes; publication must also be within that window and before tip-off. |
 | Closing | Final pre-game | Latest live output fully available before tip-off; actual time remains visible. |
-| Intermediate, live | T−8h, T−6h, T−4h | The model trained at that horizon, on an input from the preceding 30 minutes; publication must be between 30 minutes before and 30 minutes after the checkpoint, and before tip-off. |
-| Intermediate, replay | T−8h, T−6h, T−4h | Exact match of model and input horizon, using the latest own-snapshot reconstruction (workflow 2 for XGBoost; own-snapshot workflow 3 for TabPFN). |
+| Closing, replay | T−8h, T−6h, T−4h, T−0 | Exact stored input horizon (workflow 2/input mode 3, or workflow 4/input mode 0). T−0 requires its own reconstruction. |
+| Intermediate, live | T−8h, T−6h, T−4h | The model trained at that horizon, on the nearest input within ±60 minutes; publication must also be inside the window and before tip-off. |
+| Intermediate, replay | T−8h, T−6h, T−4h | Exact match of model and input horizon, using the latest own-snapshot reconstruction (workflows 2/4, or own-snapshot workflow 3 for TabPFN). |
 
 Availability is the later of prediction time and run completion.
-Closing T−6h/T−4h also require the output itself to have been produced in the
-preceding 30 minutes; finishing a long run does not make an old output fresh.
 Future input snapshots are rejected even if TabPFN labeled a pre-horizon row
 as `own`.
-Live never reads workflow 2; replay never silently fills an absent XGBoost
+Live never reads workflows 2/4; replay never silently fills an absent XGBoost
 reconstruction with a live row. Intermediate live publication delays are
 explained on the page; exact input, prediction and availability times are in
 View details. Each slot is deduplicated across refits/reruns. Missing slots
@@ -226,7 +225,9 @@ are explicit and never replaced with another trained horizon.
 
 Cards reuse the team header, NBA theme and wrapping/growing layout. Their
 white header includes the final away/home score, total points and home margin
-alongside the teams and Madrid tip-off time. Below it is one table:
+alongside the teams and Madrid tip-off time. Header text uses explicit gaps
+and full content heights; narrow headers place the score below the teams so
+long names and result labels cannot collide. Below it is one table:
 Model, Checkpoint, Predicted total (Spread error for spreads), Pick / Line,
 Result. Line-error outputs use their original anchor to recover total points.
 Original outputs, model lines, horizons and source metadata remain inspectable.
@@ -244,8 +245,12 @@ Only games marked final with both scores are settled. There is no majority acros
 hours or combined-target bet. Before the individual games, the daily summary
 separates both XGBoost and TabPFN into Closing at 6h, Closing at 4h, Closing at closing (the
 last available pre-game prediction), and Intermediate at 8h/6h/4h. Its compact
-table shows evaluated games / all games, wins / settled picks, win rate and
-MAE per checkpoint. TabPFN shows only intermediate checkpoints when no closing
+table shows separate counts for evaluated Games, settled Bets (`wins + losses`)
+and Wins, followed by win rate and MAE per checkpoint. The caption gives the
+slate's final/total game count. NO BET, PUSH and NO LINE results do not count
+as settled Bets; they can still contribute evaluated Games and MAE. Summary
+cards wrap with their tables so labels and numbers stay together. TabPFN
+shows only intermediate checkpoints when no closing
 model outputs were stored; absent games within an existing checkpoint retain
 their missing-data status.
 Win rate is `wins / (wins + losses)`; pooled metrics use pooled counts and

@@ -70,6 +70,15 @@ shown in details. Final live closing remains the last completed pregame
 prediction. Snapshot replay selects exact intermediate and closing snapshots;
 it never substitutes a live closing prediction for a missing reconstruction.
 Existing dates need a new past-snapshot run to acquire closing replay rows.
+
+Historical Backfill (workflow 4) outputs also enter Snapshot replay, including
+closing models at their explicit stored input horizon. Historical analysis
+shows these closing reconstructions in a dedicated Replay KPI, chart and table.
+They never fill live gaps. The backfill workflow finishes with a final-score
+update after its entire prediction matrix, including partial failures when
+some jobs have persisted outputs. Dry runs and cancellations skip that write.
+The update retries all pending tipped games through the existing NBA final-score
+validator, so newly inserted past games do not remain unevaluated in Aiven.
 Historical analysis retains its separate live-closing and intermediate-replay
 views.
 

@@ -4,7 +4,6 @@ import pandas as pd
 
 import streamlit as st
 from nba_ou.dashboard.config import (
-    HISTORY_DEFAULT_START_DATE,
     MODEL_NAMES,
     PREDICTION_TARGET_LABELS,
 )
@@ -14,11 +13,13 @@ from nba_ou.dashboard.domain.analysis import (
     aggregate_cells,
     paired_snapshot_summary,
     prepare_analysis,
+    season_start,
 )
 from nba_ou.dashboard.domain.dates import madrid_time, slate_date
 from nba_ou.dashboard.repositories.predictions import DashboardDataError
 from nba_ou.dashboard.ui.analysis_charts import (
     METRICS,
+    closing_replay_timeline,
     closing_timeline,
     intermediate_replay_timeline,
     live_heatmap,
@@ -30,9 +31,11 @@ from nba_ou.dashboard.ui.loaders import load_history
 METHOD_NOTES = """
 - **Slot:** model kind, schema, target, closing/intermediate, trained horizon and variant.
   Refits replace the build in a slot; they do not create extra votes or games.
-- **Time:** intermediate rows use their stored input horizon; closing rows use run start.
+- **Time:** intermediate and reconstructed closing rows use their stored input horizon;
+  live closing rows use run start.
   A bucket covers the time since that snapshot passed. T−18h+ means more than 18 hours.
-  Final is the last closing output available before tip-off, matching Yesterday.
+  Final is the last live closing output available before tip-off, or the reconstructed
+  T−0 input in replay, matching Yesterday. A T−4h replay never stands in for Final.
 - **Availability:** live input, prediction and run completion must precede tip-off.
   Input-time buckets describe what the model knew, not when the output was ready to bet.
   Tooltips report the median publication delay. Each game/slot/source/bucket appears once.
@@ -107,11 +110,11 @@ def render_historical() -> None:
     with st.container(horizontal=True, vertical_alignment="bottom"):
         dates = st.date_input(
             "NBA slate dates",
-            value=(HISTORY_DEFAULT_START_DATE, today),
+            value=(season_start(today), today),
             format="DD/MM/YYYY",
             key="history_dates",
             width=280,
-            help="Defaults to 27 October 2026 through today to exclude earlier dataset errors. Inclusive NBA slate dates use the same Pacific date boundary as Today. Displayed timestamps use Madrid time.",
+            help="Defaults to the current NBA season through today, including historical backfills. Inclusive NBA slate dates use the same Pacific date boundary as Today. Displayed timestamps use Madrid time.",
         )
         season_type = st.selectbox(
             "Season type",
@@ -177,6 +180,13 @@ def render_historical() -> None:
         & data.games["away_points"].notna()
     )
     settled_games = int(final.sum())
+    pending_games = int(
+        (data.games["status"].eq(0) & data.games["game_date"].lt(today)).sum()
+    )
+    if pending_games:
+        st.caption(
+            f"{pending_games} past games are awaiting final scores. Their predictions remain visible; win rate and MAE exclude unfinished results."
+        )
     raw = data.predictions
     if kind is not None and not raw.empty:
         raw = raw.loc[raw["kind"].eq(kind)]
@@ -189,11 +199,15 @@ def render_historical() -> None:
         return
     live = rows.loc[rows["source"].eq("Live predictions")]
     closing = live.loc[live["dataset_type"].eq(1)]
+    closing_replay = rows.loc[
+        rows["source"].eq("Snapshot replay") & rows["dataset_type"].eq(1)
+    ]
     diagonal = rows.loc[rows["on_horizon"]]
     st.subheader("Performance overview")
     with st.container(horizontal=True):
         st.metric("Final games", f"{settled_games}/{len(data.games)}", border=True)
         _win_metric("Closing · Final", closing.loc[closing["bucket"].eq(0)])
+        _win_metric("Closing · Replay", closing_replay)
         _win_metric(
             "Own snapshot · Live",
             diagonal.loc[diagonal["source"].eq("Live predictions")],
@@ -220,6 +234,26 @@ def render_historical() -> None:
             )
         with st.expander("Closing data"):
             st.dataframe(_summary_table(cells), hide_index=True, width="stretch")
+    st.subheader("Closing by input time · Replay")
+    if closing_replay.empty:
+        st.caption("No reconstructed closing predictions for these filters.")
+    else:
+        cells = aggregate_cells(closing_replay, settled_games_total=settled_games)
+        st.altair_chart(
+            closing_replay_timeline(cells, metric),
+            width="stretch",
+            alt="Closing model performance at reconstructed pre-game snapshots",
+        )
+        st.caption(
+            "Reconstructed closing models use each stored input snapshot. Final means an exact T−0 reconstruction; earlier snapshots keep their own time. These outputs do not enter live metrics."
+        )
+        with st.expander("Closing replay data"):
+            st.dataframe(
+                _summary_table(cells),
+                hide_index=True,
+                width="stretch",
+                alt="Closing replay counts, win rate, errors and coverage by model and snapshot",
+            )
     st.subheader("Intermediate by model horizon · Replay")
     replay = diagonal.loc[diagonal["source"].eq("Snapshot replay")]
     if replay.empty:

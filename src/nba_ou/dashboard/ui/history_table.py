@@ -12,7 +12,7 @@ from nba_ou.dashboard.ui.formatting import number
 RESULT_COLORS = {"WIN": "green", "LOSS": "red"}
 
 
-def checkpoint_summary_table(summary: pd.DataFrame, total_games: int) -> pd.DataFrame:
+def checkpoint_summary_table(summary: pd.DataFrame) -> pd.DataFrame:
     """Use the same compact checkpoint breakdown for every model family."""
     display = pd.DataFrame(index=summary.index)
     display["Snapshot"] = summary["Checkpoint"].map(
@@ -26,11 +26,9 @@ def checkpoint_summary_table(summary: pd.DataFrame, total_games: int) -> pd.Data
             "Intermediate · T−4h": "Intermediate at 4h",
         }
     )
-    display["Games"] = summary["Games"].map(lambda n: f"{n}/{total_games}")
-    display["Wins"] = [
-        f"{wins}/{wins + losses}"
-        for wins, losses in zip(summary["Wins"], summary["Losses"], strict=True)
-    ]
+    display["Games"] = summary["Games"].astype(int)
+    display["Bets"] = (summary["Wins"] + summary["Losses"]).astype(int)
+    display["Wins"] = summary["Wins"].astype(int)
     display["Win rate"] = summary["Win rate"].map(
         lambda n: f"{n:.1f}%" if pd.notna(n) else "—"
     )
