@@ -226,7 +226,9 @@ are explicit and never replaced with another trained horizon.
 
 Cards reuse the team header, NBA theme and wrapping/growing layout. Their
 white header includes the final away/home score, total points and home margin
-alongside the teams and Madrid tip-off time. Below it is one table:
+alongside the teams and Madrid tip-off time. Header text uses explicit gaps
+and full content heights; narrow headers place the score below the teams so
+long names and result labels cannot collide. Below it is one table:
 Model, Checkpoint, Predicted total (Spread error for spreads), Pick / Line,
 Result. Line-error outputs use their original anchor to recover total points.
 Original outputs, model lines, horizons and source metadata remain inspectable.
@@ -244,8 +246,12 @@ Only games marked final with both scores are settled. There is no majority acros
 hours or combined-target bet. Before the individual games, the daily summary
 separates both XGBoost and TabPFN into Closing at 6h, Closing at 4h, Closing at closing (the
 last available pre-game prediction), and Intermediate at 8h/6h/4h. Its compact
-table shows evaluated games / all games, wins / settled picks, win rate and
-MAE per checkpoint. TabPFN shows only intermediate checkpoints when no closing
+table shows separate counts for evaluated Games, settled Bets (`wins + losses`)
+and Wins, followed by win rate and MAE per checkpoint. The caption gives the
+slate's final/total game count. NO BET, PUSH and NO LINE results do not count
+as settled Bets; they can still contribute evaluated Games and MAE. Summary
+cards wrap with their tables so labels and numbers stay together. TabPFN
+shows only intermediate checkpoints when no closing
 model outputs were stored; absent games within an existing checkpoint retain
 their missing-data status.
 Win rate is `wins / (wins + losses)`; pooled metrics use pooled counts and

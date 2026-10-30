@@ -32,7 +32,7 @@ def render_game_header(game, *, now=None, show_result: bool = False) -> None:
             with st.container(
                 width="content",
                 horizontal_alignment="center",
-                gap=None,
+                gap="xxsmall",
                 key=f"match_center_{game_id}",
             ):
                 if show_result:
@@ -45,7 +45,7 @@ def render_game_header(game, *, now=None, show_result: bool = False) -> None:
                 "Home",
                 key=f"match_team_{game_id}_home",
             )
-        with st.container(key=f"match_footer_{game_id}", gap=None):
+        with st.container(key=f"match_footer_{game_id}", gap="xxsmall"):
             timing = f"**{madrid_time(game['tipoff_at'])}**"
             if now is not None:
                 timing += f" · {time_remaining(game['tipoff_at'], now)}"
@@ -69,7 +69,7 @@ def _game_result(game, *, final: bool) -> None:
 
 def render_team(name: str, team_id, role: str, *, key: str) -> None:
     name = full_team_name(name, team_id)
-    with st.container(horizontal_alignment="center", gap=None, key=key):
+    with st.container(horizontal_alignment="center", gap="xxsmall", key=key):
         st.caption(role)
         logo = team_logo_url(name, team_id)
         if logo:

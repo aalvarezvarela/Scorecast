@@ -36,19 +36,22 @@ def _performance_summary(games: pd.DataFrame, rows: pd.DataFrame) -> None:
         & games["away_points"].notna()
     )
     st.caption(
-        f"{int(final.sum())}/{len(games)} games final · Games = evaluated matches / all matches · Wins = wins / settled picks"
+        f"{int(final.sum())}/{len(games)} games final · "
+        "Games = evaluated matches · Bets = wins + losses · Win rate = Wins / Bets. "
+        "No bets, pushes and missing lines are excluded from Bets."
     )
     summary = history_summary(rows, by_checkpoint=True)
     if summary.empty:
         st.caption("No predictions available to summarize.")
         return
-    with st.container(horizontal=True, gap="medium"):
+    with st.container(horizontal=True, gap="medium", key="yesterday_performance"):
         for _, checkpoints in summary.groupby("Family", sort=False):
-            with st.container(border=True):
+            with st.container(border=True, width="content"):
                 st.markdown(f"**{checkpoints['Model'].iloc[0]}**")
                 st.table(
-                    checkpoint_summary_table(checkpoints, len(games)),
+                    checkpoint_summary_table(checkpoints),
                     border="horizontal",
+                    alt=f"Daily prediction coverage and betting results for {checkpoints['Model'].iloc[0]}",
                 )
                 if checkpoints["Checkpoint"].str.startswith("Closing").any():
                     st.caption(

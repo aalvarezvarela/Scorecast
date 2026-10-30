@@ -141,7 +141,7 @@ def test_selected_date_updates_results_summary_and_refreshes_only_that_date(
     assert len(tables(app)) == 1
     assert any(text.value == "### 100 — 110" for text in app.markdown)
     assert any("NBA slate · 26 Oct 2026" in text.value for text in app.caption)
-    assert app.table[0].value["Games"].eq("1/1").all()
+    assert app.table[0].value["Games"].eq(1).all()
     assert app.table[0].value["MAE"].eq("28.00 pts").all()
 
     app.session_state["yesterday_target"] = 2
@@ -248,8 +248,11 @@ def test_daily_summary_shows_win_rate_and_mae_per_model_before_all_cards(
         "Intermediate at 6h",
         "Intermediate at 4h",
     ]
-    assert checkpoint_summary["Games"].eq("2/2").all()
-    assert checkpoint_summary.loc["Closing at 6h", "Wins"] == "2/2"
+    assert checkpoint_summary["Games"].eq(2).all()
+    assert checkpoint_summary.loc["Closing at 6h", "Bets"] == 2
+    assert checkpoint_summary.loc["Closing at 6h", "Wins"] == 2
+    assert checkpoint_summary.loc["Closing at closing", "Bets"] == 0
+    assert checkpoint_summary.loc["Closing at closing", "Wins"] == 0
     assert checkpoint_summary.loc["Closing at closing", "Win rate"] == "—"
     assert checkpoint_summary["MAE"].eq("3.00 pts").all()
     pd.testing.assert_frame_equal(app.table[1].value, checkpoint_summary)
@@ -287,8 +290,31 @@ def test_tabpfn_summary_keeps_its_separate_timepoints_without_inventing_closing_
         "Intermediate at 6h",
         "Intermediate at 4h",
     ]
-    assert tabpfn["Games"].eq("2/2").all()
+    assert tabpfn["Games"].eq(2).all()
     assert tabpfn["MAE"].eq("3.00 pts").all()
+
+
+def test_summary_separates_evaluated_games_from_bets_when_a_model_abstains(
+    yesterday_setup,
+):
+    _, data = yesterday_setup
+    data.games.loc[data.games["game_id"].eq(1), "away_points"] = 119
+    closing = data.predictions["target"].eq(1) & data.predictions["dataset_type"].eq(1)
+    data.predictions.loc[closing & data.predictions["game_id"].eq(1), "bet_line_x2"] = (
+        474
+    )
+    data.predictions.loc[closing & data.predictions["game_id"].eq(2), "bet_line_x2"] = (
+        476
+    )
+
+    app = open_yesterday()
+    assert not app.exception
+    for table in app.table:
+        final = table.value.loc["Closing at closing"]
+        assert (final["Games"], final["Bets"], final["Wins"]) == (2, 1, 1)
+        assert final["Win rate"] == "100.0%"
+        assert final["MAE"] == "2.50 pts"
+    assert any("Win rate = Wins / Bets" in caption.value for caption in app.caption)
 
 
 def test_missing_source_rows_pending_and_void_games_remain_visible(yesterday_setup):
