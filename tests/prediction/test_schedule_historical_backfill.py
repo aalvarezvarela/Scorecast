@@ -225,3 +225,21 @@ def test_dependency_gate_does_not_occupy_runner_or_daily_prediction_lock():
     assert jobs["prepare"]["needs"] == "wait_for_predictions"
     assert jobs["backfill"]["needs"] == "prepare"
     assert workflow["permissions"]["actions"] == "read"
+
+
+def test_backfill_updates_scores_after_persisted_matrix_even_with_partial_failures():
+    workflow = yaml.load(
+        Path(".github/workflows/nba_backfill_predictions.yml").read_text(),
+        Loader=yaml.BaseLoader,
+    )
+    results = workflow["jobs"]["update_results"]
+    assert results["needs"] == "backfill"
+    condition = results["if"]
+    assert "!cancelled()" in condition and "inputs.persist" in condition
+    assert "needs.backfill.result == 'success'" in condition
+    assert "needs.backfill.result == 'failure'" in condition
+    assert any(
+        "scripts/prediction_store/update_game_results.py --recheck-days 0"
+        in step.get("run", "")
+        for step in results["steps"]
+    )

@@ -51,12 +51,8 @@ def history_setup(monkeypatch):
                 (480, 480),
                 (360, 240),
             )
-            for source in (
-                ("Live predictions",)
-                if horizon == 0
-                else ("Live predictions", "Snapshot replay")
-            )
-            if source != "Snapshot replay" or horizon == bucket
+            for source in ("Live predictions", "Snapshot replay")
+            if source != "Snapshot replay" or horizon == 0 or horizon == bucket
         ]
         return AnalysisData(slate.games.copy(), pd.DataFrame(rows), NOW.to_pydatetime())
 
@@ -78,23 +74,24 @@ def open_history():
     return app
 
 
-def test_history_defaults_to_clean_data_through_today_and_all_models(history_setup):
+def test_history_defaults_to_current_season_including_backfills(history_setup):
     reader, today_reader = history_setup
     app = open_history()
     assert not app.exception
     assert app.title[0].value == "Historical analysis"
     assert app.date_input(key="history_dates").value == (
-        date(2026, 10, 27),
+        date(2026, 10, 1),
         date(2026, 10, 28),
     )
     assert reader.call_count == 1
-    assert reader.call_args.args == (date(2026, 10, 27), date(2026, 10, 28), 1, 2)
+    assert reader.call_args.args == (date(2026, 10, 1), date(2026, 10, 28), 1, 2)
     assert today_reader.call_count == 1  # navigation itself never re-reads Today
     assert app.session_state["history_metric"] == "Win %"
     assert app.session_state["history_kind"] is None
     assert [node.value for node in app.subheader] == [
         "Performance overview",
         "Closing by prediction time",
+        "Closing by input time · Replay",
         "Intermediate by model horizon · Replay",
         "Live model × time",
         "Own snapshot · Live vs replay",
@@ -102,10 +99,11 @@ def test_history_defaults_to_clean_data_through_today_and_all_models(history_set
     assert {node.label for node in app.metric} == {
         "Final games",
         "Closing · Final",
+        "Closing · Replay",
         "Own snapshot · Live",
         "Own snapshot · Replay",
     }
-    assert len(rendered_charts(app)) == 4
+    assert len(rendered_charts(app)) == 5
     assert any("95%" in text.value for text in app.caption)
     assert any("Madrid" in text.value for text in app.caption)
     assert any("Different picks" in table.value for table in app.dataframe)
@@ -121,10 +119,10 @@ def test_default_end_date_tracks_today(history_setup, monkeypatch):
     app = open_history()
     assert not app.exception
     assert app.date_input(key="history_dates").value == (
-        date(2026, 10, 27),
+        date(2026, 10, 1),
         date(2026, 11, 2),
     )
-    assert reader.call_args.args[:2] == (date(2026, 10, 27), date(2026, 11, 2))
+    assert reader.call_args.args[:2] == (date(2026, 10, 1), date(2026, 11, 2))
 
 
 def test_replay_timeline_handles_no_replay_without_using_live_rows(history_setup):
@@ -188,13 +186,41 @@ def test_range_target_and_season_type_load_separate_cache_entries(history_setup)
     assert reader.call_args.args == (*changed_range, 3, 4)
     # Refreshing one selection does not evict the original cached range.
     app.date_input(key="history_dates").set_value(
-        (date(2026, 10, 27), date(2026, 10, 28))
+        (date(2026, 10, 1), date(2026, 10, 28))
     )
     app.session_state["history_target"] = 1
     app.session_state["history_season_type"] = 2
     app.run()
     assert not app.exception
     assert reader.call_count == 5
+
+
+@pytest.mark.parametrize("target", [1, 2, 3])
+def test_backfill_only_closing_outputs_are_visible_without_entering_live_metrics(
+    history_setup, target
+):
+    reader, _ = history_setup
+    data = reader.side_effect(date(2026, 10, 1), NOW.date(), target, 2)
+    rows = data.predictions.loc[
+        data.predictions["source"].eq("Snapshot replay")
+        & data.predictions["dataset_type"].eq(1)
+        & data.predictions["bucket"].eq(360)
+    ].copy()
+    reader.side_effect = None
+    reader.return_value = AnalysisData(data.games, rows, data.fetched_at)
+    app = open_history()
+    app.session_state["history_target"] = target
+    app.run()
+    assert not app.exception
+    metrics = {node.label: node.value for node in app.metric}
+    assert metrics["Closing · Replay"] != "—"
+    assert metrics["Closing · Final"] == metrics["Own snapshot · Live"] == "—"
+    assert len(rendered_charts(app)) == 1
+    table = app.dataframe[0].value
+    assert table["Model horizon (min)"].eq(0).all()
+    assert table["Source"].eq("Snapshot replay").all()
+    assert table["Input bucket (min; 0 = Final)"].eq(360).all()
+    assert table["Final games with outputs"].eq(2).all()
 
 
 def test_partial_range_skips_read_and_does_not_leave_old_charts(history_setup):

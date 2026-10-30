@@ -273,6 +273,62 @@ def assert_synthetic_selection(cursor):
     return len(frame)
 
 
+def assert_synthetic_closing_replay_selection(cursor):
+    query, params, _ = synthetic_query()
+    inputs = [dict(row) for row in params[0].obj]
+    runs = [dict(row) for row in params[1].obj]
+    tipoff = pd.Timestamp(inputs[0]["tipoff_at"])
+
+    def add(**changes):
+        row = dict(inputs[0])
+        run_id = len(inputs) + 1
+        predicted_at = tipoff + pd.Timedelta(hours=2, minutes=run_id)
+        row.update(
+            dataset_type=1,
+            model_horizon_minutes=0,
+            snapshot_horizon_minutes=240,
+            workflow=2,
+            input_mode=3,
+            predicted_at=predicted_at.isoformat(),
+            time_to_tipoff_seconds=-7200,
+            run_id=run_id,
+            input_id=run_id,
+            model_build_id=run_id,
+        )
+        row.update(changes)
+        inputs.append(row)
+        runs.append(
+            dict(
+                run_id=run_id,
+                finished_at=(predicted_at + pd.Timedelta(minutes=1)).isoformat(),
+            )
+        )
+
+    add(prediction_value=250)
+    add(workflow=4, input_mode=0, prediction_value=254)  # Newest refit wins once.
+    add(snapshot_horizon_minutes=0, prediction_value=255)
+    add(kind=3, workflow=4, input_mode=0, prediction_value=256)
+    add(workflow=4, input_mode=3, prediction_value=999)  # Wrong backfill input mode.
+    add(snapshot_horizon_minutes=-30, prediction_value=999)  # Post-tip input.
+    add(workflow=3, input_mode=0, prediction_value=999)  # Late live closing.
+    cursor.execute(query, (Jsonb(inputs), Jsonb(runs), *params[2:]))
+    frame = pd.DataFrame(
+        cursor.fetchall(), columns=[column.name for column in cursor.description]
+    )
+    replay = frame.loc[
+        frame["source"].eq("Snapshot replay") & frame["dataset_type"].eq(1)
+    ]
+    assert len(replay) == 3
+    assert {
+        (row.kind, row.bucket): row.prediction_value for row in replay.itertuples()
+    } == {(1, 240): 254, (1, 0): 255, (3, 240): 256}
+    assert not frame["prediction_value"].eq(999).any()
+    live_final = frame.loc[
+        frame["source"].eq("Live predictions") & frame["bucket"].eq(0)
+    ]
+    assert live_final["prediction_value"].tolist() == [249]
+
+
 @pytest.mark.postgres
 @pytest.mark.skipif(
     not os.getenv("NBA_OU_TEST_PG_DSN"), reason="NBA_OU_TEST_PG_DSN not set"
@@ -282,3 +338,4 @@ def test_postgres_reduces_refits_buckets_and_sources_without_future_information(
         conn.read_only = True
         with conn.cursor() as cursor:
             assert_synthetic_selection(cursor)
+            assert_synthetic_closing_replay_selection(cursor)

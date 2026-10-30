@@ -192,3 +192,29 @@ jobs:
             data/backfill_predictions/*/*.csv
             data/backfill_predictions/*/*.json
           if-no-files-found: ignore
+  update_results:
+    needs: backfill
+    # Successful matrix entries can persist games even if another entry fails.
+    # Wait for the whole matrix; dry runs and cancelled backfills never write.
+    if: ${{ !cancelled() && inputs.persist && (needs.backfill.result == 'success' || needs.backfill.result == 'failure') }}
+    runs-on: self-hosted
+    timeout-minutes: 15
+    env:
+      PYTHONUNBUFFERED: "1"
+      AIVEN_DB_URL: ${{ secrets.AIVEN_DB_URL }}
+      AIVEN_DB_PASSWORD: ${{ secrets.AIVEN_DB_PASSWORD }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: Job venv
+        uses: ./.github/actions/job-venv
+        with:
+          requirements: requirements/core.txt
+      - name: Update final scores for persisted games
+        run: >-
+          python scripts/run_timed.py "Update backfill game results" --
+          python scripts/prediction_store/update_game_results.py --recheck-days 0

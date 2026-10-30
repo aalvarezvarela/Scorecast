@@ -21,6 +21,7 @@ from nba_ou.dashboard.domain.analysis import (
 from nba_ou.dashboard.domain.comparisons import signal
 from nba_ou.dashboard.domain.history import grade_history, select_history
 from nba_ou.dashboard.ui.analysis_charts import (
+    closing_replay_timeline,
     closing_timeline,
     intermediate_replay_timeline,
     live_heatmap,
@@ -259,6 +260,7 @@ def test_charts_have_valid_specs_and_do_not_send_raw_prediction_rows(metric):
             [
                 analysis_row(horizon=0, bucket=0),
                 analysis_row(horizon=0, bucket=360),
+                analysis_row(horizon=0, bucket=240, source="Snapshot replay"),
                 analysis_row(horizon=360),
                 analysis_row(horizon=360, source="Snapshot replay"),
             ]
@@ -267,6 +269,7 @@ def test_charts_have_valid_specs_and_do_not_send_raw_prediction_rows(metric):
     cells = aggregate_cells(rows)
     charts = (
         closing_timeline(cells.loc[cells["dataset_type"].eq(1)], metric),
+        closing_replay_timeline(cells, metric),
         intermediate_replay_timeline(cells, metric),
         live_heatmap(cells.loc[cells["source"].eq("Live predictions")], metric),
         snapshot_comparison(cells.loc[cells["dataset_type"].eq(2)]),
