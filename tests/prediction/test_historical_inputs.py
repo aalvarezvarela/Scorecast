@@ -60,8 +60,9 @@ def forbid_rebuild(monkeypatch):
 
 
 @pytest.mark.parametrize("persist", [False, True])
+@pytest.mark.parametrize("tipoff", [TIP, pd.Timestamp("2026-10-24T05:30Z")])
 def test_real_registry_fit_predicts_saved_rows_without_reconstruction(
-    pipeline, monkeypatch, persist
+    pipeline, monkeypatch, persist, tipoff
 ):
     p = pipeline
     source = prediction_frame().assign(
@@ -69,7 +70,14 @@ def test_real_registry_fit_predicts_saved_rows_without_reconstruction(
     )
     store = saved_store(source)
     monkeypatch.setattr(backfill, "SeasonPartitions", lambda **k: store)
-    monkeypatch.setattr(backfill, "fetch_games", lambda *a: tipoffs())
+    monkeypatch.setattr(
+        backfill, "fetch_games", lambda *a: tipoffs().assign(tipoff_utc=tipoff)
+    )
+    monkeypatch.setattr(
+        backfill,
+        "replay_scheduled_games",
+        lambda day: schedule().assign(GAME_TIME=tipoff),
+    )
     forbid_rebuild(monkeypatch)
     predict = backfill.load_registry_model_and_predict
 
@@ -85,6 +93,8 @@ def test_real_registry_fit_predicts_saved_rows_without_reconstruction(
     assert backfill.run_backfill(DAY, persist=persist, output_dir=p.output) == 0
     assert store.read.call_count == store.manifests.call_count == 1
     assert len(pd.read_csv(next(p.output.glob("*/*.predictions.csv")))) == 1
+    models = pd.read_csv(next(p.output.glob("*/*.models.csv")))
+    assert models.train_date_max.tolist() == ["2026-10-23"]
     manifest = json.loads(next(p.output.glob("*/2026-10-24.json")).read_text())
     assert manifest["input_sources"]["60"][0]["partition_checksum"] == "sha256:saved"
     assert bool(p.written) is persist
@@ -154,7 +164,7 @@ def test_stored_only_missing_features_fail_without_rebuild_or_fit(
     assert "required features" in report["failures"][0]
 
 
-def test_saved_early_snapshot_rows_do_not_expose_overnight_results():
+def test_saved_early_snapshot_rows_are_accepted_alongside_later_snapshots():
     second = "0022600009"
     source = pd.concat(
         [prediction_frame(), prediction_frame().assign(GAME_ID=second)],
@@ -172,9 +182,17 @@ def test_saved_early_snapshot_rows_do_not_expose_overnight_results():
     )
     # GAME snapshots at 01:00 ET; second snapshots at 07:00 ET.
     result = loader.read(DAY, 1080, {GAME, second})
-    assert result.GAME_ID.tolist() == [second]
-    with pytest.raises(StoredInputsUnavailable, match="overnight"):
-        loader.read(DAY, 1080, {GAME})
+    assert result.GAME_ID.tolist() == [GAME, second]
+    assert loader.read(DAY, 1080, {GAME}).GAME_ID.tolist() == [GAME]
+
+
+def test_saved_snapshot_still_requires_a_known_tipoff():
+    loader = StoredPredictionInputs(
+        {"intermediate_line": saved_store(prediction_frame())},
+        tipoff_loader=lambda *a: tipoffs().assign(tipoff_utc=pd.NaT),
+    )
+    with pytest.raises(StoredInputsUnavailable, match="tipoff timestamp"):
+        loader.read(DAY, 60, {GAME})
 
 
 def test_closing_market_adapter_uses_snapshot_quotes_and_preserves_signs():

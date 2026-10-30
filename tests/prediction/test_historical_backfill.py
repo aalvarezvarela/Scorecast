@@ -99,21 +99,9 @@ def test_training_is_cut_before_cleaning_and_checksum_ignores_future_rows():
         backfill.past_training_frame(frame, pd.Timestamp("2026-10-01"))
 
 
-def test_early_snapshots_do_not_read_the_previous_overnight_slate():
-    assert backfill.history_limit(
-        DAY, pd.Series(["2026-10-24T22:00Z"])
-    ) == pd.Timestamp("2026-10-23")
-    # 01:00 ET: the previous day's West Coast games may still be running.
-    assert backfill.history_limit(
-        DAY, pd.Series(["2026-10-24T05:00Z"])
-    ) == pd.Timestamp("2026-10-22")
-    assert backfill.history_limit(
-        DAY, pd.Series(["2026-10-24T10:00Z"])
-    ) == pd.Timestamp("2026-10-23")
-    # 05:30 EST on the fall-back day is still before the 06:00 wall-clock boundary.
-    assert backfill.history_limit(
-        "2026-11-01", pd.Series(["2026-11-01T10:30Z"])
-    ) == pd.Timestamp("2026-10-30")
+@pytest.mark.parametrize("day", [DAY, "2026-11-01", "2027-01-01"])
+def test_history_uses_the_previous_game_date(day):
+    assert backfill.history_limit(day) == pd.Timestamp(day) - pd.Timedelta(days=1)
 
 
 def test_only_same_spec_exact_horizon_predictions_count_as_coverage():
@@ -140,7 +128,7 @@ def test_only_same_spec_exact_horizon_predictions_count_as_coverage():
         ) == {GAME}
 
 
-def test_early_horizon_does_not_skip_a_prediction_trained_on_the_overnight_slate():
+def test_early_horizon_accepts_coverage_trained_through_the_previous_day():
     slot = ModelSlot(schema_version="2_5", target="line_error", horizon_minutes=1080)
     row = dict(
         game_id=int(GAME),
@@ -152,9 +140,11 @@ def test_early_horizon_does_not_skip_a_prediction_trained_on_the_overnight_slate
         variant="main",
         train_date_max="2026-10-23",
     )
-    assert backfill.missing_games(schedule(), pd.DataFrame([row]), slot, "a") == {GAME}
+    assert not backfill.missing_games(schedule(), pd.DataFrame([row]), slot, "a")
     row["train_date_max"] = "2026-10-22"
     assert not backfill.missing_games(schedule(), pd.DataFrame([row]), slot, "a")
+    row["train_date_max"] = DAY
+    assert backfill.missing_games(schedule(), pd.DataFrame([row]), slot, "a") == {GAME}
 
 
 def test_coverage_read_is_read_only_and_excludes_models_trained_on_target_or_later(
