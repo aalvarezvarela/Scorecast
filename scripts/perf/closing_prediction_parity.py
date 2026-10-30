@@ -50,7 +50,6 @@ def main() -> int:
         frame, layer_inputs = create_df_to_predict(
             todays_prediction=True,
             scheduled_data=data,
-            strict_mode=30,
             target_game_ids=targets,
             return_layer_inputs=True,
         )

@@ -284,7 +284,6 @@ def _closing_frame(scheduled_data, date: str, configured_slots):
     frame, layer_inputs = create_df_to_predict(
         todays_prediction=True,
         scheduled_data=scheduled_data,
-        strict_mode=30,
         target_game_ids=tonight_ids,
         return_layer_inputs=True,
     )

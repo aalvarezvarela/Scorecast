@@ -154,8 +154,64 @@ def _make_prediction_odds(
 # ---------------------------------------------------------------------------
 
 
-def test_regular_season_game_passes_strict_mode_2(monkeypatch):
-    """Regular-season games (all columns populated) pass strict_mode=2."""
+@pytest.mark.parametrize("n_games", [1, 2])
+def test_missing_quotes_do_not_depend_on_other_scheduled_games(n_games):
+    """Keep the same 31-NaN quote row alone or beside a complete game."""
+    quote_columns = []
+    for book in ("fanduel", "draftkings", "betmgm", "betrivers"):
+        for market, suffixes in (
+            ("total", ("line_over", "line_under", "price_over", "price_under")),
+            ("spread", ("line_home", "line_away", "price_home", "price_away")),
+            ("ml", ("price_home", "price_away")),
+        ):
+            quote_columns.extend(f"{market}_{book}_{suffix}" for suffix in suffixes)
+    quote_columns = quote_columns[:31]
+    sparse = {
+        "game_id": "0022500101",
+        "game_date": datetime.date(2026, 1, 2),
+        "season_year": 2025,
+        "total_bet365_line_over": 225.0,
+        **dict.fromkeys(quote_columns, float("nan")),
+    }
+    complete = {
+        **sparse,
+        "game_id": "0022500102",
+        **{
+            column: (
+                -110.0
+                if "_price_" in column
+                else -3.5
+                if column.endswith("line_home")
+                else 3.5
+                if column.endswith("line_away")
+                else 225.0
+            )
+            for column in quote_columns
+        },
+    }
+    historical = pd.DataFrame(
+        [{**complete, "game_id": "0022500001", "game_date": datetime.date(2026, 1, 1)}]
+    )
+    scheduled = pd.DataFrame([sparse, complete][:n_games])
+
+    result = merge_and_validate_scheduled_odds(
+        historical,
+        pd.DataFrame(),
+        scheduled,
+        normalize_total_lines=False,
+        normalize_spread_lines=False,
+        null_extreme_spread_prices=False,
+    )
+
+    kept = result.loc[result.game_id.eq(sparse["game_id"])]
+    assert len(kept) == 1
+    assert kept[quote_columns].isna().all().all()
+    assert kept.total_bet365_line_over.iloc[0] == 225.0
+    assert set(result.game_id) == set(historical.game_id) | set(scheduled.game_id)
+
+
+def test_regular_season_game_keeps_scheduled_quotes(monkeypatch):
+    """A regular-season game with complete quotes survives the merge."""
     df_odds = _make_historical_odds()
     df_yahoo, df_sportsbook = _make_prediction_odds(
         include_public_betting_pcts=True, include_extra_yahoo_cols=True
@@ -191,18 +247,15 @@ def test_regular_season_game_passes_strict_mode_2(monkeypatch):
         lambda y, s, **kwargs: merged,
     )
 
-    result = merge_and_validate_scheduled_odds(df_odds, df_yahoo, df_sportsbook, strict_mode=2)
+    result = merge_and_validate_scheduled_odds(df_odds, df_yahoo, df_sportsbook)
 
     # Today's game must be present in the combined result
     today_rows = result[result["game_id"] == "0052500001"]
     assert len(today_rows) == 1
 
 
-def test_play_in_game_no_public_pcts_is_optional(monkeypatch, capsys):
-    """Play-in games with missing public-betting % columns must NOT raise.
-
-    Optional Yahoo inputs do not count against strict-mode row limits.
-    """
+def test_play_in_game_no_public_pcts_is_optional(monkeypatch):
+    """Play-in games with missing public-betting percentages are kept."""
     df_odds = _make_historical_odds()
 
     # Build a merged prediction frame where all 12 public-betting % cols are NaN
@@ -244,9 +297,8 @@ def test_play_in_game_no_public_pcts_is_optional(monkeypatch, capsys):
         lambda y, s, **kwargs: merged,
     )
 
-    # Should NOT raise even though all 12 public-betting % cols are NaN (> strict_mode=2)
     result = merge_and_validate_scheduled_odds(
-        df_odds, pd.DataFrame(), pd.DataFrame(), strict_mode=2
+        df_odds, pd.DataFrame(), pd.DataFrame()
     )
 
     # The play-in game row must still be present in the result
@@ -255,17 +307,12 @@ def test_play_in_game_no_public_pcts_is_optional(monkeypatch, capsys):
         "Play-in game row was removed; pipeline would produce no predictions"
     )
 
-    # No strict-mode exception is needed for optional Yahoo inputs.
-    captured = capsys.readouterr()
-    assert "exceed" not in captured.out.lower()
 
-
-def test_strict_mode_drops_partial_nan_rows_keeps_clean_rows(monkeypatch):
-    """When only SOME rows fail strict_mode, the bad rows are dropped but good ones kept."""
+def test_missing_quote_rows_and_complete_rows_are_both_kept(monkeypatch):
+    """Quote gaps are left for each model's own missing-feature budget."""
     df_odds = _make_historical_odds()
 
-    # Two prediction rows: first has optional Yahoo gaps and required quote
-    # gaps; the latter must still trigger the strict-mode row filter.
+    # Two prediction rows: one with missing percentages and quotes, one complete.
     row_bad = {
         "game_id": "0052500001",
         "game_date": datetime.date(2026, 4, 14),
@@ -344,13 +391,13 @@ def test_strict_mode_drops_partial_nan_rows_keeps_clean_rows(monkeypatch):
     )
 
     result = merge_and_validate_scheduled_odds(
-        df_odds, pd.DataFrame(), pd.DataFrame(), strict_mode=2
+        df_odds, pd.DataFrame(), pd.DataFrame()
     )
 
     # The good (regular-season) row should be present
     assert len(result[result["game_id"] == "0022500099"]) == 1
-    # The bad (play-in) row should have been dropped because a good row survived
-    assert len(result[result["game_id"] == "0052500001"]) == 0
+    # The sparse row is kept alongside the complete one.
+    assert len(result[result["game_id"] == "0052500001"]) == 1
 
 
 def test_missing_columns_in_prediction_raises():
@@ -373,7 +420,7 @@ def test_missing_columns_in_prediction_raises():
     with patch.object(mod, "merge_yahoo_sportsbook_odds", return_value=pd.DataFrame([partial_row])):
         with pytest.raises(ValueError, match="missing columns"):
             merge_and_validate_scheduled_odds(
-                df_odds, pd.DataFrame(), pd.DataFrame(), strict_mode=2
+                df_odds, pd.DataFrame(), pd.DataFrame()
             )
 
 
@@ -387,7 +434,7 @@ def test_a_stored_row_of_a_scheduled_game_gives_way_to_tonights(monkeypatch):
     tonight = df_odds.iloc[[0]].assign(game_id="0052500001", total_betmgm_line_over=2.0)
     monkeypatch.setattr(mod, "merge_yahoo_sportsbook_odds", lambda y, s, **kw: tonight)
 
-    result = merge_and_validate_scheduled_odds(df_odds, None, None, strict_mode=-1)
+    result = merge_and_validate_scheduled_odds(df_odds, None, None)
 
     rows = result[result["game_id"] == "0052500001"]
     assert rows["total_betmgm_line_over"].tolist() == [2.0]
@@ -422,7 +469,7 @@ def test_past_games_keep_the_loader_order_whatever_tonight_holds(monkeypatch):
             mod, "merge_yahoo_sportsbook_odds", lambda y, s, n=n_games, **k: tonight(n)
         )
         result = merge_and_validate_scheduled_odds(
-            df_odds, pd.DataFrame(), pd.DataFrame(), strict_mode=-1
+            df_odds, pd.DataFrame(), pd.DataFrame()
         )
         past = result[result["game_date"] < datetime.date(2026, 4, 14)]
         orders.append(past["game_id"].tolist())
@@ -451,7 +498,7 @@ def test_tonights_missing_lines_take_the_historys_float_dtype(monkeypatch):
         )
         results.append(
             merge_and_validate_scheduled_odds(
-                df_odds, pd.DataFrame(), pd.DataFrame(), strict_mode=-1
+                df_odds, pd.DataFrame(), pd.DataFrame()
             )
         )
     with_na, without = results

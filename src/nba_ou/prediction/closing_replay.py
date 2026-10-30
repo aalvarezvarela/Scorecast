@@ -208,7 +208,6 @@ def closing_replay_frame(
             recent_limit_to_include=(
                 pd.Timestamp(game_date) - pd.Timedelta(days=1)
             ).strftime("%Y-%m-%d"),
-            strict_mode=-1,
             target_game_ids=list(games.GAME_ID),
             return_layer_inputs=True,
         )
