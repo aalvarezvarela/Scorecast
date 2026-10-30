@@ -108,6 +108,13 @@ Consequences for storage:
   live run would have seen. Analyses that need strictly live information
   filter on `input_mode`.
 
+Intermediate opening totals are shared with the main SBR day-page reader and
+normalized like training, independently of whether the historical odds row is
+stored yet. Current-game public percentages remain excluded from intermediate
+inputs. Reconstructed closing models still lack timestamped public percentages;
+see [the opener parity investigation](intermediate_opener_parity.md) for the
+validated sample and that separate replay limitation.
+
 ## Capacity
 
 Per game, with the current 51 enabled slots, two baselines and ~17 daily

@@ -919,6 +919,7 @@ def create_intermediate_line_df(
     include_market_dynamics: bool = True,
     return_scoring: bool = False,
     live: LiveGameDay | None = None,
+    scheduled_odds_sportsbook: pd.DataFrame | None = None,
     target_game_ids=None,
     extra_target_snapshots: Mapping[str, int] | None = None,
     target_snapshots: Mapping[str, int] | None = None,
@@ -938,6 +939,10 @@ def create_intermediate_line_df(
     store holds no ticks for cannot become a row. Adding older years to
     ``season_years`` does **not** achieve this -- they are intersected against
     the store's own seasons and dropped.
+
+    ``scheduled_odds_sportsbook`` is the raw main-page opener frame for the
+    games in ``live``. The base builder normalizes only its opening total and
+    prices; current closing markets and public percentages are never imported.
 
     ``include_ridge_movement`` adds a walk-forward estimate of the anchor
     total's remaining move to its tick-series closing line. It uses only
@@ -1260,6 +1265,7 @@ def create_intermediate_line_df(
         combine_fanatics_and_caesars=combine_books,
         return_injury_context=True,
         scheduled_games=live.scheduled_games if live is not None else None,
+        scheduled_odds_sportsbook=scheduled_odds_sportsbook,
         roster_snapshots=roster_snapshots,
         live_as_of=live.as_of if live is not None else None,
         target_game_ids=targets,

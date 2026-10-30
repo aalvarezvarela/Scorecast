@@ -15,6 +15,37 @@ def _slot(horizon):
     return ModelSlot(schema_version="2_5", target="line_error", horizon_minutes=horizon)
 
 
+@pytest.mark.parametrize("unavailable", [False, True])
+def test_recreated_rows_fetch_day_openers_without_waiting_for_historical_insert(
+    monkeypatch,
+    unavailable,
+    capsys,
+):
+    scheduled = pd.DataFrame({"GAME_ID": ["0022600145"]})
+    day = pd.DataFrame(
+        {"game_id": ["0022600145"], "total_consensus_opener_line_over": [238.5]}
+    )
+    monkeypatch.setattr(job, "replay_scheduled_games", lambda date: scheduled)
+    monkeypatch.setattr(
+        job, "process_scheduled_referee_assignments", lambda frame: pd.DataFrame()
+    )
+    monkeypatch.setattr(job, "load_live_rosters", lambda frame: pd.DataFrame())
+
+    def odds(date, games):
+        assert date == "2026-10-29" and games is scheduled
+        if unavailable:
+            raise OSError("SBR unavailable")
+        return day
+
+    monkeypatch.setattr(job, "get_sportsbook_opener_data", odds)
+    result = job.past_scheduled_data("2026-10-29")
+    if unavailable:
+        assert result["df_odds_sportsbook_opener_scheduled"].empty
+        assert "leaving them missing" in capsys.readouterr().out
+    else:
+        assert result["df_odds_sportsbook_opener_scheduled"] is day
+
+
 def test_default_game_date_is_last_night_until_noon_eastern():
     et = "America/New_York"
     # After the late games' final buzzer, and the next morning: last night.
@@ -109,9 +140,11 @@ def test_each_slot_reads_its_own_snapshot(monkeypatch, trained_on_evaluated_date
         job,
         "read_slot_builds",
         lambda **_: {
-            _slot(0): SimpleNamespace(fit=SimpleNamespace(train_date_max="2026-10-21"))
-            if trained_on_evaluated_date
-            else None
+            _slot(0): (
+                SimpleNamespace(fit=SimpleNamespace(train_date_max="2026-10-21"))
+                if trained_on_evaluated_date
+                else None
+            )
         },
     )
     calls = []

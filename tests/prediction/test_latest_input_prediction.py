@@ -479,6 +479,53 @@ def _tonight(monkeypatch, *, as_of):
     return module, scheduled, calls
 
 
+def test_day_page_openers_are_forwarded_even_when_live_history_is_reused(monkeypatch):
+    as_of = TIP - pd.Timedelta(minutes=243)
+    module, scheduled, calls = _tonight(monkeypatch, as_of=as_of)
+    day_odds = pd.DataFrame(
+        {"game_id": ["g1"], "total_consensus_opener_line_over": [229.5]}
+    )
+    scheduled["df_odds_sportsbook_scheduled"] = day_odds
+    live = module.fetch_live_game_day()
+    module.tonight_intermediate_frame(scheduled, game_date="2026-04-10", live=live)
+    assert calls[-1]["scheduled_odds_sportsbook"] is day_odds
+    assert calls[-1]["live"] is live
+
+
+@pytest.mark.parametrize("unavailable", [False, True])
+def test_covers_current_prices_prefer_the_main_sbr_opener(monkeypatch, unavailable):
+    from nba_ou.data_processing.odds.scheduled_opener import OPENER_COLUMNS
+    from nba_ou.prediction.line_source import LineSource
+
+    as_of = TIP - pd.Timedelta(minutes=243)
+    module, scheduled, calls = _tonight(monkeypatch, as_of=as_of)
+    source = LineSource(pd.Timestamp("2026-04-10").date(), source="covers")
+    scheduled["line_source"] = source
+    fallback = pd.DataFrame(
+        {"game_id": ["g1", "g2"], **{c: [218.5, 230.5] for c in OPENER_COLUMNS}}
+    )
+    main = pd.DataFrame(
+        {
+            "game_id": ["g1"],
+            **{c: [217.5 if "line" in c else -110] for c in OPENER_COLUMNS},
+        }
+    )
+    scheduled["df_odds_sportsbook_scheduled"] = fallback
+
+    def read(date, games):
+        assert date == "2026-04-10" and games is scheduled["scheduled_games"]
+        if unavailable:
+            raise OSError("SBR unavailable")
+        return main
+
+    monkeypatch.setattr(module, "get_sportsbook_opener_data", read)
+    module.tonight_intermediate_frame(scheduled, game_date="2026-04-10")
+    actual = calls[-1]["scheduled_odds_sportsbook"].set_index("game_id")
+    assert actual.loc["g1", OPENER_COLUMNS[0]] == (218.5 if unavailable else 217.5)
+    assert actual.loc["g2", OPENER_COLUMNS[0]] == 230.5
+    pd.testing.assert_frame_equal(scheduled["df_odds_sportsbook_scheduled"], fallback)
+
+
 def test_latest_only_builds_each_games_latest_snapshot_alone(monkeypatch):
     as_of = TIP - pd.Timedelta(minutes=243)
     module, scheduled, calls = _tonight(monkeypatch, as_of=as_of)
