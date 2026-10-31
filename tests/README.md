@@ -24,7 +24,7 @@ The initial assignment of every file is recorded in [MIGRATION.md](MIGRATION.md)
 | `core/` | `nba_ou.config`, `nba_ou.utils` |
 | `datasets/` | `nba_ou.create_training_data`, `nba_ou.data_processing.missing_data` |
 | `features/` | Other `nba_ou.data_processing` modules |
-| `ingestion/` | `nba_ou.fetch_data` and ingestion scripts |
+| `ingestion/` | `nba_ou.fetch_data`, ingestion scripts, `lab.game_reports` |
 | `training/` | `training_pipeline` outside reporting, `nba_ou.modeling` outside the registry, `lab.meta_learner`, campaign/preflight configuration |
 | `prediction/` | `nba_ou.prediction` and prediction/retraining/scheduling entry points |
 | `storage/` | `nba_ou.postgre_db`, `nba_ou.modeling.registry_*`, backup/registry archive scripts |
