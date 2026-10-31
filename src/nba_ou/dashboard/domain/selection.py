@@ -11,10 +11,17 @@ SLOT_COLUMNS = [*FAMILY_COLUMNS, "dataset_type", "model_horizon_minutes"]
 
 
 def live_predictions(frame: pd.DataFrame, now) -> pd.DataFrame:
+    """Pre-game outputs from live runs, retained after the game starts or ends."""
     if frame.empty:
         return frame.copy()
     work = frame.copy()
-    for column in ("predicted_at", "tipoff_at", "run_finished_at", "input_at"):
+    for column in (
+        "predicted_at",
+        "tipoff_at",
+        "tipoff_at_prediction",
+        "run_finished_at",
+        "input_at",
+    ):
         work[column] = pd.to_datetime(work[column], utc=True, errors="coerce")
     current = utc_timestamp(now)
     valid_mode = (work["dataset_type"].eq(1) & work["input_mode"].eq(0)) | (
@@ -24,8 +31,8 @@ def live_predictions(frame: pd.DataFrame, now) -> pd.DataFrame:
         work["workflow"].isin([1, 3])
         & work["kind"].isin([1, 3])
         & work["target"].isin([1, 2, 3])
-        & work["status"].eq(0)
-        & work["tipoff_at"].gt(current)
+        & work["status"].isin([0, 1])
+        & work["predicted_at"].lt(work["tipoff_at_prediction"])
         & work["predicted_at"].le(current)
         & work["run_finished_at"].le(current)
         & work["time_to_tipoff_seconds"].gt(0)
@@ -34,7 +41,8 @@ def live_predictions(frame: pd.DataFrame, now) -> pd.DataFrame:
     return work.loc[valid].copy()
 
 
-def upcoming_games(frame: pd.DataFrame, now) -> pd.DataFrame:
+def slate_games(frame: pd.DataFrame, game_date) -> pd.DataFrame:
+    """Keep scheduled, started and final games belonging to this NBA slate."""
     if frame.empty:
         return frame.copy()
     work = frame.copy()
@@ -47,7 +55,8 @@ def upcoming_games(frame: pd.DataFrame, now) -> pd.DataFrame:
             )
         ]
     return work.loc[
-        work["status"].eq(0) & work["tipoff_at"].gt(utc_timestamp(now))
+        work["status"].isin([0, 1])
+        & pd.to_datetime(work["game_date"]).dt.date.eq(game_date)
     ].sort_values(["tipoff_at", "game_id"])
 
 
@@ -74,7 +83,7 @@ def select_predictions(
     ).drop_duplicates(SLOT_COLUMNS, keep="last")
     work["minutes_remaining"] = (
         work["tipoff_at"] - utc_timestamp(now)
-    ).dt.total_seconds() / 60
+    ).dt.total_seconds().clip(lower=0) / 60
     work["horizon_gap_minutes"] = (
         pd.to_numeric(work["model_horizon_minutes"], errors="coerce")
         - work["minutes_remaining"]
@@ -105,6 +114,7 @@ def market_snapshots(frame: pd.DataFrame, target: int, now) -> pd.DataFrame:
         work["target"].isin(targets)
         & work["anchor_book"].str.lower().isin(["bet365", "bet_365"])
         & work["input_at"].le(utc_timestamp(now))
+        & work["input_at"].lt(work["tipoff_at_prediction"])
     ].copy()
     work = work.sort_values(
         ["input_at", "predicted_at", "run_id", "input_id"], kind="stable"

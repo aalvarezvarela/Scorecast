@@ -32,6 +32,8 @@ def madrid_clock(value) -> str:
 
 
 def time_remaining(tipoff, now) -> str:
+    if utc_timestamp(tipoff) < utc_timestamp(now):
+        return "Started · result pending"
     minutes = max(
         0, int((utc_timestamp(tipoff) - utc_timestamp(now)).total_seconds() // 60)
     )

@@ -13,8 +13,8 @@ def render_game_header(game, *, now=None, show_result: bool = False) -> None:
     final = (
         show_result
         and game["status"] == 1
-        and pd.notna(game["home_points"])
-        and pd.notna(game["away_points"])
+        and pd.notna(game.get("home_points"))
+        and pd.notna(game.get("away_points"))
     )
     with st.container(key=f"match_header_{game_id}"):
         with st.container(
@@ -47,7 +47,9 @@ def render_game_header(game, *, now=None, show_result: bool = False) -> None:
             )
         with st.container(key=f"match_footer_{game_id}", gap="xxsmall"):
             timing = f"**{madrid_time(game['tipoff_at'])}**"
-            if now is not None:
+            if game["status"] == 1:
+                timing += " · Final"
+            elif now is not None and game["status"] != 2:
                 timing += f" · {time_remaining(game['tipoff_at'], now)}"
             st.caption(timing)
             if final:

@@ -185,6 +185,36 @@ def test_no_target_predictions_still_shows_the_games(app_setup, today_data):
     assert any("No live predictions" in info.value for info in app.info)
 
 
+@pytest.mark.parametrize("status", [0, 1])
+@pytest.mark.parametrize("view", ["Cards", "Table"])
+def test_started_and_final_games_keep_their_predictions(
+    app_setup, today_data, monkeypatch, status, view
+):
+    today_data.games["status"] = status
+    today_data.games["home_points"] = 115 if status == 1 else None
+    today_data.games["away_points"] = 110 if status == 1 else None
+    today_data.predictions["status"] = status
+    clock = Mock()
+    clock.now.return_value = (NOW + pd.Timedelta(hours=7)).to_pydatetime()
+    monkeypatch.setattr(today_ui, "datetime", clock)
+    app = AppTest.from_file(str(ENTRYPOINT))
+    app.session_state["today_view"] = view
+    app.run()
+    assert not app.exception
+    assert {m.label: m.value for m in app.metric}["Games"] == "2"
+    if view == "Table":
+        assert len(app.dataframe[0].value) == 8
+        assert app.dataframe[0].value["Bet365"].notna().all()
+    else:
+        assert len(card_tables(app)) == 2
+        assert rendered_signals(app) == {"OVER", "UNDER"}
+        assert not any("Tip-off imminent" in text.value for text in app.caption)
+        expected = "Final" if status == 1 else "Started · result pending"
+        assert sum(expected in text.value for text in app.caption) >= 2
+        if status == 1:
+            assert sum(text.value == "### 110 — 115" for text in app.markdown) == 2
+
+
 def test_connection_error_does_not_show_a_false_empty_slate(app_setup):
     app_setup.side_effect = DashboardDataError("Could not read Aiven.")
     app = AppTest.from_file(str(ENTRYPOINT)).run()
