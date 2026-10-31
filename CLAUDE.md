@@ -256,9 +256,15 @@ results. In short:
   `--line intermediate` follows a fixed horizon, T-360 by default); the targets
   share the database update, tonight's rows and the stored run, and each gets
   its own fit. TabPFN keeps no model, so each run fits it
-  with `tabpfn-client` on the rows, features, NaN budget and window of that
-  slot's production spec, read from the season partitions, and predicts
-  tonight's rows. Stored as `model_builds.kind` 3 / `runs.workflow` 3.
+  with `tabpfn-client` on the features of that slot's production spec plus a
+  numeric `SEASON_YEAR` (the season's start year, from `GAME_DATE`, TabPFN
+  only), read from the season partitions, and predicts tonight's rows. Its
+  rows are not the spec's window: every valid game since 2019-01-01
+  (`--train-games N` caps it at the last N), with TabPFN's own NaN budget of
+  800 per row (`TABPFN_MAX_NA_PER_ROW`) instead of the spec's, at fit and
+  prediction time (`prediction/prediction_tabpfn_client.py`). Thinking fits get
+  a 400 s server-side budget. XGBoost slots keep their spec's window and NaN
+  budget. Stored as `model_builds.kind` 3 / `runs.workflow` 3.
   `--modes` (workflow input `modes`) fits each target in one or more modes:
   `standard` (the default) or thinking
   (`thinking_medium`, `thinking_high`), each its own variant

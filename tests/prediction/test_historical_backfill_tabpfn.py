@@ -134,10 +134,16 @@ def tabpfn_pipeline(monkeypatch, tmp_path):
         fits.append((training, model_version, mode))
         assert training.train_date_max == pd.Timestamp("2026-10-23")
         assert training.X.A.max() == 3.0
-        assert training.n_games == 3
-        regressor = SimpleNamespace(
-            predict=lambda X: np.full(len(X), float(training.y.mean()))
-        )
+        assert training.X["SEASON_YEAR"].tolist() == [2026.0] * 4
+        assert training.n_games == 4
+        assert training.train_date_min == pd.Timestamp("2026-10-20")
+
+        def predict(X):
+            assert X.columns.tolist() == training.X.columns.tolist()
+            assert X["SEASON_YEAR"].tolist() == [2026.0] * len(X)
+            return np.full(len(X), float(training.y.mean()))
+
+        regressor = SimpleNamespace(predict=predict)
         return FittedTabPFN(
             regressor, model_version=model_version, client_version="test", mode=mode
         )

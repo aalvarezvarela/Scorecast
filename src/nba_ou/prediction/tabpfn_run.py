@@ -65,7 +65,10 @@ from nba_ou.prediction.prediction_tabpfn_client import (
     DEFAULT_MODEL_VERSION,
     DEFAULT_MODES,
     INTERMEDIATE_LINE,
+    SEASON_YEAR_FEATURE,
     STANDARD_MODE,
+    TABPFN_MAX_NA_PER_ROW,
+    TRAINING_START_DATE,
     TabPFNTrainingSet,
     feature_slot_for,
     fit_tabpfn,
@@ -337,8 +340,8 @@ def load_fit_inputs(
         specs.append(spec)
         _status(
             f"{slot.describe()}: spec {spec.spec_id}, {spec.features.n_features} "
-            f"features, {spec.training.train_games} games, max "
-            f"{spec.cleaning.max_na_per_row} NaN per row"
+            f"features (+ {SEASON_YEAR_FEATURE}); TabPFN: games since "
+            f"{TRAINING_START_DATE}, max {TABPFN_MAX_NA_PER_ROW} NaN per row"
         )
 
     partitions = SeasonPartitions(

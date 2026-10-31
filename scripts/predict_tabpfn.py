@@ -10,14 +10,18 @@
 One or more targets and one line per run (``line_error``, ``total_points`` and ``spread_error``
 at the closing line by default; ``--line intermediate`` follows the slot of a fixed time before
 tip-off, T-360 by default). TabPFN keeps no model, so each run fits it on the
-rows and columns of that slot's production build
+valid historical rows since 2019-01-01, using that slot's production features
+plus numeric SEASON_YEAR (the season's starting year) for TabPFN only, and
+TabPFN's own NaN budget (800 per row) instead of the spec's
 (``nba_ou.prediction.prediction_tabpfn_client``):
 
-1. The production spec of the target's slot at that line (its features, NaN
-   budget and window) and its training rows: the season partitions the daily
+1. The production spec of the target's slot at that line (its features) and
+   its training rows: the season partitions the daily
    refit keeps current (``nba_ou.create_training_data.season_partitions``),
    read as the refit reads them -- every season for the closing line, the
-   horizon's rows for an intermediate slot. Both are loaded before any other
+   horizon's rows for an intermediate slot. TabPFN uses all valid games since
+   2019-01-01, without the spec's rolling window, unless --train-games caps
+   that history. Both are loaded before any other
    work, and partitions older than ``--max-frame-age-days`` are refused.
 2. The database update, the SBR feed check and tonight's schedule, referees,
    injuries and odds, fetched as the daily predictor fetches them. Tonight's
@@ -389,7 +393,7 @@ def main(argv: Sequence[str] | None = None) -> None:
     parser.add_argument(
         "--train-games",
         type=int,
-        help="Fit on the last N games instead of the spec's window.",
+        help="Cap TabPFN's history since 2019-01-01 at the last N valid games.",
     )
     parser.add_argument(
         "--max-frame-age-days",

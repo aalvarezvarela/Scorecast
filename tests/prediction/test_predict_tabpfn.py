@@ -16,7 +16,11 @@ from zoneinfo import ZoneInfo
 import numpy as np
 import pandas as pd
 import pytest
-from nba_ou.modeling.refit import with_residual_targets
+from nba_ou.modeling.refit import (
+    prepare_refit_rows,
+    select_training_window,
+    with_residual_targets,
+)
 from nba_ou.modeling.registry_models import (
     SpecCleaning,
     SpecFeatures,
@@ -29,6 +33,7 @@ from nba_ou.postgre_db.predictions_aiven import schema as store_schema
 from nba_ou.prediction import tabpfn_run
 from nba_ou.prediction.prediction_store import PredictionRunRecorder
 from nba_ou.prediction.prediction_tabpfn_client import (
+    TABPFN_MAX_NA_PER_ROW,
     FittedTabPFN,
     _authenticate,
     feature_slot_for,
@@ -110,11 +115,14 @@ def test_modes_are_parsed_once_each_in_order():
     ("mode", "overrides"),
     [
         ("standard", {}),
-        ("thinking_medium", {"thinking_effort": "medium"}),
-        ("thinking_high", {"thinking_effort": "high"}),
+        (
+            "thinking_medium",
+            {"thinking_effort": "medium", "thinking_timeout_s": 400},
+        ),
+        ("thinking_high", {"thinking_effort": "high", "thinking_timeout_s": 400}),
     ],
 )
-def test_a_thinking_fit_asks_the_client_for_its_effort(
+def test_a_thinking_fit_asks_the_client_for_its_effort_and_time_budget(
     monkeypatch, mode, overrides, use_alt_key
 ):
     """Nothing reaches the hosted service: the client module is a stand-in."""
@@ -204,19 +212,148 @@ def _history(n=8) -> pd.DataFrame:
             "NOT_A_FEATURE": ["x"] * n,
         }
     )
-    frame.loc[0, "FEAT_B"] = np.nan  # over the NaN budget: never trained on
+    # Over the spec's NaN budget (0), within TabPFN's own: TabPFN trains on it.
+    frame.loc[0, "FEAT_B"] = np.nan
     return frame
 
 
-def test_the_training_set_is_the_specs_window_of_numeric_features():
+def test_the_training_set_uses_all_valid_history_instead_of_the_specs_window():
     training_set = tabpfn_training_set(_history(), _spec(), frame_key="k")
 
-    assert list(training_set.X.columns) == FEATURES
+    assert list(training_set.X.columns) == [*FEATURES, "SEASON_YEAR"]
+    assert training_set.X["SEASON_YEAR"].tolist() == [2025.0] * 8
     assert (training_set.X.dtypes == "float64").all()
-    assert training_set.n_games == 4
-    assert str(training_set.train_date_min.date()) == "2026-03-05"
+    assert training_set.n_games == 8
+    assert str(training_set.train_date_min.date()) == "2026-03-01"
     assert str(training_set.train_date_max.date()) == "2026-03-08"
-    assert len(training_set.y) == 4
+    assert len(training_set.y) == 8
+
+
+def test_tabpfn_replaces_the_specs_nan_budget_with_its_own():
+    """The spec's budget (0) would drop row 0; TabPFN's keeps every row up to
+    TABPFN_MAX_NA_PER_ROW NaN features and drops the rows over it."""
+    budget = TABPFN_MAX_NA_PER_ROW
+    wide = [f"F{i}" for i in range(budget + 1)]
+    history = pd.concat(
+        [_history(), pd.DataFrame(0.0, index=range(8), columns=wide)], axis=1
+    )
+    history.loc[1, wide[:budget]] = np.nan  # at the budget: kept
+    history.loc[2, wide] = np.nan  # one over it: dropped
+    spec = _spec(features=wide, max_na_per_row=0)
+
+    training_set = tabpfn_training_set(history, spec, frame_key="k")
+
+    expected = history.drop(index=2)
+    assert training_set.n_games == 7
+    assert training_set.y.tolist() == pytest.approx(expected["LINE_ERROR"].tolist())
+    assert spec.cleaning.max_na_per_row == 0
+
+
+@pytest.mark.parametrize("horizon", [0, 360])
+@pytest.mark.parametrize("target", ["line_error", "total_points", "spread_error"])
+@pytest.mark.parametrize("train_games", [None, 2, 100])
+def test_training_starts_on_january_1_2019_before_any_optional_cap(
+    horizon, target, train_games
+):
+    history = _history()
+    history["GAME_DATE"] = pd.to_datetime(
+        [
+            "2018-12-28",
+            "2018-12-29",
+            "2018-12-31",
+            "2019-01-01",
+            "2019-01-02",
+            "2020-01-01",
+            "2025-01-01",
+            "2026-01-01",
+        ]
+    )
+    history["HOME_MARGIN"] = np.arange(len(history), dtype=float)
+    history["ODDS_SPREAD_LINE_HOME_bet365"] = 3.5
+    spec = _spec(horizon=horizon, target=target, train_games=1)
+    before = history.copy(deep=True)
+    training_set = tabpfn_training_set(
+        _snapshots(history) if horizon else history,
+        spec,
+        frame_key="k",
+        train_games=train_games,
+    )
+
+    expected = history.iloc[3:].assign(SEASON_YEAR=[2018, 2018, 2019, 2024, 2025])
+    if train_games == 2:
+        expected = expected.iloc[-2:]
+    assert training_set.n_games == len(expected)
+    assert training_set.train_date_min == expected["GAME_DATE"].min()
+    assert training_set.train_date_max == expected["GAME_DATE"].max()
+    pd.testing.assert_frame_equal(
+        training_set.X.reset_index(drop=True),
+        expected[[*FEATURES, "SEASON_YEAR"]].astype("float64").reset_index(drop=True),
+    )
+    expected_y = {
+        "line_error": expected["LINE_ERROR"],
+        "total_points": expected["TOTAL_POINTS"],
+        "spread_error": expected["HOME_MARGIN"] - 3.5,
+    }[target]
+    assert training_set.y.tolist() == pytest.approx(expected_y.tolist())
+    pd.testing.assert_frame_equal(history, before)
+    assert spec.training.train_games == 1
+
+
+def test_registry_training_keeps_its_rolling_window():
+    history, spec = _history(), _spec(train_games=4)
+    tabpfn_training_set(history, spec, frame_key="k")
+    registry_rows = select_training_window(
+        prepare_refit_rows(history, spec), train_games=spec.training.train_games
+    )
+    assert len(registry_rows) == 4
+    assert "SEASON_YEAR" not in registry_rows
+    assert spec.features.feature_names == FEATURES
+    assert registry_rows["GAME_ID"].tolist() == history["GAME_ID"].iloc[-4:].tolist()
+
+
+def test_history_before_2019_leaves_no_training_games():
+    history = _history()
+    history["GAME_DATE"] = "2018-12-31"
+    with pytest.raises(ValueError, match="training window is empty"):
+        tabpfn_training_set(history, _spec(), frame_key="k")
+
+
+@pytest.mark.parametrize("with_metadata", [False, True])
+def test_season_year_follows_the_canonical_date_boundary(with_metadata):
+    history = _history(n=4)
+    history["GAME_DATE"] = [
+        "2020-10-11",  # Delayed 2019-20 season.
+        "2020-12-22",
+        "2021-07-20",
+        "2026-10-20",
+    ]
+    if with_metadata:
+        # A dataset's SEASON_YEAR column is ignored: GAME_DATE decides, at fit
+        # and prediction time alike.
+        history["SEASON_YEAR"] = ["2019", None, "2020", "2025"]
+    before = history.copy(deep=True)
+    training_set = tabpfn_training_set(history, _spec(), frame_key="k")
+    assert training_set.X["SEASON_YEAR"].tolist() == [2019.0, 2020.0, 2020.0, 2026.0]
+    pd.testing.assert_frame_equal(history, before)
+
+
+def test_a_row_without_a_date_is_refused_rather_than_given_a_nan_season():
+    history = _history()
+    history.loc[3, "GAME_DATE"] = None
+    with pytest.raises(ValueError, match="without a GAME_DATE"):
+        predict_with_tabpfn(
+            df=history,
+            spec=_spec(),
+            model=FittedTabPFN(Mock(), model_version="v3.5", client_version="t"),
+            training_set=tabpfn_training_set(_history(), _spec(), frame_key="k"),
+        )
+
+
+def test_season_year_is_added_once_when_the_spec_already_contains_it():
+    history = _history().assign(SEASON_YEAR=2025)
+    spec = _spec(features=[*FEATURES, "SEASON_YEAR"])
+    training_set = tabpfn_training_set(history, spec, frame_key="k")
+    assert training_set.X.columns.tolist() == [*FEATURES, "SEASON_YEAR"]
 
 
 def test_the_residual_targets_are_derived_from_the_closing_outcomes():
@@ -246,7 +383,7 @@ def test_playoff_and_preseason_games_are_not_trained_on():
     history.loc[7, "GAME_ID"] = "0012500107"  # preseason
     training_set = tabpfn_training_set(history, _spec(), frame_key="k")
 
-    assert training_set.n_games == 4
+    assert training_set.n_games == 6
     assert str(training_set.train_date_max.date()) == "2026-03-06"
 
 
@@ -269,12 +406,11 @@ def test_an_intermediate_spec_trains_on_its_horizon_only():
         _snapshots(history), _spec(horizon=360), frame_key="k"
     )
 
-    assert training_set.n_games == 4
-    assert len(training_set.X) == 4
-    expected = history.iloc[4:]
-    assert training_set.y.tolist() == pytest.approx(expected["LINE_ERROR"].tolist())
+    assert training_set.n_games == 8
+    assert len(training_set.X) == 8
+    assert training_set.y.tolist() == pytest.approx(history["LINE_ERROR"].tolist())
     assert training_set.X["FEAT_B"].tolist() == pytest.approx(
-        expected["FEAT_B"].tolist()
+        history["FEAT_B"].tolist(), nan_ok=True
     )
 
 
@@ -298,10 +434,12 @@ class _MeanRegressor:
 
     def fit(self, X, y):
         self.mean_ = float(y.mean())
+        self.feature_names_in_ = list(X.columns)
         return self
 
     def predict(self, X):
         assert (X.dtypes == "float64").all()
+        assert list(X.columns) == self.feature_names_in_
         return np.full(len(X), self.mean_)
 
 
@@ -338,6 +476,63 @@ def _schedule() -> pd.DataFrame:
     )
 
 
+@pytest.mark.parametrize("horizon", [0, 360])
+@pytest.mark.parametrize("cleaned", [False, True])
+@pytest.mark.parametrize("with_metadata", [False, True])
+def test_prediction_supplies_numeric_season_year_in_training_column_order(
+    horizon, cleaned, with_metadata
+):
+    spec = _spec(horizon=horizon)
+    history = _snapshots(_history()) if horizon else _history()
+    training_set = tabpfn_training_set(history, spec, frame_key="k")
+    regressor = SimpleNamespace(predict=Mock(return_value=np.array([1.0, 2.0])))
+    model = FittedTabPFN(regressor, model_version="v3.5", client_version="test")
+    tonight = _tonight()
+    if with_metadata:
+        tonight["SEASON_YEAR"] = ["2025", None]
+    if horizon:
+        tonight = _snapshots(tonight.assign(TOTAL_POINTS=np.nan))
+    before = tonight.copy(deep=True)
+
+    predictions = predict_with_tabpfn(
+        df=tonight,
+        spec=spec,
+        model=model,
+        training_set=training_set,
+        cleaned=cleaned,
+        prediction_datetime=PREDICTION_AT,
+    )
+
+    assert len(predictions) == 2
+    X = regressor.predict.call_args.args[0]
+    assert X.columns.tolist() == training_set.X.columns.tolist()
+    assert X["SEASON_YEAR"].tolist() == [2026.0, 2026.0]
+    assert (X.dtypes == "float64").all()
+    pd.testing.assert_frame_equal(tonight, before)
+    assert spec.features.feature_names == FEATURES
+
+
+def test_prediction_uses_tabpfns_nan_budget_not_the_specs():
+    """A row over the spec's budget (0) is still predicted, as it is trained on."""
+    spec = _spec(max_na_per_row=0)
+    training_set = tabpfn_training_set(_history(), spec, frame_key="k")
+    regressor = SimpleNamespace(predict=Mock(return_value=np.array([1.0, 2.0])))
+    model = FittedTabPFN(regressor, model_version="v3.5", client_version="test")
+    tonight = _tonight()
+    tonight.loc[tonight.index[0], "FEAT_B"] = np.nan
+
+    predictions = predict_with_tabpfn(
+        df=tonight,
+        spec=spec,
+        model=model,
+        training_set=training_set,
+        prediction_datetime=PREDICTION_AT,
+    )
+
+    assert len(predictions) == 2
+    assert np.isnan(regressor.predict.call_args.args[0]["FEAT_B"].iloc[0])
+
+
 def test_a_tabpfn_output_is_stored_as_a_tabpfn_build(monkeypatch):
     spec = _spec()
     training_set = tabpfn_training_set(_history(), spec, frame_key="train_data/k")
@@ -358,7 +553,9 @@ def test_a_tabpfn_output_is_stored_as_a_tabpfn_build(monkeypatch):
     assert predictions["PRED_LINE_ERROR"].tolist() == pytest.approx(
         [training_set.y.mean()] * 2
     )
-    assert predictions["FIT_ID"].unique().tolist() == [f"{spec.spec_id}-20260308-4g"]
+    assert predictions["FIT_ID"].unique().tolist() == [
+        f"{spec.spec_id}-20260308-8g-season_year"
+    ]
 
     recorder = PredictionRunRecorder(
         workflow=store_schema.WORKFLOW_TABPFN, game_date="2026-10-21", book="bet365"
@@ -602,10 +799,10 @@ def test_multiple_targets_share_preparation_and_keep_their_specs(
         assert deps[builder].call_args.kwargs["horizon"] == horizon
     fits = deps["fit_tabpfn"].call_args_list
     assert len(fits) == 2
-    assert fits[0].args[0].X.columns.tolist() == FEATURES
-    assert fits[1].args[0].X.columns.tolist() == ["FEAT_B"]
-    assert fits[0].args[0].n_games == 4
-    assert fits[1].args[0].n_games == 6
+    assert fits[0].args[0].X.columns.tolist() == [*FEATURES, "SEASON_YEAR"]
+    assert fits[1].args[0].X.columns.tolist() == ["FEAT_B", "SEASON_YEAR"]
+    assert fits[0].args[0].n_games == 8
+    assert fits[1].args[0].n_games == 8
     assert fits[0].args[0].y.abs().max() < 10
     assert fits[1].args[0].y.min() > 200
     if not persist:
@@ -672,10 +869,10 @@ def test_each_mode_is_its_own_fit_and_variant(monkeypatch):
     )
     fits = deps["fit_tabpfn"].call_args_list
     assert [(fit.args[0].n_games, fit.kwargs["mode"]) for fit in fits] == [
-        (4, "standard"),
-        (4, "thinking_high"),
-        (6, "standard"),
-        (6, "thinking_high"),
+        (8, "standard"),
+        (8, "thinking_high"),
+        (8, "standard"),
+        (8, "thinking_high"),
     ]
     recorder = deps["persist_prediction_run"].call_args.args[0]
     tables = recorder.tables(status=store_schema.RUN_STATUS_OK)
@@ -750,9 +947,9 @@ def test_fits_limit_a_mode_to_some_targets(monkeypatch):
     job.predict_tabpfn(targets=targets, modes=modes, mode_targets=mode_targets)
     fits = deps["fit_tabpfn"].call_args_list
     assert [(fit.args[0].n_games, fit.kwargs["mode"]) for fit in fits] == [
-        (4, "standard"),
-        (4, "thinking_high"),
-        (6, "standard"),
+        (8, "standard"),
+        (8, "thinking_high"),
+        (8, "standard"),
     ]
     builds = (
         deps["persist_prediction_run"]
