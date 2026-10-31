@@ -22,7 +22,7 @@ from nba_ou.dashboard.domain.selection import (
     live_predictions,
     market_snapshots,
     select_predictions,
-    upcoming_games,
+    slate_games,
 )
 from nba_ou.dashboard.repositories.predictions import DashboardDataError
 from nba_ou.dashboard.ui.controls import minimum_edge_select
@@ -118,7 +118,7 @@ def render_today() -> None:
         return
 
     now = datetime.now(UTC)
-    games = upcoming_games(data.games, now)
+    games = slate_games(data.games, game_date)
     if data.games.empty:
         st.info("No games have been recorded in Aiven for today's NBA slate yet.")
         st.caption(
@@ -127,11 +127,13 @@ def render_today() -> None:
         return
     if games.empty:
         st.info(
-            "All recorded games for this slate have started or are no longer scheduled."
+            "No scheduled, started or completed games are recorded for this NBA slate."
         )
         return
 
     live = live_predictions(data.predictions, now)
+    if not live.empty:
+        live = live.loc[live["game_id"].isin(games["game_id"])].copy()
     families = model_families(displayed_models(live), targets)
     with (
         st.container(key="today_settings"),

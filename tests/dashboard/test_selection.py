@@ -4,7 +4,7 @@ from nba_ou.dashboard.domain.selection import (
     live_predictions,
     market_snapshots,
     select_predictions,
-    upcoming_games,
+    slate_games,
 )
 
 from .conftest import NOW, make_prediction
@@ -64,12 +64,12 @@ def test_newest_output_wins_across_refits_and_closing(today_data):
     [
         {"workflow": 2},
         {"kind": 2},
-        {"status": 1},
         {"status": 2},
-        {"tipoff_at": NOW},
+        {"tipoff_at_prediction": NOW - pd.Timedelta(minutes=15)},
         {"predicted_at": NOW + pd.Timedelta(seconds=1)},
         {"run_finished_at": NOW + pd.Timedelta(seconds=1)},
         {"time_to_tipoff_seconds": -1},
+        {"time_to_tipoff_seconds": 0},
         {"input_mode": 0},
         {"target": 99},
     ],
@@ -144,12 +144,48 @@ def test_market_filters_book_and_future_nominal_inputs():
     assert market_snapshots(frame, 1, NOW).iloc[0]["bet365_line"] == 230.5
 
 
-def test_started_and_void_games_disappear_but_unpredicted_games_remain(today_data):
+def test_slate_keeps_started_and_final_games_but_excludes_other_days_and_void(
+    today_data,
+):
     games = today_data.games.copy()
-    games.loc[0, "tipoff_at"] = NOW
-    assert upcoming_games(games, NOW)["game_id"].tolist() == [2]
+    games.loc[0, "tipoff_at"] = NOW - pd.Timedelta(hours=1)
+    games.loc[1, "status"] = 1
+    assert slate_games(games, NOW.date())["game_id"].tolist() == [1, 2]
     games.loc[1, "status"] = 2
-    assert upcoming_games(games, NOW).empty
+    assert slate_games(games, NOW.date())["game_id"].tolist() == [1]
+    games.loc[0, "game_date"] = (NOW - pd.Timedelta(days=1)).date()
+    assert slate_games(games, NOW.date()).empty
+
+
+@pytest.mark.parametrize("status", [0, 1])
+def test_predictions_and_pregame_markets_survive_tipoff_and_finish(today_data, status):
+    frame = today_data.predictions.copy()
+    frame["status"] = status
+    after_tipoff = NOW + pd.Timedelta(hours=7)
+    selected = select_predictions(frame, (1, 2), after_tipoff)
+    assert len(selected) == 8
+    intermediate = selected.loc[selected["phase"].eq("Intermediate")]
+    assert set(intermediate["model_horizon_minutes"]) == {120}
+    assert set(selected["minutes_remaining"]) == {0}
+    assert set(market_snapshots(frame, 1, after_tipoff)["game_id"]) == {1, 2}
+
+
+def test_started_games_do_not_use_post_tip_market_observations():
+    frame = pd.DataFrame(
+        [
+            make_prediction(),
+            make_prediction(input_at=NOW + pd.Timedelta(hours=5), bet_line_x2=500),
+        ]
+    )
+    market = market_snapshots(frame, 2, NOW + pd.Timedelta(hours=7)).iloc[0]
+    assert market["bet365_line"] == 230.5
+
+
+def test_slate_uses_game_date_across_madrid_midnight(today_data):
+    games = today_data.games.copy()
+    # 00:30 in Madrid on the 29th still belongs to the NBA slate of the 28th.
+    games.loc[0, "tipoff_at"] = pd.Timestamp("2026-10-28T23:30:00Z")
+    assert set(slate_games(games, NOW.date())["game_id"]) == {1, 2}
 
 
 def test_missing_target_and_empty_model_selection_are_empty(today_data):

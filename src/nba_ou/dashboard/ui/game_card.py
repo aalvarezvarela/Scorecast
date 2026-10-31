@@ -173,7 +173,7 @@ def render_game_card(
     missing_models: tuple[str, ...] = (),
 ) -> None:
     with st.container(border=True):
-        render_game_header(game, now=now)
+        render_game_header(game, now=now, show_result=game["status"] == 1)
         _headline(pick, market, reference, game, spread=spread)
         _market_freshness(market, now=now)
         _predictions(predictions, families, missing_models, spread=spread)

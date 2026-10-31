@@ -79,17 +79,23 @@ Streamlit 1.66.1 used by the standalone deployment requirements.
 1. The default NBA slate date follows the predictor's Pacific date. This is
    separate from displayed dates: tip-off always shows the full Madrid date
    and 24-hour time, so midnight never makes a game appear on the wrong night.
-2. Only scheduled games with future tip-offs are shown. `prediction.games`
+2. Scheduled, started and final games stay visible for the current NBA slate;
+   postponed/void games are excluded. The slate is matched by `game_date`,
+   even across Madrid midnight. Final scores appear in Cards when stored.
+   `prediction.games`
    contains games accepted by at least one prediction run, not an independent
    complete NBA schedule. Empty data therefore means no games recorded yet,
    not a verified off day. Games without a prediction for the selected target
    remain visible in Cards.
 3. Only completed live daily/TabPFN runs and pre-tip outputs available at the
-   read time qualify. Baselines and the retrospective past-snapshot workflow
+   read time qualify, including after the game starts or finishes. Predictions
+   and market observations remain pre-game; post-tip outputs are excluded.
+   Baselines and the retrospective past-snapshot workflow
    are excluded. A partial run's accepted outputs remain usable.
 4. For each game, target and family (`kind`, `schema_version`, `variant`), show
    the latest closing prediction and one intermediate model: minimize the
-   distance between its trained horizon and the game's actual time remaining.
+   distance between its trained horizon and the game's actual time remaining
+   (clamped to zero once the game starts).
    Equal distances prefer the longer horizon. For each slot, the newest
    output wins across fits. Different families may have different available
    horizons; labels disclose each one (particularly TabPFN).
