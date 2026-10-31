@@ -1106,3 +1106,84 @@ def test_booking_check_compares_next_execution_with_the_plan():
     assert job.booking_mismatches(groups, [1, 2], booked, now) == []
     booked[1]["enabled"] = False
     assert len(job.booking_mismatches(groups, [1, 2], booked, now)) == 1
+
+
+@pytest.mark.parametrize(
+    ("now", "day"),
+    [
+        ("2026-10-31 08:35", "2026-11-01"),
+        ("2026-01-31 08:35", "2026-02-01"),
+        ("2026-03-31 08:35", "2026-04-01"),
+        ("2026-12-31 08:35", "2027-01-01"),
+    ],
+)
+def test_booking_check_accepts_null_prediction_with_exact_stored_schedule(now, day):
+    # The 2026-10-31 run booked these three jobs correctly, but the provider's
+    # PHP predictor skipped November (Oct 31 + one month overflows to Dec 1).
+    groups = [
+        job.ScheduleGroup(day=date.fromisoformat(day), minute=minute, hours=(hour,))
+        for hour, minute in [(0, 0), (3, 30), (5, 0)]
+    ]
+    ids = [8730097, 8730100, 8730104]
+    booked = [
+        {
+            "jobId": job_id,
+            "enabled": True,
+            "nextExecution": None,
+            "schedule": group.schedule(),
+        }
+        for job_id, group in zip(ids, groups, strict=True)
+    ]
+    assert job.booking_mismatches(groups, ids, booked, _utc(now)) == []
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("timezone", "Europe/Madrid"),
+        ("expiresAt", 20261031235959),
+        ("hours", [1]),
+        ("minutes", [30]),
+        ("mdays", [31]),
+        ("months", [10]),
+        ("wdays", [1]),
+    ],
+)
+def test_booking_check_rejects_null_prediction_with_wrong_schedule(field, value):
+    group = job.ScheduleGroup(day=date(2026, 11, 1), minute=0, hours=(0,))
+    booked = {
+        "jobId": 1,
+        "enabled": True,
+        "nextExecution": None,
+        "schedule": {**group.schedule(), field: value},
+    }
+    assert (
+        len(job.booking_mismatches([group], [1], [booked], _utc("2026-10-31 08:35")))
+        == 1
+    )
+
+
+@pytest.mark.parametrize("state", ["disabled", "no_schedule", "missing", "wrong_next"])
+def test_booking_check_does_not_hide_other_booking_failures(state):
+    group = job.ScheduleGroup(day=date(2026, 11, 1), minute=0, hours=(0,))
+    booked = {
+        "jobId": 1,
+        "enabled": state != "disabled",
+        "nextExecution": None,
+        "schedule": group.schedule(),
+    }
+    if state == "no_schedule":
+        del booked["schedule"]
+    if state == "wrong_next":
+        booked["nextExecution"] = int(_utc("2026-11-01 01:00").timestamp())
+    assert (
+        len(
+            job.booking_mismatches(
+                [group],
+                [1],
+                [] if state == "missing" else [booked],
+                _utc("2026-10-31 08:35"),
+            )
+        )
+        == 1
+    )

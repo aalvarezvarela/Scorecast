@@ -49,7 +49,8 @@ have a separate payload per snapshot time and horizon. The pool is patched
 every day; jobs not needed that day are
 disabled. Schedules are in UTC (no daylight-saving gaps) and expire at the end
 of their date, so a job left over from a failed day never fires again. After
-booking, each job's ``nextExecution`` is read back and checked against the plan.
+booking, each job's ``nextExecution`` is read back and checked against the plan;
+if the provider cannot predict it, the stored schedule must match exactly.
 
 Secrets (dry run needs none): ``CRONJOB_API_KEY`` and
 ``CRONJOB_GITHUB_DISPATCH_TOKEN``, see ``nba_ou.scheduling.cronjob_org``.
@@ -675,14 +676,27 @@ def apply_pool(
 def booking_mismatches(
     groups: list[ScheduleGroup], job_ids: list[int], jobs: list[dict], now: datetime
 ) -> list[str]:
-    """Jobs whose ``nextExecution`` (from ``GET /jobs``) is not the group's next
-    planned time."""
+    """Verify enabled jobs against their next execution, or their exact stored
+    schedule when cron-job.org cannot predict that execution."""
     by_id = {job["jobId"]: job for job in jobs}
     problems = []
     for group, job_id in zip(groups, job_ids, strict=True):
         expected = min(at for at in group.fire_times() if at > now)
         job = by_id.get(job_id, {})
         actual = job.get("nextExecution")
+        # The provider's PHP predictor can skip a shorter month when adding
+        # one month to the 31st (e.g. Oct 31 -> Dec 1), returning null despite
+        # a valid booking. In that case verify every stored schedule field.
+        if (
+            job.get("enabled")
+            and actual is None
+            and job.get("schedule") == group.schedule()
+        ):
+            print(
+                f"OK   job {job_id}: next run unavailable; stored schedule "
+                f"matches plan (next {_clock(expected)})"
+            )
+            continue
         if not job.get("enabled") or actual != int(expected.timestamp()):
             shown = datetime.fromtimestamp(actual, UTC) if actual else actual
             problems.append(

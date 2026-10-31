@@ -278,8 +278,17 @@ the current `INTERMEDIATE_INPUT_MODE = latest` and `LATEST_INPUT_SLOTS = all`:
   gave the same set of whole-minute UTC tip-offs, as did the season schedule feed.
 - **Cron.** Each job's schedule is in UTC, built from the same UTC trigger
   times. After `--apply`, the script reads every job's `nextExecution` back
-  from `GET /jobs` and exits 1 if one is not the planned next time or the job
-  is disabled.
+  from `GET /jobs`. A non-null prediction must equal the planned next time.
+  If the prediction is null, the job must be enabled and its entire stored
+  schedule must match the plan exactly, including timezone, date, times and
+  expiry; otherwise the script exits 1. Disabled or missing jobs always fail.
+  The API documents null as an unavailable prediction, not a failed booking.
+  On 2026-10-31 this caused a false failure for three correctly booked Nov 1
+  jobs: the provider's PHP predictor adds a month before resetting the day,
+  so Oct 31 overflows to Dec 1 and skips November. This fallback verifies the
+  saved booking without changing its execution times or making extra API calls.
+  See the [API contract](https://docs.cron-job.org/rest-api.html#job) and
+  [provider predictor](https://github.com/pschlan/cron-job.org/blob/master/api/lib/ExecutionPredictor.php).
 
 ## Why a pool of jobs
 
