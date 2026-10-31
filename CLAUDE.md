@@ -107,8 +107,10 @@ survived the evaluation discipline in the `experiments` skill.
   the map of data sources, storage and which module builds each feature family.
   Keep both references in sync when features change. A document keeps its path
   when its status changes: update its `Status:` line and the index instead.
-- `.claude/skills/` — `experiments` (repo-specific training and evaluation)
-  and four portable skills (`feature-engineering`, `sports-model-pipeline`,
+- `.claude/skills/` — two repo-specific skills, `experiments` (training and
+  evaluation) and `serve-train-parity` (prediction rows vs the training build
+  of the same games, `scripts/perf/serve_train_parity.py`), and four portable
+  skills (`feature-engineering`, `sports-model-pipeline`,
   `odds-data-architecture`, `sports-data-architecture`).
 - `tests/` — pytest, grouped by the module under test: `core/`, `datasets/`,
   `features/`, `ingestion/`, `training/`, `prediction/`, `storage/`, and
@@ -294,6 +296,13 @@ results. In short:
 - A feature that is cheap to compute historically may differ in the
   tonight-only prediction build (it loads less history). Check training vs
   prediction parity for any expanding/season-level feature.
+
+## Language
+
+Everything written to the repository is in **English**: code, identifiers,
+comments, docstrings, docs, skills, commit messages and PR descriptions,
+whatever language the request was made in. Replies in the conversation may
+follow the user's language.
 
 ## Environment / tooling
 

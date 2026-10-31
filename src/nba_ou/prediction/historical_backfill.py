@@ -56,6 +56,7 @@ from nba_ou.prediction.intermediate_frame import PASSTHROUGH_COLUMNS
 from nba_ou.prediction.prediction import load_registry_model_and_predict
 from nba_ou.prediction.prediction_store import (
     PredictionRunRecorder,
+    no_report_games,
     persist_prediction_run,
 )
 from nba_ou.prediction.prediction_tabpfn_client import (
@@ -519,12 +520,20 @@ def _backfill_date(
                     report_required_max_horizon=SETTINGS.report_required_max_horizon,
                     resolved=resolved,
                 )
+                # A game without both injury reports at a short horizon is
+                # skipped as the live slot skips it: recorded, not a failure.
+                no_report = set(no_report_games(predictions))
                 if predictions is None or predictions.empty:
                     recorder.add_predictions(predictions, label=label)
-                    failures.append(f"{game_date} {label}: no eligible prediction rows")
+                    if set(rows.GAME_ID.astype(str)) - no_report:
+                        failures.append(
+                            f"{game_date} {label}: no eligible prediction rows"
+                        )
                     continue
-                omitted = set(rows.GAME_ID.astype(str)) - set(
-                    predictions.GAME_ID.astype(str)
+                omitted = (
+                    set(rows.GAME_ID.astype(str))
+                    - set(predictions.GAME_ID.astype(str))
+                    - no_report
                 )
                 if omitted:
                     failures.append(

@@ -19,6 +19,8 @@ from nba_ou.data_processing.odds.closing_line_repair import (
     ACTION_HISTORY_SAME,
     ACTION_OUTLIER_MEDIAN,
     ACTION_OUTLIER_NULLED,
+    ACTION_STALE_BOOK_MEDIAN,
+    ACTION_STALE_BOOK_NULLED,
     ACTION_UNVERIFIED,
     audit_repaired_closes,
     repair_closing_lines,
@@ -262,10 +264,11 @@ def test_stale_outlier_is_nulled_for_a_non_anchor_book():
         [
             *_consensus_ticks(227.0),
             *_consensus_ticks(226.0, minutes=300),
-            # Quoted a day early and already far from every other book then.
-            tick("draftkings", 1700, line=226.0),
-            tick("fanduel", 1700, line=226.0),
-            tick("betmgm", 1640, line=214.5),
+            # Quoted hours early (within the stale-book lag, so step B's case)
+            # and already far from every other book then.
+            tick("draftkings", 700, line=226.0),
+            tick("fanduel", 700, line=226.0),
+            tick("betmgm", 640, line=214.5),
         ]
     )
 
@@ -358,7 +361,7 @@ def test_moneyline_anchor_median_fill_devigs_back_to_the_median():
             tick("draftkings", 10, market="money_line", line=None, left_price=300, right_price=-380),
             tick("fanduel", 10, market="money_line", line=None, left_price=290, right_price=-370),
             tick("caesars", 10, market="money_line", line=None, left_price=310, right_price=-400),
-            tick("bet365", 1200, market="money_line", line=None, left_price=-105, right_price=-115),
+            tick("bet365", 600, market="money_line", line=None, left_price=-105, right_price=-115),
         ]
     )
 
@@ -410,11 +413,73 @@ def test_no_outlier_when_other_books_disagree_among_themselves():
 
 
 def test_deviation_below_threshold_is_left_alone():
-    history = ticks([*_consensus_ticks(227.0), tick("betmgm", 2000, line=222.0)])
+    history = ticks([*_consensus_ticks(227.0), tick("betmgm", 600, line=222.0)])
 
     _, audit = repair_closing_lines(wide_row(), history)
 
     assert cell(audit, "betmgm")["action"] == ACTION_HISTORY_FILLED
+
+
+def test_book_recorded_only_at_its_opener_is_nulled_not_kept():
+    # The 2026-27 Fanatics shape (0022600020): the feed kept only the opener,
+    # ten days before tip, while every other book went on to close ~237.
+    # Neither that opener nor SBR's own value is a verified close.
+    df = wide_row(
+        total_betmgm_line_over=237.0,
+        total_betmgm_line_under=237.0,
+        total_betmgm_price_over=-110.0,
+        total_betmgm_price_under=-110.0,
+    )
+    history = ticks([*_consensus_ticks(237.0, minutes=60), tick("betmgm", 14186, line=242.0)])
+
+    repaired, audit = repair_closing_lines(df, history)
+
+    assert np.isnan(repaired.iloc[0]["total_betmgm_line_over"])
+    assert np.isnan(repaired.iloc[0]["total_betmgm_price_under"])
+    target = cell(audit, "betmgm")
+    assert target["action"] == ACTION_STALE_BOOK_NULLED
+    assert target["book_lag_minutes"] == pytest.approx(14126.0)
+    audit_repaired_closes(repaired, audit)
+
+
+def test_stale_anchor_book_is_filled_with_the_fresh_median():
+    history = ticks([*_consensus_ticks(237.0, minutes=60), tick("bet365", 3000, line=242.0)])
+
+    repaired, audit = repair_closing_lines(wide_row(), history)
+
+    row = repaired.iloc[0]
+    assert row["total_bet365_line_over"] == 237.0
+    assert row["total_bet365_price_over"] == -110.0
+    assert cell(audit, "bet365")["action"] == ACTION_STALE_BOOK_MEDIAN
+    audit_repaired_closes(repaired, audit)
+
+
+def test_stale_book_still_in_line_with_the_market_is_kept():
+    # A book that did not move all day: its old quote is still the market's.
+    history = ticks([*_consensus_ticks(227.0), tick("betmgm", 1500, line=228.5)])
+
+    repaired, audit = repair_closing_lines(wide_row(), history)
+
+    assert repaired.iloc[0]["total_betmgm_line_over"] == 228.5
+    assert cell(audit, "betmgm")["action"] == ACTION_HISTORY_FILLED
+
+
+def test_lag_is_measured_against_the_freshest_book_of_the_game():
+    # A whole-game feed freeze leaves every book equally old: none is stale
+    # against the others, so none is emptied.
+    history = ticks(
+        [
+            tick("draftkings", 3000, line=227.0),
+            tick("fanduel", 3000, line=227.0),
+            tick("caesars", 3000, line=227.0),
+            tick("betmgm", 3100, line=231.0),
+        ]
+    )
+
+    repaired, audit = repair_closing_lines(wide_row(), history)
+
+    assert repaired.iloc[0]["total_betmgm_line_over"] == 231.0
+    assert ACTION_STALE_BOOK_NULLED not in set(audit["action"])
 
 
 def test_write_back_audit_catches_a_tampered_frame():

@@ -1,7 +1,9 @@
 # Skills
 
-`experiments` is repo-specific: it describes `training_pipeline/`,
-`experiments/` and `artifacts/experiments/` in this repository.
+`experiments` and `serve-train-parity` are repo-specific: the first describes
+`training_pipeline/`, `experiments/` and `artifacts/experiments/`; the second
+how to compare the rows a prediction read with the training rows built for
+the same games afterwards, and the causes of disagreement found so far.
 
 The other four are **portable**. They were distilled from this NBA system but
 are written as sport-agnostic decisions with the NBA implementation as

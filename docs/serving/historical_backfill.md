@@ -14,7 +14,10 @@ prediction inputs. A current production booster is never loaded.
 
 If a partition, row, required feature or safe timestamp is missing, the failure
 is reported. Other valid slots/dates can continue; the process exits nonzero
-for incomplete coverage. Missing inputs are never generated automatically.
+for incomplete coverage. Missing inputs are never generated automatically. A
+game a short-horizon slot skips for a missing injury report
+(`REPORT_REQUIRED_MAX_HORIZON`), as the live slot skips it, is recorded in the
+run but is not a failure.
 
 ## Closing and TabPFN
 
@@ -26,8 +29,20 @@ is never used to fill inputs.
 The closing adapter applies the existing row-wise odds formulas to the saved
 snapshot quotes. It does not calculate team/player history, fetch injury reports,
 read rosters, or run either dataset builder. Untimestamped Yahoo/consensus
-percentages and unavailable opener prices remain NaN. All required feature
-names must be supplied, and both injury reports must be filed at that snapshot.
+percentages remain NaN. All required feature names must be supplied, and both
+injury reports must be filed at that snapshot.
+
+The one value read from the game's stored closing row is its **consensus
+opener** (SBR's, BetMGM's first quote: spread line and prices, total and
+moneyline prices), per market and only when the snapshot already shows
+BetMGM's opener, i.e. it was published before the snapshot (on 2025-26 and
+2026-27 always 11 hours or more before tip). The snapshot carries only a
+normalized cross-book opener, so without it the closing spread book count,
+cross-book spread and consensus reference were computed one book short: on
+2026-27 at T-0 that moved the closing spread model by 0.41 points against the
+closing row and flipped 25 of 80 sides (0.28 and 17 with it; the rest are the
+snapshot's own quotes and the missing public percentages). The opening total
+line still comes from the snapshot.
 
 `--tabpfn` adds standard TabPFN for all three targets at T-240. With closing,
 there are six standard fits per date: three intermediate and three closing.
