@@ -62,6 +62,14 @@ httpx = "^0.28.1"
 [tool.poetry.group.browser.dependencies]
 playwright = "^1.57.0"
 
+# Manual YouTube recap audio archives; FFmpeg and Node >=22 are system tools.
+[tool.poetry.group.media]
+optional = true
+
+[tool.poetry.group.media.dependencies]
+yt-dlp = "2026.10.26"
+yt-dlp-ejs = "0.8.0"
+
 # training_pipeline: campaign configs, Optuna search, reports.
 [tool.poetry.group.train.dependencies]
 optuna = "^4.7.0"

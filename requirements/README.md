@@ -31,6 +31,7 @@ match the project pins. See `docs/serving/streamlit_dashboard.md`.
 | `retrain-cuda.txt` | main, cuda | `retrain_prediction_models` |
 | `retrain-cpu.txt` | main, cpu | manual model checks on a CPU-only machine |
 | `tests-cpu.txt` | main, cpu, scrape, train, dashboard, dev | `tests` |
+| `recap-audio.txt` | main, scrape, media | manual NBA YouTube recap audio archive |
 
 The groups are defined and commented in `pyproject.toml`. `retrain-*` leaves
 out `scrape` on purpose: the refit builds the closing frame for history, so it
