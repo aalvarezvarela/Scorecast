@@ -1,7 +1,10 @@
 """Prediction inputs read from the retrain partitions, without building history.
 
 Only intermediate snapshot rows are prediction inputs, including for closing
-models at T-240. A played game's closing row is NEVER used to fill a feature.
+models at T-240. A played game's closing row is NEVER used to fill a feature,
+with one exception: its consensus opener (SBR's, BetMGM's first quote), which
+the snapshot does not carry and which was published before the snapshot when
+the snapshot already shows BetMGM's opener (``with_stored_openers``).
 """
 
 from __future__ import annotations
@@ -45,12 +48,63 @@ def without_outcomes(frame):
     ).copy()
 
 
-def closing_from_snapshot(snapshot):
+#: The consensus opener's market stems in the merged odds frame, and the
+#: snapshot market whose BetMGM opener shows it was published.
+OPENER_MARKETS: dict[str, str] = {"total": "TOT", "spread": "SPR", "ml": "ML"}
+
+
+#: This game's opener quote, not the earlier games' rolling ``..._BEFORE`` ones.
+_OPENER_QUOTE = re.compile(
+    rf"ODDS_({'|'.join(OPENER_MARKETS)})_consensus_opener_"
+    r"(line|price)_(over|under|away|home)"
+)
+
+
+def opener_columns(closing_rows: pd.DataFrame) -> list[str]:
+    """The stored closing rows' consensus opener quote columns (line, prices)."""
+    return [column for column in closing_rows if _OPENER_QUOTE.fullmatch(column)]
+
+
+def with_stored_openers(
+    odds: pd.DataFrame, frame: pd.DataFrame, openers: pd.DataFrame
+) -> pd.DataFrame:
+    """``odds`` with the consensus opener of ``openers`` where it was published.
+
+    SBR's consensus opener is BetMGM's first quote, line and prices. The
+    snapshot keeps BetMGM's opener line only (normalized), so the closing
+    spread consensus, its book count and cross-book spread are otherwise
+    computed without it: on 2026-27 that moved the closing spread model by 0.4
+    points and flipped 25 of 80 sides. ``openers`` (indexed by GAME_ID, the
+    stored closing columns, ``ODDS_`` prefixed) fill a market only for games
+    whose snapshot already shows BetMGM's opener: published before the
+    snapshot. On 2025-26 and 2026-27 it always was, 11 hours or more before tip.
+    """
+    out = odds.copy()
+    ids = frame.GAME_ID.astype(str)
+    missing = pd.Series(float("nan"), index=frame.index)
+    for market, prefix in OPENER_MARKETS.items():
+        opened = pd.to_numeric(
+            frame.get(f"ODDS_SNAP_{prefix}_BETMGM_OPENER_LINE", missing),
+            errors="coerce",
+        ).notna()
+        for stored in opener_columns(openers):
+            if not stored.startswith(f"ODDS_{market}_"):
+                continue
+            column = stored.removeprefix("ODDS_")
+            value = ids.map(openers[stored])
+            current = out[column] if column in out else missing
+            out[column] = value.where(opened, current)
+    return out
+
+
+def closing_from_snapshot(snapshot, openers=None):
     """Run only the row-wise closing market formulas on saved snapshot quotes.
 
     Team/player/report/referee history already belongs to this snapshot. Yahoo
     and untimestamped consensus percentages stay unavailable. Closing's raw
     handicap and canonical implied-margin signs follow their existing helpers.
+    ``openers``: the stored consensus opener per game (``with_stored_openers``);
+    None leaves it missing but for the snapshot's opening total.
     """
     frame = without_outcomes(snapshot).drop(
         columns=list(LEAKY_BEFORE_COLUMNS), errors="ignore"
@@ -97,6 +151,8 @@ def closing_from_snapshot(snapshot):
                 )
     odds = merge_yahoo_sportsbook_odds(pd.DataFrame(), raw).set_index("game_id")
     odds = odds.reindex(frame.GAME_ID.astype(str)).set_axis(frame.index)
+    if openers is not None:
+        odds = with_stored_openers(odds, frame, openers)
     current = {}
     for book in books:
         current[total_line_col(book)] = odds[f"total_{book}_line_over"]
@@ -149,10 +205,25 @@ class StoredPredictionInputs:
 
     def __init__(self, stores, *, tipoff_loader):
         self.store = stores.get("intermediate_line")
+        self.closing_store = stores.get("closing_line")
         self.tipoff_loader = tipoff_loader
         self.manifests = None
         self.frames = OrderedDict()
         self.tipoffs = {}
+        self.openers = {}
+
+    def stored_openers(self, season: int) -> pd.DataFrame | None:
+        """The season's stored consensus openers by GAME_ID; None without a
+        closing partition (a run with no closing slot)."""
+        if self.closing_store is None or not hasattr(self.closing_store, "read"):
+            return None
+        if season not in self.openers:
+            rows = self.closing_store.read(season)
+            columns = opener_columns(rows)
+            self.openers[season] = rows.assign(
+                GAME_ID=rows.GAME_ID.astype(str)
+            ).set_index("GAME_ID")[columns]
+        return self.openers[season]
 
     def read(self, game_date, horizon, ids, *, closing=False, required_features=()):
         if self.store is None or not hasattr(self.store, "read"):
@@ -211,7 +282,7 @@ class StoredPredictionInputs:
                 raise ValueError(
                     "No historical closing input has both injury reports filed"
                 )
-            frame = closing_from_snapshot(frame)
+            frame = closing_from_snapshot(frame, openers=self.stored_openers(season))
         frame = without_outcomes(frame)
         missing = set(required_features) - set(frame.columns)
         if missing:

@@ -329,6 +329,23 @@ def test_cutoff_violation_is_rejected_before_prediction_or_storage(
     assert not any(key.endswith("model.json") for key in pipeline.s3.put_order)
 
 
+@pytest.mark.parametrize("skipped, exit_code", [([GAME], 0), ([], 1)])
+def test_a_game_skipped_for_a_missing_injury_report_is_not_a_failure(
+    pipeline, monkeypatch, skipped, exit_code
+):
+    # Short-horizon slots skip a game lacking either team's report, as the live
+    # slot does. Only an unexplained missing prediction fails the run.
+    from nba_ou.prediction.report_requirement import NO_REPORT_ATTR
+
+    def predict(**_):
+        empty = pd.DataFrame()
+        empty.attrs[NO_REPORT_ATTR] = list(skipped)
+        return empty
+
+    monkeypatch.setattr(backfill, "load_registry_model_and_predict", predict)
+    assert backfill.run_backfill(DAY, output_dir=pipeline.output) == exit_code
+
+
 def test_already_covered_slots_do_not_refit_or_insert(pipeline, monkeypatch):
     row = dict(
         game_id=int(GAME),

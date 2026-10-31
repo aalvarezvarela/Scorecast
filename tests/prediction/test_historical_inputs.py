@@ -11,6 +11,7 @@ from nba_ou.prediction.historical_inputs import (
     StoredInputsUnavailable,
     StoredPredictionInputs,
     closing_from_snapshot,
+    opener_columns,
 )
 
 from tests.prediction import test_historical_backfill as registry_tests
@@ -57,6 +58,13 @@ def forbid_rebuild(monkeypatch):
         ),
     ]:
         monkeypatch.setattr(importlib.import_module(module), function, fail)
+
+
+def assert_one_snapshot_and_one_opener_read(store):
+    """The four-hour snapshot once, and the closing season once for its openers."""
+    horizons = [call.kwargs.get("horizon") for call in store.read.call_args_list]
+    assert horizons.count(240) == 1
+    assert horizons.count(None) == 1
 
 
 @pytest.mark.parametrize("persist", [False, True])
@@ -122,7 +130,7 @@ def test_all_six_tabpfn_models_share_saved_snapshot_rows(tabpfn_pipeline, monkey
         == 0
     )
     assert len(p.fits) == 6
-    assert store.read.call_count == 1
+    assert_one_snapshot_and_one_opener_read(store)
     assert len(p.written[0].predictions) == 6
     assert p.written[0].inputs.snapshot_horizon_minutes.eq(240).all()
     assert p.written[0].inputs.total_bet_line_x2.eq(450).all()
@@ -220,6 +228,61 @@ def test_closing_market_adapter_uses_snapshot_quotes_and_preserves_signs():
     assert frame.IMPLIED_PTS_HOME_BEFORE.tolist() == [9999.0]
 
 
+def stored_openers(**values):
+    """A stored closing row's consensus opener quote, by GAME_ID."""
+    row = {
+        "ODDS_spread_consensus_opener_line_away": 1.5,
+        "ODDS_spread_consensus_opener_line_home": -1.5,
+        "ODDS_spread_consensus_opener_price_away": 1.91,
+        "ODDS_spread_consensus_opener_price_home": 1.91,
+        "ODDS_ml_consensus_opener_price_away": 2.2,
+        "ODDS_ml_consensus_opener_price_home": 1.7,
+        # An earlier games' rolling column with the same stem: never a quote.
+        "ODDS_spread_consensus_opener_price_LAST_ALL_5_MATCHES_BEFORE_TEAM_HOME": 9.0,
+        "ODDS_ml_consensus_opener_price_home_SEASON_BEFORE_AVG_TEAM_HOME": 9.0,
+        "TOTAL_POINTS": 9999.0,
+        **values,
+    }
+    return pd.DataFrame([row], index=pd.Index([GAME], name="GAME_ID"))
+
+
+def test_opener_columns_are_this_games_quote_only():
+    columns = opener_columns(stored_openers())
+    assert sorted(columns) == sorted(
+        [
+            "ODDS_spread_consensus_opener_line_away",
+            "ODDS_spread_consensus_opener_line_home",
+            "ODDS_spread_consensus_opener_price_away",
+            "ODDS_spread_consensus_opener_price_home",
+            "ODDS_ml_consensus_opener_price_away",
+            "ODDS_ml_consensus_opener_price_home",
+        ]
+    )
+
+
+def test_closing_adapter_takes_the_stored_opener_published_before_the_snapshot():
+    frame = quoted_frame(prediction_frame()).assign(
+        ODDS_SNAP_SPR_BETMGM_OPENER_LINE=1.5, ODDS_SNAP_ML_BETMGM_OPENER_LINE=0.55
+    )
+    converted = closing_from_snapshot(frame, openers=stored_openers())
+
+    assert converted.ODDS_spread_consensus_opener_line_home.tolist() == [-1.5]
+    assert converted.ODDS_spread_consensus_opener_price_away.tolist() == [1.91]
+    assert converted.ODDS_ml_consensus_opener_price_home.tolist() == [1.7]
+    assert converted[spread_line_home_col("consensus_opener")].tolist() == [1.5]
+    assert not converted.columns.duplicated().any()
+    assert "TOTAL_POINTS" not in converted
+
+
+def test_closing_adapter_leaves_an_opener_the_snapshot_had_not_seen_missing():
+    # No BetMGM opener in the snapshot: not published yet at that time.
+    frame = quoted_frame(prediction_frame())
+    converted = closing_from_snapshot(frame, openers=stored_openers())
+
+    assert converted.ODDS_spread_consensus_opener_line_home.isna().all()
+    assert converted.ODDS_ml_consensus_opener_price_home.isna().all()
+
+
 def test_closing_registry_model_also_uses_saved_four_hour_row(pipeline, monkeypatch):
     from nba_ou.prediction.report_requirement import COVERED_COLUMNS
 
@@ -240,7 +303,7 @@ def test_closing_registry_model_also_uses_saved_four_hour_row(pipeline, monkeypa
         )
         == 0
     )
-    assert store.read.call_count == 1
+    assert_one_snapshot_and_one_opener_read(store)
     assert p.written[0].model_builds.dataset_type.tolist() == [1]
     assert p.written[0].inputs.input_mode.tolist() == [0]
     assert p.written[0].inputs.snapshot_horizon_minutes.tolist() == [240]
