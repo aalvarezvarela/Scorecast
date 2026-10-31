@@ -17,6 +17,15 @@ would pair a pre-game number with SBR's live prices and normalize into a line
 that never existed. Where history has no quote the SBR value is kept, as
 ``unverified``.
 
+**Step A2 -- stale books.** A history cell whose last quote is over
+``STALE_BOOK_LAG_MINUTES`` older than the freshest verified book of its game
+and market is no close when the feed stopped recording that book (2026-27
+keeps only Fanatics' opener for a third of the games). It is emptied -- the
+anchor book filled with the median -- when at least ``MIN_OTHER_BOOKS`` fresh
+books agree (``OTHERS_MAX_RANGE``) and it sits ``STALE_BOOK_THRESHOLDS`` or
+more from them. SBR's value is no fallback: on such cells it is as often
+wrong (an in-play close).
+
 **Step B -- cross-book outliers.** Deliberately conservative: it only acts
 where a quote is very likely a data mistake, not merely a book that disagreed.
 Comparison happens on normalized levels (centered to -110/-110 for totals and
@@ -137,6 +146,21 @@ OTHERS_MAX_RANGE: dict[str, float] = {
 #: comparison to count; with fewer, only the closing comparison is used.
 MIN_OTHER_BOOKS_AS_OF = 2
 
+#: A book whose last pre-tip quote is this much older than the freshest
+#: verified book of its game and market may simply have stopped being
+#: recorded. Measured on 2023-24 to 2026-27 history closes: up to a 12-hour lag
+#: 1.5% of totals sit 2.5+ points from the other books, beyond it 13-39%. In
+#: 2026-27 the feed keeps only Fanatics' opener for a third of the games.
+STALE_BOOK_LAG_MINUTES = 720
+#: Deviation from the agreeing fresh books that empties such a stale quote.
+#: Tighter than ``OUTLIER_THRESHOLDS``: those test a book's close against the
+#: others' closes; this tests a quote known to be out of date.
+STALE_BOOK_THRESHOLDS: dict[str, float] = {
+    MARKET_TOTALS: 2.0,
+    MARKET_SPREAD: 2.0,
+    MARKET_MONEYLINE: 0.05,
+}
+
 ACTION_HISTORY_SAME = "history_same"
 ACTION_HISTORY_REPLACED = "history_replaced"
 ACTION_HISTORY_FILLED = "history_filled"
@@ -148,6 +172,11 @@ ACTION_UNVERIFIED = "unverified"
 ACTION_HISTORY_STALE = "history_stale"
 ACTION_OUTLIER_NULLED = "outlier_nulled"
 ACTION_OUTLIER_MEDIAN = "outlier_median_filled"
+#: History-backed, but over ``STALE_BOOK_LAG_MINUTES`` older than the game's
+#: freshest book and out of line with the agreeing fresh books: emptied, or
+#: for the anchor book filled with their median.
+ACTION_STALE_BOOK_NULLED = "stale_book_nulled"
+ACTION_STALE_BOOK_MEDIAN = "stale_book_median_filled"
 
 AUDIT_COLUMNS = [
     "game_id",
@@ -163,6 +192,7 @@ AUDIT_COLUMNS = [
     "others_range",
     "n_others",
     "deviation",
+    "book_lag_minutes",
 ]
 
 TickLoader = Callable[[list[str]], pd.DataFrame]
@@ -419,6 +449,59 @@ def _as_of_deviation(
     return deviation
 
 
+def _stale_book_stats(cells: pd.DataFrame) -> pd.DataFrame:
+    """Each cell's lag behind its game and market's freshest verified book, and
+    the median, range and count of the *fresh* verified other books (lag within
+    ``STALE_BOOK_LAG_MINUTES``)."""
+    verified = cells["verified"].to_numpy()
+    minutes = cells["history_minutes_before_tip"].to_numpy(dtype="float64")
+    level = cells["final_level"].to_numpy(dtype="float64")
+    out = np.full((len(cells), 4), np.nan)
+    for index in cells.groupby(["game_id", "market"], sort=False).indices.values():
+        known = index[verified[index] & ~np.isnan(minutes[index])]
+        if not len(known):
+            continue
+        lag = minutes - minutes[known].min()
+        out[known, 0] = lag[known]
+        fresh = known[(lag[known] <= STALE_BOOK_LAG_MINUTES) & ~np.isnan(level[known])]
+        for position in known:
+            others = level[fresh[fresh != position]]
+            out[position, 3] = len(others)
+            if len(others):
+                out[position, 1] = np.median(others)
+                out[position, 2] = others.max() - others.min()
+    return pd.DataFrame(
+        out,
+        columns=["book_lag_minutes", "fresh_median", "fresh_range", "fresh_n"],
+        index=cells.index,
+    )
+
+
+def _null_cells(cells: pd.DataFrame, mask: pd.Series) -> None:
+    """Empty the final quote of ``mask``'s cells, in place."""
+    columns = ["final_line", "final_left_price", "final_right_price", "final_level"]
+    cells.loc[mask, columns] = np.nan
+
+
+def _fill_with_median(cells: pd.DataFrame, mask: pd.Series, median: pd.Series) -> None:
+    """Give ``mask``'s cells the other books' ``median`` level at -110, in place.
+
+    Lines round to the market's increment; a moneyline takes the zero-vig prices
+    of the median home win probability.
+    """
+    if not mask.any():
+        return
+    lined = mask & cells["market"].ne(MARKET_MONEYLINE)
+    cells.loc[lined, "final_line"] = round_to_increment_signed(median[lined])
+    cells.loc[lined, ["final_left_price", "final_right_price"]] = -110.0
+    moneyline = mask & cells["market"].eq(MARKET_MONEYLINE)
+    home = median[moneyline]
+    cells.loc[moneyline, "final_right_price"] = _american_from_probability(home)
+    cells.loc[moneyline, "final_left_price"] = _american_from_probability(1.0 - home)
+    cells.loc[lined, "final_level"] = cells.loc[lined, "final_line"]
+    cells.loc[moneyline, "final_level"] = home
+
+
 def _american_from_probability(probability: pd.Series) -> pd.Series:
     """Zero-vig American price for a win probability."""
     p = pd.to_numeric(probability, errors="coerce")
@@ -516,6 +599,28 @@ def repair_closing_lines(
         )
     cells["final_level"] = cells["history_level"].where(verified, cells["sbr_level"])
 
+    # ---- Step A2: books whose recording stopped ---------------------------- #
+    # Step A takes a book's last quote however old. When the feed stopped
+    # recording one book (only its opener, days before tip) while the others
+    # went on, that quote is no close: the step B threshold, built for closes,
+    # lets most of these through.
+    cells = cells.join(_stale_book_stats(cells))
+    stale_book = (
+        cells["verified"]
+        & cells["book_lag_minutes"].gt(STALE_BOOK_LAG_MINUTES)
+        & cells["fresh_n"].ge(MIN_OTHER_BOOKS)
+        & cells["fresh_range"].le(cells["market"].map(OTHERS_MAX_RANGE))
+        & (cells["final_level"] - cells["fresh_median"])
+        .abs()
+        .ge(cells["market"].map(STALE_BOOK_THRESHOLDS))
+    )
+    stale_anchor = stale_book & cells["book"].eq(anchor_book)
+    cells.loc[stale_book & ~stale_anchor, "action"] = ACTION_STALE_BOOK_NULLED
+    cells.loc[stale_anchor, "action"] = ACTION_STALE_BOOK_MEDIAN
+    _null_cells(cells, stale_book & ~stale_anchor)
+    _fill_with_median(cells, stale_anchor, cells["fresh_median"])
+    cells = cells.drop(columns=["fresh_median", "fresh_range", "fresh_n"])
+
     # ---- Step B ---------------------------------------------------------- #
     cells = cells.join(_leave_one_out_stats(cells))
     final_line = pd.to_numeric(cells["final_line"], errors="coerce")
@@ -541,6 +646,7 @@ def repair_closing_lines(
         & cells["others_range"].le(max_range)
         & cells["deviation"].abs().ge(threshold)
     )
+    candidate &= ~stale_book
 
     if candidate.any():
         verified_candidates = cells[candidate & cells["verified"]]
@@ -561,22 +667,8 @@ def repair_closing_lines(
     cells.loc[outlier & ~anchor, "action"] = ACTION_OUTLIER_NULLED
     cells.loc[outlier & anchor, "action"] = ACTION_OUTLIER_MEDIAN
 
-    nulled = outlier & ~anchor
-    cells.loc[nulled, ["final_line", "final_left_price", "final_right_price", "final_level"]] = np.nan
-
-    median_fill = outlier & anchor
-    if median_fill.any():
-        lined = median_fill & cells["market"].ne(MARKET_MONEYLINE)
-        cells.loc[lined, "final_line"] = round_to_increment_signed(
-            cells.loc[lined, "others_median"]
-        )
-        cells.loc[lined, ["final_left_price", "final_right_price"]] = -110.0
-        moneyline = median_fill & cells["market"].eq(MARKET_MONEYLINE)
-        home = cells.loc[moneyline, "others_median"]
-        cells.loc[moneyline, "final_right_price"] = _american_from_probability(home)
-        cells.loc[moneyline, "final_left_price"] = _american_from_probability(1.0 - home)
-        cells.loc[lined, "final_level"] = cells.loc[lined, "final_line"]
-        cells.loc[moneyline, "final_level"] = home
+    _null_cells(cells, outlier & ~anchor)
+    _fill_with_median(cells, outlier & anchor, cells["others_median"])
 
     # ---- Write back ------------------------------------------------------ #
     changed = (
@@ -647,6 +739,18 @@ def print_repair_summary(audit: pd.DataFrame) -> None:
             f"{TRUNCATED_HISTORY_MINUTES} min before tip (SBR feed freeze): "
             "their closes are the last pre-tip quotes, flagged history_stale."
         )
+    stale_books = audit[
+        audit["action"].isin([ACTION_STALE_BOOK_NULLED, ACTION_STALE_BOOK_MEDIAN])
+    ]
+    if not stale_books.empty:
+        print(
+            f"  Stale books (last quote over {STALE_BOOK_LAG_MINUTES} min older than "
+            "the game's freshest book, out of line with the fresh books): "
+            + ", ".join(
+                f"{book}={int(count)}"
+                for book, count in stale_books["book"].value_counts().items()
+            )
+        )
     outliers = audit[
         audit["action"].isin([ACTION_OUTLIER_NULLED, ACTION_OUTLIER_MEDIAN])
     ]
@@ -679,7 +783,10 @@ def audit_repaired_closes(repaired: pd.DataFrame, audit: pd.DataFrame) -> None:
     wrong = expected & ~np.isclose(
         merged["level"].fillna(np.inf), merged["final_level"], rtol=0.0, atol=1e-6
     )
-    nulled = merged["action"].eq(ACTION_OUTLIER_NULLED) & merged["level"].notna()
+    nulled = (
+        merged["action"].isin([ACTION_OUTLIER_NULLED, ACTION_STALE_BOOK_NULLED])
+        & merged["level"].notna()
+    )
     if wrong.any() or nulled.any():
         sample = merged.loc[wrong | nulled, [*CELL_KEYS, "action", "final_level", "level"]]
         raise AssertionError(

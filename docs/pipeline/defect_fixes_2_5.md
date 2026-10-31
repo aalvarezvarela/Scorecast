@@ -20,6 +20,7 @@ and promoted on 2026-10-20. Item A is accepted and not fixed.
 | 8 | Veterans without current-season history vanish from player groups | Fixed (per-member earlier-history fallback) |
 | 9 | Available players without a target box-score row lose their last game | Fixed (date-based `_AFTER` selection) |
 | A | Intermediate `GLOBAL_*` can include results after the snapshot | **Accepted, not fixed** |
+| 10 | Closing repair takes a book's stale opener as its close (2026-27 Fanatics) | Fixed (repair rule, 2026-10-31) |
 
 ## Decisions
 
@@ -239,6 +240,39 @@ game: prior scores 10 and 30 read 10 historically versus 20.23 through serving.
 row is strictly earlier than the target date, including the minutes threshold
 used for ranking. Same-day rows retain `_CUM_AVG` so target-game outcomes stay
 excluded. Regression tests compare historical and official-roster paths.
+
+## 10. Stale per-book closes from an opener-only history
+
+Found 2026-10-31. **Problem.** In 2026-27 the SBR/Covers feed keeps only
+Fanatics' opener for about a third of the games: its last totals tick is over
+24 hours before tip in 34% of them (0.1% in 2025-26). Step A of the closing
+repair takes each book's last pre-tip quote however old, so it replaced SBR's
+correct close with that opener. Example `0022600020`: SBR 237.0, every other
+book 237-237.5, repaired Fanatics 242.0 (the opener of 10-21). After the
+repair 24 of 80 Fanatics closes sat 2.5+ points from the other books' median
+(6 in SBR's raw value). Step B's 6-point threshold, built for closes, let
+these through. They fed every `*_fanatics_sportsbook_*` rolling feature and
+the cross-book aggregates, in training and in tonight's rows alike.
+
+**Fix** (`closing_line_repair.py`, step A2): a history cell whose last quote
+is over `STALE_BOOK_LAG_MINUTES` (720) older than the freshest verified book
+of its game and market is emptied (`stale_book_nulled`; the anchor book is
+filled with the median, `stale_book_median_filled`) when at least 3 fresh
+books agree within `OTHERS_MAX_RANGE` and it sits `STALE_BOOK_THRESHOLDS` (2
+points; 0.05 moneyline win probability) or more from them. Measured on
+2023-24 to 2026-27 history closes: up to a 12-hour lag 1.5% of totals sit 2.5+
+points from the other books, beyond it 13-39%. SBR's value is no fallback: on
+the lagged cells it was off as often (11% vs 17% of totals, 5% vs 3% of
+spreads). A stale quote still in line with the market (a book that did not
+move all day) is kept.
+
+The rule empties 22 cells of 2026-27 (21 Fanatics totals) and 2-26 per market
+in earlier seasons. Applied with `repair_sportsbook_closes.py --season-year 2026
+--redo` and the 2026 closing and intermediate partitions rebuilt on 2026-10-31:
+Fanatics closes 2.5+ points off the median went from 24 to 5 of 80, and only
+Fanatics, BetMGM and cross-book columns changed. Earlier seasons keep their
+memoised repair (`closing_line_repair` history memo, frozen key) until they are
+rebuilt. Tests: the stale-book cases in `tests/features/test_closing_line_repair.py`.
 
 ## Accepted in 2_5 (not fixed)
 
