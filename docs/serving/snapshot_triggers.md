@@ -138,8 +138,18 @@ The TabPFN workflow's `target` input is a list separated by spaces or commas,
 `line_error total_points spread_error` by default (also the script's default and what the
 scheduler requests). From the CLI, use for example
 `python scripts/predict_tabpfn.py --targets line_error` (`--target` remains an
-alias). Each target uses its own production spec and
-training window; database updates, the schedule and tonight's feature rows are
+alias). Each target uses its production spec's features and cleaning, plus a
+numeric `SEASON_YEAR` feature only for TabPFN (the season's starting year,
+e.g. 2026 for 2026–27), always derived from `GAME_DATE` with the canonical
+date-to-season helper, at fit and prediction time alike.
+TabPFN fits on all valid games dated 2019-01-01 or later, independently of the
+spec's rolling training window, and replaces the spec's NaN budget with its own,
+800 NaN features per row (`TABPFN_MAX_NA_PER_ROW`), for its training rows and
+tonight's rows: a strict spec budget would drop the older seasons. This applies to standard and thinking modes,
+at closing and intermediate horizons; `--train-games N` optionally caps this
+history at the last N valid games. XGBoost keeps its existing spec window and
+NaN budget.
+Database updates, the schedule and tonight's feature rows are
 shared, and all outputs are stored in one prediction run. If a target's inference
 fails, the other targets are still attempted and saved, and the run fails with
 a partial result. `--feature-slot` requires a single target.
@@ -147,8 +157,11 @@ a partial result. `--feature-slot` requires a single target.
 Its `modes` input (`--modes` in the script) lists the fits of each target, `standard` by
 default, which is today's model and what the scheduler requests. The other
 modes are TabPFN's thinking at medium or high effort (`thinking_medium`,
-`thinking_high`): the server searches the fit within its default time budget,
-which costs more time and inference. Each mode is stored as its own variant
+`thinking_high`): the server searches each fit within an explicit 400-second
+budget (`THINKING_TIMEOUT_SECONDS` in
+`prediction/prediction_tabpfn_client.py`), separate from HTTP/polling and
+GitHub Actions timeouts. Thinking costs more time and inference. Each mode is
+stored as its own variant
 (`tabpfn_v3_5`, `tabpfn_v3_5_thinking_high`), so a run with
 `modes="standard thinking_high"` stores both side by side. `fits` (`--fits`)
 gives each mode its own targets instead of `target` and `modes`, e.g.

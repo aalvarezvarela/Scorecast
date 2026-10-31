@@ -34,6 +34,12 @@ there are six standard fits per date: three intermediate and three closing.
 `--tabpfn-only` omits XGBoost; `--snapshot-minutes` (alias
 `--tabpfn-horizon-minutes`) changes that one shared timepoint. Thinking modes,
 pooled slots and layered schemas are not included; base schema 2_5 is supported.
+TabPFN uses all valid training games since 2019-01-01 that precede the prediction
+date, independently of the production spec's rolling window, with its own NaN
+budget of 800 per row (`TABPFN_MAX_NA_PER_ROW`) instead of the spec's, and adds
+numeric `SEASON_YEAR` (from `GAME_DATE`) to its training and prediction
+features. XGBoost continues to use that spec's window and NaN budget after the
+historical cutoff.
 
 ## Run
 

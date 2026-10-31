@@ -4,9 +4,12 @@ TabPFN keeps no model: it is fitted on every run, on the rows and columns of
 one registry slot's production build -- by default the slot of the same
 target at the closing line or at one intermediate horizon (T-360 by default):
 
-* the features, cleaning and training window: that build's spec, so TabPFN is
-  fitted on exactly the rows and columns its XGBoost counterpart was. The
-  spec's recency weights are not applied: TabPFN takes no sample weights.
+* the features and cleaning: that build's spec, plus the numeric SEASON_YEAR
+  feature for TabPFN only, derived from GAME_DATE. TabPFN uses all valid games
+  since 2019-01-01 instead of the spec's rolling training window, and its own
+  NaN budget (``TABPFN_MAX_NA_PER_ROW``) instead of the spec's, at fit and
+  prediction time. The spec's recency weights are not applied: TabPFN takes no
+  sample weights.
 * the rows: the season partitions the daily refit
   (``scripts/retrain_prediction_models.py``) fits on and keeps current
   (``nba_ou.create_training_data.season_partitions``), read through
@@ -17,8 +20,8 @@ Tonight's rows are built by the caller at the moment it predicts
 (``scripts/predict_tabpfn.py``) -- for an intermediate slot, the row of its
 horizon, whether that snapshot has passed or not (``SNAPSHOT_PASSED``) -- and
 go through the registry slots' serving path
-(``load_and_predict_model_for_nba_games``): the same NaN budget, picks and
-output columns, for every target. The run is stored as ``model_builds.kind`` 3
+(``load_and_predict_model_for_nba_games``): the same picks and output columns,
+for every target, with TabPFN's NaN budget. The run is stored as ``model_builds.kind`` 3
 (``KIND_TABPFN``).
 
 Each fit is in one mode (``MODES``): the standard model, or thinking, where the
@@ -49,10 +52,18 @@ from nba_ou.prediction.prediction import (
     load_and_predict_model_for_nba_games,
     resolve_prediction_target,
 )
+from nba_ou.utils.general_utils import get_season_year_from_date
 
 #: The newest model family ``tabpfn-client`` 0.6 serves
 #: (``tabpfn_client.constants.ModelVersion``).
 DEFAULT_MODEL_VERSION = "v3.5"
+#: TabPFN's own history cutoff; registry models keep their spec's window.
+TRAINING_START_DATE = "2019-01-01"
+#: Start year of the NBA season, added only to TabPFN's model inputs.
+SEASON_YEAR_FEATURE = "SEASON_YEAR"
+#: TabPFN's NaN budget per row over the spec's features, replacing the spec's
+#: own: a strict budget would drop the older seasons the 2019 history adds.
+TABPFN_MAX_NA_PER_ROW = 800
 CLOSING_LINE = "closing_line"
 INTERMEDIATE_LINE = "intermediate_line"
 #: Minutes before tip-off of the intermediate slot TabPFN follows by default.
@@ -63,6 +74,8 @@ SNAPSHOT_COLUMN = "TIME_TO_MATCH_MIN"
 STANDARD_MODE = "standard"
 #: The thinking modes, by their ``tabpfn_client`` ``thinking_effort``.
 THINKING_EFFORTS = {"thinking_medium": "medium", "thinking_high": "high"}
+#: Server-side fit budget, separate from HTTP and async polling timeouts.
+THINKING_TIMEOUT_SECONDS = 400
 #: The modes a run can fit, each a variant of its own.
 MODES = (STANDARD_MODE, *THINKING_EFFORTS)
 #: The modes of a run when none are given.
@@ -71,7 +84,8 @@ DEFAULT_MODES = (STANDARD_MODE,)
 
 @dataclass(frozen=True)
 class TabPFNTrainingSet:
-    """The rows and columns TabPFN is fitted on, as the spec selects them."""
+    """TabPFN's history since 2019, using the spec's features, TabPFN's NaN
+    budget and SEASON_YEAR."""
 
     X: pd.DataFrame
     y: pd.Series
@@ -162,6 +176,27 @@ def numeric_features(X: pd.DataFrame) -> pd.DataFrame:
     return X.apply(_coerce_feature_column_for_xgboost).astype("float64")
 
 
+def _season_year(frame: pd.DataFrame) -> pd.Series:
+    """The season's start year of each row, from GAME_DATE.
+
+    The same canonical helper at fit and prediction time (the datasets'
+    SEASON_YEAR column agrees with it on every row); raises on a row without
+    a date rather than handing TabPFN a NaN.
+    """
+    dates = pd.to_datetime(frame["GAME_DATE"])
+    if dates.isna().any():
+        raise ValueError(f"{int(dates.isna().sum())} row(s) without a GAME_DATE.")
+    return dates.map(get_season_year_from_date).astype("float64")
+
+
+def _with_tabpfn_cleaning(spec: ModelSpec) -> ModelSpec:
+    """``spec`` with TabPFN's NaN budget, for selecting its training rows."""
+    cleaning = spec.cleaning.model_copy(
+        update={"max_na_per_row": TABPFN_MAX_NA_PER_ROW}
+    )
+    return spec.model_copy(update={"cleaning": cleaning})
+
+
 def tabpfn_training_set(
     frame: pd.DataFrame,
     spec: ModelSpec,
@@ -169,27 +204,34 @@ def tabpfn_training_set(
     frame_key: str,
     train_games: int | None = None,
 ) -> TabPFNTrainingSet:
-    """The spec's rows of ``frame``: its horizon, target, features, NaN budget
-    and window.
+    """All valid games since 2019-01-01 at the spec's horizon, using its target
+    and features, TabPFN's NaN budget (``TABPFN_MAX_NA_PER_ROW``) and numeric
+    SEASON_YEAR. The spec's NaN budget and training-window size are not
+    applied.
 
-    ``train_games`` overrides the spec's window (the last N games).
+    ``train_games`` optionally caps this history at the last N valid games.
     """
     settings = settings_from_spec(spec)
     # The XGBoost refit's rows (nba_ou.modeling.refit.prepare_refit_rows), which
     # follow training: regular season and play-in only, the residual target
     # derived (an intermediate frame ships it, against the snapshot's line),
-    # basic cleaning, and the NaN budget with Yahoo exempt.
-    prepared = prepare_refit_rows(rows_of_horizon(frame, spec), spec)
+    # basic cleaning, and the NaN budget (TabPFN's) with Yahoo exempt.
+    history = rows_of_horizon(frame, spec)
+    history = history.loc[
+        pd.to_datetime(history[settings.date_column]).ge(TRAINING_START_DATE)
+    ]
+    prepared = prepare_refit_rows(history, _with_tabpfn_cleaning(spec))
     window = select_training_window(
         prepared,
-        train_games=train_games or settings.train_games,
+        train_games=train_games,
         date_col=settings.date_column,
     )
     if window.empty:
         raise ValueError(f"{spec.spec_id}: the training window is empty.")
     dates = window[settings.date_column]
+    X = window[settings.feature_names].assign(SEASON_YEAR=_season_year(window))
     return TabPFNTrainingSet(
-        X=numeric_features(window[settings.feature_names]),
+        X=numeric_features(X),
         y=pd.to_numeric(window[settings.target_column], errors="coerce"),
         train_date_min=pd.Timestamp(dates.min()).to_pydatetime(),
         train_date_max=pd.Timestamp(dates.max()).to_pydatetime(),
@@ -243,8 +285,8 @@ def fit_tabpfn(
     random_state: int = 0,
 ) -> FittedTabPFN:
     """Fit the hosted regressor of ``model_version`` on ``training_set``, in
-    ``mode`` (``MODES``). A thinking fit runs within the server's default time
-    budget."""
+    ``mode`` (``MODES``). Each thinking fit gets a 400-second server-side
+    budget (``THINKING_TIMEOUT_SECONDS``)."""
     if mode not in MODES:
         raise ValueError(f"Unknown TabPFN mode {mode!r}; choose from {MODES}.")
     try:
@@ -257,7 +299,12 @@ def fit_tabpfn(
 
     _authenticate(tabpfn_client)
     thinking = (
-        {} if mode == STANDARD_MODE else {"thinking_effort": THINKING_EFFORTS[mode]}
+        {}
+        if mode == STANDARD_MODE
+        else {
+            "thinking_effort": THINKING_EFFORTS[mode],
+            "thinking_timeout_s": THINKING_TIMEOUT_SECONDS,
+        }
     )
     regressor = tabpfn_client.TabPFNRegressor.create_default_for_version(
         model_version, random_state=random_state, **thinking
@@ -286,13 +333,16 @@ def predict_with_tabpfn(
     ``cleaned``: ``df`` is ``clean_prediction_frame`` of tonight's rows, shared
     by the run's targets.
 
-    The build is (spec, training cutoff, window size): the same rows and
-    features give the same ``fit_id``, however often a day's runs repeat it.
+    The build is (spec, training cutoff, window size, extra SEASON_YEAR feature,
+    TabPFN's NaN budget):
+    the same rows and features give the same ``fit_id``, however often a day's
+    runs repeat it.
     """
     dataset_type = str(spec.identity.dataset_type)
     rows = rows_of_horizon(df, spec)
     if rows.empty:
         return pd.DataFrame()
+    rows = rows.assign(SEASON_YEAR=_season_year(rows))
     target = str(spec.identity.target)
     horizon = spec.identity.horizon_minutes
     variant = model_variant(model.model_version, model.mode)
@@ -307,10 +357,11 @@ def predict_with_tabpfn(
         ),
         model_type="TabPFNRegressor",
         model_version=model.model_version,
-        required_features=list(spec.features.feature_names),
+        required_features=list(training_set.X.columns),
         prediction_source=variant,
         training_code_tag=(
-            f"tabpfn-client {model.client_version}"
+            f"tabpfn-client {model.client_version}, feature {SEASON_YEAR_FEATURE}, "
+            f"max {TABPFN_MAX_NA_PER_ROW} NaN per row"
             + (
                 ""
                 if model.mode == STANDARD_MODE
@@ -322,7 +373,7 @@ def predict_with_tabpfn(
         prediction_datetime=prediction_datetime,
         prediction_target=resolve_prediction_target(target),
         passthrough_columns=passthrough_columns,
-        max_na_per_row=spec.cleaning.max_na_per_row,
+        max_na_per_row=TABPFN_MAX_NA_PER_ROW,
         cleaned=cleaned,
         extra_summary_columns={
             "MODEL_TARGET": target,
@@ -332,6 +383,7 @@ def predict_with_tabpfn(
             "SPEC_ID": spec.spec_id,
             "FIT_ID": (
                 f"{spec.spec_id}-{train_date_max:%Y%m%d}-{training_set.n_games}g"
+                "-season_year"
             ),
             "MODEL_DATASET_TYPE": dataset_type,
             # No build of its own: the frame it was fitted on.
