@@ -1,7 +1,5 @@
 import pandas as pd
 
-from nba_ou.utils.filter_by_date_range import filter_by_date_range
-
 
 def normalize_game_ids(game_ids) -> list[str]:
     """Normalize GAME_ID values into unique, non-empty strings."""
@@ -106,42 +104,6 @@ def filter_by_seasons_with_extra_game_ids(
             ]
         filtered_df = pd.concat([filtered_df, extra_rows], ignore_index=True)
         filtered_df = filtered_df.drop_duplicates(keep="first")
-
-    sort_cols = [c for c in ["GAME_DATE", "GAME_ID"] if c in filtered_df.columns]
-    if sort_cols:
-        filtered_df = filtered_df.sort_values(sort_cols).reset_index(drop=True)
-
-    return filtered_df
-
-
-def filter_by_date_range_with_extra_game_ids(
-    df: pd.DataFrame,
-    older_limit_to_include,
-    recent_limit_to_include,
-    extra_game_ids=None,
-) -> pd.DataFrame:
-    """
-    Filter by date and keep explicit extra GAME_IDs, capped to most recent date.
-    """
-    filtered_df = filter_by_date_range(
-        df, older_limit_to_include, recent_limit_to_include
-    )
-    normalized_extra_game_ids = normalize_game_ids(extra_game_ids)
-    if not normalized_extra_game_ids or "GAME_ID" not in df.columns:
-        return filtered_df
-
-    extra_mask = df["GAME_ID"].astype(str).isin(set(normalized_extra_game_ids))
-    if not extra_mask.any():
-        return filtered_df
-
-    extra_rows = df.loc[extra_mask].copy()
-    # Extra matchup rows may bypass lower bound, but must respect the recent upper bound.
-    extra_rows = filter_by_date_range(
-        extra_rows, None, most_recent_date_to_include=recent_limit_to_include
-    )
-
-    filtered_df = pd.concat([filtered_df, extra_rows], ignore_index=True)
-    filtered_df = filtered_df.drop_duplicates(keep="first")
 
     sort_cols = [c for c in ["GAME_DATE", "GAME_ID"] if c in filtered_df.columns]
     if sort_cols:
