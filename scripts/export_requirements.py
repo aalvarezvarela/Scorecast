@@ -30,6 +30,7 @@ JOBS: dict[str, tuple[str, ...]] = {
     "db-update": ("main", "scrape"),
     "core": ("main",),
     "tests-cpu": ("main", "cpu", "scrape", "train", "dashboard", "dev"),
+    "recap-audio": ("main", "scrape", "media"),
 }
 
 
