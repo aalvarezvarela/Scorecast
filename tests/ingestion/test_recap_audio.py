@@ -67,7 +67,10 @@ class FakeS3:
 
 @pytest.fixture
 def config(tmp_path):
-    return audio.AudioConfig(2026, tmp_path / "audio", request_interval=0)
+    # Index behaviour has its own tests; the rest exercise per-game search.
+    return audio.AudioConfig(
+        2026, tmp_path / "audio", request_interval=0, use_channel_index=False
+    )
 
 
 @pytest.fixture
@@ -123,7 +126,7 @@ def recap():
 def fake_media(monkeypatch):
     calls = []
 
-    def fetch(entry, config, pacer):
+    def fetch(entry, config, pacer, index=None):
         calls.append(entry["game_id"])
         path = config.audio_path(entry["game_id"])
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -602,3 +605,131 @@ def test_current_season_refresh_accepts_newly_final_scores(config, payload, fake
     )
     assert result["games"]["0052600001"]["status"] == "uploaded"
     assert fake_media == ["0022600001", "0052600001"]
+
+
+def test_repeated_search_misses_stop_instead_of_scanning_entire_season(
+    config, payload, monkeypatch
+):
+    games = payload["leagueSchedule"]["gameDates"][0]["games"]
+    for number in range(3, 10):
+        games.append({**games[0], "gameId": f"00226{number:05d}"})
+    monkeypatch.setattr(audio, "fetch_audio", lambda *args: False)
+    with pytest.raises(RuntimeError, match="5 consecutive recap misses"):
+        audio.run_archive(config, payload=payload)
+    saved = json.loads((config.directory / "manifest.json").read_bytes())
+    assert saved["summary"]["by_status"]["not_found"] == 5
+    assert saved["summary"]["by_status"]["pending"] > 0
+
+
+NOW = "2026-11-05T12:00:00+00:00"
+
+
+def gap_payload(payload, count=8):
+    """Final games on 2026-10-28 with distinct scores, so titles identify them."""
+    games = payload["leagueSchedule"]["gameDates"][0]["games"]
+    base = games[0]
+    games[:] = [
+        {
+            **base,
+            "gameId": f"00226{number:05d}",
+            "awayTeam": {**base["awayTeam"], "score": 100 + number},
+        }
+        for number in range(1, count + 1)
+    ]
+    return payload
+
+
+def title(number):
+    return f"Game Recap: Heat {100 + number}, Hawks 117"
+
+
+@pytest.fixture
+def indexed(config, payload, fake_media, monkeypatch):
+    listings = []
+
+    def list_channel(config, pacer):
+        listings.append(audio.utc_now())
+        return [{"id": "last", "title": title(8)}, {"id": "other", "title": "Other"}]
+
+    monkeypatch.setattr(audio, "list_channel", list_channel)
+    monkeypatch.setattr(audio, "utc_now", lambda: NOW)
+    return replace(config, use_channel_index=True), gap_payload(payload), listings
+
+
+def test_channel_listing_decides_gap_games_without_network_or_stopping(indexed):
+    config, payload, listings = indexed
+    manifest = audio.run_archive(config, payload=payload, max_games=1)
+    games = manifest["games"]
+    assert games["0022600008"]["status"] == "downloaded"
+    absent = [g for g in games.values() if g["status"] == "not_found"]
+    assert len(absent) == 7
+    assert all(g["attempts"] == 0 for g in absent)
+    assert "channel listing" in absent[0]["error"]
+    # The cached listing still covers every closed window: no relisting.
+    audio.run_archive(config, payload=payload)
+    assert listings == [NOW]
+    assert json.loads(config.index_path.read_bytes())["listed_at_utc"] == NOW
+
+
+def test_listing_is_refreshed_once_it_would_decide_more_games(indexed):
+    config, payload, listings = indexed
+    stale = {
+        "channel_id": audio.CHANNEL_ID,
+        "listed_at_utc": "2026-10-29T12:00:00+00:00",
+        "videos": [],
+    }
+    config.index_path.parent.mkdir(parents=True)
+    config.index_path.write_bytes(audio.json_bytes(stale))
+    entries = list(audio.prepare_manifest(config, payload)["games"].values())
+    assert audio.channel_index(config, audio.RequestPacer(0), entries)["videos"]
+    assert listings == [NOW]
+    # A listing that shrank sharply is a truncated response, not deleted videos.
+    stale.update(listed_at_utc="2026-10-29T12:00:00+00:00", videos=[{}] * 1000)
+    config.index_path.write_bytes(audio.json_bytes(stale))
+    with pytest.raises(RuntimeError, match="truncated"):
+        audio.channel_index(config, audio.RequestPacer(0), entries)
+
+
+def test_listing_is_authoritative_only_after_the_upload_window(
+    config, payload, monkeypatch
+):
+    entry = audio.prepare_manifest(config, payload)["games"]["0022600001"]
+    calls = []
+
+    class YoutubeDL:
+        def __init__(self, options):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            pass
+
+        def extract_info(self, url, download=False):
+            calls.append(url)
+            return {"entries": []}
+
+    monkeypatch.setitem(sys.modules, "yt_dlp", SimpleNamespace(YoutubeDL=YoutubeDL))
+    monkeypatch.setitem(
+        sys.modules, "yt_dlp.utils", SimpleNamespace(DownloadError=RuntimeError)
+    )
+    index = {"listed_at_utc": "2026-10-31T05:00:00+00:00", "videos": []}
+    # 2026-10-28 + 2 days ends on 10-30 in New York; 05:00 UTC is still 10-31 01:00.
+    assert audio.find_recap(entry, config, audio.RequestPacer(0), index) is None
+    assert calls == []
+    index["listed_at_utc"] = "2026-10-31T03:00:00+00:00"
+    assert audio.find_recap(entry, config, audio.RequestPacer(0), index) is None
+    assert len(calls) == 2
+
+
+def test_other_season_score_matches_do_not_stop_a_listed_season(indexed, monkeypatch):
+    config, payload, _ = indexed
+    videos = [{"id": f"old{n}", "title": title(n)} for n in range(1, 9)]
+    monkeypatch.setattr(audio, "list_channel", lambda *args: videos)
+    # Every listed title fails verification, like a 2021 video with the same score.
+    monkeypatch.setattr(audio, "fetch_audio", lambda *args: False)
+    manifest = audio.run_archive(config, payload=payload)
+    games = manifest["games"].values()
+    assert all(g["status"] == "not_found" and g["attempts"] == 1 for g in games)
+    assert "another season" in next(iter(games))["error"]

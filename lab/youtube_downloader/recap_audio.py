@@ -62,6 +62,8 @@ class AudioConfig:
     search_results: int = 25
     upload_window_days: int = 2
     js_runtime: str = "node"
+    diagnostics: bool = False
+    use_channel_index: bool = True
 
     def __post_init__(self):
         # Keep season/phase validation consistent with the written archive.
@@ -95,6 +97,11 @@ class AudioConfig:
     @property
     def s3_prefix(self) -> str:
         return f"{self.prefix.strip('/')}/season={self.season}"
+
+    @property
+    def index_path(self) -> Path:
+        # One listing of the whole channel serves every season under this root.
+        return Path(self.local_root) / "channel_index.json"
 
     def audio_path(self, game_id: str) -> Path:
         return self.directory / "audio" / f"{game_id}.opus"
@@ -289,18 +296,160 @@ def verify_video(info: dict, entry: dict, config: AudioConfig) -> bool:
     )
 
 
-def find_recap(entry: dict, config: AudioConfig, pacer: RequestPacer) -> dict | None:
-    """Try channel search then broader search, verifying every accepted video."""
+def list_channel(config: AudioConfig, pacer: RequestPacer) -> list[dict]:
+    """Flat listing (ID and title) of every upload on the channel."""
+    from yt_dlp import YoutubeDL
+
+    pacer.wait()
+    with YoutubeDL(
+        {**youtube_options(config), "extract_flat": True, "skip_download": True}
+    ) as ydl:
+        result = ydl.extract_info(
+            f"https://www.youtube.com/channel/{CHANNEL_ID}/videos", download=False
+        )
+    if not isinstance(result, dict) or not result.get("entries"):
+        raise RuntimeError("YouTube returned no channel listing")
+    return [
+        {"id": e["id"], "title": e.get("title") or ""}
+        for e in result["entries"]
+        if e and e.get("id")
+    ]
+
+
+def index_covers(index: dict, entry: dict, config: AudioConfig) -> bool:
+    """True if the game's upload window had closed when the channel was listed."""
+    listed = (
+        datetime.fromisoformat(index["listed_at_utc"])
+        .astimezone(ZoneInfo("America/New_York"))
+        .date()
+    )
+    window_end = date.fromisoformat(entry["date"]) + timedelta(
+        days=config.upload_window_days
+    )
+    return listed > window_end
+
+
+def index_matches(index: dict, entry: dict) -> list[dict]:
+    return [v for v in index["videos"] if matches_game(v["title"], entry)]
+
+
+def channel_index(
+    config: AudioConfig, pacer: RequestPacer, entries: list[dict]
+) -> dict:
+    """Load the cached channel listing, relisting only when it would decide more games.
+
+    Searching game by game cannot tell an absent recap from a search miss and
+    costs two searches per game; the listing answers every closed upload window
+    at once (Motion Station has no recaps for most of Oct 2025-Feb 2026).
+    """
+    path = config.index_path
+    cached = json.loads(path.read_bytes()) if path.is_file() else None
+    if cached and cached.get("channel_id") != CHANNEL_ID:
+        cached = None
+    now = {"listed_at_utc": utc_now()}
+    if cached and not any(
+        index_covers(now, e, config) and not index_covers(cached, e, config)
+        for e in entries
+    ):
+        return cached
+    print("Listing every channel upload (takes a few minutes)...", flush=True)
+    # The start time is conservative: uploads during the listing may be absent.
+    listed_at = utc_now()
+    videos = list_channel(config, pacer)
+    if cached and len(videos) < 0.99 * len(cached["videos"]):
+        raise RuntimeError(
+            f"Channel listing returned {len(videos)} videos, fewer than the "
+            f"{len(cached['videos'])} cached; YouTube may have truncated it, retry later"
+        )
+    index = {"channel_id": CHANNEL_ID, "listed_at_utc": listed_at, "videos": videos}
+    path.parent.mkdir(parents=True, exist_ok=True)
+    atomic_write(path, json_bytes(index))
+    print(f"  {len(videos)} uploads listed", flush=True)
+    return index
+
+
+def verify_candidates(
+    candidates: list[dict],
+    entry: dict,
+    config: AudioConfig,
+    pacer: RequestPacer,
+    seen: set,
+    errors: list,
+) -> dict | None:
+    """Fetch each candidate's metadata and return the single verified recap."""
     from yt_dlp import YoutubeDL
     from yt_dlp.utils import DownloadError
 
+    candidates = sorted(
+        candidates,
+        key=lambda e: (
+            "extended" in normalized(e.get("title", "")),
+            -int(e.get("view_count") or 0),
+        ),
+    )
+    verified = []
+    for candidate in candidates:
+        video_id = candidate["id"]
+        if video_id in seen:
+            continue
+        pacer.wait()
+        try:
+            with YoutubeDL(
+                {
+                    **youtube_options(config),
+                    "skip_download": True,
+                    "ignore_no_formats_error": True,
+                }
+            ) as ydl:
+                info = ydl.extract_info(
+                    f"https://www.youtube.com/watch?v={video_id}",
+                    download=False,
+                )
+        except DownloadError as exc:
+            errors.append(str(exc))
+            continue
+        seen.add(video_id)
+        if info and verify_video(info, entry, config):
+            verified.append(info)
+        elif config.diagnostics:
+            print(
+                f"    Rejected {video_id}: channel={info.get('channel_id') if info else None}, "
+                f"publication={publication(info)[0] if info else None}, expected game date={entry['date']}",
+                flush=True,
+            )
+    standard = [i for i in verified if "extended" not in normalized(i["title"])]
+    choices = standard or verified
+    if len(choices) > 1:
+        raise ValueError(f"Ambiguous recap match: {[i['id'] for i in choices]}")
+    return choices[0] if choices else None
+
+
+def find_recap(
+    entry: dict, config: AudioConfig, pacer: RequestPacer, index: dict | None = None
+) -> dict | None:
+    """Use the channel listing, else channel then broader search; verify every video.
+
+    Once the listing covers the game's upload window, it is the only source.
+    """
+    from yt_dlp import YoutubeDL
+    from yt_dlp.utils import DownloadError
+
+    errors, seen = [], set()
+    if index is not None:
+        candidates = index_matches(index, entry)
+        if config.diagnostics:
+            print(f"  Channel listing: {len(candidates)} candidates", flush=True)
+        info = verify_candidates(candidates, entry, config, pacer, seen, errors)
+        if info or index_covers(index, entry, config):
+            if not info and errors:
+                raise RuntimeError(f"YouTube verification failed: {errors[-1]}")
+            return info
     query = f'Game Recap {entry["away"]} {entry["away_score"]} {entry["home"]} {entry["home_score"]}'
     searches = [
         f"https://www.youtube.com/channel/{CHANNEL_ID}/search?"
         + urlencode({"query": query}),
         f"ytsearch{config.search_results}:{query} Motion Station",
     ]
-    errors, seen = [], set()
     for search in searches:
         try:
             pacer.wait()
@@ -323,42 +472,22 @@ def find_recap(entry: dict, config: AudioConfig, pacer: RequestPacer) -> dict | 
                 and matches_game(e.get("title", ""), entry)
                 and e.get("channel_id") in (None, CHANNEL_ID)
             ]
-            candidates.sort(
-                key=lambda e: (
-                    "extended" in normalized(e.get("title", "")),
-                    -int(e.get("view_count") or 0),
+            if config.diagnostics:
+                entries = result["entries"]
+                print(
+                    f"  Search: {search} | {len(entries)} results, "
+                    f"{len(candidates)} matching title/score/channel candidates",
+                    flush=True,
                 )
-            )
-            verified = []
-            for candidate in candidates:
-                video_id = candidate["id"]
-                if video_id in seen:
-                    continue
-                pacer.wait()
-                try:
-                    with YoutubeDL(
-                        {
-                            **youtube_options(config),
-                            "skip_download": True,
-                            "ignore_no_formats_error": True,
-                        }
-                    ) as ydl:
-                        info = ydl.extract_info(
-                            f"https://www.youtube.com/watch?v={video_id}",
-                            download=False,
+                for item in entries[:3]:
+                    if item:
+                        print(
+                            f"    Result: {item.get('title')} ({item.get('id')})",
+                            flush=True,
                         )
-                except DownloadError as exc:
-                    errors.append(str(exc))
-                    continue
-                seen.add(video_id)
-                if info and verify_video(info, entry, config):
-                    verified.append(info)
-            standard = [i for i in verified if "extended" not in normalized(i["title"])]
-            choices = standard or verified
-            if len(choices) > 1:
-                raise ValueError(f"Ambiguous recap match: {[i['id'] for i in choices]}")
-            if choices:
-                return choices[0]
+            info = verify_candidates(candidates, entry, config, pacer, seen, errors)
+            if info:
+                return info
         except DownloadError as exc:
             errors.append(str(exc))
     if errors:
@@ -503,10 +632,12 @@ def encode_audio(
     return duration
 
 
-def fetch_audio(entry: dict, config: AudioConfig, pacer: RequestPacer) -> bool:
+def fetch_audio(
+    entry: dict, config: AudioConfig, pacer: RequestPacer, index: dict | None = None
+) -> bool:
     from yt_dlp import YoutubeDL
 
-    info = find_recap(entry, config, pacer)
+    info = find_recap(entry, config, pacer, index)
     if info is None:
         return False
     selected = {}
@@ -704,9 +835,13 @@ def reconcile(config: AudioConfig, manifest: dict, store: S3AudioStore) -> None:
     remote, inventory = store.load_manifest(), store.inventory()
     for game_id, entry in manifest["games"].items():
         previous = (remote or {}).get("games", {}).get(game_id)
-        if previous and previous.get("sha256") and any(
-            previous[k] != entry[k]
-            for k in ("date", "phase", "away", "home", "away_score", "home_score")
+        if (
+            previous
+            and previous.get("sha256")
+            and any(
+                previous[k] != entry[k]
+                for k in ("date", "phase", "away", "home", "away_score", "home_score")
+            )
         ):
             raise ValueError(f"Local/S3 game identity differs for {game_id}")
         if entry["s3_key"] in inventory:
@@ -744,18 +879,27 @@ def reconcile(config: AudioConfig, manifest: dict, store: S3AudioStore) -> None:
 
 
 def process_game(
-    entry: dict, config: AudioConfig, store: S3AudioStore | None, pacer: RequestPacer
+    entry: dict,
+    config: AudioConfig,
+    store: S3AudioStore | None,
+    pacer: RequestPacer,
+    index: dict | None = None,
 ) -> None:
     try:
         body = local_audio(entry, config)
         if body is None:
             entry["attempts"] += 1
             entry["last_attempt_at"] = utc_now()
-            if not fetch_audio(entry, config, pacer):
-                entry.update(
-                    status="not_found",
-                    error="No verified recap found; search misses are retried on the next run",
+            if not fetch_audio(entry, config, pacer, index):
+                error = (
+                    "No verified recap found; search misses are retried on the next run"
                 )
+                if index and index_covers(index, entry, config):
+                    error = (
+                        "Listed titles match the score but not the channel and "
+                        "publication window (another season's game)"
+                    )
+                entry.update(status="not_found", error=error)
                 return
         body = record_audio(entry, config)
     except Exception as exc:
@@ -809,8 +953,12 @@ def run_archive(
             0,
             0,
         )
+        consecutive_missing = 0
+        index, absent = None, 0
         failure = None
         try:
+            if config.use_channel_index and entries:
+                index = channel_index(config, pacer, entries)
             for entry in entries:
                 if (
                     not store
@@ -818,13 +966,27 @@ def run_archive(
                     and local_audio(entry, config) is not None
                 ):
                     continue
+                if (
+                    index
+                    and entry["status"] in {"pending", "not_found"}
+                    and not config.audio_path(entry["game_id"]).is_file()
+                    and index_covers(index, entry, config)
+                    and not index_matches(index, entry)
+                ):
+                    # Decided without network: neither an attempt nor a search miss.
+                    entry.update(
+                        status="not_found",
+                        error=f"Not in the channel listing of {index['listed_at_utc']}",
+                    )
+                    absent += 1
+                    continue
                 if max_games is not None and processed >= max_games:
                     break
                 print(
                     f"[{processed + 1}] {entry['date']} {entry['away']} @ {entry['home']} ({entry['game_id']})",
                     flush=True,
                 )
-                process_game(entry, config, store, pacer)
+                process_game(entry, config, store, pacer, index)
                 processed += 1
                 checkpoint(config, manifest)
                 print(
@@ -834,6 +996,17 @@ def run_archive(
                 consecutive_errors = (
                     consecutive_errors + 1 if entry["status"].endswith("error") else 0
                 )
+                # The stop detects broken search; a listed game whose only title
+                # match is another season's same score is a definite answer.
+                if entry["status"] != "not_found":
+                    consecutive_missing = 0
+                elif not (index and index_covers(index, entry, config)):
+                    consecutive_missing += 1
+                if consecutive_missing >= 5:
+                    raise RuntimeError(
+                        "Stopped after 5 consecutive recap misses among listed or recent games. "
+                        "Use --diagnostics to inspect results. Missing games remain retryable."
+                    )
                 if consecutive_errors >= 5:
                     raise RuntimeError(
                         "Stopped after 5 consecutive failures; inspect manifest errors before retrying"
@@ -850,5 +1023,7 @@ def run_archive(
                     if failure is None:
                         raise
                     print(f"Could not publish S3 manifest: {exc}", flush=True)
+        if absent:
+            print(f"{absent} games have no recap in the channel listing", flush=True)
         print(json.dumps(summarize(manifest, game_date), indent=2), flush=True)
         return manifest

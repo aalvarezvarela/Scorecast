@@ -89,6 +89,16 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--search-results", type=positive_int, default=25)
     parser.add_argument(
+        "--diagnostics",
+        action="store_true",
+        help="show search result counts, sample titles and rejected publication dates",
+    )
+    parser.add_argument(
+        "--no-channel-index",
+        action="store_true",
+        help="search YouTube game by game instead of using the cached channel listing",
+    )
+    parser.add_argument(
         "--upload-window-days",
         type=int,
         default=2,
@@ -144,6 +154,8 @@ def main(argv: list[str] | None = None) -> int:
             search_results=args.search_results,
             upload_window_days=args.upload_window_days,
             js_runtime=args.js_runtime,
+            diagnostics=args.diagnostics,
+            use_channel_index=not args.no_channel_index,
         )
         require_tools(config)
         manifest = run_archive(

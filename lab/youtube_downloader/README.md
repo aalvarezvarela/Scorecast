@@ -50,6 +50,12 @@ regular season, play-in, playoffs and the Cup final. Preseason is opt-in;
 All-Star exhibitions are excluded. Another language or phase scope requires a
 separate local root and S3 prefix to avoid mixing archive configurations.
 
+Use `--diagnostics --max-games 1` to inspect search counts, sample titles and
+rejected publication dates when discovery fails. Five consecutive `not_found`
+results among games that needed YouTube requests stop and checkpoint the run;
+games absent from the channel listing never trigger this stop (see
+[Matching](#matching-audio-selection-and-recovery)). Misses remain retryable.
+
 ## Install
 
 The optional Poetry `media` group pins yt-dlp and its EJS challenge solver:
@@ -105,7 +111,7 @@ persisted. The exact output profile is recorded at manifest level.
 | --- | --- |
 | `pending` | Scheduled final game, not processed yet. |
 | `not_final` | Official schedule does not mark the game final. |
-| `not_found` | No verified recap was found; retried on the next run. |
+| `not_found` | No verified recap was found, or none is in the channel listing (`error` says which); re-checked on the next run. |
 | `downloaded` | Verified local Opus exists; complete for local-only runs, otherwise awaiting upload. |
 | `uploaded` | Audio exists in S3 and is reconciled with the manifest. |
 | `fetch_error` | Search, matching, language, download, integrity or encoding failed. |
@@ -117,8 +123,24 @@ misses remain visible but are not treated as processing errors.
 
 ## Matching, audio selection and recovery
 
-The runner searches Motion Station's channel, then falls back to a broader
-YouTube search. Every accepted candidate must match the configured channel,
+Discovery starts from a flat listing (ID and title) of every Motion Station
+upload, cached in `<local-root>/channel_index.json` and shared by all seasons.
+The runner lists the channel again only when a pending game's upload window
+(game date + `--upload-window-days`, New York time) has closed after the cached
+listing was taken; one listing of about 31,000 uploads takes a few minutes. For
+a game whose window had closed before the listing:
+
+- a matching title is verified as below and downloaded;
+- no matching title marks it `not_found` without any YouTube request. Such games
+  do not count as attempts, toward `--max-games` or toward the five-miss stop.
+
+Games whose window was still open at listing time (yesterday's games, for
+example) fall back to the per-game search: Motion Station's channel, then a
+broader YouTube search. `--no-channel-index` uses only that per-game search.
+A listing more than 1% shorter than the cached one is refused as a probable
+truncated response.
+
+Every accepted candidate must match the configured channel,
 both team names, final scores and publication window. Standard recaps are
 preferred over extended versions. Multiple matching candidates of the preferred
 type produce an explicit error instead of selecting a potentially wrong game.
@@ -151,11 +173,41 @@ Reconciliation recovers remote-only progress and orphan uploads, and reuploads
 a missing remote object from a valid local file. Object metadata preserves the
 recap identity for recovery after a lost manifest checkpoint.
 
-Search coverage over entire historical seasons has not yet been measured.
 Some videos may be unavailable or published outside the default window. Inspect
 the coverage manifest before concluding a season is complete. If these recaps
 later become model inputs, use their publication timestamps: a postgame recap
 cannot be used to predict that same game.
+
+### Channel coverage by season (measured 2026-11-01)
+
+A full flat listing returned 31,322 uploads. Matching `Game Recap` titles to the
+official schedule by team name and final score (regular season, play-in,
+playoffs, Cup final) gives:
+
+| Season | Final games | With recap | Coverage |
+| --- | ---: | ---: | ---: |
+| 2015-16 to 2019-20 | ~1,300 each | ~10 each | ~1% (score coincidences with later seasons) |
+| 2020-21 | 1,171 | 1,108 | 94.6% |
+| 2021-22 | 1,323 | 1,307 | 98.8% |
+| 2022-23 | 1,320 | 1,296 | 98.2% |
+| 2023-24 | 1,319 | 1,297 | 98.3% |
+| 2024-25 | 1,321 | 1,295 | 98.0% |
+| 2025-26 | 1,322 | 446 | 33.7% |
+| 2026-27 (to 2026-10-31) | 88 | 84 | 95.5% |
+
+2025-26 has almost no recaps from October 2025 to February 2026 (30 of 896
+games, none of 198 in December) and ~98% from March 2026 on. The listing does
+not say whether the missing videos were never published, removed or hidden.
+A few titles are truncated (`Game Recap: Rockets 119, Thunder`) and cannot be
+matched. Before the channel index, a 2025-26 season run stopped at its first
+five games and never reached March.
+
+The first two official recaps were located on NBA.com through each game's
+`gameRecap` metadata. Anonymous playback options were obtainable, but the
+investigated playback path reported Widevine; a downloadable unencrypted audio
+track has not been verified. No NBA.com fallback is implemented or promised by
+this runner. Historical season completeness remains a source-availability
+limitation, not an audio encoding guarantee.
 
 ## Validation and measurements
 
