@@ -324,33 +324,3 @@ def build_historical_average_line_error_baseline_predictions(
     )
 
     return df_summary.dropna(subset=["PRED_LINE_ERROR"])
-
-
-def load_baseline_predictions_for_nba_games(
-    *,
-    df: pd.DataFrame,
-    df_history: pd.DataFrame,
-    prediction_datetime: datetime | None = None,
-    random_seed: int | None = None,
-    total_points_pick_line_col: str | None = None,
-) -> dict[str, pd.DataFrame]:
-    """Build the baseline predictions, by baseline model name."""
-    random_predictions = build_random_line_error_baseline_predictions(
-        df,
-        prediction_datetime=prediction_datetime,
-        random_seed=random_seed,
-        total_points_pick_line_col=total_points_pick_line_col,
-    )
-    average_predictions = build_historical_average_line_error_baseline_predictions(
-        df,
-        df_history,
-        prediction_datetime=prediction_datetime,
-        total_points_pick_line_col=total_points_pick_line_col,
-    )
-
-    predictions_by_model = {
-        RANDOM_LINE_ERROR_BASELINE_MODEL_NAME: random_predictions,
-        HISTORICAL_AVERAGE_LINE_ERROR_BASELINE_MODEL_NAME: average_predictions,
-    }
-
-    return predictions_by_model
