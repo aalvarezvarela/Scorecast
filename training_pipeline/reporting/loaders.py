@@ -39,46 +39,6 @@ def _optional_csv(path: Path, **kwargs: Any) -> pd.DataFrame | None:
         return None
 
 
-def load_fold_betting(row: Any) -> pd.DataFrame | None:
-    return _optional_csv(
-        run_dir_of(row) / "cv_fold_betting.csv", parse_dates=["valid_start", "valid_end"]
-    )
-
-
-def load_seed_stability(row: Any) -> pd.DataFrame | None:
-    return _optional_csv(run_dir_of(row) / "seed_stability.csv")
-
-
-def load_calibration_buckets(row: Any) -> list[tuple[str, pd.DataFrame]]:
-    """Reliability buckets, CV first because it pools far more games."""
-    found = []
-    for filename, source in (("cv_calibration_buckets.csv", "CV"),
-                             ("calibration_buckets.csv", "holdout")):
-        frame = _optional_csv(run_dir_of(row) / filename)
-        if frame is not None and not frame.empty:
-            found.append((source, frame))
-    return found
-
-
-def load_line_comparison(row: Any) -> pd.DataFrame | None:
-    """Alternative-line scoring, preferring the CV table for its bet volume."""
-    for filename, source in (("cv_line_comparison.csv", "CV folds"),
-                             ("line_comparison.csv", "holdout")):
-        frame = _optional_csv(run_dir_of(row) / filename)
-        if frame is not None and not frame.empty:
-            frame = frame.copy()
-            frame.insert(0, "measured_on", source)
-            return frame
-    return None
-
-
-def load_feature_names(row: Any) -> set[str]:
-    path = run_dir_of(row) / "feature_schema.json"
-    if not path.exists():
-        return set()
-    return set(read_json(path).get("feature_names", []))
-
-
 def load_metadata(row: Any) -> dict[str, Any]:
     """The run's ``metadata.json``, or an empty dict when it is absent.
 
@@ -188,24 +148,6 @@ def load_config_flat(row: Any) -> dict[str, Any]:
     return flatten(read_json(path))
 
 
-def load_walk_forward(row: Any) -> dict[str, Any] | None:
-    """Per-day retrain log plus pooled predictions, for runs scored daily."""
-    run_dir = run_dir_of(row)
-    daily_path = run_dir / "backtest_daily.csv"
-    predictions_path = run_dir / "backtest_predictions.parquet"
-    if not daily_path.exists() or not predictions_path.exists():
-        return None
-    daily = pd.read_csv(
-        daily_path, parse_dates=["date", "train_start_date", "train_end_date"]
-    )
-    predictions = pd.read_parquet(predictions_path)
-    predictions["date"] = pd.to_datetime(predictions["date"])
-    return {
-        "daily": daily.sort_values("date").reset_index(drop=True),
-        "predictions": predictions.sort_values("date").reset_index(drop=True),
-    }
-
-
 def settle_bets(frame: pd.DataFrame) -> pd.DataFrame:
     """Attach win/push outcomes to a predictions frame.
 
@@ -269,7 +211,7 @@ def load_all_predictions(
 ) -> list[tuple[str, pd.DataFrame]]:
     """Every settled prediction set this run wrote, labelled by source.
 
-    Unlike :func:`load_predictions`, which picks one, this returns both so the
+    Unlike a single-run loader, this returns both so the
     cross-validation and holdout periods can be compared directly rather than
     one standing in for the other.
 
@@ -374,27 +316,3 @@ def _ensure_selection_score(frame: pd.DataFrame, row: Any) -> pd.DataFrame | Non
     if row.get("is_classifier", False):
         return None
     return frame.assign(selection_score=frame["predicted_edge"].abs())
-
-
-def load_predictions(row: Any) -> tuple[pd.DataFrame, str] | None:
-    """Settled predictions, preferring the pooled CV folds for their volume.
-
-    Returns ``(frame, source)`` with pushes already removed, or None when the
-    run wrote nothing usable.
-    """
-    required = {"selection_score", "predicted_edge", "target_line", OUTCOME_COLUMN}
-    for filename, source in (("cv_predictions.parquet", "CV"),
-                             ("final_test_predictions.parquet", "holdout")):
-        path = run_dir_of(row) / filename
-        if not path.exists():
-            continue
-        frame = pd.read_parquet(path)
-        normalised = _normalise_outcome(frame)
-        if normalised is None or not required <= set(normalised.columns):
-            continue
-        frame = normalised.dropna(subset=list(required))
-        if frame.empty:
-            continue
-        settled = settle_bets(frame)
-        return settled[~settled["push"]], source
-    return None

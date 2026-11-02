@@ -14,106 +14,6 @@ import pandas as pd
 from training_pipeline.reporting.theme import BREAK_EVEN, short_name
 
 
-def cv_vs_test_win_rate(table: pd.DataFrame) -> list[str]:
-    """How the cross-validated win rate fared on the held-out period."""
-    if table.empty:
-        return ["_No run reports both a cross-validation and a holdout win rate._"]
-
-    messages: list[str] = []
-    held_up = table[table["win_rate"] > BREAK_EVEN]
-    both = table[(table["win_rate"] > BREAK_EVEN) & (table["cv_win_rate"] > BREAK_EVEN)]
-    median_drop = table["win_rate_drop"].median()
-
-    messages.append(
-        f"Across {len(table)} run(s) the median move from cross-validation to the held-out test is "
-        f"**{-median_drop:+.2%}** in win rate. "
-        + ("A drop is the expected direction: the folds chose the hyperparameters, so they flatter "
-           "the model. What matters is whether anything is left after it."
-           if median_drop > 0 else
-           "The holdout came out *above* cross-validation here, which is more often the small "
-           "holdout being lucky than a model that improves out of sample.")
-    )
-
-    if both.empty:
-        messages.append(
-            "⚠️ **No run clears break-even in both measurements.** A win rate above 52.38% in one "
-            "and below it in the other is the signature of noise rather than an edge."
-        )
-    else:
-        messages.append(
-            "Runs above break-even in **both**: "
-            + ", ".join(
-                f"`{r.label}` (CV {r.cv_win_rate:.1%} → test {r.win_rate:.1%})"
-                for r in both.itertuples()
-            )
-            + ". These are the only ones worth carrying forward — and still only on "
-            f"{int(both['n_bets'].min())}–{int(both['n_bets'].max())} test bets."
-        )
-
-    fragile = held_up[~held_up["label"].isin(both["label"])]
-    if not fragile.empty:
-        messages.append(
-            "_Above break-even on the test but not in cross-validation: "
-            + ", ".join(f"`{name}`" for name in fragile["label"])
-            + ". With the larger CV sample disagreeing, treat the test figure as the fluke._"
-        )
-    return messages
-
-
-def edge_ranges(pooled: pd.DataFrame) -> list[str]:
-    """Whether a bigger predicted edge actually wins more often."""
-    if pooled.empty:
-        return ["_No regression runs with usable predictions._"]
-
-    messages: list[str] = []
-    for source in pooled["source"].unique():
-        subset = pooled[
-            (pooled["source"] == source) & (~pooled["too_few_to_read"])
-        ].sort_values("edge_low")
-        if len(subset) < 3:
-            continue
-
-        # Spearman over the readable bins, weighted implicitly by using the bin
-        # order: a monotone rise is the claim being tested.
-        rho = subset["edge_low"].corr(subset["win_rate"], method="spearman")
-        smallest = subset.iloc[0]
-        largest = subset.iloc[-1]
-        messages.append(
-            f"- **{source}**: win rate goes from **{smallest['win_rate']:.1%}** in the "
-            f"{smallest['edge_range']} point range ({int(smallest['n_bets'])} bets) to "
-            f"**{largest['win_rate']:.1%}** in {largest['edge_range']} "
-            f"({int(largest['n_bets'])} bets). Rank correlation across ranges "
-            f"**{rho:+.2f}**. "
-            + ("A clear upward trend — bigger edges really are better bets."
-               if rho > 0.6 else
-               "**No usable trend**: a bigger predicted edge does not win more often here."
-               if rho < 0.3 else
-               "A weak, non-monotone trend — not something to size bets on.")
-        )
-
-    thin = pooled[pooled["too_few_to_read"]]
-    if not thin.empty:
-        ranges = sorted(set(thin["edge_range"]))
-        messages.append(
-            f"_{len(thin)} range/source cell(s) hold fewer than 30 bets and are shown but not "
-            f"readable ({', '.join(ranges)}). Large edges are rare, so their win rates swing wildly "
-            "on a handful of games — the widest intervals in the chart._"
-        )
-
-    readable = pooled[~pooled["too_few_to_read"]]
-    if not readable.empty:
-        best = readable.loc[readable["win_rate"].idxmax()]
-        messages.append(
-            "**What this means for the bet threshold.** If win rate is flat across ranges, raising "
-            "the minimum edge does not improve bet quality — it only discards volume, and volume is "
-            "what every significance test here is short of. The best readable range is "
-            f"`{best['edge_range']}` at {best['win_rate']:.1%} on {int(best['n_bets'])} bets "
-            f"({best['source']}); check whether that is meaningfully above the ranges you are "
-            "currently discarding before keeping the filter."
-        )
-    return messages
-
-
 def coverage(per_strategy: pd.Series) -> list[str]:
     if len(per_strategy) < 2 or per_strategy.max() < 2 * per_strategy.min():
         return []
@@ -212,20 +112,6 @@ def significance(runs: pd.DataFrame) -> list[str]:
     ]
 
 
-def cv_agreement(agreement: pd.DataFrame) -> list[str]:
-    if agreement.empty:
-        return []
-    n_agree = int(agreement["same_sign"].sum())
-    tail = (
-        "A majority disagreeing is itself the finding: at these volumes the two measurements "
-        "are largely independent noise, and neither alone should pick a winner."
-        if n_agree <= len(agreement) / 2 else
-        "Runs agreeing on sign are the ones worth carrying forward."
-    )
-    return [f"**{n_agree} of {len(agreement)} run(s) agree on the sign** of their edge "
-            f"between CV and holdout. {tail}"]
-
-
 def strategy_spread(summary: pd.DataFrame, runs: pd.DataFrame) -> list[str]:
     # Absent column, not just absent values: single-seed runs never write one.
     if "seed_roi_range" not in runs.columns or summary.empty:
@@ -240,49 +126,6 @@ def strategy_spread(summary: pd.DataFrame, runs: pd.DataFrame) -> list[str]:
             "strategy beats another.")
     return [f"Mean-ROI spread between strategies is **{spread:.2%}**, against a worst-case seed "
             f"range of **{noise:.2%}**. {tail}"]
-
-
-def classifier_quality(classifiers: pd.DataFrame) -> list[str]:
-    messages = []
-    for _, row in classifiers.iterrows():
-        improvement = row.get("cv_log_loss_improvement")
-        if pd.isna(improvement):
-            continue
-        tail = ("Positive, so the probabilities carry information beyond the base rate — though "
-                "how much is best judged next to the bet volume."
-                if improvement > 0 else
-                "**Not positive**: the probabilities are no better than always predicting the "
-                "historical OVER rate, so any profit is not coming from probability quality.")
-        messages.append(f"- **{row['label']}**: CV log-loss improvement **{improvement:+.4f}**. {tail}")
-    return messages
-
-
-def confidence_trend(trend: pd.DataFrame) -> list[str]:
-    if trend.empty:
-        return []
-    strong = trend[(trend["p_value"] < 0.05) & (trend["rho"] > 0)]
-    if strong.empty:
-        return [
-            "⚠️ **No run shows a significant positive relationship between confidence and "
-            "winning.** On this evidence a higher minimum-edge threshold is not selecting better "
-            "bets — it is only reducing volume, which makes every other number here harder to "
-            "prove. Worth testing a lower threshold explicitly before assuming the filter earns "
-            "its place."
-        ]
-    return [
-        "✅ Confidence predicts winning for: "
-        + ", ".join(f"`{r.label}` (rho {r.rho:+.3f}, p={r.p_value:.3f})"
-                    for r in strong.itertuples())
-        + ". For these, a selective threshold is doing real work."
-    ]
-
-
-def fold_consistency(consistency: pd.DataFrame) -> list[str]:
-    if consistency.empty:
-        return []
-    return ["`mean_over_sd` below about 1 means the fold-to-fold spread is as large as the "
-            "average itself — the signature of an edge carried by a few folds rather than a "
-            "repeatable one."]
 
 
 def leakage(audit: pd.DataFrame) -> list[str]:
