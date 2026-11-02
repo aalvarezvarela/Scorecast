@@ -119,12 +119,9 @@ def build_xgb_params(
     plus per-fold early stopping" to an ordinary sampled hyperparameter; see
     ``OptunaConfig.tune_n_estimators`` for the measurements behind that.
 
-    The suggest_* calls are issued in exactly the same order, with the same
-    names and distributions, as
-    ``nba_ou.modeling.optuna_total_points.build_xgb_params_total_points``. That
-    ordering matters: a seeded TPE sampler draws per-parameter in call order,
-    so any reordering would change results even with identical ranges. A test
-    asserts both builders yield identical draws under the same seed.
+    The suggest_* calls keep a fixed order, names and distributions for
+    ``UPSTREAM_SEARCH_SPACE``: a seeded TPE sampler draws per-parameter in call
+    order, so any reordering would change results even with identical ranges.
     """
     params: dict[str, Any] = {
         "booster": "gbtree",

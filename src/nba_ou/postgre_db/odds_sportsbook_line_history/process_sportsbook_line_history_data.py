@@ -52,16 +52,6 @@ MARKET_ALIASES = {
 }
 
 
-def normalize_line_history_market(market: str) -> str:
-    normalized = str(market).strip().lower().replace(" ", "_")
-    if normalized not in MARKET_ALIASES:
-        raise ValueError(
-            f"Unknown line-history market {market!r}. "
-            f"Valid values: {sorted(MARKET_ALIASES)}"
-        )
-    return MARKET_ALIASES[normalized]
-
-
 def _normalize_sbr_team_name(value: object) -> object:
     if pd.isna(value):
         return value
@@ -83,34 +73,6 @@ def _normalize_sbr_team_name(value: object) -> object:
             return mapped
 
     raise RuntimeError(f"Unrecognized SBR team name: {name}")
-
-
-def _resolve_game_start_timestamp_utc(df: pd.DataFrame) -> pd.Series:
-    resolved = pd.Series(pd.NaT, index=df.index, dtype="datetime64[ns, UTC]")
-    for col in ["game_time_utc", "game_start_timestamp_utc", "game_start_timestamp"]:
-        if col not in df.columns:
-            continue
-        parsed = pd.to_datetime(df[col], errors="coerce", utc=True)
-        resolved = resolved.combine_first(parsed)
-
-    fallback = pd.to_datetime(
-        _build_game_start_timestamp(df), errors="coerce", utc=True
-    )
-    return resolved.combine_first(fallback)
-
-
-def _build_game_start_timestamp(df: pd.DataFrame) -> pd.Series:
-    start_time = (
-        df["start_time"]
-        .astype("string")
-        .str.replace(r"\s*\(?ET\)?\s*$", "", regex=True)
-        .str.strip()
-    )
-    start_time = start_time.mask(start_time.isin(["", "-", "nan", "NaN"]))
-    combined = (df["game_date"].astype(str) + " " + start_time).where(
-        start_time.notna()
-    )
-    return pd.to_datetime(combined, errors="coerce")
 
 
 def build_games_home_away_for_line_history(games_df: pd.DataFrame) -> pd.DataFrame:

@@ -49,38 +49,6 @@ def _predict_best(model: XGBRegressor, X: pd.DataFrame) -> np.ndarray:
     return model.predict(X)
 
 
-def build_xgb_params_total_points(
-    trial: optuna.Trial,
-    *,
-    random_state: int = 16,
-    objective: str = "reg:squarederror",
-) -> dict:
-    """
-    Conservative search space for noisy NBA totals.
-    """
-    return {
-        "booster": "gbtree",
-        "tree_method": "hist",
-        "objective": objective,
-        "eval_metric": "mae",
-        "max_depth": trial.suggest_int("max_depth", 2, 4),
-        "min_child_weight": trial.suggest_float(
-            "min_child_weight", 5.0, 60.0, log=True
-        ),
-        "gamma": trial.suggest_float("gamma", 0.1, 3.0),
-        "subsample": trial.suggest_float("subsample", 0.55, 0.95),
-        "colsample_bytree": trial.suggest_float("colsample_bytree", 0.35, 0.8),
-        "learning_rate": trial.suggest_float("learning_rate", 0.0075, 0.06, log=True),
-        "reg_alpha": trial.suggest_float("reg_alpha", 1e-2, 20.0, log=True),
-        "reg_lambda": trial.suggest_float("reg_lambda", 1, 50.0, log=True),
-        "n_estimators": 1000,
-        "early_stopping_rounds": 70,
-        "random_state": random_state,
-        "n_jobs": -1,
-        "verbosity": 0,
-    }
-
-
 def evaluate_fold_total_points(
     model: XGBRegressor,
     X_valid: pd.DataFrame,

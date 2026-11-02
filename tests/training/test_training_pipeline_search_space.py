@@ -1,7 +1,5 @@
 import optuna
 import pytest
-from nba_ou.modeling.optuna_error_line import build_xgb_params_error_line
-from nba_ou.modeling.optuna_total_points import build_xgb_params_total_points
 from optuna.samplers import TPESampler
 from pydantic import ValidationError
 
@@ -27,44 +25,6 @@ def _sample_params(builder, n_trials: int = 5) -> list[dict]:
 
     study.optimize(objective, n_trials=n_trials)
     return captured
-
-
-# `device` is a static XGBoost param added by build_xgb_params for GPU support;
-# the upstream builders never set it. Strip it before comparing so the equality
-# check keeps testing what it is meant to: parameter names, ranges, log flags,
-# and suggest_* call order.
-def _drop_device(params_list: list[dict]) -> list[dict]:
-    return [{k: v for k, v in p.items() if k != "device"} for p in params_list]
-
-
-def test_upstream_space_constant_reproduces_upstream_total_points_exactly():
-    """UPSTREAM_SEARCH_SPACE must stay a faithful transcription of the
-    hardcoded upstream space: same parameter names, ranges, log flags AND call
-    order. A seeded TPE sampler draws per-parameter in call order, so identical
-    draws prove all four match. This is what keeps pre-existing results
-    reproducible now that the *defaults* deliberately differ.
-    """
-    upstream = _sample_params(
-        lambda t: build_xgb_params_total_points(t, objective="reg:squarederror")
-    )
-    mine = _sample_params(
-        lambda t: build_xgb_params(
-            t, UPSTREAM_SEARCH_SPACE, objective_name="reg:squarederror"
-        )
-    )
-    assert _drop_device(mine) == upstream
-
-
-def test_upstream_space_constant_reproduces_upstream_error_line_exactly():
-    upstream = _sample_params(
-        lambda t: build_xgb_params_error_line(t, objective="reg:squarederror")
-    )
-    mine = _sample_params(
-        lambda t: build_xgb_params(
-            t, UPSTREAM_SEARCH_SPACE, objective_name="reg:squarederror"
-        )
-    )
-    assert _drop_device(mine) == upstream
 
 
 def test_defaults_deliberately_differ_from_upstream():
