@@ -23,6 +23,7 @@ from typing import ClassVar
 from urllib.parse import urlsplit
 
 import requests
+from tqdm.auto import tqdm
 
 from lab.game_reports import season_reports as reports
 from lab.youtube_downloader import recap_audio as audio
@@ -501,13 +502,28 @@ def run_archive(
             reports.reconcile(config, manifest, store)
         session = stack.enter_context(requests.Session())
         client = WishperClient(config, session)
+        entries = [
+            entry
+            for entry in manifest["games"].values()
+            if entry["game_status"] == 3
+            and (game_date is None or entry["date"] == game_date.isoformat())
+        ]
+        progress = stack.enter_context(
+            tqdm(
+                entries,
+                desc=f"Transcripts {config.season}",
+                unit="game",
+                bar_format="{desc}: {percentage:3.0f}%|{bar}| {n_fmt}/{total_fmt} "
+                "[{elapsed}<{remaining}]{postfix}",
+                dynamic_ncols=True,
+                disable=None,
+            )
+        )
         processed, consecutive_errors, failure = 0, 0, None
         try:
-            for game_id, entry in manifest["games"].items():
-                if entry["game_status"] != 3 or (
-                    game_date and entry["date"] != game_date.isoformat()
-                ):
-                    continue
+            for entry in progress:
+                game_id = entry["game_id"]
+                progress.set_postfix_str(f"{game_id} {entry['status']}")
                 if store and entry["status"] == "uploaded":
                     continue
                 body = local_transcript(entry, config)
@@ -531,6 +547,7 @@ def run_archive(
                         path = load_audio(item, audio_config, audio_store)
                         # A new transcript describes the audio it is made from.
                         entry["audio_sha256"] = item["sha256"]
+                        progress.set_postfix_str(f"{game_id} transcribing")
                         body = pack_transcript(
                             client.transcribe(path), entry, item, config, audio_config
                         )
@@ -544,6 +561,7 @@ def run_archive(
                 else:
                     if store:
                         try:
+                            progress.set_postfix_str(f"{game_id} uploading")
                             store.put_report(entry, body)
                             entry.update(status="uploaded", error="")
                         except Exception as exc:
@@ -552,9 +570,9 @@ def run_archive(
                                 error=f"{type(exc).__name__}: {exc}",
                             )
                 checkpoint(config, manifest)
-                print(
+                progress.set_postfix_str(f"{game_id} {entry['status']}")
+                progress.write(
                     f"[{processed}] {entry['date']} {game_id}: {entry['status']}",
-                    flush=True,
                 )
                 consecutive_errors = (
                     consecutive_errors + 1 if entry["status"].endswith("error") else 0
@@ -565,6 +583,7 @@ def run_archive(
             failure = exc
             raise
         finally:
+            progress.close()
             checkpoint(config, manifest)
             if store:
                 try:

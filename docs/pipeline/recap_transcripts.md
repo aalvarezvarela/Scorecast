@@ -87,6 +87,15 @@ For a bounded local pilot using separate directories and no AWS access:
 `status` reads `profile=<--transcription-profile>/season=<season>/` under
 `--local-root`; pass the same profile you ran with (default `wishper-v1`).
 
+Interactive terminals show a progress bar for each stage, with a game counter,
+percentage, elapsed time, estimated remaining time, and the current game/status.
+Bars track final games in the selected season/date, including checks of cached
+files and unavailable audio. A `--max-games` pilot can stop before 100% because
+that option limits new processing rather than the selected inventory. Wishper
+returns the completed text only, so the bar advances between games rather than
+showing progress within a single audio file. Bars are hidden when output is not
+a terminal; per-game messages and the final JSON summary remain available.
+
 `--max-games` limits processing separately in each stage; it does not shrink
 either manifest. Completed transcripts do not consume the transcript-stage
 budget. A date run shares the full season inventory and only processes the
