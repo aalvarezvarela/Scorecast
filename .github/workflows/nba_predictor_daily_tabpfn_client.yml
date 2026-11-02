@@ -45,11 +45,11 @@ on:
                 type: string
                 default: ""
             use_alt_key:
-                description: "Use TABPFN_API_KEY_ALT for every fit (the scheduler sets it at T-8 and T-4)"
+                description: "Use TABPFN_API_KEY_ALT for every fit (the scheduler sets it at T-12 and T-8)"
                 type: boolean
                 default: false
             include_closing:
-                description: "Also predict the closing line in this job after the intermediate run (T-10, T-8 and T-6)"
+                description: "Also predict the closing line in this job after the intermediate run (T-10, T-8, T-6 and T-4)"
                 type: boolean
                 default: false
             game_date:
@@ -185,7 +185,7 @@ jobs:
                       ${{ !inputs.update_db && '--skip-db-update' || '' }} \
                       ${{ !inputs.persist && '--no-persist' || '' }}
 
-            # Fallback when no normal predictor run covers T-10, T-8 or T-6.
+            # Fallback when no normal predictor run covers T-10, T-8, T-6 or T-4.
             # Both lines share this job's API key; closing_fits (else fits,
             # else target and modes) gives the closing line's fits.
             - name: Run additional TabPFN closing line
