@@ -322,31 +322,3 @@ def _runs_frame(with_seeds: bool):
     if with_seeds:
         frame["seed_roi_range"] = [0.05, 0.06]
     return frame
-
-
-def test_seed_narrative_survives_a_frame_with_no_seed_column():
-    """Single seed is the default, so seed_roi_range is usually absent from the
-    frame ENTIRELY -- not merely NaN. dropna(subset=[...]) raises KeyError on a
-    missing column, which turns "these runs have no error bars" into "the whole
-    report failed to render"."""
-    from training_pipeline.reporting import narrative
-
-    assert narrative.seed_noise(_runs_frame(with_seeds=False)) == []
-
-
-def test_strategy_spread_survives_a_frame_with_no_seed_column():
-    import pandas as pd
-
-    from training_pipeline.reporting import narrative
-
-    summary = pd.DataFrame({"mean_roi": [0.1, 0.2]})
-
-    assert narrative.strategy_spread(summary, _runs_frame(with_seeds=False)) == []
-
-
-def test_seed_narrative_still_speaks_when_the_data_is_there():
-    """Guards the guard: archived runs DO carry seed ranges and must keep
-    getting the commentary."""
-    from training_pipeline.reporting import narrative
-
-    assert narrative.seed_noise(_runs_frame(with_seeds=True))

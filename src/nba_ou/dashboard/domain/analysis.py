@@ -56,12 +56,6 @@ def season_start(day: date) -> date:
     return date(day.year if day.month >= 10 else day.year - 1, 10, 1)
 
 
-def time_bucket(minutes: float) -> int | None:
-    if not np.isfinite(minutes) or minutes <= 0:
-        return None
-    return next((h for h in TIME_GRID if minutes <= h), EARLY_BUCKET)
-
-
 def bucket_label(bucket: int) -> str:
     if bucket == FINAL_BUCKET:
         return "Final"

@@ -270,7 +270,7 @@ def fit_final_model(
     """Fit one model on fixed hyperparameters.
 
     Shared by both target families, which is what makes recency weighting
-    available to TOTAL_POINTS: upstream's fit_best_xgb_total_points has no
+    available to TOTAL_POINTS: the old per-target refit helpers had no
     sample_weight parameter, so routing through it would silently drop the
     weights.
 

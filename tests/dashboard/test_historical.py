@@ -15,7 +15,6 @@ from nba_ou.dashboard.domain.analysis import (
     paired_snapshot_summary,
     prepare_analysis,
     season_start,
-    time_bucket,
     wilson_interval,
 )
 from nba_ou.dashboard.domain.comparisons import signal
@@ -52,29 +51,6 @@ def analysis_row(*, game_id=1, horizon=360, bucket=None, **changes):
     )
     row.update(changes)
     return row
-
-
-@pytest.mark.parametrize(
-    "minutes,bucket",
-    [
-        (-1, None),
-        (0, None),
-        (float("nan"), None),
-        (float("inf"), None),
-        (0.1, 30),
-        (30, 30),
-        (30.01, 60),
-        (60, 60),
-        (60.1, 120),
-        (359.5, 360),
-        (360, 360),
-        (360.1, 420),
-        (1080, 1080),
-        (1080.1, EARLY_BUCKET),
-    ],
-)
-def test_input_time_buckets_cover_right_after_each_snapshot(minutes, bucket):
-    assert time_bucket(minutes) == bucket
 
 
 def test_grid_matches_serving_contract_and_season_boundary():

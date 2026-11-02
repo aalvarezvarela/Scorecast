@@ -47,54 +47,6 @@ def threshold_units(runs: pd.DataFrame) -> list[str]:
             + "\n".join(lines)]
 
 
-def seed_noise(runs: pd.DataFrame) -> list[str]:
-    """Error-bar commentary, for the runs that happen to have one.
-
-    Single-seed is the default, so ``seed_roi_range`` is usually absent from the
-    frame ENTIRELY -- not merely NaN. dropna(subset=[...]) raises KeyError on a
-    missing column, which is how a helper like this turns "no error bars" into
-    "the whole report failed to render".
-    """
-    messages: list[str] = []
-    if "seed_roi_range" not in runs.columns:
-        return messages
-    seeded = runs.dropna(subset=["seed_roi_range"])
-    if len(runs) >= 2 and not seeded.empty:
-        between = runs["roi"].max() - runs["roi"].min()
-        within = seeded["seed_roi_range"].max()
-        best = runs.loc[runs["roi"].idxmax()]
-        worst = runs.loc[runs["roi"].idxmin()]
-        if between > within:
-            tone, verdict = "✅", (
-                f"larger than the widest seed range (**{within:.2%}**), so the spread across "
-                "runs is not fully explained by seed noise.")
-        else:
-            tone, verdict = "⚠️", (
-                f"**smaller** than the widest seed range (**{within:.2%}**) — this selection "
-                "cannot distinguish its runs from one another.")
-        n_cohorts = runs[["holdout_start", "holdout_end"]].drop_duplicates().shape[0]
-        caveat = "" if n_cohorts == 1 else (
-            f" Note these runs span **{n_cohorts} different holdout cohorts**, so part of the "
-            "spread is different games rather than different configurations.")
-        messages.append(
-            f"{tone} Best-to-worst ROI spread is **{between:.2%}** "
-            f"({best['label']} {best['roi']:+.2%} vs {worst['label']} {worst['roi']:+.2%}), "
-            f"which is {verdict}{caveat}"
-        )
-
-    # Only worth saying when the selection is MIXED: with every run single-seed
-    # (the default) this would just restate the protocol on every report.
-    missing = runs[runs["seed_roi_range"].isna()]
-    if not missing.empty and not seeded.empty:
-        messages.append(
-            f"_{len(missing)} run(s) have no seed data and no error bar: "
-            + ", ".join(f"`{name}`" for name in missing["label"])
-            + ". Compare them on holdout MAE, which is far less noisy than ROI, "
-            "or set `evaluation_seeds: [101, 202]` and rerun to give them one._"
-        )
-    return messages
-
-
 def significance(runs: pd.DataFrame) -> list[str]:
     proven = runs[runs["win_rate_ci_low"] > BREAK_EVEN]
     if proven.empty:
@@ -110,22 +62,6 @@ def significance(runs: pd.DataFrame) -> list[str]:
                     for r in proven.itertuples())
         + ". Confirm against the CV column before believing it."
     ]
-
-
-def strategy_spread(summary: pd.DataFrame, runs: pd.DataFrame) -> list[str]:
-    # Absent column, not just absent values: single-seed runs never write one.
-    if "seed_roi_range" not in runs.columns or summary.empty:
-        return []
-    if not runs["seed_roi_range"].notna().any():
-        return []
-    noise = runs["seed_roi_range"].max()
-    spread = summary["mean_roi"].max() - summary["mean_roi"].min()
-    tail = ("The strategies are separated by more than seed noise."
-            if spread > noise else
-            "**That is within seed noise** — this selection does not establish that any "
-            "strategy beats another.")
-    return [f"Mean-ROI spread between strategies is **{spread:.2%}**, against a worst-case seed "
-            f"range of **{noise:.2%}**. {tail}"]
 
 
 def leakage(audit: pd.DataFrame) -> list[str]:

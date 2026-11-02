@@ -371,26 +371,6 @@ def set_build_channel(
     return pointer
 
 
-def read_history(
-    *, s3_client, bucket: str, slot: ModelSlot, limit: int | None = None
-) -> list[HistoryEntry]:
-    """Every channel flip, newest first."""
-    objects = list_s3_objects(
-        s3_client=s3_client, bucket=bucket, prefix=slot.history_prefix
-    )
-    keys = sorted(
-        (obj["Key"] for obj in objects if obj["Key"].endswith(".json")), reverse=True
-    )
-    if limit is not None:
-        keys = keys[:limit]
-    entries = []
-    for key in keys:
-        raw = _read_bytes_or_none(s3_client=s3_client, bucket=bucket, key=key)
-        if raw is not None:
-            entries.append(HistoryEntry.model_validate_json(raw))
-    return entries
-
-
 # ---------------------------------------------------------------------------
 # Resolution
 # ---------------------------------------------------------------------------

@@ -1,8 +1,6 @@
-import io
 import json
 
 import boto3
-import pandas as pd
 
 
 def make_s3_client(*, profile: str | None, region: str, config=None):
@@ -48,8 +46,3 @@ def list_s3_objects(*, s3_client, bucket: str, prefix: str) -> list[dict]:
     for page in pages:
         objects.extend(page.get("Contents", []))
     return objects
-
-
-def load_parquet_from_bytes(b: bytes) -> pd.DataFrame:
-    """Load a parquet DataFrame from bytes."""
-    return pd.read_parquet(io.BytesIO(b))

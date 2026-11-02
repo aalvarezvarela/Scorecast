@@ -21,7 +21,6 @@ from nba_ou.modeling.registry_store import (
     SlotNotPromotedError,
     list_fit_ids,
     read_channel,
-    read_history,
     resolve_channel,
     resolve_config_spec,
     set_build_channel,
@@ -239,25 +238,6 @@ def test_rollback_is_the_same_flip_with_an_earlier_build(s3, slot):
     assert pointer.fit_id == first.fit_id
     assert pointer.previous_fit_id == second.fit_id
     assert resolve_channel(s3_client=s3, bucket=BUCKET, slot=slot).fit_id == first.fit_id
-
-
-def test_history_records_every_flip_newest_first(s3, slot):
-    spec = make_spec()
-    first = publish(s3, slot, spec, fitted_at=datetime(2026, 9, 1, tzinfo=UTC))
-    second = publish(s3, slot, spec, fitted_at=datetime(2026, 9, 21, tzinfo=UTC))
-    for fit_id in (first.fit_id, second.fit_id):
-        set_build_channel(
-            s3_client=s3,
-            bucket=BUCKET,
-            slot=slot,
-            channel=Channel.PRODUCTION,
-            fit_id=fit_id,
-        )
-
-    entries = read_history(s3_client=s3, bucket=BUCKET, slot=slot)
-    assert [entry.to_fit_id for entry in entries] == [second.fit_id, first.fit_id]
-    assert entries[0].from_fit_id == first.fit_id
-    assert entries[-1].from_fit_id is None
 
 
 # --- listing and retention -------------------------------------------------

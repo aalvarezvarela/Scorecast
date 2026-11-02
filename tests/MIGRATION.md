@@ -121,7 +121,6 @@ shared builders move into support without importing test modules.
 | `tests/test_projected_lineup.py` | `tests/features/test_projected_lineup.py` | `nba_ou.data_processing.lineups.projected_lineup` |
 | `tests/test_rating_gate.py` | `tests/features/test_rating_gate.py` | `nba_ou.data_processing.lineups.rating_gate` |
 | `tests/test_read_injury_report.py` | `tests/ingestion/test_read_injury_report.py` | `nba_ou.fetch_data.injury_reports.get_latest_injury_report` |
-| `tests/test_ref_assignments_archive.py` | `tests/storage/test_ref_assignments_archive.py` | `nba_ou.postgre_db.injuries_refs` |
 | `tests/test_referee_assignment_store.py` | `tests/ingestion/test_referee_assignment_store.py` | `nba_ou.fetch_data.referees` |
 | `tests/test_referee_campaign_configs.py` | `tests/training/test_referee_campaign_configs.py` | `training_pipeline.cli` |
 | `tests/test_referee_speedups.py` | `tests/features/test_referee_speedups.py` | `nba_ou.data_processing.referees.add_referee_features` |

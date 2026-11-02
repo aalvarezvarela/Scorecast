@@ -30,15 +30,6 @@ def read_json(path: str | Path) -> dict:
     return json.loads(Path(path).read_text())
 
 
-def _optional_csv(path: Path, **kwargs: Any) -> pd.DataFrame | None:
-    if not path.exists():
-        return None
-    try:
-        return pd.read_csv(path, **kwargs)
-    except (OSError, pd.errors.ParserError, ValueError):
-        return None
-
-
 def load_metadata(row: Any) -> dict[str, Any]:
     """The run's ``metadata.json``, or an empty dict when it is absent.
 

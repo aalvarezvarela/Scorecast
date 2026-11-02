@@ -623,65 +623,6 @@ class PlayerLookupIndex:
         return lookup
 
 
-def get_players_for_team_in_season(df_players, season_id, team_id, date_to_filter):
-    """
-    Returns rows from df_players belonging to (season_id, team_id),
-    only for players who had not left by date_to_filter (based on last game).
-
-    NOTE: For batch processing, use create_player_lookup() instead for much better performance.
-
-    Args:
-        df_players (pd.DataFrame): Player statistics DataFrame
-        season_id (str): Season identifier
-        team_id (str): Team identifier
-        date_to_filter (datetime): Date to filter by
-
-    Returns:
-        pd.DataFrame: Filtered player data for the team in the season
-    """
-    # Filter same season
-    df_season = df_players[df_players["SEASON_ID"] == season_id].copy()
-    if df_season.empty:
-        return pd.DataFrame(columns=df_players.columns)
-
-    # Only games BEFORE this date
-    df_season = df_season[df_season["GAME_DATE"] < date_to_filter]
-
-    # Only consider players who played for this team at least once
-    df_with_target_team = df_season[df_season["TEAM_ID"] == team_id]
-    if df_with_target_team.empty:
-        return pd.DataFrame(columns=df_players.columns)
-
-    # Players who appeared for that team
-    possible_ids = set(df_with_target_team["PLAYER_ID"].unique())
-    df_season = df_season[df_season["PLAYER_ID"].isin(possible_ids)]
-
-    # Sort by date so we can see each player's last appearance
-    df_season.sort_values(["PLAYER_ID", "GAME_DATE"], inplace=True)
-
-    # For each player, take the last row to see final team
-    df_last_game = df_season.groupby("PLAYER_ID", as_index=False).tail(1)
-    final_player_ids = df_last_game.loc[
-        df_last_game["TEAM_ID"] == team_id, "PLAYER_ID"
-    ].unique()
-
-    # Return the relevant rows for these players who truly remain on the team
-    df_result = df_players[
-        (df_players["SEASON_ID"] == season_id)
-        & (df_players["TEAM_ID"] == team_id)
-        & (df_players["PLAYER_ID"].isin(final_player_ids))
-    ].copy()
-
-    # Filter out players who have not played
-    df_result = df_result[df_result["MIN"] > 0]
-    df_result = df_result[df_result["GAME_DATE"] <= date_to_filter]
-
-    # Drop rows with NaN points
-    df_result = df_result.dropna(subset=["PTS"])
-
-    return df_result
-
-
 def _season_year_from_value(season_value):
     if pd.isna(season_value):
         return None
