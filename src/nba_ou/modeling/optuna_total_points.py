@@ -9,8 +9,6 @@ from nba_ou.modeling.scorers import (
     over_under_betting_accuracy_total_points,
     over_under_betting_accuracy_total_points_with_min_edge,
 )
-from optuna.pruners import MedianPruner
-from optuna.samplers import TPESampler
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 from xgboost import XGBRegressor
 
@@ -249,45 +247,6 @@ def objective_total_points_mae(
     )
 
     return mean_mae
-
-
-def tune_xgb_total_points_optuna(
-    *,
-    X: pd.DataFrame,
-    y: pd.Series,
-    splits: list[tuple[np.ndarray, np.ndarray]],
-    line_col: str,
-    n_trials: int = 80,
-    timeout: int | None = None,
-    objective_name: str = "reg:squarederror",
-    study_name: str = "xgb_total_points_mae",
-) -> optuna.Study:
-    """
-    Run Optuna tuning for total-points regression.
-    """
-    study = optuna.create_study(
-        direction="minimize",
-        sampler=TPESampler(seed=16),
-        pruner=MedianPruner(n_warmup_steps=5),
-        study_name=study_name,
-    )
-
-    study.optimize(
-        lambda trial: objective_total_points_mae(
-            trial,
-            X=X,
-            y=y,
-            splits=splits,
-            line_col=line_col,
-            objective_name=objective_name,
-        ),
-        n_trials=n_trials,
-        timeout=timeout,
-        n_jobs=1,
-        show_progress_bar=True,
-    )
-
-    return study
 
 
 def summarize_optuna_trials(study: optuna.Study) -> pd.DataFrame:

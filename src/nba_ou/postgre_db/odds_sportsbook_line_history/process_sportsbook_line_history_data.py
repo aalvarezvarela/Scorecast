@@ -5,7 +5,6 @@ from nba_ou.config.constants import TEAM_NAME_STANDARDIZATION
 from nba_ou.postgre_db.games.fetch_data_from_db.fetch_data_from_games_db import (
     load_cleaned_games_for_odds,
 )
-from tqdm import tqdm
 
 MARKET_TOTALS = "totals"
 MARKET_MONEYLINE = "money_line"
@@ -190,39 +189,6 @@ def _build_game_start_timestamp(df: pd.DataFrame) -> pd.Series:
     return pd.to_datetime(combined, errors="coerce")
 
 
-def build_line_history_df_from_csvs(
-    line_history_root_dir: str | Path,
-    *,
-    season_dir_glob: str = "*",
-    markets: list[str] | None = None,
-) -> pd.DataFrame:
-    csv_paths = discover_line_history_csvs(
-        line_history_root_dir,
-        season_dir_glob=season_dir_glob,
-    )
-    target_markets = set(normalize_line_history_markets(markets))
-
-    frames: list[pd.DataFrame] = []
-    for csv_path in tqdm(csv_paths, desc="Reading line-history CSVs", unit="file"):
-        day_df = _read_line_history_csv(csv_path)
-        if day_df.empty:
-            continue
-        day_df = day_df[
-            day_df["market"].map(normalize_line_history_market).isin(target_markets)
-        ]
-        if not day_df.empty:
-            frames.append(day_df)
-
-    if not frames:
-        return pd.DataFrame(columns=LINE_HISTORY_COLUMNS + ["line_timestamp"])
-
-    out = pd.concat(frames, ignore_index=True)
-    out = normalize_line_history_df(out)
-    out = out.drop_duplicates().reset_index(drop=True)
-    print(f"Built line-history dataframe: {out.shape[0]} rows x {out.shape[1]} columns")
-    return out
-
-
 def build_games_home_away_for_line_history(games_df: pd.DataFrame) -> pd.DataFrame:
     if games_df.empty:
         return pd.DataFrame(
@@ -255,36 +221,6 @@ def build_games_home_away_for_line_history(games_df: pd.DataFrame) -> pd.DataFra
         subset=["game_date", "team_home", "team_away"],
         keep="first",
     )
-
-
-def merge_line_history_with_games(
-    line_history_df: pd.DataFrame,
-    games_df: pd.DataFrame | None,
-) -> pd.DataFrame:
-    if line_history_df.empty:
-        return line_history_df.copy()
-
-    out = line_history_df.copy()
-    out = out.drop(columns=["game_id"], errors="ignore")
-
-    if games_df is None or games_df.empty:
-        print("No games data provided; returning line-history data without game_id.")
-        return out
-
-    games_ha = build_games_home_away_for_line_history(games_df)
-    if games_ha.empty:
-        print("No home/away games mapping found; returning data without game_id.")
-        return out
-
-    out = out.merge(
-        games_ha,
-        on=["game_date", "team_home", "team_away"],
-        how="left",
-    )
-    if "game_season_year" in out.columns:
-        out["season_year"] = out["season_year"].fillna(out["game_season_year"])
-        out = out.drop(columns=["game_season_year"])
-    return out
 
 
 def load_games_for_line_history_creation() -> pd.DataFrame:

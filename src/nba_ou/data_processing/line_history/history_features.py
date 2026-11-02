@@ -18,7 +18,6 @@ contrast.
 
 from __future__ import annotations
 
-import numpy as np
 import pandas as pd
 
 from nba_ou.postgre_db.line_history_aiven.fetch import MARKET_TOTALS
@@ -183,22 +182,4 @@ def _league_wide_rollups(
         games[["game_id", "game_date"]]
         .merge(out, on="game_date", how="left")
         .drop(columns=["game_date"])
-    )
-
-
-def summarise_dynamics(dynamics: pd.DataFrame) -> pd.Series:
-    """Compact description of the movement-count distribution, for sanity checks."""
-    if dynamics.empty:
-        return pd.Series(dtype="float64")
-    return pd.Series(
-        {
-            "games": float(len(dynamics)),
-            "median_moves": float(dynamics["N_MOVES_OPEN_TO_CLOSE"].median()),
-            "mean_moves": float(dynamics["N_MOVES_OPEN_TO_CLOSE"].mean()),
-            "median_abs_move": float(dynamics["ABS_MOVE_OPEN_TO_CLOSE"].median()),
-            "pct_never_moved": float(
-                (dynamics["N_MOVES_OPEN_TO_CLOSE"] == 0).mean() * 100.0
-            ),
-            "mean_signed_move": float(np.nanmean(dynamics["MOVE_OPEN_TO_CLOSE"])),
-        }
     )

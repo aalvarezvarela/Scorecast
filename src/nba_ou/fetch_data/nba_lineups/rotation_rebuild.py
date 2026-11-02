@@ -83,11 +83,6 @@ def _box_seconds(value: object) -> float:
     return float(text) * 60
 
 
-def _int(value: object) -> int:
-    number = pd.to_numeric(value, errors="coerce")
-    return 0 if pd.isna(number) else int(number)
-
-
 def _prepare(pbp: pd.DataFrame) -> pd.DataFrame:
     events = pbp.copy()
     for column in ("EVENTNUM", "EVENTMSGTYPE", "EVENTMSGACTIONTYPE", "PERIOD"):

@@ -30,17 +30,6 @@ from nba_ou.utils.general_utils import (
 )
 
 
-def load_existing_data(filepath: str, dtype: dict):
-    """Attempts to load existing CSV data, returns None if file not found."""
-    try:
-        df = pd.read_csv(filepath, dtype=dtype)
-        print(f"Existing data found: {filepath}")
-        return df
-    except FileNotFoundError:
-        print(f"No existing data found: {filepath}. Starting from scratch...")
-        return None
-
-
 def upload_games_to_postgresql(team_df: pd.DataFrame, games_id_to_exclude=None):
     """Uploads team/game data to PostgreSQL database.
 

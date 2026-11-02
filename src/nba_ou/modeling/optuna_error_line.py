@@ -10,8 +10,6 @@ from nba_ou.modeling.scorers import (
     over_under_betting_accuracy_error_line,
     over_under_betting_accuracy_error_line_with_min_edge,
 )
-from optuna.pruners import MedianPruner
-from optuna.samplers import TPESampler
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 from xgboost import XGBRegressor
 
@@ -339,53 +337,6 @@ def objective_error_line_mae(
     return mean_mae
 
 
-def tune_xgb_error_line_optuna(
-    *,
-    X: pd.DataFrame,
-    y: pd.Series,
-    sample_weight: pd.Series | np.ndarray | list[float] | None = None,
-    sample_weight_dates: pd.Series | np.ndarray | list[str] | None = None,
-    sample_weight_lambda: float | None = None,
-    tune_sample_weight_lambda: bool = False,
-    sample_weight_lambda_bounds: tuple[float, float] = (1e-4, 0.05),
-    splits: list[tuple[np.ndarray, np.ndarray]],
-    n_trials: int = 80,
-    timeout: int | None = None,
-    objective_name: str = "reg:squarederror",
-    study_name: str = "xgb_error_line_mae",
-) -> optuna.Study:
-    """
-    Run Optuna tuning for line-error regression.
-    """
-    study = optuna.create_study(
-        direction="minimize",
-        sampler=TPESampler(seed=16),
-        pruner=MedianPruner(n_warmup_steps=5),
-        study_name=study_name,
-    )
-
-    study.optimize(
-        lambda trial: objective_error_line_mae(
-            trial,
-            X=X,
-            y=y,
-            sample_weight=sample_weight,
-            sample_weight_dates=sample_weight_dates,
-            sample_weight_lambda=sample_weight_lambda,
-            tune_sample_weight_lambda=tune_sample_weight_lambda,
-            sample_weight_lambda_bounds=sample_weight_lambda_bounds,
-            splits=splits,
-            objective_name=objective_name,
-        ),
-        n_trials=n_trials,
-        timeout=timeout,
-        n_jobs=1,
-        show_progress_bar=True,
-    )
-
-    return study
-
-
 def summarize_optuna_trials(study: optuna.Study) -> pd.DataFrame:
     """
     Build a tidy dataframe with primary and secondary metrics.
@@ -565,76 +516,3 @@ def get_trial_n_estimators(trial: optuna.trial.FrozenTrial) -> int:
         final_n_estimators = trial.params.get("n_estimators", 75)
 
     return max(50, int(round(float(final_n_estimators))))
-
-
-def fit_best_xgb_error_line(
-    *,
-    X_dev: pd.DataFrame,
-    y_dev: pd.Series,
-    sample_weight: pd.Series | np.ndarray | list[float] | None = None,
-    sample_weight_dates: pd.Series | np.ndarray | list[str] | None = None,
-    sample_weight_lambda: float | None = None,
-    study: optuna.Study | None = None,
-    trial: optuna.trial.FrozenTrial | None = None,
-    objective_name: str = "reg:squarederror",
-) -> XGBRegressor:
-    """
-    Refit the selected params on all development data.
-
-    Pass either a study or an explicit trial. When a study is provided, the
-    Optuna best-by-MAE trial is used. The final n_estimators comes from the
-    median CV best iteration when available.
-    """
-    if (study is None) == (trial is None):
-        raise ValueError("Provide exactly one of study or trial.")
-    if sample_weight is not None and sample_weight_dates is not None:
-        raise ValueError("Provide either sample_weight or sample_weight_dates, not both.")
-
-    selected_trial = trial if trial is not None else study.best_trial
-    best_params = selected_trial.params.copy()
-    final_n_estimators = get_trial_n_estimators(selected_trial)
-
-    final_params = {
-        "booster": "gbtree",
-        "tree_method": "hist",
-        "objective": objective_name,
-        "eval_metric": "mae",
-        "random_state": 16,
-        "n_jobs": -1,
-        "verbosity": 0,
-        "n_estimators": final_n_estimators,
-        **best_params,
-    }
-
-    model = XGBRegressor(**final_params)
-    sample_weight_series = _coerce_sample_weight(sample_weight, X_dev.index)
-    sample_weight_date_series = _coerce_sample_weight_dates(
-        sample_weight_dates, X_dev.index
-    )
-
-    if sample_weight_date_series is not None:
-        resolved_sample_weight_lambda = sample_weight_lambda
-        if (
-            resolved_sample_weight_lambda is None
-            and "sample_weight_lambda" in selected_trial.params
-        ):
-            resolved_sample_weight_lambda = float(
-                selected_trial.params["sample_weight_lambda"]
-            )
-
-        if resolved_sample_weight_lambda is None:
-            raise ValueError(
-                "sample_weight_lambda must be provided or present in the selected trial."
-            )
-
-        sample_weight_series = build_recency_sample_weights(
-            sample_weight_date_series,
-            lambda_=float(resolved_sample_weight_lambda),
-        )
-
-    fit_kwargs = {"verbose": False}
-    if sample_weight_series is not None:
-        fit_kwargs["sample_weight"] = sample_weight_series.to_numpy(dtype=float)
-
-    model.fit(X_dev, y_dev, **fit_kwargs)
-    return model
