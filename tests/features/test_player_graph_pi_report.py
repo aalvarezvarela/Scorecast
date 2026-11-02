@@ -1,14 +1,13 @@
 """The pre-registered statistics of the phase 5 report."""
 
 import importlib.util
-from pathlib import Path
 
 import numpy as np
 import pytest
 
-_PATH = (
-    Path(__file__).parents[1] / "scripts" / "player_graph" / "report_pi_walk_forward.py"
-)
+from tests.support.paths import REPO_ROOT
+
+_PATH = REPO_ROOT / "scripts" / "player_graph" / "report_pi_walk_forward.py"
 _spec = importlib.util.spec_from_file_location("report_pi_walk_forward", _PATH)
 report = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(report)
