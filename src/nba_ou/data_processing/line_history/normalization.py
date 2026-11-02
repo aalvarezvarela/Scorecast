@@ -274,19 +274,3 @@ def center_spread(
         odds_format=odds_format,
         left_wins_above=False,
     )
-
-
-def moneyline_fair_probabilities(
-    home_price: pd.Series,
-    away_price: pd.Series,
-    *,
-    odds_format: str = "american",
-) -> pd.DataFrame:
-    """Devigged moneyline probabilities.
-
-    There is no line to center here, so this is the whole of "normalisation"
-    for the moneyline market. Returns ``fair_home``, ``fair_away``,
-    ``overround``.
-    """
-    fair = devig_two_way(home_price, away_price, odds_format=odds_format)
-    return fair.rename(columns={"fair_left": "fair_home", "fair_right": "fair_away"})

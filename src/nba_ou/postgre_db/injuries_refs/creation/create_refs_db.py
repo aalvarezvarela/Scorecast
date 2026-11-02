@@ -219,8 +219,6 @@ def upload_refs_data_to_db(df: pd.DataFrame, if_exists: str = "append") -> bool:
         df_load = df_load[required_columns]
 
         # Load to database
-        table_name = f"{schema}.nba_refs"
-
         with conn.cursor() as cur:
             if if_exists == "replace":
                 # Clear table first
@@ -323,7 +321,7 @@ def load_all_refs_from_csv_folder(
             print(f"Removed {before_dedup - after_dedup} duplicate records")
 
         # Load to database
-        success = load_refs_to_db(df_combined, if_exists=if_exists)
+        success = upload_refs_data_to_db(df_combined, if_exists=if_exists)
 
         if success:
             print("\n✓ Successfully loaded all referee data to database")

@@ -6,7 +6,6 @@ from nba_ou.postgre_db.game_time_index.sync_game_time_index import (
     _build_season_snapshot_for_upsert,
     _select_games_to_fetch,
     extract_game_index_record,
-    extract_game_time_utc,
     format_season_label,
     parse_season_year,
 )
@@ -26,14 +25,6 @@ def test_parse_season_year_rejects_inconsistent_label() -> None:
 
 def test_format_season_label() -> None:
     assert format_season_label(2024) == "2024-25"
-
-
-def test_extract_game_time_utc_returns_aware_datetime() -> None:
-    payload = {"game": {"gameTimeUTC": "2025-01-01T00:30:00Z"}}
-
-    result = extract_game_time_utc(payload)
-
-    assert result == datetime(2025, 1, 1, 0, 30, tzinfo=timezone.utc)
 
 
 def test_extract_game_index_record_maps_requested_fields() -> None:

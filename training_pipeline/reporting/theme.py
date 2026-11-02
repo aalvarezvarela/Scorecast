@@ -82,23 +82,6 @@ def strategy_legend(ax: plt.Axes, strategies: Any, extra: list[Line2D] | None = 
         ax.legend(handles=handles, fontsize=8, loc="best")
 
 
-def label_bars(ax: plt.Axes, bars: Any, values: Any, fmt: str = "{:.1%}") -> None:
-    """Direct value labels on bars.
-
-    Required relief for the lower-contrast palette slot, and it lets every bar
-    be read without tracking back to the axis.
-    """
-    for bar, value in zip(bars, values, strict=True):
-        if pd.isna(value):
-            continue
-        height = bar.get_height()
-        ax.annotate(
-            fmt.format(value), (bar.get_x() + bar.get_width() / 2, height),
-            textcoords="offset points", xytext=(0, 4 if height >= 0 else -11),
-            ha="center", fontsize=8, color=INK_2,
-        )
-
-
 def rotate_xticks(ax: plt.Axes, rotation: int = 20) -> None:
     ax.tick_params(axis="x", rotation=rotation)
     for tick in ax.get_xticklabels():

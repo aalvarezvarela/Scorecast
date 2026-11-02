@@ -1,6 +1,5 @@
 import numpy as np
 import pandas as pd
-from sklearn.metrics import make_scorer
 
 
 def evaluate_total_points_thresholds(
@@ -89,31 +88,6 @@ def over_under_betting_accuracy_total_points(y_true, y_pred, betting_line) -> fl
     return float(np.mean(true_side[non_push] == pred_side[non_push]))
 
 
-class OverUnderScorerTotalPoints:
-    """
-    sklearn-compatible scorer for models predicting total points.
-    It reads the betting line from X[line_col].
-    """
-
-    def __init__(self, line_col: str):
-        self.line_col = line_col
-
-    def __call__(self, estimator, X, y_true):
-        if self.line_col not in X.columns:
-            raise KeyError(f"{self.line_col} not found in X for scoring")
-
-        y_pred = estimator.predict(X)
-        betting_line = pd.to_numeric(X[self.line_col], errors="coerce").to_numpy(
-            dtype=float
-        )
-
-        return over_under_betting_accuracy_total_points(
-            y_true=np.asarray(y_true, dtype=float),
-            y_pred=np.asarray(y_pred, dtype=float),
-            betting_line=betting_line,
-        )
-
-
 def over_under_betting_accuracy_total_points_with_min_edge(
     y_true,
     y_pred,
@@ -164,35 +138,6 @@ def over_under_betting_accuracy_total_points_with_min_edge(
         return np.nan
 
     return float(np.mean(true_side[non_push] == pred_side[non_push]))
-
-class OverUnderScorerTotalPointsMinEdge:
-    """
-    sklearn-compatible scorer for total-points models that only scores
-    predictions with |y_pred - line| > min_edge.
-    """
-
-    def __init__(self, line_col: str, min_edge: float = 1.0):
-        self.line_col = line_col
-        self.min_edge = min_edge
-
-    def __call__(self, estimator, X, y_true):
-        if self.line_col not in X.columns:
-            raise KeyError(f"{self.line_col} not found in X for scoring")
-
-        y_pred = estimator.predict(X)
-        betting_line = pd.to_numeric(X[self.line_col], errors="coerce").to_numpy(
-            dtype=float
-        )
-
-        score = over_under_betting_accuracy_total_points_with_min_edge(
-            y_true=np.asarray(y_true, dtype=float),
-            y_pred=np.asarray(y_pred, dtype=float),
-            betting_line=betting_line,
-            min_edge=self.min_edge,
-        )
-
-        return score if np.isfinite(score) else 0.0
-
 
 def over_under_betting_accuracy_error_line(y_true_error, y_pred_error) -> float:
     """
@@ -305,35 +250,3 @@ def evaluate_error_thresholds(
         )
 
     return pd.DataFrame(rows), y_pred_error
-
-
-class OverUnderScorerLineError:
-    """
-    sklearn-compatible scorer for models predicting line error directly.
-    """
-
-    def __call__(self, estimator, X, y_true):
-        y_pred = estimator.predict(X)
-        return over_under_betting_accuracy_error_line(
-            y_true_error=np.asarray(y_true, dtype=float),
-            y_pred_error=np.asarray(y_pred, dtype=float),
-        )
-
-
-class OverUnderScorerLineErrorMinEdge:
-    """
-    sklearn-compatible scorer for direct line-error models that only scores
-    predictions with |predicted_error| > min_edge.
-    """
-
-    def __init__(self, min_edge: float = 1.0):
-        self.min_edge = min_edge
-
-    def __call__(self, estimator, X, y_true):
-        y_pred = estimator.predict(X)
-        score = over_under_betting_accuracy_error_line_with_min_edge(
-            y_true_error=np.asarray(y_true, dtype=float),
-            y_pred_error=np.asarray(y_pred, dtype=float),
-            min_edge=self.min_edge,
-        )
-        return score if np.isfinite(score) else 0.0

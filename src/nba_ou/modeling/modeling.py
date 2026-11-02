@@ -1,4 +1,3 @@
-import json
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -995,51 +994,6 @@ def make_test_anchored_walk_forward_splits(
     return all_splits, fold_info
 
 
-def summarize_splits(
-    splits: list[tuple[np.ndarray, np.ndarray]],
-    df: pd.DataFrame,
-    *,
-    date_col: str = "GAME_DATE",
-) -> pd.DataFrame:
-    """
-    Build a summary dataframe from already-created splits.
-
-    Parameters
-    ----------
-    splits : list[tuple[np.ndarray, np.ndarray]]
-        CV splits.
-    df : pd.DataFrame
-        Original dataframe.
-    date_col : str
-        Date column.
-
-    Returns
-    -------
-    pd.DataFrame
-        One row per fold with date ranges and sizes.
-    """
-    dates = pd.to_datetime(df[date_col], errors="coerce").dt.normalize()
-
-    rows = []
-    for i, (train_idx, test_idx) in enumerate(splits, start=1):
-        tr_dates = dates.iloc[train_idx]
-        te_dates = dates.iloc[test_idx]
-
-        rows.append(
-            {
-                "fold": i,
-                "train_n_games": len(train_idx),
-                "test_n_games": len(test_idx),
-                "train_start_date": tr_dates.min(),
-                "train_end_date": tr_dates.max(),
-                "test_start_date": te_dates.min(),
-                "test_end_date": te_dates.max(),
-            }
-        )
-
-    return pd.DataFrame(rows)
-
-
 def validate_time_splits(
     df: pd.DataFrame,
     splits: Iterable[tuple[np.ndarray, np.ndarray]],
@@ -1201,10 +1155,3 @@ def save_model_bundle(
     meta_path.write_text(final_metadata.model_dump_json(by_alias=True, indent=2))
 
     return model_path, meta_path
-
-
-def load_model_bundle(model_path: str | Path, meta_path: str | Path):
-    model = XGBRegressor()
-    model.load_model(model_path)
-    metadata = json.loads(Path(meta_path).read_text())
-    return model, metadata

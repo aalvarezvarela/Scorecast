@@ -63,13 +63,6 @@ def outcome_from_predictions(predictions: pd.DataFrame) -> np.ndarray:
     )
 
 
-def decimal_odds_from_american(american_odds: float) -> float:
-    """Convert American odds to decimal odds (stake included)."""
-    if american_odds > 0:
-        return 1.0 + american_odds / 100.0
-    return 1.0 + 100.0 / abs(american_odds)
-
-
 def break_even_win_rate(decimal_odds: float) -> float:
     """Win rate needed to break even at the given decimal odds."""
     if decimal_odds <= 1.0:

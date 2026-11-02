@@ -194,43 +194,6 @@ def build_master_lines_df(
     return master_df
 
 
-def print_dup_diagnostics(master_df: pd.DataFrame) -> None:
-    """
-    Prints:
-      - number of fully duplicated rows
-      - whether there are duplicated game_ids (and how many)
-    """
-    if master_df.empty:
-        print("master_df is empty")
-        return
-
-    n_dup_rows = int(master_df.duplicated().sum())
-    n_dup_game_ids = (
-        int(master_df.duplicated(subset=["game_id"]).sum())
-        if "game_id" in master_df.columns
-        else -1
-    )
-
-    print(f"Duplicated full rows: {n_dup_rows}")
-
-    if "game_id" not in master_df.columns:
-        print("Column 'game_id' not found, cannot compute duplicated game_ids.")
-        return
-
-    print(f"Duplicated game_id rows: {n_dup_game_ids}")
-
-    if n_dup_game_ids > 0:
-        dup_ids = (
-            master_df.loc[
-                master_df.duplicated(subset=["game_id"], keep=False), "game_id"
-            ]
-            .value_counts()
-            .head(20)
-        )
-        print("Top duplicated game_ids (up to 20):")
-        print(dup_ids.to_string())
-
-
 def nan_percentage_by_column(df: pd.DataFrame) -> pd.DataFrame:
     """
     Compute percentage of NaN values per column.

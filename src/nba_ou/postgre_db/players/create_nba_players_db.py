@@ -1,4 +1,3 @@
-import pandas as pd
 import psycopg
 from nba_ou.postgre_db.config.db_config import (
     connect_nba_db,

@@ -6,7 +6,6 @@ from training_pipeline.betting import (
     DECIMAL_ODDS_MINUS_110,
     betting_threshold_sweep,
     break_even_win_rate,
-    decimal_odds_from_american,
     evaluate_betting,
     wilson_interval,
 )
@@ -16,8 +15,6 @@ BREAK_EVEN_MINUS_110 = 110.0 / 210.0  # 0.523809...
 
 def test_minus_110_decimal_odds_and_break_even_rate():
     assert DECIMAL_ODDS_MINUS_110 == pytest.approx(1.9090909, abs=1e-6)
-    assert decimal_odds_from_american(-110) == pytest.approx(DECIMAL_ODDS_MINUS_110)
-    assert decimal_odds_from_american(150) == pytest.approx(2.5)
     assert break_even_win_rate(DECIMAL_ODDS_MINUS_110) == pytest.approx(
         BREAK_EVEN_MINUS_110
     )

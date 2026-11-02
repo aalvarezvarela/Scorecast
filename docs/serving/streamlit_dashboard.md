@@ -1,5 +1,8 @@
 # NBA prediction dashboard
 
+Status: **Implemented** — the Aiven dashboard is the supported application;
+the legacy Supabase applications have been removed.
+
 The unified app reads **Aiven only**. It never calls Supabase, S3, a scraper,
 the predictor, or a results updater. Logos retain the ESPN images used by the
 original apps. Every displayed timestamp, including tip-off, prediction times
@@ -45,8 +48,8 @@ files or `packages.txt` are needed for the dashboard runtime.
 Dependency-file selection follows the
 [Community Cloud documentation](https://docs.streamlit.io/deploy/streamlit-community-cloud/deploy-your-app/app-dependencies).
 
-`streamlit_app_old.py` and `streamlit_ou_app_old.py` preserve both original
-applications as references. The new application does not import either.
+The original Supabase applications and their shared UI helpers have been
+removed. Their historical implementations remain available in Git history.
 
 ## Pages and architecture
 

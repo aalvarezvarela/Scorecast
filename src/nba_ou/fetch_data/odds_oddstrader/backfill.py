@@ -20,7 +20,7 @@ truncated history for good.
 from __future__ import annotations
 
 import time
-from collections.abc import Iterable, Iterator
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
 from typing import Any
@@ -247,12 +247,3 @@ def backfill_days(
 
     result.requests = client.requests_made
     return result
-
-
-def iter_raw_days(existing: set[str]) -> Iterator[date]:
-    """Dates that have a stored ``events.json.gz``, ascending."""
-    days = sorted(
-        {key.rsplit("/", 2)[-2] for key in existing if key.endswith("/events.json.gz")}
-    )
-    for value in days:
-        yield date.fromisoformat(value)

@@ -450,26 +450,6 @@ def _check_rolling_origin(
     return problems
 
 
-def check_campaign(
-    campaign_dir: Path,
-    *,
-    skip_data: bool,
-    allow_short_training_windows: bool = False,
-) -> int:
-    """Backward-compatible directory entry point used by existing callers."""
-    configs_paths = sorted(
-        path
-        for path in campaign_dir.glob("*.y*ml")
-        if not path.name.startswith("_")
-    )
-    return check_configs(
-        configs_paths,
-        label=str(campaign_dir),
-        skip_data=skip_data,
-        allow_short_training_windows=allow_short_training_windows,
-    )
-
-
 def _resolve_config_paths(inputs: list[Path]) -> tuple[list[Path], list[str]]:
     """Expand directories and retain explicitly selected YAML files.
 

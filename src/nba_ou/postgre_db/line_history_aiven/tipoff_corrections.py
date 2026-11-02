@@ -34,7 +34,6 @@ from nba_ou.fetch_data.nba_schedule.fetch_nba_schedule import (
     fetch_tipoffs_for_dates,
     tipoffs_from_cache,
 )
-from nba_ou.fetch_data.nba_schedule.tipoff_corrections import TIPOFF_CORRECTIONS
 
 from .schema import SCHEMA
 
@@ -330,14 +329,3 @@ def retime_games(
     elif commit:
         conn.commit()
     return pd.DataFrame(report, columns=REPORT_COLUMNS)
-
-
-def correct_stored_tipoffs(
-    conn: psycopg.Connection, *, dry_run: bool = False
-) -> pd.DataFrame:
-    """Apply ``TIPOFF_CORRECTIONS`` to the stored games."""
-    return retime_games(
-        conn,
-        {game_id: c.tipoff_utc for game_id, c in TIPOFF_CORRECTIONS.items()},
-        dry_run=dry_run,
-    )

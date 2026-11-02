@@ -98,18 +98,6 @@ def _parse_int(value: Any) -> int | None:
         return None
 
 
-def extract_game_time_utc(payload: dict[str, Any]) -> datetime | None:
-    game = _get_game_payload(payload)
-    if not game:
-        return None
-
-    game_time_utc = game.get("gameTimeUTC")
-    if not game_time_utc:
-        return None
-
-    return _parse_timestamp(game_time_utc)
-
-
 def extract_game_index_record(
     payload: dict[str, Any],
     *,

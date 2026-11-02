@@ -620,27 +620,6 @@ def resolve_train_games_to_use(
     return None if settings.train_games is None else int(settings.train_games)
 
 
-def select_rolling_training_window(
-    prepared_df: pd.DataFrame,
-    *,
-    date_col: str,
-    train_games: int | None,
-) -> pd.DataFrame:
-    """Select either the full history or the latest rolling training window."""
-    sorted_df = prepared_df.sort_values(date_col, kind="mergesort").reset_index(
-        drop=True
-    )
-
-    if train_games is None:
-        return sorted_df
-    if train_games <= 0:
-        raise ValueError("train_games must be greater than zero.")
-    if train_games >= len(sorted_df):
-        return sorted_df.copy()
-
-    return sorted_df.tail(train_games).reset_index(drop=True)
-
-
 def retrain_model(
     training_window_df: pd.DataFrame,
     *,

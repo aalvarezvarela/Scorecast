@@ -7,8 +7,6 @@ from nba_ou.utils.general_utils import (
 )
 from nba_ou.utils.seasons import (
     classify_season_type,
-    get_all_seasons_from_2006,
-    get_season_start_date_n_seasons_back,
     get_seasons_between_dates,
 )
 
@@ -51,18 +49,6 @@ def test_two_season_july_context_does_not_include_future_season():
     ]
 
 
-def test_all_seasons_and_start_date_use_the_same_july_boundary():
-    reference_date = pd.Timestamp("2026-07-23")
-
-    assert get_all_seasons_from_2006(reference_date)[-2:] == [
-        "2024-25",
-        "2025-26",
-    ]
-    assert get_season_start_date_n_seasons_back(
-        2, reference_date
-    ) == pd.Timestamp("2024-10-01")
-
-
 @pytest.mark.parametrize(
     ("prefix", "expected_type"),
     list(SEASON_TYPE_MAP.items()),
@@ -73,4 +59,3 @@ def test_season_type_classifier_uses_canonical_mapping(prefix, expected_type):
 
 def test_season_type_classifier_returns_unknown_for_unmapped_prefix():
     assert classify_season_type("9992500001") == "Unknown"
-

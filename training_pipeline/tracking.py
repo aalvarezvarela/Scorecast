@@ -102,14 +102,6 @@ def parse_run_dir_timestamp(run_dir: str | Path) -> datetime | None:
         return None
 
 
-def optuna_sqlite_storage_url(
-    run_dir: str | Path, filename: str = "optuna_study.db"
-) -> str:
-    sqlite_path = Path(run_dir) / filename
-    sqlite_path.parent.mkdir(parents=True, exist_ok=True)
-    return f"sqlite:///{sqlite_path.resolve().as_posix()}"
-
-
 def save_dataframe(df: pd.DataFrame, path: str | Path) -> Path:
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)

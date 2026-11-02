@@ -106,18 +106,6 @@ def _fit_seasons(seasons) -> set[int]:
     return {int(s) for s in seasons} | {int(s) - 1 for s in seasons}
 
 
-def add_intermediate_market_dynamics(
-    snapshots: pd.DataFrame, **kwargs
-) -> pd.DataFrame:
-    """Return ``snapshots`` with the G1, G2 and G3 columns appended.
-
-    Takes ``intermediate_market_dynamics_columns``' arguments.
-    """
-    return attach_market_dynamics(
-        snapshots, intermediate_market_dynamics_columns(snapshots, **kwargs)
-    )
-
-
 def attach_market_dynamics(snapshots: pd.DataFrame, added: pd.DataFrame) -> pd.DataFrame:
     """``snapshots`` with ``added`` (computed on the same rows, in this order)."""
     overlap = sorted(set(added.columns) & set(snapshots.columns))

@@ -1104,7 +1104,7 @@ rather than adding parallel ones.
 | Polite HTTP | `scrape_sportsbook_line_history.py`: `new_session()`, `_sleep_politely()` with `SLEEP_MIN_S`/`SLEEP_MAX_S`, `fetch_next_data()` retry loop | Reuse the idiom directly; add the canary/circuit-breaker, which is new and specific to this source |
 | Retry helper | `create_robust_session()` in `get_latest_injury_report.py` (urllib3 `Retry`, `status_forcelist=[429,500,502,503,504]`) | **Must not** be reused as-is — it does not list 403, and here 403 needs bespoke handling |
 | PDF parsing | `pymupdf` already a dependency; `read_injury_report()` already parses these exact PDFs | Reuse for validation (`page_count`, header line). Full parsing stays out of scope |
-| S3 access | `src/nba_ou/utils/s3_models.py`: `make_s3_client(profile, region)`, `upload_bytes_to_s3`, `list_s3_objects`, `load_parquet_from_bytes` | Reuse verbatim; no new S3 layer |
+| S3 access | `src/nba_ou/utils/s3_models.py`: `make_s3_client(profile, region)`, `upload_bytes_to_s3`, `list_s3_objects` | Reuse verbatim; no new S3 layer |
 | S3 key building | `s3_prediction_snapshots.py`: `build_snapshot_base_key()` | Mirror with `build_injury_report_key()` |
 | Config | `src/nba_ou/config.ini` + `CONFIG_SCHEMA` in `settings.py`; secrets overlaid from `config.secrets.ini` | Add an `[InjuryReportArchive]` section: `CDN_BASE_URL`, `S3_PREFIX`, `REQUEST_DELAY_S`, `COOLDOWN_S`, `CHECKPOINT_EVERY`, `CANARY_URL`, `LOCAL_ROOT` |
 | Seasons | `src/nba_ou/utils/seasons.py`, `get_season_year_from_date` | Reuse for `season` / `season_year` |
