@@ -147,15 +147,6 @@ def _prepare_required_features_for_prediction(
     return normalized_required, required_df, na_count, na_names
 
 
-def _nested_metadata_value(metadata: dict, *path: str) -> object | None:
-    current: object = metadata
-    for key in path:
-        if not isinstance(current, dict):
-            return None
-        current = current.get(key)
-    return current
-
-
 def resolve_prediction_target(registry_target: str) -> PredictionTarget:
     """Map a spec's declared target onto a prediction target.
 
@@ -172,14 +163,6 @@ def resolve_prediction_target(registry_target: str) -> PredictionTarget:
         raise ValueError(
             f"Unknown model target {registry_target!r}. Known targets: {known}."
         ) from None
-
-
-def _resolve_feature_names_from_metadata(metadata: dict) -> list[str] | None:
-    schema_feature_names = _nested_metadata_value(metadata, "schema", "feature_names")
-    if isinstance(schema_feature_names, list) and schema_feature_names:
-        return [str(feat) for feat in schema_feature_names]
-
-    return None
 
 
 def clean_prediction_frame(

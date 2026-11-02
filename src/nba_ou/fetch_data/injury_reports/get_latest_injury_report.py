@@ -1,11 +1,8 @@
-import os
 import re
-from datetime import datetime
 
 import pandas as pd
 import pymupdf  # PyMuPDF
 import requests
-from bs4 import BeautifulSoup
 from nba_ou.config.request_headers import HEADERS_BROWSER_LIKE
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
@@ -60,64 +57,6 @@ def create_robust_session():
     session.headers.update(HEADERS_BROWSER_LIKE)
 
     return session
-
-
-def get_latest_pdf(nba_injury_report_url) -> bytes:
-    """Download the latest injury report PDF and return it as bytes."""
-    session = create_robust_session()
-    try:
-        # Fetch the webpage content with improved headers and retry logic
-        response = session.get(nba_injury_report_url, timeout=30, allow_redirects=True)
-        response.raise_for_status()
-
-        # Parse the HTML
-        soup = BeautifulSoup(response.text, "html.parser")
-
-        # Find all PDF links (ignoring case)
-        pdf_links = [
-            link["href"]
-            for link in soup.find_all("a", href=True)
-            if link["href"].lower().endswith(".pdf")
-        ]
-
-        if not pdf_links:
-            print("No PDF links found.")
-            raise ValueError("No PDF links found.")
-
-        # Filter only 'Injury-Report' links (case insensitive)
-        injury_reports = [link for link in pdf_links if "injury-report" in link.lower()]
-
-        latest_pdf_url = injury_reports[-1]
-        print(f"The latest injury report link is: {latest_pdf_url}")
-
-        # If the URL is relative, make it absolute
-        if latest_pdf_url.startswith("/"):
-            base_url = re.match(r"https?://[^/]+", nba_injury_report_url).group(0)
-            latest_pdf_url = base_url + latest_pdf_url
-
-        print(f"Downloading latest PDF: {latest_pdf_url}")
-
-        # Download the PDF with improved headers and retry logic
-        pdf_response = session.get(latest_pdf_url, timeout=30, allow_redirects=True)
-        pdf_response.raise_for_status()
-
-        print(f"PDF downloaded successfully ({len(pdf_response.content)} bytes)")
-        return pdf_response.content
-
-    except requests.exceptions.Timeout:
-        print("Timeout error: The request took too long")
-        raise
-    except requests.exceptions.ConnectionError:
-        print(f"Connection error: Unable to connect to {nba_injury_report_url}")
-        raise
-    except requests.exceptions.HTTPError as e:
-        print(f"HTTP error: {e.response.status_code} - {e.response.reason}")
-        raise
-    except requests.exceptions.RequestException as e:
-        print(f"Error fetching data: {e}")
-        raise
-    finally:
-        session.close()
 
 
 def is_positional_row(elements):
@@ -345,33 +284,3 @@ def read_injury_report(pdf_data):
     columns_to_ffill = ["Matchup", "Team", "Game Date", "Game Time"]
     df[columns_to_ffill] = df[columns_to_ffill].ffill()
     return df
-
-
-def retrieve_injury_report_as_df(nba_injury_reports_url, reports_path=None):
-    """
-    Retrieves the latest injury report PDF from the NBA website and extracts the data.
-
-    Args:
-        nba_injury_reports_url: URL to the NBA injury reports page
-        reports_path: Optional path to save a copy of the PDF. If None, PDF is not saved.
-
-    Returns:
-        DataFrame with injury report data
-    """
-    # Download the PDF as bytes
-    pdf_bytes = get_latest_pdf(nba_injury_reports_url)
-
-    # Optionally save a copy to disk
-    if reports_path:
-        game_date = datetime.now().strftime("%Y-%m-%d")
-        os.makedirs(reports_path, exist_ok=True)
-        pdf_name = f"latest_report_{game_date}.pdf"
-        pdf_path = os.path.join(reports_path, pdf_name)
-        with open(pdf_path, "wb") as f:
-            f.write(pdf_bytes)
-        print(f"PDF saved to {pdf_path}")
-
-    # Read the PDF from bytes and extract data
-    df_report = read_injury_report(pdf_bytes)
-
-    return df_report

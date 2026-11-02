@@ -157,13 +157,6 @@ outright rather than deprecated:
   predictions table carries `pred_line_error`, `pred_total_points`,
   `total_over_under_line`, `total_bet365_line_at_prediction` — all totals
   ([create_ou_predictions_db.py:270-310](../../src/nba_ou/postgre_db/predictions/create/create_ou_predictions_db.py#L270-L310)).
-- **Two incompatible discovery contracts for one layout.**
-  `get_latest_model_bundle_from_prefix` sorts candidates by S3 `LastModified`
-  ([s3_models.py:115](../../src/nba_ou/utils/s3_models.py#L115)); `extract_single_bundle`
-  raises unless the prefix holds *exactly* two objects
-  (`model_registry.py:45-78`).
-  `LastModified` is set by the copy, so restoring an archived bundle reshuffles
-  which one is "latest".
 - **Model and metadata are two independent writes.** `save_retrained_bundle_to_staging`
   clears the prefix, then uploads the model, then uploads the metadata
   ([retraining_utils.py:783-803](../../src/nba_ou/modeling/retraining_utils.py#L783-L803)).

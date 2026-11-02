@@ -272,18 +272,6 @@ def connect_all_star_voting_db() -> psycopg.Connection:
     return connect_schema_db(get_schema_name_all_star_voting())
 
 
-def connect_odds_sportsbook_db() -> psycopg.Connection:
-    return connect_schema_db(get_schema_name_odds_sportsbook())
-
-
-def connect_odds_yahoo_db() -> psycopg.Connection:
-    return connect_schema_db(get_schema_name_odds_yahoo())
-
-
-def connect_predictions_db() -> psycopg.Connection:
-    return connect_schema_db(get_schema_name_predictions())
-
-
 def connect_injuries_db() -> psycopg.Connection:
     return connect_schema_db(get_schema_name_injuries())
 
