@@ -46,7 +46,31 @@ def test_historical_read_binds_filters_and_bounds_rows_in_one_read_only_snapshot
     assert "ROW_NUMBER()" in commands[2].args[0]
 
 
-def test_oversized_read_never_returns_a_truncated_sample(monkeypatch):
+@pytest.mark.parametrize("target,reads", [(1, True), (2, True), (3, False)])
+def test_random_baseline_is_read_only_for_totals_targets(monkeypatch, target, reads):
+    conn = MagicMock()
+    conn.__enter__.return_value = conn
+    cursor = conn.cursor.return_value.__enter__.return_value
+    cursor.description = [SimpleNamespace(name="game_id")]
+    cursor.fetchall.return_value = [(1,)]
+    monkeypatch.setattr(analysis, "open_connection", MagicMock(return_value=conn))
+    data = analysis.read_history_range(NOW.date(), NOW.date(), target, 2)
+    commands = cursor.execute.call_args_list
+    assert len(commands) == (4 if reads else 3)
+    assert len(data.baselines) == (1 if reads else 0)
+    if reads:
+        query, params = commands[3].args
+        assert query == analysis.BASELINE_QUERY
+        # Total points reuses line error's stored OVER/UNDER random picks.
+        assert "v.target = 1" in query and "v.kind = 2" in query
+        assert params == (
+            NOW.date(),
+            NOW.date(),
+            [2],
+            "random_line_error_baseline",
+            data.fetched_at,
+            data.fetched_at,
+        )
     conn = MagicMock()
     conn.__enter__.return_value = conn
     monkeypatch.setattr(analysis, "open_connection", MagicMock(return_value=conn))

@@ -215,8 +215,13 @@ def grade_history(
     )
     work["comparison_edge"] = work["predicted_value"] - work["reference_line"]
     thresholds = DEFAULT_MIN_EDGE_BY_KIND if min_edge is None else min_edge
+    # Baselines (kind 2) have no default; callers pass their threshold.
     work["min_edge"] = work["kind"].map(
-        lambda kind: thresholds.get(int(kind), DEFAULT_MIN_EDGE_BY_KIND[int(kind)])
+        lambda kind: (
+            thresholds[int(kind)]
+            if int(kind) in thresholds
+            else DEFAULT_MIN_EDGE_BY_KIND[int(kind)]
+        )
     )
     if not (np.isfinite(work["min_edge"]) & work["min_edge"].ge(0)).all():
         raise ValueError("min_edge must be a finite, non-negative number of points")

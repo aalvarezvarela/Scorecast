@@ -1,7 +1,9 @@
 # Historical analysis
 
-Status: **Partial** — main historical views implemented 2026-10-28; combined
-strategies and a full-season performance measurement remain.
+Status: **Partial** — main historical views implemented 2026-10-28; ≥/< 6h
+windows, best slot, mean-of-predictions combinations and the random baseline
+2026-11-02. Consensus/agreement views and a full-season performance
+measurement remain.
 
 ## Context
 
@@ -63,8 +65,22 @@ Below it, a **target selector**: Line error | Total points | Spread error.
 These are the three views, each with the same sections; TabPFN appears only
 where it has outputs (no spread).
 
-1. **KPI strip**: settled games, then pooled win % for closing Final, live
-   intermediate on-horizon (pooled) and replay on-horizon (pooled).
+1. **KPI strip**: settled games, pooled win % for closing Final and closing
+   replay, and the random baseline (totals only). Below, one row per source
+   (live, replay): own snapshot pooled over every horizon, then split into
+   **≥ 6h** (models trained at T−6h or earlier) and **< 6h**.
+1b. **Best own-snapshot slot** (source switch, replay by default): the highest
+   win % among each intermediate model at its own snapshot and each closing
+   Final with at least 30 settled bets. Cards show the slot, win %, ROI and the
+   **coin-flip chance**: the share of simulations in which the best of the same
+   number of coin-flip cells, with the same bet counts, reaches that win %.
+   Cells share games, so treating them as independent overstates the chance;
+   it is a conservative guide, not a p-value. The chart is the cumulative win %
+   by slate date of the best slot (Wilson band), pooled own snapshots, the
+   random baseline, the best combination when one beats the slot, and the grey
+   band where a coin flip with the same bets lands 95% of the time. The slot
+   is chosen on the games it is scored on, so the curve flatters it.
+1c. **Combinations · mean of predictions**: §4.
 2. **Closing by prediction time** (main closing answer): a line chart with
    x = time bucket (`T−18h+` → `T−30m` → Final), y = win %, a CI band, a
    break-even rule and bet-count labels. The table goes in an expander. Pooled
@@ -74,8 +90,9 @@ where it has outputs (no spread).
    for reconstructed closing outputs, including Historical Backfill. The
    overview's Closing · Replay metric pools these outputs; it never enters
    Closing · Final or any live metric.
-3. **Model × time heatmap: live** (the main answer). Rows are Closing plus the
-   16 intermediate horizons (longest at the top). Columns are the time
+3. **Model × time heatmap: live** (the main answer). XGBoost only: TabPFN
+   predicts only at its scheduled runs and its sparse cells added nothing.
+   Rows are Closing plus the 16 intermediate horizons (longest at the top). Columns are the time
    buckets, far to near. The **diagonal is outlined**: cells to its left are
    a model predicting before its trained snapshot (`SNAPSHOT_PASSED` false),
    cells to its right are a model fed a fresher snapshot than it was trained
@@ -100,6 +117,29 @@ where it has outputs (no spread).
 Every combined pick is graded at **the line available when it would be
 placed** (time T), never at a later line.
 
+- **Mean of predictions** (implemented, `domain/strategies.py`): a fixed,
+  pre-declared family, never a search over subsets. Per model family the mean
+  over its own-snapshot horizons (all, ≥ 6h, < 6h), all families together, and,
+  with the Settings toggle, line error + total points (reads the other totals
+  target, cached). Members are averaged as **edges** (prediction minus the line
+  that member was graded at), so different snapshots, models and totals targets
+  share a scale; the mean is bet at the latest member's line, price and minimum
+  edge. Averaging predicted totals instead would bet against every line move
+  since the earliest member. Each strategy is compared with the best single
+  slot on the games both bet (W/L only), with an exact two-sided sign test on
+  the games only one of them won. A combination is "better" only with at
+  least 30 settled bets and a higher win %; it is then drawn in the efficacy
+  chart, and the message says whether the paired difference is noise.
+  First read (2026-11-02, 92 games, replay): no combination clearly beats the
+  best slot; line error + total points did not help (pooled 47.7% vs 48.7%
+  for line error alone, edge correlation 0.29), and the stored random baseline
+  stood at 29-20.
+- **Random baseline** (implemented): stored `kind=2` random picks
+  (`random_line_error_baseline`, from 2026-10-26), one per game, preferring the
+  past-snapshot workflow's T−0 row; graded like any closing Final with no
+  minimum edge. Line error and total points show the same OVER/UNDER bets;
+  spread has none.
+
 - **Consensus at T** (implement first): for each game and bucket T, a simple
   majority of every slot's signal in column T, with the same equal-vote and
   tie = no bet rule as `domain/picks.game_pick`. Output: a win % vs T curve
@@ -122,7 +162,9 @@ placed** (time T), never at a later line.
   horizon interchangeability when predictions share games.
 - Do not report an independent-sample χ² homogeneity test: rows and columns
   share games. Formal comparisons require a paired or game-clustered method.
-  Never highlight a "best" cell.
+  The heatmaps never highlight a "best" cell. The best-slot section (§3, 1b)
+  is the one place a best is picked, at the user's request, and it always
+  shows the coin-flip chance and states that the pick flatters itself.
 - Cells in one column share games, so they are correlated. The CI holds per
   cell only.
 
@@ -132,6 +174,8 @@ placed** (time T), never at a later line.
 | --- | --- |
 | `read_history_range(start, end, target, season_type)`: one SQL query computing `r`, source and bucket, a window-rank reduction per `(game, slot, source, bucket)` (plus the Final row), narrow columns only, `SET LOCAL statement_timeout` raised for this read; a separate small query returns game counts | `src/nba_ou/dashboard/repositories/analysis.py` (bucket `CASE` generated from the grid constant) |
 | Grid constant, bucket labels, Wilson CI, cell aggregation, consensus/agreement | new `src/nba_ou/dashboard/domain/analysis.py` |
+| Best slot, coin-flip chance, cumulative win %, mean-of-predictions combinations, paired sign test | `src/nba_ou/dashboard/domain/strategies.py` |
+| Random baseline read (`kind=2`, totals only) | `BASELINE_QUERY` in `src/nba_ou/dashboard/repositories/analysis.py` |
 | Vectorized grading shared with Yesterday (replaces `iterrows` in `grade_history`, same outputs) | `src/nba_ou/dashboard/domain/history.py` |
 | Cached loader (TTL 15 min, keyed by range + target + season type) | `src/nba_ou/dashboard/ui/loaders.py` |
 | Page rendering, Altair heatmap / CI charts | new `src/nba_ou/dashboard/ui/historical.py`, with chart specifications in `ui/analysis_charts.py`, sharing `config.SIGNAL_HEX_COLORS` |

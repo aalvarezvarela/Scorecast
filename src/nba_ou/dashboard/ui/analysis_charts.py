@@ -219,3 +219,133 @@ def snapshot_comparison(cells: pd.DataFrame):
         .configure_legend(orient="bottom")
         .configure_view(strokeWidth=0)
     )
+
+
+# Fixed roles so a filter that drops a series never repaints the others.
+EFFICACY_ROLES = {
+    "Best slot": "#F6C56F",
+    "Best combination": "#D3BDFF",
+    "All own snapshots": SIGNAL_HEX_COLORS["UNDER"],
+    "Random baseline": "#AFBCD4",
+}
+REFERENCE_ROLES = ("All own snapshots", "Random baseline")
+
+
+def efficacy_chart(curves: pd.DataFrame):
+    """Running win % by slate date; ``curves`` has a ``role`` and a ``series``."""
+    data = curves.copy()
+    data["reference"] = data["role"].isin(REFERENCE_ROLES)
+    roles = [role for role in EFFICACY_ROLES if role in set(data["role"])]
+    base = alt.Chart(data).encode(
+        x=alt.X("game_date:T", title="NBA slate date", axis=alt.Axis(format="%d %b"))
+    )
+    best = data.loc[data["role"].eq("Best slot")]
+    flip = (
+        alt.Chart(best)
+        .mark_area(opacity=0.12, color="#AFBCD4")
+        .encode(x="game_date:T", y="flip_low:Q", y2="flip_high:Q")
+    )
+    band = (
+        alt.Chart(best)
+        .mark_area(opacity=0.18, color=EFFICACY_ROLES["Best slot"])
+        .encode(x="game_date:T", y="ci_low:Q", y2="ci_high:Q")
+    )
+    lines = base.mark_line(point=True, strokeWidth=2).encode(
+        y=alt.Y(
+            "win_pct:Q", title="Cumulative win %", scale=alt.Scale(domain=[0, 100])
+        ),
+        color=alt.Color(
+            "role:N",
+            title=None,
+            scale=alt.Scale(
+                domain=roles, range=[EFFICACY_ROLES[role] for role in roles]
+            ),
+        ),
+        detail="series:N",
+        strokeDash=alt.condition(
+            "datum.reference", alt.value([5, 3]), alt.value([1, 0])
+        ),
+        tooltip=[
+            alt.Tooltip("series:N", title="Series"),
+            alt.Tooltip("game_date:T", title="Through", format="%d %b %Y"),
+            alt.Tooltip("wins:Q", title="Wins"),
+            alt.Tooltip("losses:Q", title="Losses"),
+            alt.Tooltip("win_pct:Q", title="Win %", format=".1f"),
+            alt.Tooltip("ci_low:Q", title="95% CI low", format=".1f"),
+            alt.Tooltip("ci_high:Q", title="95% CI high", format=".1f"),
+        ],
+    )
+    rule = (
+        alt.Chart(pd.DataFrame({"reference": [BREAK_EVEN]}))
+        .mark_rule(strokeDash=[5, 4], color="#AFBCD4")
+        .encode(y="reference:Q")
+    )
+    return (
+        (flip + band + rule + lines)
+        .properties(height=380)
+        .configure_legend(orient="bottom")
+        .configure_view(strokeWidth=0)
+    )
+
+
+STRATEGY_ROLES = {
+    "Best single slot": "#F6C56F",
+    "Combination": SIGNAL_HEX_COLORS["UNDER"],
+    "Random baseline": "#AFBCD4",
+}
+
+
+def strategy_chart(table: pd.DataFrame):
+    """Win % and per-row interval for the best slot, combinations and random."""
+    data = table.copy()
+    order = data["strategy"].tolist()
+    roles = [role for role in STRATEGY_ROLES if role in set(data["role"])]
+    base = alt.Chart(data).encode(
+        y=alt.Y("strategy:N", title=None, sort=order, axis=alt.Axis(labelLimit=340)),
+        color=alt.Color(
+            "role:N",
+            title=None,
+            scale=alt.Scale(
+                domain=roles, range=[STRATEGY_ROLES[role] for role in roles]
+            ),
+        ),
+        tooltip=[
+            alt.Tooltip("strategy:N", title="Strategy"),
+            alt.Tooltip("wins:Q", title="Wins"),
+            alt.Tooltip("losses:Q", title="Losses"),
+            alt.Tooltip("pushes:Q", title="Pushes"),
+            alt.Tooltip("win_pct:Q", title="Win %", format=".1f"),
+            alt.Tooltip("ci_low:Q", title="95% CI low", format=".1f"),
+            alt.Tooltip("ci_high:Q", title="95% CI high", format=".1f"),
+            alt.Tooltip("roi:Q", title="ROI %", format=".1f"),
+            alt.Tooltip("mae:Q", title="MAE (points)", format=".2f"),
+            alt.Tooltip("matched_games:Q", title="Games bet by both"),
+            alt.Tooltip(
+                "matched_delta_pp:Q", title="Δ vs best on those (pp)", format="+.1f"
+            ),
+        ],
+    )
+    intervals = base.mark_rule(strokeWidth=2).encode(
+        x=alt.X(
+            "ci_low:Q",
+            title="Win % (95% per-row interval)",
+            scale=alt.Scale(domain=[0, 100]),
+        ),
+        x2="ci_high:Q",
+    )
+    points = base.mark_point(filled=True, size=70).encode(
+        x="win_pct:Q",
+        opacity=alt.condition("datum.low_sample", alt.value(0.4), alt.value(1.0)),
+    )
+    reference = (
+        alt.Chart(pd.DataFrame({"reference": [BREAK_EVEN]}))
+        .mark_rule(strokeDash=[5, 4], color="#AFBCD4")
+        .encode(x="reference:Q")
+    )
+    return (
+        (reference + intervals + points)
+        # Streamlit fits axis and legend inside this height: leave them room.
+        .properties(height=120 + 30 * len(order))
+        .configure_legend(orient="bottom")
+        .configure_view(strokeWidth=0)
+    )

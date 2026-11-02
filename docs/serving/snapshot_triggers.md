@@ -31,13 +31,13 @@ day, `schedule_snapshot_triggers.yml` runs
      slate of its run's Pacific date (`predict_nba_games.py`), so a trigger
      before Pacific midnight (03:00 ET) would predict the previous day's games.
      Examples: an early tip's T-1080, a noon game's T-720.
-3. adds **four TabPFN jobs** at **T-600, T-480, T-360 and T-240** (10 h, 8 h,
-   6 h and 4 h) of the **last scheduled tip-off of the date**. Postponed, cancelled
+3. adds **five TabPFN jobs** at **T-720, T-600, T-480, T-360 and T-240** (12 h,
+   10 h, 8 h, 6 h and 4 h) of the **last scheduled tip-off of the date**. Postponed, cancelled
    and TBD games do not select the last tip-off. Games sharing the last tip-off
    share its anchor metadata; earlier tip-offs do not book extra jobs.
 
    Each job predicts the targets and modes of `TABPFN_FITS`
-   (`schedule_snapshot_triggers.py`), table below. The first three
+   (`schedule_snapshot_triggers.py`), table below. All five
    run intermediate, using each target's production spec and training rows
    of that exact horizon. Intermediate
    reconstructs **every game of the slate, including started/final games**, at
@@ -46,19 +46,21 @@ day, `schedule_snapshot_triggers.yml` runs
    Only the selected horizon is built. The full slate and crews are read for
    TabPFN alone; normal predictions retain their live schedule.
 
-   **T-600, T-480 and T-360 also predict the closing line**,
+   **T-600, T-480, T-360 and T-240 also predict the closing line**,
    inside the same GitHub job, with that job's API key.
-   **T-240 runs closing only**, without an intermediate T-240 prediction.
+   **T-720 runs intermediate only**, without a closing prediction.
 
    | Run | Intermediate fits | Closing fits | Key |
    |---|---|---|---|
+   | T-720 | standard: all three | — | `TABPFN_API_KEY_ALT` |
    | T-600 | standard: `line_error`, `total_points` | standard: `line_error`, `total_points` | normal |
-   | T-480 | standard: all three; `thinking_high`: `line_error`, `total_points` | standard: all three | `TABPFN_API_KEY_ALT` |
-   | T-360 | standard: `line_error`, `total_points` | standard: `line_error`, `total_points` | normal |
-   | T-240 | — | standard: all three | `TABPFN_API_KEY_ALT` |
+   | T-480 | standard: all three | standard: all three | `TABPFN_API_KEY_ALT` |
+   | T-360 | standard: all three | standard: all three | normal |
+   | T-240 | standard: all three | standard: all three | normal |
 
-   Since 2026-10-29 `spread_error` is left out of T-600 and T-360, and
-   `thinking_high` runs only for the totals targets on T-480's intermediate line.
+   Since 2026-11-02 no scheduled run fits `thinking_high`, T-720 was added
+   (intermediate only), T-360 fits `spread_error` again and T-240 also runs
+   intermediate, with the normal key. `spread_error` is left out of T-600 only.
    Each job carries its own fits, `MODE=TARGET[,TARGET]` items separated by
    spaces (`nba_ou.scheduling.tabpfn_jobs`, `--fits` of `predict_tabpfn.py`):
    a joined job as the `FITS` field of its `tabpfn` item, a standalone
@@ -66,8 +68,8 @@ day, `schedule_snapshot_triggers.yml` runs
    Joined dispatches append a `0` closing
    job after the intermediate job; standalone dispatches set `include_closing`
    and run a second script step, without repeating the database update.
-   T-240 carries only `0` when joined, or `line=closing` when standalone;
-   standalone closing has no intermediate horizon, cutoff or anchor-game metadata.
+   T-720 carries only its intermediate job when joined, or
+   `include_closing=false` without `closing_fits` when standalone.
    Closing uses the line and closing features available at execution time,
    not a future final market line. It retains the normal closing requirements:
    only pending games with both teams' injury reports filed are eligible.
@@ -95,10 +97,10 @@ day, `schedule_snapshot_triggers.yml` runs
    (`HORIZON@AS_OF@GAME_IDS@FITS`); a snapshot without a covering predictor run
    retains a standalone dispatch. Normal predictor times do not change.
    The fits are those of the table above, the same in both booking modes.
-   **T-480 and T-240 use the repository secret
+   **T-720 and T-480 use the repository secret
    `TABPFN_API_KEY_ALT` for every fit**;
-   T-600 and T-360 use the normal `TABPFN_ACCESS_TOKEN`.
-   The scheduler sets `tabpfn_use_alt_key=true` on the joined T-480 and T-240
+   T-600, T-360 and T-240 use the normal `TABPFN_ACCESS_TOKEN`.
+   The scheduler sets `tabpfn_use_alt_key=true` on the joined T-720 and T-480
    dispatches, or `use_alt_key=true` on their standalone fallbacks. The workflow exposes
    `TABPFN_USE_ALT_KEY=true` and the client selects the alternate secret.
    A missing alternate key fails explicitly, without falling back to the
@@ -166,10 +168,9 @@ stored as its own variant
 `modes="standard thinking_high"` stores both side by side. `fits` (`--fits`)
 gives each mode its own targets instead of `target` and `modes`, e.g.
 `standard=line_error,total_points,spread_error thinking_high=line_error,total_points`.
-The scheduled runs fit (table in "What it does"): T-600 and T-360 two standard
-intermediate and two standard closing fits each; T-480 five intermediate fits
-(three standard, two high-thinking) and three standard closing fits; T-240
-three standard closing fits.
+The scheduled runs fit (table in "What it does"), standard only: T-720 three
+intermediate fits; T-600 two intermediate and two closing fits; T-480, T-360
+and T-240 three intermediate and three closing fits each.
 Closing fits run only when games are eligible. All fits of a line share its preparation
 and are stored in the same TabPFN run, with a variant per target and mode.
 
@@ -200,9 +201,8 @@ skips the snapshots that pass meanwhile.
 | 08:00 | `retrain_prediction_models.yml` (`update_database`, `promote`) | database update; on a game day, then refit, smoke test, promotion |
 | 09:35 | `schedule_snapshot_triggers.yml` | books everything below |
 | each snapshot | `nba_predictor_daily.yml` | every enabled slot |
-| last tip − 10 h, − 8 h, − 6 h | joined inside `nba_predictor_daily.yml` | TabPFN intermediate: `line_error` + `total_points` at T-10/T-6; all three + `thinking_high` for the totals at T-8; every game at its own snapshot |
-| last tip − 10 h, − 8 h, − 6 h, in the same job | TabPFN closing | standard, eligible pending games: `line_error` + `total_points` at T-10/T-6, all three at T-8; alternate key at T-8, normal key otherwise |
-| last tip − 4 h | joined inside `nba_predictor_daily.yml`, standalone fallback | TabPFN closing only, all three targets, standard mode, alternate key, eligible pending games |
+| last tip − 12 h, − 10 h, − 8 h, − 6 h, − 4 h | joined inside `nba_predictor_daily.yml`, standalone fallback | TabPFN intermediate, standard: `line_error` + `total_points` at T-10, all three otherwise; every game at its own snapshot; alternate key at T-12/T-8, normal key otherwise |
+| last tip − 10 h, − 8 h, − 6 h, − 4 h, in the same job | TabPFN closing | standard, eligible pending games: `line_error` + `total_points` at T-10, all three otherwise; same key as its intermediate job |
 | last end + 30 min | `nba_predict_past_snapshots.yml` | intermediate slots on their own snapshots; registry closing models on reconstructed T-8h/T-6h/T-4h/T-0; random and historical-average baselines on T-0 |
 | earlier of last end + 2 h and next morning 07:50 | `update_finished_matches_daily.yml` | final scores (prediction store), finished matches |
 | 11:11 every day | `update_finished_matches_daily.yml` | retry pending final scores and finished matches |
@@ -400,9 +400,9 @@ T-1080 and T-960 of a 19:00 ET game.
   2 min after the predictor run covering its snapshot so that one is queued first,
   but cross-workflow execution order is not guaranteed. See [GitHub's concurrency reference](https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax#concurrency).
 - More TabPFN runs increase runner time and inference usage: the slate
-  needs two standard intermediate fits at T-600 and T-360, and three standard
-  plus two high-thinking intermediate fits at T-480. Closing adds two standard
-  fits at T-600 and T-360 and three at T-480 and T-240 when games are eligible. Queuing
+  needs three standard intermediate fits at T-720, T-480, T-360 and T-240, and
+  two at T-600. Closing adds two standard fits at T-600 and three at T-480,
+  T-360 and T-240 when games are eligible. Queuing
   preserves work but does not guarantee execution at the trigger's minute.
 - The T−30 run can finish close to tip-off. The predictor never
   stores a game that is in progress.

@@ -90,6 +90,7 @@ def test_history_defaults_to_current_season_including_backfills(history_setup):
     assert app.session_state["history_kind"] is None
     assert [node.value for node in app.subheader] == [
         "Performance overview",
+        "Best own-snapshot slot",
         "Closing by prediction time",
         "Closing by input time · Replay",
         "Intermediate by model horizon · Replay",
@@ -101,8 +102,14 @@ def test_history_defaults_to_current_season_including_backfills(history_setup):
         "Closing · Final",
         "Closing · Replay",
         "Own snapshot · Live",
+        "Live · ≥ 6h",
+        "Live · < 6h",
         "Own snapshot · Replay",
+        "Replay · ≥ 6h",
+        "Replay · < 6h",
     }
+    # Two games never reach the minimum sample for a best slot.
+    assert any("No slot has 30 settled bets" in text.value for text in app.caption)
     assert len(rendered_charts(app)) == 5
     assert any("95%" in text.value for text in app.caption)
     assert any("Madrid" in text.value for text in app.caption)
@@ -263,3 +270,120 @@ def test_empty_games_empty_outputs_and_safe_errors(history_setup):
     assert not app.exception
     assert app.error[0].value == "Could not read historical predictions from Aiven."
     assert not app.info
+
+
+def season_data(target, games=40):
+    """Enough settled replay games for a best slot, its combinations and random."""
+    rows, baselines, slate = [], [], []
+    for game in range(1, games + 1):
+        # Odd games finish 235 (OVER 230.5 wins), even games 215 (UNDER wins).
+        points = 121 if game % 2 else 101
+        day = date(2026, 10, 20) + pd.Timedelta(days=game % 4)
+        slate.append(
+            dict(
+                game_id=game,
+                game_date=day,
+                status=1,
+                home_points=points,
+                away_points=114,
+            )
+        )
+        common = dict(game_id=game, target=target, home_points=points)
+        # T−6h follows the result except every tenth game: 36 of 40.
+        right = (game % 2 == 1) != (game % 10 == 0)
+        for horizon, value in ((480, 240), (360, 240 if right else 220), (120, 220)):
+            rows.append(
+                analysis_row(
+                    horizon=horizon,
+                    bucket=horizon,
+                    source="Snapshot replay",
+                    prediction_value=value if target == 2 else value - 229,
+                    **common,
+                )
+            )
+        for kind in (1, 3):
+            rows.append(
+                analysis_row(
+                    horizon=360,
+                    bucket=240,
+                    kind=kind,
+                    prediction_value=240 if target == 2 else 11,
+                    **common,
+                )
+            )
+        if target != 3:
+            baselines.append(
+                analysis_row(
+                    game_id=game,
+                    horizon=0,
+                    bucket=0,
+                    kind=2,
+                    target=1,
+                    home_points=points,
+                    source="Random baseline",
+                    variant="random_line_error_baseline",
+                    prediction_value=1.0 if game % 5 else -1.0,
+                )
+            )
+    return AnalysisData(
+        pd.DataFrame(slate),
+        pd.DataFrame(rows),
+        NOW.to_pydatetime(),
+        pd.DataFrame(baselines),
+    )
+
+
+@pytest.mark.parametrize("target", [1, 2, 3])
+def test_best_slot_combinations_random_and_six_hour_windows(history_setup, target):
+    reader, _ = history_setup
+    reader.side_effect = lambda start, end, target, season_type, **kwargs: (
+        season_data(target)
+    )
+    app = open_history()
+    app.session_state["history_target"] = target
+    app.run()
+    assert not app.exception
+    metrics = {node.label: node.value for node in app.metric}
+    # T−8h always says OVER and T−2h always UNDER: 20 of 40 games each.
+    assert metrics["Replay · ≥ 6h"] != metrics["Replay · < 6h"]
+    assert metrics["Replay · < 6h"] == "50.0%"
+    assert metrics["Best slot"] == "XGBoost · 2.5 · T−6h"
+    assert metrics["Coin-flip chance"].endswith("%")
+    assert ("Random baseline" in metrics) is (target != 3)
+    assert "Combinations · mean of predictions" in [
+        node.value for node in app.subheader
+    ]
+    assert any(
+        "No combination beats the best single slot" in node.value for node in app.info
+    )
+    # Efficacy, combinations, intermediate replay, live heatmap, own snapshot.
+    assert len(rendered_charts(app)) == 5
+    combinations = next(t.value for t in app.dataframe if "Strategy" in t.value)
+    assert "XGBoost · 2.5 · mean ≥ 6h" in set(combinations["Strategy"])
+    assert ("Random baseline" in set(combinations["Strategy"])) is (target != 3)
+    # TabPFN live cells stay out of the model × time view and its margins.
+    live_tables = [
+        t.value
+        for t in app.dataframe
+        if "Input bucket (min; 0 = Final)" in t.value
+        and t.value.get("Source", pd.Series(dtype=str)).eq("Live predictions").any()
+    ]
+    assert live_tables
+    assert not any(t["Model"].str.startswith("TabPFN").any() for t in live_tables)
+    # The page opens on line error; cross-target combinations stay off.
+    assert [call.args[2] for call in reader.call_args_list] == sorted({1, target})
+
+
+def test_cross_target_combinations_read_the_other_totals_target(history_setup):
+    reader, _ = history_setup
+    reader.side_effect = lambda start, end, target, season_type, **kwargs: (
+        season_data(target)
+    )
+    app = open_history()
+    app.toggle(key="history_cross_target").set_value(True).run()
+    assert not app.exception
+    assert [call.args[2] for call in reader.call_args_list] == [1, 2]
+    combinations = next(t.value for t in app.dataframe if "Strategy" in t.value)
+    assert "XGBoost · 2.5 · line error + total points · all horizons" in set(
+        combinations["Strategy"]
+    )
