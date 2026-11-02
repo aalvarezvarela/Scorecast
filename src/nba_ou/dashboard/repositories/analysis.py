@@ -1,7 +1,7 @@
 """Bounded, SQL-reduced historical reads from Aiven's prediction schema only."""
 
 from configparser import Error as ConfigurationError
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, date, datetime
 
 import pandas as pd
@@ -118,12 +118,37 @@ ANALYSIS_QUERY = """
     SELECT * FROM reduced LIMIT %s
 """.replace("BUCKET_CASE", _BUCKET_CASE).replace("SLOT", _SLOT)
 
+# Stored by the past-snapshot workflow (2) on reconstructed T-0 lines, and by
+# daily runs (1) before 2026-10-29; one row per game, preferring workflow 2.
+# Only the totals market has one: total points reuses the same OVER/UNDER bet.
+RANDOM_BASELINE_VARIANT = "random_line_error_baseline"
+BASELINE_QUERY = """
+    SELECT DISTINCT ON (v.game_id)
+           v.game_id, v.kind, v.schema_version, v.target, v.dataset_type,
+           v.model_horizon_minutes, v.variant, v.prediction_value, v.model_line,
+           v.bet_line_x2, v.bet_price_over_home, v.bet_price_under_away,
+           v.home_points, v.away_points, v.status, v.predicted_at,
+           v.predicted_at AS input_at,
+           GREATEST(v.predicted_at, r.finished_at) AS available_at,
+           'Random baseline' AS source, 0 AS bucket
+    FROM prediction.predictions_full v
+    JOIN prediction.runs r ON r.run_id = v.run_id
+    WHERE v.game_date BETWEEN %s AND %s AND v.target = 1
+      AND v.season_type = ANY(%s::smallint[])
+      AND v.kind = 2 AND v.variant = %s AND v.dataset_type = 1
+      AND v.predicted_at <= %s AND r.finished_at <= %s
+    ORDER BY v.game_id, v.workflow = 2 DESC,
+             GREATEST(v.predicted_at, r.finished_at) DESC, v.run_id DESC
+"""
+
 
 @dataclass(frozen=True)
 class AnalysisData:
     games: pd.DataFrame
     predictions: pd.DataFrame
     fetched_at: datetime
+    # Random baseline, totals targets only; graded like any closing Final.
+    baselines: pd.DataFrame = field(default_factory=pd.DataFrame)
 
 
 def read_history_range(
@@ -162,12 +187,28 @@ def read_history_range(
                         MAX_ANALYSIS_ROWS + 1,
                     ),
                 )
-        if len(predictions) > MAX_ANALYSIS_ROWS:
-            raise DashboardDataError(
-                "This date range contains too many historical cells. Choose a shorter "
-                "range; no partial results have been displayed."
-            )
-        return AnalysisData(games, predictions, fetched_at)
+                if len(predictions) > MAX_ANALYSIS_ROWS:
+                    raise DashboardDataError(
+                        "This date range contains too many historical cells. Choose "
+                        "a shorter range; no partial results have been displayed."
+                    )
+                baselines = (
+                    _frame(
+                        cursor,
+                        BASELINE_QUERY,
+                        (
+                            start,
+                            end,
+                            types,
+                            RANDOM_BASELINE_VARIANT,
+                            fetched_at,
+                            fetched_at,
+                        ),
+                    )
+                    if target in (1, 2)
+                    else pd.DataFrame()
+                )
+        return AnalysisData(games, predictions, fetched_at, baselines)
     except psycopg.errors.QueryCanceled:
         raise DashboardDataError(
             "The historical read timed out. Choose a shorter date range and try again."

@@ -275,16 +275,13 @@ results. In short:
   stored, each stored as a TabPFN run (`prediction/tabpfn_run.py`, shared with
   `predict_tabpfn.py`); `[Schedule] TABPFN_RUNS` (`separate` / `joined` /
   `none`, now `joined`) decides how the scheduler books them. Scheduled jobs
-  run intermediate and closing at T-600, T-480 and T-360 of the last tip-off,
-  plus closing only at T-240. Intermediate reconstructs every game at its own
-  snapshot; closing predicts eligible pending games using current inputs.
-  Each job carries its own fits (`MODE=TARGET[,TARGET]`, `--fits`;
-  `TABPFN_FITS` in the scheduler): T-600 and T-360 fit `line_error` and
-  `total_points`, standard, on both lines; T-480 fits all three standard on
-  both lines plus `thinking_high` for `line_error` and `total_points` on the
-  intermediate line only, all with `TABPFN_API_KEY_ALT`; T-240 fits all three
-  standard at closing, also with `TABPFN_API_KEY_ALT`. T-600 and T-360 use the
-  normal key.
+  run intermediate only at T-720 and intermediate and closing at T-600, T-480,
+  T-360 and T-240 of the last tip-off. Intermediate reconstructs every game at
+  its own snapshot; closing predicts eligible pending games using current
+  inputs. Each job carries its own fits (`MODE=TARGET[,TARGET]`, `--fits`;
+  `TABPFN_FITS` in the scheduler), all standard: T-600 fits `line_error` and
+  `total_points`, every other run all three targets. T-720 and T-480 use
+  `TABPFN_API_KEY_ALT`; T-600, T-360 and T-240 the normal key.
 
 ## Adding or changing features
 

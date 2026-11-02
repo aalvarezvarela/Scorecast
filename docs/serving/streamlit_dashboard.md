@@ -53,7 +53,9 @@ applications as references. The new application does not import either.
 The entrypoint registers three pages using `st.navigation`. Today is the
 default. Yesterday shows stored predictions and results for a selected date.
 [Historical analysis](historical_analysis.md) shows the closing timeline, live
-model/time heatmap and own-snapshot live/replay comparisons over a date range.
+model/time heatmap and own-snapshot live/replay comparisons over a date range,
+plus the best own-snapshot slot, mean-of-predictions combinations and the random
+baseline.
 Page scripts compose
 modules in `nba_ou.dashboard`:
 

@@ -529,23 +529,16 @@ def _snapshot_games(dispatch) -> list[str]:
 _TOTALS = [("line_error", "standard"), ("total_points", "standard")]
 _ALL = [*_TOTALS, ("spread_error", "standard")]
 #: Lead time -> ``(target, mode)`` fits of its intermediate and closing lines:
-#: no spread at T-600/T-360, thinking_high for the totals on T-480's
-#: intermediate line only, closing only at T-240.
+#: standard only, intermediate only at T-720, no spread at T-600.
 EXPECTED_TABPFN_FITS = {
+    720: (_ALL, None),
     600: (_TOTALS, _TOTALS),
-    480: (
-        [
-            ("line_error", "standard"),
-            ("line_error", "thinking_high"),
-            ("total_points", "standard"),
-            ("total_points", "thinking_high"),
-            ("spread_error", "standard"),
-        ],
-        _ALL,
-    ),
-    360: (_TOTALS, _TOTALS),
-    240: (None, _ALL),
+    480: (_ALL, _ALL),
+    360: (_ALL, _ALL),
+    240: (_ALL, _ALL),
 }
+#: The lead times whose fits use TABPFN_API_KEY_ALT.
+ALT_KEY_HORIZONS = (720, 480)
 
 
 def _fits(text: str) -> list[tuple[str, str]]:
@@ -556,15 +549,16 @@ def _fits(text: str) -> list[tuple[str, str]]:
     return TabPFNJob(targets=targets, modes=modes, mode_targets=mode_targets).fits
 
 
-def test_tabpfn_runs_four_times_from_the_last_tip_with_their_fits():
+def test_tabpfn_runs_five_times_from_the_last_tip_with_their_fits():
     games = _tabpfn_games()
     runs = job.tabpfn_runs(games, "2026-10-22", _utc("2026-10-22 08:00"))
-    assert len(runs) == 4
+    assert len(runs) == 5
     assert [(at, dict(d.inputs)["line"]) for at, d in runs] == [
+        (_utc("2026-10-22 13:02"), "intermediate"),
         (_utc("2026-10-22 15:02"), "intermediate"),
         (_utc("2026-10-22 17:02"), "intermediate"),
         (_utc("2026-10-22 19:02"), "intermediate"),
-        (_utc("2026-10-22 21:02"), "closing"),
+        (_utc("2026-10-22 21:02"), "intermediate"),
     ]
     for at, dispatch in runs:
         inputs = dict(dispatch.inputs)
@@ -573,25 +567,16 @@ def test_tabpfn_runs_four_times_from_the_last_tip_with_their_fits():
         assert inputs["update_db"] == "false"
         assert inputs["game_date"] == "2026-10-22"
         assert "game_ids" not in inputs
-        if inputs["line"] == "closing":
-            assert (
-                not {
-                    "horizon_minutes",
-                    "as_of",
-                    "snapshot_game_ids",
-                    "closing_fits",
-                }
-                & inputs.keys()
-            )
-            assert inputs["include_closing"] == "false"
-            assert _fits(inputs["fits"]) == EXPECTED_TABPFN_FITS[240][1]
-            assert inputs["use_alt_key"] == "true"
-            continue
         assert _snapshot_games(dispatch) == ["0022600003"]
         horizon = int(inputs["horizon_minutes"])
         inter, closing = EXPECTED_TABPFN_FITS[horizon]
         assert _fits(inputs["fits"]) == inter
-        assert _fits(inputs["closing_fits"]) == closing
+        if closing is None:
+            assert inputs["include_closing"] == "false"
+            assert "closing_fits" not in inputs
+        else:
+            assert inputs["include_closing"] == "true"
+            assert _fits(inputs["closing_fits"]) == closing
         cutoff = datetime.fromisoformat(inputs["as_of"])
         assert cutoff == _utc("2026-10-23 01:00") - timedelta(minutes=horizon)
         assert at == cutoff + timedelta(minutes=job.TABPFN_DELAY_MINUTES)
@@ -606,8 +591,9 @@ def test_nearby_tipoffs_do_not_book_extra_tabpfn_runs():
     games = _tabpfn_games().iloc[:2].copy()
     games.loc[1, "tipoff_utc"] += pd.Timedelta(minutes=15)
     runs = job.tabpfn_runs(games, "2026-10-22", _utc("2026-10-22 08:00"))
-    assert len(runs) == 4
+    assert len(runs) == 5
     assert [at for at, _ in runs] == [
+        _utc("2026-10-22 11:17"),
         _utc("2026-10-22 13:17"),
         _utc("2026-10-22 15:17"),
         _utc("2026-10-22 17:17"),
@@ -624,13 +610,10 @@ def test_each_tabpfn_run_has_its_fits_in_both_booking_modes():
     separate = {}
     for _, dispatch in job.tabpfn_runs(games, "2026-10-22", now):
         inputs = dict(dispatch.inputs)
-        if inputs["line"] == "closing":
-            separate[240] = (None, _fits(inputs["fits"]))
-        else:
-            separate[int(inputs["horizon_minutes"])] = (
-                _fits(inputs["fits"]),
-                _fits(inputs["closing_fits"]),
-            )
+        separate[int(inputs["horizon_minutes"])] = (
+            _fits(inputs["fits"]),
+            _fits(inputs["closing_fits"]) if "closing_fits" in inputs else None,
+        )
     assert separate == EXPECTED_TABPFN_FITS
 
     _, joined, alone = _joined(games, now)
@@ -644,7 +627,7 @@ def test_each_tabpfn_run_has_its_fits_in_both_booking_modes():
             dict(dispatch.inputs)["tabpfn"], modes=["standard", "thinking_high"]
         )
         by_line = {item.horizon: item.fits for item in jobs}
-        actual[horizon] = (by_line.get(horizon), by_line[0])
+        actual[horizon] = (by_line[horizon], by_line.get(0))
     assert actual == EXPECTED_TABPFN_FITS
 
 
@@ -652,29 +635,31 @@ def test_tabpfn_follows_the_covering_predictor_but_keeps_the_last_games_cutoff()
     games = _tabpfn_games().iloc[:1].copy()
     now = _utc("2026-10-22 08:00")
     predictor = job.trigger_times(
-        job.game_tipoffs(games), [600, 590, 480, 360, 30], now
+        job.game_tipoffs(games), [720, 600, 590, 480, 360, 30], now
     )
     runs = job.tabpfn_runs(games, "2026-10-22", now, predictor)
-    at, dispatch = runs[0]
+    at, dispatch = runs[1]
     assert at == _utc("2026-10-22 13:12")
     assert dict(dispatch.inputs)["as_of"] == "2026-10-22T13:00:00+00:00"
 
 
-def test_all_tabpfn_times_book_closing_and_t8_and_t4_select_the_alternate_key():
+def test_tabpfn_times_book_closing_except_t12_and_t12_t8_select_the_alternate_key():
     from nba_ou.prediction.tabpfn_run import parse_jobs
 
     games = _tabpfn_games()
     now = _utc("2026-10-22 08:00")
     _, joined, alone = _joined(games, now)
-    assert len(joined) == 4 and not alone
+    assert len(joined) == 5 and not alone
     for at, dispatch in joined.items():
         inputs = dict(dispatch.inputs)
         jobs = parse_jobs(inputs["tabpfn"])
         horizon = int((_utc("2026-10-23 01:00") - at).total_seconds() / 60)
         assert [item.horizon for item in jobs] == (
-            [horizon, 0] if horizon != 240 else [0]
+            [horizon, 0] if horizon != 720 else [720]
         )
-        assert inputs["tabpfn_use_alt_key"] == str(horizon in (480, 240)).lower()
+        assert inputs["tabpfn_use_alt_key"] == str(horizon in ALT_KEY_HORIZONS).lower()
+        if horizon == 720:
+            continue
         closing = jobs[-1]
         assert closing.dataset_type == "closing_line"
         assert closing.as_of is None
@@ -683,20 +668,16 @@ def test_all_tabpfn_times_book_closing_and_t8_and_t4_select_the_alternate_key():
 
     for _, dispatch in job.tabpfn_runs(games, "2026-10-22", now):
         inputs = dict(dispatch.inputs)
-        if inputs["line"] == "closing":
-            assert inputs["include_closing"] == "false"
-            assert inputs["use_alt_key"] == "true"
-            continue
         horizon = int(inputs["horizon_minutes"])
-        assert inputs["include_closing"] == "true"
-        assert inputs["use_alt_key"] == str(horizon == 480).lower()
+        assert inputs["include_closing"] == str(horizon != 720).lower()
+        assert inputs["use_alt_key"] == str(horizon in ALT_KEY_HORIZONS).lower()
 
 
 def test_games_sharing_the_last_tip_share_the_anchor_metadata():
     games = _tabpfn_games()
     games.loc[1, "tipoff_utc"] = games.loc[2, "tipoff_utc"]
     runs = job.tabpfn_runs(games, "2026-10-22", _utc("2026-10-22 08:00"))
-    assert len(runs) == 4
+    assert len(runs) == 5
     assert all(
         _snapshot_games(dispatch) == ["0022600002", "0022600003"]
         for _, dispatch in runs
@@ -715,7 +696,7 @@ def test_tabpfn_titles_name_the_last_games_horizon_and_cutoff():
     title = job.pool_title(2, group)
     assert (
         title
-        == "Scorecast - snapshot trigger 02 | TabPFN T-600 E@F | snapshot 22/10 17:00 Madrid"
+        == "Scorecast - snapshot trigger 02 | TabPFN T-720 E@F | snapshot 22/10 15:00 Madrid"
     )
 
 
@@ -750,7 +731,7 @@ def test_tabpfn_slots_before_daily_booking_are_lost():
     assert {dict(d.inputs).get("horizon_minutes") for _, d in runs} == {
         "480",
         "360",
-        None,
+        "240",
     }
 
 
@@ -766,15 +747,14 @@ def test_tabpfn_payload_carries_date_horizon_cutoff_and_anchor_games_only():
     assert json.loads(payload["extendedData"]["body"]) == {
         "ref": "main",
         "inputs": {
-            "fits": "standard=line_error,total_points",
+            "fits": "standard=line_error,total_points,spread_error",
             "line": "intermediate",
-            "use_alt_key": "false",
-            "include_closing": "true",
+            "use_alt_key": "true",
+            "include_closing": "false",
             "update_db": "false",
             "game_date": "2026-10-22",
-            "closing_fits": "standard=line_error,total_points",
-            "horizon_minutes": "600",
-            "as_of": "2026-10-22T15:00:00+00:00",
+            "horizon_minutes": "720",
+            "as_of": "2026-10-22T13:00:00+00:00",
             "snapshot_game_ids": "0022600003",
         },
     }
@@ -848,7 +828,7 @@ def test_scheduler_books_exact_tabpfn_payloads_and_verifies_the_pool(
     tabpfn = [
         group for group in groups if group.dispatch.workflow_file == job.TABPFN_WORKFLOW
     ]
-    assert len(tabpfn) == (4 if include_tabpfn else 0)
+    assert len(tabpfn) == (5 if include_tabpfn else 0)
     assert any(group.dispatch == job.PREDICTOR for group in groups)
     assert any(group.dispatch == job.FINISHED_MATCHES for group in groups)
     assert any(
@@ -857,9 +837,6 @@ def test_scheduler_books_exact_tabpfn_payloads_and_verifies_the_pool(
     assert len(groups) <= job.MAX_POOL
     for group in tabpfn:
         assert len(group.fire_times()) == 1
-        if dict(group.dispatch.inputs)["line"] == "closing":
-            assert group.fire_times() == [_utc("2026-10-22 21:02")]
-            continue
         # After the predictor run covering the snapshot, never before it.
         snapshot = datetime.fromisoformat(dict(group.dispatch.inputs)["as_of"])
         assert group.fire_times()[0] >= snapshot + timedelta(
@@ -944,7 +921,7 @@ def test_booked_tabpfn_inputs_match_the_workflow_and_cli(monkeypatch, tmp_path):
                 "TABPFN_SNAPSHOT_GAME_IDS": inputs.get("snapshot_game_ids", ""),
             },
         )
-        horizon = int(inputs.get("horizon_minutes", "240"))
+        horizon = int(inputs["horizon_minutes"])
         inter, closing = EXPECTED_TABPFN_FITS[horizon]
         assert fits == (closing if inputs["line"] == "closing" else inter)
         assert options["line"] == inputs["line"]
@@ -962,6 +939,9 @@ def test_booked_tabpfn_inputs_match_the_workflow_and_cli(monkeypatch, tmp_path):
         assert pd.Timestamp(options["as_of"]) <= at - timedelta(
             minutes=job.TABPFN_DELAY_MINUTES
         )
+        if closing is None:
+            assert inputs["include_closing"] == "false"
+            continue
         # The closing step reads closing_fits (inputs.closing_fits || inputs.fits).
         assert "inputs.closing_fits" in str(
             steps["Run additional TabPFN closing line"]["env"]["TABPFN_FITS"]
@@ -976,7 +956,7 @@ def test_booked_tabpfn_inputs_match_the_workflow_and_cli(monkeypatch, tmp_path):
 
 def _joined(games, now):
     predictor = job.trigger_times(
-        job.game_tipoffs(games), [600, 480, 360, 240, 30], now
+        job.game_tipoffs(games), [720, 600, 480, 360, 240, 30], now
     )
     return predictor, *job.joined_tabpfn_runs(games, "2026-10-22", now, predictor)
 
@@ -994,7 +974,7 @@ def test_joined_tabpfn_jobs_ride_in_the_predictor_run_covering_their_snapshot():
         (str(game.game_id), horizon): game.tipoff_utc.to_pydatetime()
         - timedelta(minutes=horizon)
         for game in games.iloc[[-1]].itertuples()
-        for horizon in (600, 480, 360)
+        for horizon in (720, 600, 480, 360, 240)
     }
     actual = {}
     for run, dispatch in joined.items():
@@ -1011,7 +991,7 @@ def test_joined_tabpfn_jobs_ride_in_the_predictor_run_covering_their_snapshot():
             for game_id in tabpfn_job.snapshot_games:
                 actual[(game_id, tabpfn_job.horizon)] = tabpfn_job.as_of
     assert actual == expected
-    assert len(joined) == 4
+    assert len(joined) == 5
     assert joined[_utc("2026-10-22 17:00")].label == "T-480 E@F"
 
 

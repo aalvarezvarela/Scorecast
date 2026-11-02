@@ -20,7 +20,7 @@ on:
                 type: string
                 default: standard
             tabpfn_use_alt_key:
-                description: "Use TABPFN_API_KEY_ALT for every TabPFN fit in this run (the scheduler sets it at T-8 and T-4)"
+                description: "Use TABPFN_API_KEY_ALT for every TabPFN fit in this run (the scheduler sets it at T-12 and T-8)"
                 type: boolean
                 default: false
             tabpfn_refresh:
