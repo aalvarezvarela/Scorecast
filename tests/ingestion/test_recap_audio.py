@@ -1,7 +1,5 @@
 """Audio archive coverage, language selection, recovery and encoding contracts."""
 
-import hashlib
-import io
 import json
 import shutil
 import subprocess
@@ -16,53 +14,7 @@ from botocore.exceptions import ClientError
 
 from lab.youtube_downloader import download_recaps as cli
 from lab.youtube_downloader import recap_audio as audio
-
-
-def client_error(code):
-    return ClientError({"Error": {"Code": code}}, "test")
-
-
-class FakeS3:
-    def __init__(self):
-        self.objects = {}
-        self.fail_keys = set()
-
-    def put_object(self, **kwargs):
-        key = kwargs["Key"]
-        if key in self.fail_keys:
-            raise client_error("AccessDenied")
-        old = self.objects.get(key)
-        if kwargs.get("IfNoneMatch") == "*" and old:
-            raise client_error("PreconditionFailed")
-        if "IfMatch" in kwargs and (not old or old["ETag"] != kwargs["IfMatch"]):
-            raise client_error("PreconditionFailed")
-        self.objects[key] = {
-            **kwargs,
-            "ETag": hashlib.sha256(kwargs["Body"]).hexdigest(),
-        }
-        return {"ETag": self.objects[key]["ETag"]}
-
-    def get_object(self, **kwargs):
-        if kwargs["Key"] not in self.objects:
-            raise client_error("NoSuchKey")
-        item = self.objects[kwargs["Key"]]
-        return {**item, "Body": io.BytesIO(item["Body"])}
-
-    def head_object(self, **kwargs):
-        item = self.objects[kwargs["Key"]]
-        return {"Metadata": item["Metadata"], "ContentLength": len(item["Body"])}
-
-    def get_paginator(self, name):
-        return self
-
-    def paginate(self, **kwargs):
-        yield {
-            "Contents": [
-                {"Key": k, "Size": len(v["Body"])}
-                for k, v in self.objects.items()
-                if k.startswith(kwargs["Prefix"])
-            ]
-        }
+from tests.support.conditional_s3 import ConditionalFakeS3
 
 
 @pytest.fixture
@@ -188,7 +140,7 @@ def test_s3_resume_reuploads_missing_object_without_refetch(
     config, payload, fake_media
 ):
     config = replace(config, bucket="test")
-    s3 = FakeS3()
+    s3 = ConditionalFakeS3()
     audio.run_archive(
         config, payload=payload, store=audio.S3AudioStore(s3, config), max_games=1
     )
@@ -206,7 +158,7 @@ def test_s3_resume_reuploads_missing_object_without_refetch(
 
 def test_remote_only_resume_recovers_metadata(config, payload, fake_media):
     config = replace(config, bucket="test")
-    s3 = FakeS3()
+    s3 = ConditionalFakeS3()
     audio.run_archive(
         config, payload=payload, store=audio.S3AudioStore(s3, config), max_games=1
     )
@@ -225,7 +177,7 @@ def test_remote_only_resume_recovers_metadata(config, payload, fake_media):
 
 def test_orphan_upload_recovers_from_object_metadata(config, payload, fake_media):
     config = replace(config, bucket="test")
-    s3 = FakeS3()
+    s3 = ConditionalFakeS3()
     manifest = audio.prepare_manifest(config, payload)
     entry = manifest["games"]["0022600001"]
     audio.fetch_audio(entry, config, audio.RequestPacer(0))
@@ -243,7 +195,7 @@ def test_orphan_upload_recovers_from_object_metadata(config, payload, fake_media
 
 def test_upload_failure_keeps_local_audio_for_retry(config, payload, fake_media):
     config = replace(config, bucket="test")
-    s3 = FakeS3()
+    s3 = ConditionalFakeS3()
     key = config.audio_key("0022600001")
     s3.fail_keys.add(key)
     result = audio.run_archive(
@@ -262,7 +214,7 @@ def test_s3_media_and_manifest_are_not_silently_overwritten(
     config, payload, fake_media
 ):
     config = replace(config, bucket="test")
-    s3 = FakeS3()
+    s3 = ConditionalFakeS3()
     manifest = audio.run_archive(
         config, payload=payload, store=audio.S3AudioStore(s3, config), max_games=1
     )
@@ -471,7 +423,7 @@ def test_cli_requires_selection():
 def test_local_archive_can_be_uploaded_later(config, payload, fake_media):
     audio.run_archive(config, payload=payload, max_games=1)
     uploaded = replace(config, bucket="test")
-    s3 = FakeS3()
+    s3 = ConditionalFakeS3()
     result = audio.run_archive(
         uploaded,
         payload=payload,
@@ -563,7 +515,7 @@ def test_error_stop_checkpoints_and_keeps_original_error_if_manifest_fails(
         raise RuntimeError("source changed")
 
     monkeypatch.setattr(audio, "fetch_audio", fail)
-    store = audio.S3AudioStore(FakeS3(), config)
+    store = audio.S3AudioStore(ConditionalFakeS3(), config)
     monkeypatch.setattr(store, "save_manifest", fail)
     with pytest.raises(RuntimeError, match="5 consecutive"):
         audio.run_archive(config, payload=payload, store=store)
@@ -576,7 +528,7 @@ def test_orphan_audio_cannot_be_adopted_under_another_language(
     config, payload, fake_media
 ):
     config = replace(config, bucket="test")
-    s3 = FakeS3()
+    s3 = ConditionalFakeS3()
     manifest = audio.run_archive(
         config, payload=payload, store=audio.S3AudioStore(s3, config), max_games=1
     )
@@ -587,7 +539,7 @@ def test_orphan_audio_cannot_be_adopted_under_another_language(
 
 def test_current_season_refresh_accepts_newly_final_scores(config, payload, fake_media):
     config = replace(config, bucket="test")
-    s3 = FakeS3()
+    s3 = ConditionalFakeS3()
     scheduled = payload["leagueSchedule"]["gameDates"][0]["games"][2]
     scheduled["awayTeam"] = {**scheduled["awayTeam"], "score": 0}
     scheduled["homeTeam"] = {**scheduled["homeTeam"], "score": 0}

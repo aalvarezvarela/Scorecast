@@ -5,6 +5,21 @@
 runner uses the same official NBA schedule, game IDs, phase scope and S3 settings
 as the [written-report archive](../game_reports/README.md).
 
+## Transcription with Wishper
+
+To download audio, transcribe it through the external Wishper API, and archive
+one JSON.gz per game using the written-report format, see
+[the transcript guide](../../docs/pipeline/recap_transcripts.md).
+
+```bash
+.venv/bin/python lab/youtube_downloader/transcribe_recaps.py download --date 2026-10-28
+# Reuse existing audio, without requesting NBA or YouTube:
+.venv/bin/python lab/youtube_downloader/transcribe_recaps.py download 2025-26 --skip-download
+```
+
+The transcript archive has its own local root, S3 prefix, and resumable manifest;
+the existing audio and written-report commands keep their current behavior.
+
 ## Run
 
 From the repository root, using the project's existing environment:

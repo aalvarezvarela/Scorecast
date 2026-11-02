@@ -20,6 +20,7 @@ from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from pathlib import Path
+from typing import ClassVar
 
 from botocore.exceptions import ClientError
 from nba_api.stats.endpoints import ScheduleLeagueV2
@@ -78,6 +79,8 @@ class SeasonConfig:
     workers: int = 4
     request_interval: float = 0.35
     checkpoint_every: int = 10
+    # Subfolder holding one object per game, locally and in S3.
+    objects_dir: ClassVar[str] = "reports"
 
     def __post_init__(self):
         if not 2000 <= self.season_year <= 2099:
@@ -104,10 +107,10 @@ class SeasonConfig:
         return f"{self.prefix.strip('/')}/season={self.season}"
 
     def report_path(self, game_id: str) -> Path:
-        return self.directory / "reports" / f"{game_id}.json.gz"
+        return self.directory / self.objects_dir / f"{game_id}.json.gz"
 
     def report_key(self, game_id: str) -> str:
-        return f"{self.s3_prefix}/reports/{game_id}.json.gz"
+        return f"{self.s3_prefix}/{self.objects_dir}/{game_id}.json.gz"
 
 
 def season_games(payload: dict, config: SeasonConfig) -> dict:
@@ -390,7 +393,8 @@ class S3ReportStore:
     def inventory(self) -> dict[str, int]:
         objects = {}
         for page in self.client.get_paginator("list_objects_v2").paginate(
-            Bucket=self.config.bucket, Prefix=f"{self.config.s3_prefix}/reports/"
+            Bucket=self.config.bucket,
+            Prefix=f"{self.config.s3_prefix}/{self.config.objects_dir}/",
         ):
             objects.update(
                 {item["Key"]: item["Size"] for item in page.get("Contents", [])}
