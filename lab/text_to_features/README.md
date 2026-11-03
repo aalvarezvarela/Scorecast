@@ -4,6 +4,13 @@ Exploration code for turning NBA news and game texts into model features,
 including embeddings. Currently, it loads archived reports and recap transcripts,
 cleans the text, and prepares team and player perspectives for a later text model.
 
+The rewrites, the S3/database readers and the Nebius client now live in
+[`src/nba_ou/data_processing/game_texts/`](../../src/nba_ou/data_processing/game_texts/), where the production
+pipeline that embeds every archived report uses them
+([`docs/pipeline/text_embeddings.md`](../../docs/pipeline/text_embeddings.md)).
+This folder keeps the experiments: the local GPU embedder (`embeddings.py`),
+the role probes and the notebooks.
+
 ## Conclusions and recommendation
 
 Read this first; the sections after it describe the rewrites, the method and
@@ -64,7 +71,7 @@ What follows from it:
 
 **Recommendation.**
 
-- **Model: Qwen3-Embedding-8B through Nebius** ([`nebius.py`](nebius.py)): the
+- **Model: Qwen3-Embedding-8B through Nebius** ([`nebius.py`](../../src/nba_ou/data_processing/game_texts/nebius.py)): the
   only one that gains on availability by side, and fast and cheap (the whole
   7-condition sweep, about 9,300 texts: 8 minutes, 5.08M tokens, about $0.05). 4B
   on the local GPU is the fallback if the API is not acceptable in serving
@@ -128,7 +135,7 @@ and `away` fields: NBA.com written reports
 ([`docs/pipeline/recap_transcripts.md`](../../docs/pipeline/recap_transcripts.md)).
 
 ```python
-from lab.text_to_features.team_perspective import (
+from nba_ou.data_processing.game_texts.team_perspective import (
     document_perspectives,
     perspective_texts,
     replace_teams,
@@ -142,7 +149,7 @@ rewrite.text, rewrite.mentions  # every matched span with its role
 
 ## Rules
 
-No model is involved. `team_perspective.py` holds an alias table for the 30
+No model is involved. `game_texts/team_perspective.py` holds an alias table for the 30
 franchises, keyed by the schedule nickname stored with each document:
 
 - **Forms**: nickname, city or region, every city + nickname combination
@@ -171,7 +178,7 @@ never occur in NBA prose, so they can be found again unambiguously.
 With the game's players, the rewrites also say which side each player is on:
 
 ```python
-from lab.text_to_features.documents import load_game_players
+from nba_ou.data_processing.game_texts.documents import load_game_players
 
 players = load_game_players([doc["game_id"]])[doc["game_id"]]
 texts = document_perspectives(doc, players=players, label_rule="any")
@@ -339,7 +346,7 @@ prefix alone moves every vector.
 ```
 
 0.6B and 4B run on the local GPU; 8B (Qwen3-Embedding-8B, 4096 dimensions)
-through the Nebius Token Factory API ([`nebius.py`](nebius.py), key in
+through the Nebius Token Factory API ([`nebius.py`](../../src/nba_ou/data_processing/game_texts/nebius.py), key in
 `[Nebius] NEBIUS_API_KEY`, smoke test in `nebius_embedding_api_test.ipynb`).
 The API returns L2-normalized vectors; the instruction is applied locally in the
 same format, and the billed tokens equal the local tokenizer's count. The full

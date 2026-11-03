@@ -14,9 +14,13 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import torch
+from nba_ou.data_processing.game_texts.embedding_inputs import (
+    embedding_input,
+)
+from nba_ou.data_processing.game_texts.team_perspective import (
+    document_perspectives,
+)
 from transformers import AutoModel, AutoTokenizer, BitsAndBytesConfig
-
-from lab.text_to_features.team_perspective import document_perspectives
 
 MODEL_ID = "Qwen/Qwen3-Embedding-4B"
 MODEL_REVISION = "5cf2132abc99cad020ac570b19d031efec650f2b"
@@ -32,15 +36,6 @@ MODELS = {
 VARIANTS = ("raw", "home_target", "away_target")
 PAIRS = (("raw", "home_target"), ("raw", "away_target"), ("home_target", "away_target"))
 GIB = 1024**3
-
-
-def embedding_input(text: str, instruction: str | None = None) -> str:
-    """Apply Qwen's instruction format; a missing instruction preserves the text."""
-    if instruction is None:
-        return text
-    if not instruction.strip():
-        raise ValueError("instruction must be nonempty or None")
-    return f"Instruct: {instruction}\nQuery:{text}"
 
 
 def gpu_report(parameters: int = PARAMETERS) -> dict:

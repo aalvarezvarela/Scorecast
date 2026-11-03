@@ -30,6 +30,7 @@ the folder of its topic, with a status line, and gets a row here.
 | Document | Status | Covers | Main code |
 |---|---|---|---|
 | [recap_transcripts.md](pipeline/recap_transcripts.md) | Reference | Download NBA recap audio, transcribe with Wishper, and archive JSON.gz per game with S3 recovery | `lab/youtube_downloader/transcribe_recaps.py`, `lab/youtube_downloader/recap_transcripts.py` |
+| [text_embeddings.md](pipeline/text_embeddings.md) | Implemented | NBA.com reports embedded with Qwen3-Embedding-8B (Nebius): raw + target_view per team, lossless S3 store, incremental updates; no features yet | `data_processing/game_texts/`, `scripts/text_embeddings/embed_game_reports.py` |
 | [training_data_processing.md](pipeline/training_data_processing.md) | Reference | Closing-line pipeline step by step: rolling windows, players, injuries, referees, travel, column selection, naming | `create_training_data/create_df_to_predict.py` |
 | [feature_engineering_overview.md](pipeline/feature_engineering_overview.md) | Reference | Map of data sources, storage and the module behind each feature family | `data_processing/` |
 | [yahoo_features.md](pipeline/yahoo_features.md) | Reference | The compact 36-column Yahoo percentage contract | `config/yahoo_features.py` |

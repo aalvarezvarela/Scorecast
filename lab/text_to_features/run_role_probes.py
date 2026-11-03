@@ -24,15 +24,15 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
-
-from lab.text_to_features import role_probes as rp
-from lab.text_to_features.documents import (
+from nba_ou.data_processing.game_texts.documents import (
     list_keys,
     load_document,
     load_game_players,
     s3_client,
 )
-from lab.text_to_features.team_perspective import document_perspectives
+from nba_ou.data_processing.game_texts.team_perspective import document_perspectives
+
+from lab.text_to_features import role_probes as rp
 
 ROOT = Path(__file__).resolve().parents[2]
 OUT = ROOT / "artifacts/text_to_features/role_probes"
@@ -189,7 +189,7 @@ def main() -> None:
 
     cache_dir = ROOT / "artifacts/huggingface"
     if args.model in REMOTE:
-        from lab.text_to_features.nebius import NebiusEmbedder
+        from nba_ou.data_processing.game_texts.nebius import NebiusEmbedder
 
         embedder = NebiusEmbedder(cache_dir=cache_dir, model_id=MODELS[args.model])
     else:

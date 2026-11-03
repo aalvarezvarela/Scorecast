@@ -1,8 +1,7 @@
 import numpy as np
 import pytest
-
-from lab.text_to_features import nebius
-from lab.text_to_features.nebius import NebiusEmbedder, batches
+from nba_ou.data_processing.game_texts import nebius
+from nba_ou.data_processing.game_texts.nebius import NebiusEmbedder, batches
 
 
 class FakeTokenizer:

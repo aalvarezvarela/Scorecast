@@ -34,8 +34,13 @@ from dataclasses import dataclass
 
 import numpy as np
 import pandas as pd
-
-from lab.text_to_features.team_perspective import OPPONENT_LABEL, TARGET_LABEL
+from nba_ou.data_processing.game_texts.embedding_inputs import (
+    TARGET_VIEW_INSTRUCTION,
+)
+from nba_ou.data_processing.game_texts.team_perspective import (
+    OPPONENT_LABEL,
+    TARGET_LABEL,
+)
 
 CURRENT_INSTRUCTION = (
     "Represent this NBA game text while distinguishing Target Team from Opponent "
@@ -57,7 +62,7 @@ INSTRUCTIONS: dict[str, str | None] = {
         "Given an NBA game recap, represent how the Target Team played against "
         "the Opponent Team: result, scoring, defense, pace and missing players."
     ),
-    "target_view": "Represent this NBA game recap from the Target Team's point of view.",
+    "target_view": TARGET_VIEW_INSTRUCTION,
     # Mirror of target_view: if the roles matter, it should flip them.
     "opponent_view": (
         "Represent this NBA game recap from the Opponent Team's point of view."

@@ -1,6 +1,5 @@
 import pytest
-
-from lab.text_to_features.team_perspective import (
+from nba_ou.data_processing.game_texts.team_perspective import (
     TEAMS,
     document_perspectives,
     perspective_texts,

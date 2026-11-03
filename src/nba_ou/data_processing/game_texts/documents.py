@@ -11,10 +11,12 @@ import gzip
 import json
 import random
 from collections.abc import Iterable
+from concurrent.futures import ThreadPoolExecutor
+from datetime import UTC, datetime
+from zoneinfo import ZoneInfo
 
 from nba_ou.config.settings import SETTINGS
-
-from lab.text_to_features.players import Player
+from nba_ou.data_processing.game_texts.players import Player
 
 SOURCES = {
     "report": ("train_data/game_reports/v1", "reports"),
@@ -23,6 +25,8 @@ SOURCES = {
         "transcripts",
     ),
 }
+#: NBA.com story dates are US Eastern wall-clock times without an offset.
+PUBLISHED_TIMEZONE = ZoneInfo("America/New_York")
 
 
 def s3_client():
@@ -50,12 +54,38 @@ def list_keys(client, source: str, season: str | None = None) -> list[str]:
     return sorted(keys)
 
 
+def key_season(key: str) -> str:
+    """ "2025-26" from ``.../season=2025-26/reports/<game_id>.json.gz``."""
+    return key.split("season=", 1)[1].split("/", 1)[0]
+
+
+def published_at_utc(published_at: str | None) -> str:
+    """NBA.com's offset-less Eastern story date in UTC ("" if absent); reports
+    archived before 2026-10-31 do not store it (``lab/game_reports``)."""
+    if not published_at:
+        return ""
+    moment = datetime.fromisoformat(published_at)
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=PUBLISHED_TIMEZONE)
+    return moment.astimezone(UTC).isoformat()
+
+
 def load_document(client, key: str, source: str) -> dict:
     body = client.get_object(Bucket=SETTINGS.s3_bucket, Key=key)["Body"].read()
     document = json.loads(gzip.decompress(body))
     document["source"] = source
     document["s3_key"] = key
+    if source == "report" and not document.get("published_at_utc"):
+        document["published_at_utc"] = published_at_utc(document.get("published_at"))
     return document
+
+
+def load_documents(
+    client, keys: Iterable[str], source: str, workers: int = 16
+) -> list[dict]:
+    """``load_document`` for many keys, in parallel, in key order."""
+    with ThreadPoolExecutor(workers) as pool:
+        return list(pool.map(lambda key: load_document(client, key, source), keys))
 
 
 def sample_documents(
@@ -80,6 +110,7 @@ def load_game_players(game_ids: Iterable[str]) -> dict[str, list[Player]]:
     NBA inactive list, one entry per player. Teams come from ``team_id``."""
     from nba_api.stats.static import players as static_players
     from nba_api.stats.static import teams
+
     from nba_ou.postgre_db.injuries_refs.fetch_injury_db.get_injury_data_from_db import (  # noqa: E501
         get_injury_data_from_db,
     )
