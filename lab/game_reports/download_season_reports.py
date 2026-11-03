@@ -71,7 +71,12 @@ def build_parser() -> argparse.ArgumentParser:
         "--request-interval",
         type=float,
         default=0.35,
-        help="minimum seconds between NBA.com requests across workers",
+        help="minimum seconds between source requests across workers (NBA.com and ESPN)",
+    )
+    parser.add_argument(
+        "--espn-fallback",
+        action="store_true",
+        help="try ESPN written recaps only when NBA.com has no postgame article",
     )
     parser.add_argument(
         "--retry-unavailable",
@@ -99,6 +104,7 @@ def main(argv: list[str] | None = None) -> int:
         phases=tuple(args.phases),
         workers=args.workers,
         request_interval=args.request_interval,
+        espn_fallback=args.espn_fallback,
     )
     if args.mode == "status":
         path = config.directory / "manifest.json"
