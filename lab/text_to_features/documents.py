@@ -14,7 +14,7 @@ from collections.abc import Iterable
 
 from nba_ou.config.settings import SETTINGS
 
-from lab.text_perspective.players import Player
+from lab.text_to_features.players import Player
 
 SOURCES = {
     "report": ("train_data/game_reports/v1", "reports"),

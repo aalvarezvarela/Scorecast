@@ -1,7 +1,7 @@
 import pytest
 
-from lab.text_perspective.players import Player, sentence_spans, tag_players
-from lab.text_perspective.team_perspective import perspective_texts
+from lab.text_to_features.players import Player, sentence_spans, tag_players
+from lab.text_to_features.team_perspective import perspective_texts
 
 HEAT = [Player("Tyler", "Herro", "Heat"), Player("Bam", "Adebayo", "Heat")]
 KNICKS = [Player("Jalen", "Brunson", "Knicks"), Player("OG", "Anunoby", "Knicks")]

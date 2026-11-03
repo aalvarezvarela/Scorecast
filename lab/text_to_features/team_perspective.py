@@ -18,7 +18,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from functools import lru_cache
 
-from lab.text_perspective.players import PLAYER_NOTE, Player, tag_players
+from lab.text_to_features.players import PLAYER_NOTE, Player, tag_players
 
 TARGET_LABEL = "Target Team"
 OPPONENT_LABEL = "Opponent Team"

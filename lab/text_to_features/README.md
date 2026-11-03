@@ -1,7 +1,13 @@
-# Team-perspective game texts
+# Text to features
 
-Exploration code: turns one game text into three, so that a later text model
-reads it from either side of the game.
+Exploration code for turning NBA news and game texts into model features,
+including embeddings. Currently, it loads archived reports and recap transcripts,
+cleans the text, and prepares team and player perspectives for a later text model.
+
+## Team-perspective game texts
+
+Turns one game text into three, so that a later text model reads it from either
+side of the game.
 
 | Version | Content |
 | --- | --- |
@@ -32,7 +38,7 @@ and `away` fields: NBA.com written reports
 ([`docs/pipeline/recap_transcripts.md`](../../docs/pipeline/recap_transcripts.md)).
 
 ```python
-from lab.text_perspective.team_perspective import (
+from lab.text_to_features.team_perspective import (
     document_perspectives,
     perspective_texts,
     replace_teams,
@@ -75,7 +81,7 @@ never occur in NBA prose, so they can be found again unambiguously.
 With the game's players, the rewrites also say which side each player is on:
 
 ```python
-from lab.text_perspective.documents import load_game_players
+from lab.text_to_features.documents import load_game_players
 
 players = load_game_players([doc["game_id"]])[doc["game_id"]]
 texts = document_perspectives(doc, players=players, label_rule="any")
