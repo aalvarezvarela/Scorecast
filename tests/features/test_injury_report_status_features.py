@@ -338,6 +338,22 @@ def test_available_roster_count_ignores_the_target_game_box_score():
     assert played.loc[played["GAME_ID"].eq(TARGET), col].iloc[0] == 2
 
 
+def test_available_roster_count_is_unknown_when_nobody_played_recently():
+    """A team's first game of a season has nobody with minutes in the last 30
+    days: NaN, not 0 ("nobody available")."""
+    out = add_player_history_features(
+        _team_rows(),
+        _players(30.0),
+        _injuries(),
+        stat_cols=["PTS"],
+        include_available_roster_count=True,
+    )[0]
+    col = "N_AVAILABLE_ROSTER_PLAYERS_BEFORE"
+    first = out.loc[out["GAME_ID"].eq("0022400001"), col].iloc[0]
+    assert pd.isna(first)
+    assert out.loc[out["GAME_ID"].eq(TARGET), col].iloc[0] == 2
+
+
 # --------------------------------------------------------------------------------
 # Questionable history
 # --------------------------------------------------------------------------------

@@ -245,6 +245,17 @@ History
     Parquet files under ``data/train_data`` built before this change still
     carry those quotes. ``docs/odds/alternate_line_ticks.md``.
 
+    Both datasets, rebuilt in place under the 2_5 label (the same bug-fix
+    precedent), in the S3 season partitions (2026-11-04):
+    ``{ACTIVE,INJURED,QUESTIONABLE}_WEIGHTED_*`` leave out players with no
+    earlier appearance with minutes. One such player on the roster made the
+    side's total minutes NaN and the value 0; with preseason dropped that hit
+    97% of teams' first games, 73% of second games and ~5% late in a season.
+    ``N_AVAILABLE_ROSTER_PLAYERS`` is NaN instead of 0 when nobody on the team
+    played in the last 30 days. The rebuild also refreshes the history memo
+    (``NBA_OU_HISTORY_MEMO_REBUILD=1``), so past seasons get the stale-book step
+    of the closing-line repair (#107), which the frozen memo had kept out.
+
 ``2_6``
     First layered version, over ``2_5`` (``schema_layers/v2_6.py``).
 

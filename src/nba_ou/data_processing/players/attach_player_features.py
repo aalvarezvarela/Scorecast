@@ -1112,8 +1112,12 @@ def add_player_history_features(
                 & (dates >= game_date - pd.Timedelta(days=AVAILABLE_ROSTER_RECENT_DAYS))
                 & (np.where(pd.isna(minutes), 0, minutes) > 0)
             ]
+            # Nobody with minutes in the window means the team has not played
+            # for AVAILABLE_ROSTER_RECENT_DAYS (a season opener, a long break):
+            # unknown, not "nobody available".
+            n_recent = roster.n_players(recent)
             row_update[_with_before_suffix(N_AVAILABLE_ROSTER_PLAYERS_COL)] = (
-                roster.n_players(recent)
+                n_recent if n_recent > 0 else np.nan
             )
 
         # Bench player stats (available non-starters with 7-21 avg MIN)
@@ -1346,14 +1350,22 @@ def add_player_history_features(
             weights = minutes_by_player.get(key, {})
             for stat_col in ACTIVE_PROFILE.weighted_rate_stats:
                 values = per_player_values.get(stat_col, {}).get(key, {})
-                weighted = sum(
-                    values[pid] * weights.get(pid, 0.0)
+                # A player with no earlier appearance with minutes reads NaN
+                # (a rookie, a new signing, someone yet to play) and carries no
+                # evidence: he is left out. Summed in, one such player made the
+                # total NaN, ``total_minutes > 0`` false and the team's rate 0.
+                pairs = [
+                    (values[pid], weights.get(pid, 0.0))
                     for pid in values
                     if values[pid] != 0
-                )
-                total_minutes = sum(
-                    weights.get(pid, 0.0) for pid in values if values[pid] != 0
-                )
+                ]
+                pairs = [
+                    (value, weight)
+                    for value, weight in pairs
+                    if np.isfinite(value) and np.isfinite(weight)
+                ]
+                weighted = sum(value * weight for value, weight in pairs)
+                total_minutes = sum(weight for _, weight in pairs)
                 # 0 is the right no-evidence value: with nobody on this side of
                 # the split (no injuries, or no history yet) there is no rate to
                 # report, and the column sits alongside N_INJURED_PLAYERS which
