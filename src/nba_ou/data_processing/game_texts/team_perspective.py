@@ -221,8 +221,16 @@ def replace_teams(
     return Rewrite(rewritten, tuple(mentions))
 
 
-# "TORONTO (AP) — ", "SACRAMENTO, Calif. (AP) ", "ORLANDO, Fla. - (AP)"
-DATELINE = re.compile(r"\A\s*[A-Z][A-Z.'’ -]+(?:,[^()\n]{0,30})?\(AP\)\s*[—–-]*\s*")
+# "TORONTO (AP) — ", "SACRAMENTO, Calif. (AP) ", "ORLANDO, Fla. - (AP)",
+# "PORTLAND. Ore. (AP) ", "Orlando, Fla. (AP) "; reports before 2019-20 (and a
+# few later ones) have no "(AP)": "CLEVELAND -- ", "OAKLAND, Calif. -- ",
+# "HOUSTON -- — ".
+DATELINE = re.compile(
+    r"\A\s*(?:"
+    r"[A-Z][A-Z.'’ -]+(?:,[^()\n]{0,30}?|\.? [A-Z][a-z]{1,5}\.)?\s*(?:\(AP\)|--)"
+    r"|[A-Z][a-z]+(?: [A-Z][a-z]+)*,[^()\n]{0,30}?\(AP\)"
+    r")\s*[—–-]*\s*"
+)
 # AP footers: a rule of dashes, "(More) AP NBA: <url>", "See AP’s full NBA
 # coverage here" and the writer's "Follow ... on Twitter: <url>". Story text
 # has no URLs, so any line with one is footer.

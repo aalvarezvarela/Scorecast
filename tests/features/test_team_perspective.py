@@ -96,6 +96,35 @@ def test_strip_boilerplate_drops_dateline_and_footer():
     )
 
 
+@pytest.mark.parametrize(
+    "opening",
+    [
+        "TORONTO (AP) — ",
+        "ORLANDO, Fla. - (AP) ",
+        "PORTLAND. Ore. (AP) ",
+        "PORTLAND Ore. (AP) ",
+        "Orlando, Fla. (AP) ",
+        "CLEVELAND -- ",
+        "OAKLAND, Calif. -- ",
+        "SALT LAKE CITY -- — ",
+    ],
+)
+def test_strip_boilerplate_drops_every_dateline_form(opening):
+    assert strip_boilerplate(f"{opening}Fox had 29 points.") == "Fox had 29 points."
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Devin Booker returned -- and scored 30.",
+        "In the wake of an easy win, the Blazers rested.",
+        "NBA-leading Thunder win again.",
+    ],
+)
+def test_strip_boilerplate_keeps_openings_without_dateline(text):
+    assert strip_boilerplate(text) == text
+
+
 def test_perspective_texts_mirror_each_other():
     texts = perspective_texts(
         "TORONTO (AP) Raptors beat Nets.", "Raptors", "Nets", intro=False
