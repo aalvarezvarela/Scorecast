@@ -152,6 +152,31 @@ def test_weighted_aggregate_is_minutes_weighted_not_a_plain_mean():
         assert value.iloc[row] > plain_mean, row
 
 
+def test_a_player_without_minutes_history_is_left_out_of_the_weighted_rate():
+    """A rookie or new signing who has not played yet reads NaN, and must not
+    turn the whole team's rate into 0 (it did: NaN total minutes)."""
+    df_team, df_players, df_injuries = _frames()
+    rookie = df_players[df_players.PLAYER_ID.eq(200000)].assign(
+        PLAYER_ID=209999,
+        PLAYER_NAME="Rookie",
+        MIN=0.0,
+        PTS=float("nan"),
+        OFF_RATING=float("nan"),
+        DEF_RATING=float("nan"),
+        TS_PCT=float("nan"),
+        PACE_PER40=float("nan"),
+    )
+    df_players = pd.concat([df_players, rookie], ignore_index=True)
+    out, _ = add_player_history_features(df_team, df_players, df_injuries, STATS)
+    out = out.sort_values("GAME_DATE").reset_index(drop=True)
+
+    healthy_weighted, _ = _expected_weighted(range(9))
+    for row in (1, 2, 4):
+        assert out["ACTIVE_WEIGHTED_OFF_RATING_BEFORE"].iloc[row] == pytest.approx(
+            healthy_weighted
+        ), row
+
+
 def test_questionable_players_get_the_same_reduced_weighted_calculation():
     df_team, df_players, df_injuries = _frames()
     target = df_team.GAME_ID.iloc[3]

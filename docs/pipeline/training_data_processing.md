@@ -599,7 +599,9 @@ not do is need this many columns to say it. The measurements:
 eight per-slot rate columns, one number per side weighting each player's rate by
 their own minutes. It says what the per-slot columns were reaching for, and
 stays defined when a slot is empty. `0` means nobody on that side of the split,
-which `N_INJURED_PLAYERS` disambiguates.
+which `N_INJURED_PLAYERS` disambiguates. A player with no earlier appearance with
+minutes (a rookie or new signing yet to play) has no rate and is left out of the
+average; before 2026-11-04 one such player made the whole side's value `0`.
 
 **Two things the cut was not allowed to break:**
 

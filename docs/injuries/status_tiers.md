@@ -243,6 +243,9 @@ Three details that are not mechanical:
 - **`N_AVAILABLE_ROSTER_PLAYERS`** counts players on the available side of the
   split who logged minutes in the 30 days before the game. Without the recency
   window, waived players would stay "on the roster" all season.
+  - It is NaN when nobody on the team logged minutes in the window: a season
+    opener or a break of 30+ days. Unknown, not "nobody available" (it was 0
+    until 2026-11-04).
   - It never reads the target game's box score.
   - Its name must not start with `N_ACTIVE_PLAYERS`, the rotation-leak guard in
     `config/leakage.py`.
