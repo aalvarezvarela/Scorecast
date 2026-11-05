@@ -2,7 +2,8 @@
 
 Status: Implemented — every archived NBA.com report (2017-18 on) is embedded
 and stored in S3. No feature reads the vectors yet; the daily job does not run
-it yet.
+it yet. Two research campaigns found no value as line_error features (see
+"Feature experiments"), so the feature work is closed.
 
 The reasons for each choice (model, instruction, team rewrites) are in
 [`lab/text_to_features/README.md`](../../lab/text_to_features/README.md).
@@ -117,11 +118,31 @@ vectors before using them as features.
   float32. The store holds 225 MB, about 6.4 KB per vector against 16 KB as raw
   float32. `verify` passes on every season.
 
+## Feature experiments
+
+Two campaigns tested the vectors as line_error features, with research
+columns built outside the schema layers (each research Parquet has a
+`.provenance.json`). Per team, they used the newest reports published strictly
+before the snapshot (`published_at_utc`). The vectors were reduced by PCA, or
+by PCA of a residual from which the game's box score, both franchises and the
+season running means were removed first.
+
+- [`report_text_last_game_2026_11`](../../experiments/report_text_last_game_2026_11/README.md):
+  the last game's report at the close, T-480 and T-720, four reductions, at the
+  production hyperparameters. No arm passed. The 64-dimension arms were worse
+  in CV, and the 16-dimension residual arms were neutral.
+- [`report_text_optuna_2026_11`](../../experiments/report_text_optuna_2026_11/README.md):
+  the last game plus the mean of the last 5 reports (residual, 16 dimensions
+  each), at T-480 and T-720, with every arm re-tuned by Optuna. In the holdout
+  the text arm was worse than both controls at both horizons. Two tunings of
+  the same control differed by 0.07–0.09 MAE.
+
+Earlier probes found that a previous-game vector does not predict the next
+game's LINE_ERROR or SPREAD_ERROR, at any reduction size.
+
 ## Not done
 
-- Features: reduction (Matryoshka truncation or PCA), aggregation over a
-  team's previous games, the `published_at_utc` availability rule, a schema
-  layer and the walk-forward ablation.
+- Features: the campaigns above found no value, so no schema layer was built.
 - A daily job: the report download is not scheduled either.
 - Recap transcripts (`documents.SOURCES["transcript"]`): the inputs work for
   them, but the store and CLI are for reports only.

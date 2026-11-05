@@ -36,8 +36,8 @@ survived the evaluation discipline in the `experiments` skill.
     `historic_games/`, `merged_home_away_data/` (incl.
     `select_train_columns.py`), `statistics/`, `missing_data/`,
     `scheduled_games/`, `game_texts/` (NBA.com report embeddings with
-    Qwen3-Embedding-8B via Nebius, stored losslessly in S3; no features yet —
-    `docs/pipeline/text_embeddings.md`).
+    Qwen3-Embedding-8B via Nebius, stored losslessly in S3; no features: two
+    line_error campaigns found no value — `docs/pipeline/text_embeddings.md`).
   - `modeling/` — model-side library code:
     - `modeling.py` — CV splitters, recency sample weighting,
       `ModelBundleMetadata`.
