@@ -77,7 +77,16 @@ the KPI strip.
    highest win % among the slots with at least 30 settled bets. A slot is an
    intermediate model at its own snapshot, or a closing model at one input
    timepoint (Final included). Each card shows the slot, win %, bets and ROI.
-   A fourth card gives the **coin-flip chance** of the best one: the share of
+   Each card also gives **P(profitable)**: the posterior probability that the
+   slot's true win rate beats 52.38%, from its wins and losses and a skeptical
+   Beta(50, 50) prior (a coin flip worth 100 bets; 32% with no bets), exact
+   via the binomial identity, no scipy. It does not know the slot was picked
+   as a leader. Beside the cards, two selection-aware checks of the best one:
+   the **game-permutation p** (each simulation flips every game's result at
+   random, the same flip for every slot that bet it, so shared games stay
+   shared; the share of 2,000 simulations whose best slot reaches the observed
+   win %, +1 corrected, shown as `< 0.001` below its resolution) and the
+   **coin-flip chance**: the share of
    simulations in which the best of the same number of coin-flip cells, with
    the same bet counts, reaches that win %. Cells share games, so treating
    them as independent overstates the chance; it is a conservative guide, not
@@ -141,8 +150,9 @@ placed** (time T), never at a later line.
   compared with the three best single slots and the random baseline, paired
   with the best slot on the games both bet (W/L only) with an exact two-sided
   sign test on the games only one of them won. The leader is picked from all
-  combinations tried, so a card reports its win % and its coin-flip chance
-  over all of them; "All combinations tried" lists every one. The previous fixed family
+  combinations tried, so cards report its win %, P(profitable), and its
+  coin-flip chance and game-permutation p over all of them; the combination
+  table adds P(profitable) per row; "All combinations tried" lists every one. The previous fixed family
   (per-model means across horizons, 2026-11-02) is replaced: it mixed
   snapshots that are never available together at a betting time.
   First read of that family (2026-11-02, 92 games, replay): no combination

@@ -38,17 +38,34 @@ def yesterday_setup(monkeypatch):
     loaders.load_yesterday.clear()
 
 
-def open_yesterday(source="Live predictions"):
-    """The page, switched to ``source`` (None keeps the default, replay)."""
+def open_yesterday(source="Live predictions", target=1):
+    """The page on ``source`` and ``target``; None keeps the default (replay,
+    Summary)."""
     app = AppTest.from_file(str(ENTRYPOINT)).run()
     app.switch_page("app_pages/yesterday.py").run()
     if source is not None:
         app.session_state["yesterday_source"] = source
+    if target is not None:
+        app.session_state["yesterday_target"] = target
+    if source is not None or target is not None:
         app.run()
     return app
 
 
-def test_yesterday_defaults_to_snapshot_replay(yesterday_setup):
+def test_yesterday_defaults_to_the_replay_summary(yesterday_setup):
+    reader, _ = yesterday_setup
+    app = open_yesterday(source=None, target=None)
+    assert not app.exception
+    assert app.session_state["yesterday_source"] == "Snapshot replay"
+    assert app.session_state["yesterday_target"] == 0
+    target = app.button_group(key="yesterday_target")
+    assert target.options[0] == "Summary"
+    assert "Slate summary" in [node.value for node in app.subheader]
+    assert not tables(app)
+    assert reader.call_count == 1
+
+
+def test_yesterday_replay_cards_show_reconstructed_outputs(yesterday_setup):
     reader, _ = yesterday_setup
     app = open_yesterday(source=None)
     assert not app.exception
