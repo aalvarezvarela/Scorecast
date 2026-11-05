@@ -1,8 +1,6 @@
 """Archive invariants: expected-game coverage, immutable uploads, and recovery."""
 
 import gzip
-import hashlib
-import io
 import json
 import zlib
 from dataclasses import replace
@@ -12,59 +10,7 @@ import pytest
 from botocore.exceptions import ClientError
 
 from lab.game_reports import season_reports as archive
-
-
-def client_error(code):
-    return ClientError({"Error": {"Code": code, "Message": code}}, "test")
-
-
-class FakeS3:
-    def __init__(self):
-        self.objects = {}
-        self.fail_keys = set()
-        self.puts = []
-
-    def put_object(self, **kwargs):
-        key = kwargs["Key"]
-        if key in self.fail_keys:
-            raise client_error("AccessDenied")
-        previous = self.objects.get(key)
-        if kwargs.get("IfNoneMatch") == "*" and previous:
-            raise client_error("PreconditionFailed")
-        if "IfMatch" in kwargs and (
-            not previous or previous["ETag"] != kwargs["IfMatch"]
-        ):
-            raise client_error("PreconditionFailed")
-        body = kwargs["Body"]
-        self.objects[key] = {
-            "Body": body,
-            "Metadata": kwargs.get("Metadata", {}),
-            "ETag": hashlib.sha256(body).hexdigest(),
-        }
-        self.puts.append(key)
-        return {"ETag": self.objects[key]["ETag"]}
-
-    def get_object(self, **kwargs):
-        if kwargs["Key"] not in self.objects:
-            raise client_error("NoSuchKey")
-        stored = self.objects[kwargs["Key"]]
-        return {**stored, "Body": io.BytesIO(stored["Body"])}
-
-    def head_object(self, **kwargs):
-        stored = self.objects[kwargs["Key"]]
-        return {"ContentLength": len(stored["Body"]), "Metadata": stored["Metadata"]}
-
-    def get_paginator(self, name):
-        return self
-
-    def paginate(self, **kwargs):
-        yield {
-            "Contents": [
-                {"Key": key, "Size": len(obj["Body"])}
-                for key, obj in self.objects.items()
-                if key.startswith(kwargs["Prefix"])
-            ]
-        }
+from tests.support.conditional_s3 import ConditionalFakeS3, client_error
 
 
 @pytest.fixture
@@ -161,7 +107,7 @@ def test_json_gzip_is_deterministic_without_duplicate_text(config, manifest):
 def test_failed_upload_retries_local_file_without_refetch(
     config, manifest, monkeypatch
 ):
-    s3 = FakeS3()
+    s3 = ConditionalFakeS3()
     failing = config.report_key("0042500001")
     s3.fail_keys.add(failing)
     fetched = []
@@ -187,7 +133,7 @@ def test_failed_upload_retries_local_file_without_refetch(
 def test_orphan_upload_is_recovered_without_source_request(
     config, manifest, monkeypatch
 ):
-    s3 = FakeS3()
+    s3 = ConditionalFakeS3()
     entry = manifest["games"]["0022500001"]
     store = archive.S3ReportStore(s3, config)
     store.put_report(entry, report_body(entry, config))
@@ -199,7 +145,7 @@ def test_orphan_upload_is_recovered_without_source_request(
 
 
 def test_missing_s3_object_is_reuploaded_from_local(config, manifest, monkeypatch):
-    s3 = FakeS3()
+    s3 = ConditionalFakeS3()
     monkeypatch.setattr(
         archive, "fetch_report", lambda entry, cfg, pacer: report_body(entry, cfg)
     )
@@ -217,7 +163,7 @@ def test_missing_s3_object_is_reuploaded_from_local(config, manifest, monkeypatc
 
 
 def test_existing_different_s3_report_is_never_overwritten(config, manifest):
-    s3 = FakeS3()
+    s3 = ConditionalFakeS3()
     store = archive.S3ReportStore(s3, config)
     entry = manifest["games"]["0022500001"]
     body = report_body(entry, config)
@@ -229,7 +175,7 @@ def test_existing_different_s3_report_is_never_overwritten(config, manifest):
 
 
 def test_manifest_conditional_write_rejects_stale_writer(config, manifest):
-    s3 = FakeS3()
+    s3 = ConditionalFakeS3()
     first, second = archive.S3ReportStore(s3, config), archive.S3ReportStore(s3, config)
     first.save_manifest(manifest)
     second.load_manifest()
@@ -242,7 +188,7 @@ def test_manifest_conditional_write_rejects_stale_writer(config, manifest):
 def test_remote_only_resume_preserves_unavailable_status(
     config, payload, manifest, monkeypatch, tmp_path
 ):
-    s3 = FakeS3()
+    s3 = ConditionalFakeS3()
     monkeypatch.setattr(archive, "fetch_report", lambda *args: None)
     archive.download_season(config, manifest, archive.S3ReportStore(s3, config))
     other = replace(config, local_root=tmp_path / "another-machine")
@@ -282,7 +228,7 @@ def test_unusable_local_report_is_set_aside_and_refetched(
     monkeypatch.setattr(
         archive, "fetch_report", lambda entry, cfg, pacer: report_body(entry, cfg)
     )
-    s3 = FakeS3()
+    s3 = ConditionalFakeS3()
     archive.download_season(config, manifest, archive.S3ReportStore(s3, config))
     assert manifest["games"]["0022500001"]["status"] == "uploaded"
     assert archive.use_local_report(manifest["games"]["0022500001"], config) == body
@@ -319,7 +265,7 @@ def test_stored_reports_expose_utc_publication_time(config, manifest):
 def test_manifest_publish_failure_does_not_hide_the_run_error(
     config, manifest, monkeypatch, capsys
 ):
-    s3 = FakeS3()
+    s3 = ConditionalFakeS3()
     monkeypatch.setattr(
         archive,
         "fetch_report",
@@ -358,7 +304,10 @@ def test_missing_game_index_is_distinguished_from_wrong_game_data(
     )
     monkeypatch.setattr(archive, "fetch_page_props", lambda *args: props)
     result = archive.process_game(
-        entry, config, archive.S3ReportStore(FakeS3(), config), archive.RequestPacer(0)
+        entry,
+        config,
+        archive.S3ReportStore(ConditionalFakeS3(), config),
+        archive.RequestPacer(0),
     )
     assert result["status"] == ("not_available" if redirected else "fetch_error")
     assert result["error"]
@@ -379,7 +328,10 @@ def test_pregame_preview_is_explicitly_recorded_as_unavailable(
     monkeypatch.setattr(archive, "create_session", MagicMock())
     monkeypatch.setattr(archive, "fetch_page_props", lambda *args: props)
     result = archive.process_game(
-        entry, config, archive.S3ReportStore(FakeS3(), config), archive.RequestPacer(0)
+        entry,
+        config,
+        archive.S3ReportStore(ConditionalFakeS3(), config),
+        archive.RequestPacer(0),
     )
     assert result["status"] == "not_available"
     assert "pregame preview" in result["error"]

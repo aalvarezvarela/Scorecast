@@ -28,8 +28,16 @@ def test_parser_defaults_and_mode():
     args = cli.build_parser().parse_args(["download", "2024-25", "--max-games", "5"])
     assert (args.mode, args.season, args.max_games) == ("download", 2024, 5)
     assert tuple(args.phases) == cli.DEFAULT_PHASES
+    assert not args.espn_fallback
     with pytest.raises(SystemExit):
         cli.build_parser().parse_args(["download", "2024", "--max-games", "0"])
+
+
+def test_historical_fallback_flag():
+    args = cli.build_parser().parse_args(
+        ["download", "2018-19", "--espn-fallback", "--retry-unavailable"]
+    )
+    assert args.espn_fallback and args.retry_unavailable
 
 
 @pytest.mark.parametrize(

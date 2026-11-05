@@ -25,6 +25,7 @@ from zoneinfo import ZoneInfo
 
 from botocore.exceptions import ClientError
 from nba_api.stats.endpoints import ScheduleLeagueV2
+from tqdm.auto import tqdm
 
 from lab.game_reports.season_reports import (
     DEFAULT_PHASES,
@@ -956,10 +957,22 @@ def run_archive(
         consecutive_missing = 0
         index, absent = None, 0
         failure = None
+        progress = tqdm(
+            entries,
+            desc=f"Audio {config.season}",
+            unit="game",
+            bar_format="{desc}: {percentage:3.0f}%|{bar}| {n_fmt}/{total_fmt} "
+            "[{elapsed}<{remaining}]{postfix}",
+            dynamic_ncols=True,
+            disable=None,
+        )
         try:
             if config.use_channel_index and entries:
                 index = channel_index(config, pacer, entries)
-            for entry in entries:
+            for entry in progress:
+                progress.set_postfix_str(
+                    f"{entry['game_id']} {entry['status']}"
+                )
                 if (
                     not store
                     and entry["status"] == "downloaded"
@@ -982,16 +995,15 @@ def run_archive(
                     continue
                 if max_games is not None and processed >= max_games:
                     break
-                print(
+                progress.write(
                     f"[{processed + 1}] {entry['date']} {entry['away']} @ {entry['home']} ({entry['game_id']})",
-                    flush=True,
                 )
                 process_game(entry, config, store, pacer, index)
                 processed += 1
                 checkpoint(config, manifest)
-                print(
+                progress.set_postfix_str(f"{entry['game_id']} {entry['status']}")
+                progress.write(
                     f"  {entry['status']}: {entry['error'] or entry['local_path']}",
-                    flush=True,
                 )
                 consecutive_errors = (
                     consecutive_errors + 1 if entry["status"].endswith("error") else 0
@@ -1015,6 +1027,7 @@ def run_archive(
             failure = exc
             raise
         finally:
+            progress.close()
             checkpoint(config, manifest)
             if store:
                 try:

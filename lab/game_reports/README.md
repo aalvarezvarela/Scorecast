@@ -18,7 +18,41 @@ From the repository root:
 3. Select the next season explicitly; the runner never loops over seasons.
 
 Options: `--retry-unavailable`, `--max-games N` (pilot run), `--workers`,
-`--request-interval`, `--phases`, `--local-root`, `--s3-prefix`; see `--help`.
+`--request-interval`, `--phases`, `--local-root`, `--s3-prefix`,
+`--espn-fallback`; see `--help`.
+
+## Historical seasons (2017–18, 2018–19)
+
+The NBA.com pages checked for these seasons have no written `story`. Adding
+`/recap` does not restore it; old `/games/YYYYMMDD/TEAMTEAM` URLs redirect to
+the games index. The legacy `data.nba.com` recap JSON route returned HTTP 403
+in the investigation, so it is not used as a working alternative.
+
+An opt-in ESPN fallback tries NBA.com first and retrieves ESPN's full written
+recap only when NBA.com has no postgame article (including missing pages or
+preview-only pages). Request failures, blocks, and malformed or mismatched NBA
+data remain errors. The opening two games of each season were verified against
+ESPN, which retains their full Associated Press articles; this sample does not
+establish full-season coverage.
+
+```bash
+.venv/bin/python lab/game_reports/download_season_reports.py download 2017-18 --espn-fallback --retry-unavailable
+.venv/bin/python lab/game_reports/download_season_reports.py download 2018-19 --espn-fallback --retry-unavailable
+```
+
+`--retry-unavailable` is needed to revisit games already marked `not_available`.
+Add `--max-games 5` for a pilot. Completed uploads are reused. Existing NBA
+reports are never replaced with ESPN reports.
+
+ESPN events are matched by US Eastern game date and home/away teams, then the
+summary and recap event IDs are checked again. Its per-day scoreboard is shared
+across workers; all additional requests obey `--request-interval`. Reports keep
+the official NBA game ID and add `source: "ESPN"`, `espn_event_id`, the ESPN
+article/API URLs, `nba_source_url`, and `nba_unavailable_reason`.
+`published_at` preserves ESPN's `originallyPosted` (or `published`) with its
+explicit timezone; `published_at_utc` converts that instant to UTC. The original
+publication and last-modified fields are also retained. These dates can reflect
+later edits, so do not infer publication from tip-off or retrieval time.
 
 ## Storage
 
@@ -28,7 +62,7 @@ retrieval time, official game ID, and season/phase metadata. The redundant
 `paragraphs` array from the daily prototype is omitted: `text` already preserves
 paragraph breaks.
 
-`published_at` is NBA.com's story date verbatim: a US Eastern wall-clock time
+For NBA.com reports, `published_at` is the story date verbatim: a US Eastern wall-clock time
 (`America/New_York`, daylight saving included) with no offset. `published_at_utc`
 is the same instant in UTC. Reports archived before 2026-10-31 do not carry that
 field; read them through `season_reports.load_report()`, which fills it in. The
