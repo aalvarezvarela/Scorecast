@@ -86,7 +86,12 @@ def upsert_teams(
 ) -> dict[str, int]:
     """Register clubs; returns ``report_name -> team_id``."""
     with conn.cursor() as cur:
+        cur.execute(_q("SELECT report_name FROM {schema}.ir_team"))
+        stored = {name for (name,) in cur.fetchall()}
         for row in teams.itertuples(index=False):
+            if row.report_name in stored:
+                continue
+            stored.add(row.report_name)
             cur.execute(
                 _q(
                     "INSERT INTO {schema}.ir_team (nba_team_id, tricode, report_name) "
@@ -142,9 +147,19 @@ def upsert_reasons(
     Unseen categories are inserted rather than rejected -- unlike statuses, new
     ones are normal (Health and Safety Protocols in 2020, Ineligible To Play in
     2022).
+
+    Only keys not stored yet are inserted. An ``INSERT ... ON CONFLICT DO
+    NOTHING`` draws a value from the identity sequence even when the row
+    exists, so inserting every pair on every run used the SMALLINT
+    ``category_id`` sequence up (32767 values for 16 categories) and stopped
+    the injury ingest on 2026-11-04. ``ON CONFLICT`` stays for a concurrent
+    writer.
     """
     with conn.cursor() as cur:
-        for code, label, _ in pairs:
+        cur.execute(_q("SELECT code, category_id FROM {schema}.ir_reason_category"))
+        categories = {code: cid for code, cid in cur.fetchall()}
+        missing = {code: label for code, label, _ in pairs if code not in categories}
+        for code, label in missing.items():
             cur.execute(
                 _q(
                     "INSERT INTO {schema}.ir_reason_category (code, label) "
@@ -152,10 +167,16 @@ def upsert_reasons(
                 ),
                 (code, label),
             )
-        cur.execute(_q("SELECT code, category_id FROM {schema}.ir_reason_category"))
-        categories = {code: cid for code, cid in cur.fetchall()}
+        if missing:
+            cur.execute(_q("SELECT code, category_id FROM {schema}.ir_reason_category"))
+            categories = {code: cid for code, cid in cur.fetchall()}
 
+        cur.execute(_q("SELECT category_id, detail FROM {schema}.ir_reason"))
+        stored = set(cur.fetchall())
         for code, _, detail in pairs:
+            if (categories[code], detail) in stored:
+                continue
+            stored.add((categories[code], detail))
             cur.execute(
                 _q(
                     "INSERT INTO {schema}.ir_reason (category_id, detail) "
@@ -176,9 +197,19 @@ def upsert_reasons(
 def upsert_reports(
     conn: psycopg.Connection, reports: pd.DataFrame, *, commit: bool = True
 ) -> dict[pd.Timestamp, int]:
-    """Register report coverage; returns ``observed_at -> report_id``."""
+    """Register report coverage; returns ``observed_at -> report_id``.
+
+    Stored reports are skipped before the insert, which would otherwise draw
+    an identity value for nothing (see ``upsert_reasons``).
+    """
     with conn.cursor() as cur:
+        cur.execute(_q("SELECT observed_at FROM {schema}.ir_report"))
+        stored = {ts for (ts,) in cur.fetchall()}
         for row in reports.itertuples(index=False):
+            observed_at = _to_native(row.observed_at)
+            if observed_at in stored:
+                continue
+            stored.add(observed_at)
             cur.execute(
                 _q(
                     "INSERT INTO {schema}.ir_report "
@@ -187,7 +218,7 @@ def upsert_reports(
                     "ON CONFLICT (observed_at) DO NOTHING"
                 ),
                 (
-                    _to_native(row.observed_at),
+                    observed_at,
                     int(row.season_year),
                     int(row.era),
                     int(row.n_rows),

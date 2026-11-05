@@ -458,6 +458,127 @@ def test_clear_season_rolls_back_everything_on_failure():
     assert conn.rolled_back and not conn.committed
 
 
+class _IdentityTables:
+    """The four identity-keyed dimensions, with Postgres's sequence behaviour:
+    every ``INSERT`` draws the next value, even one that hits ``ON CONFLICT``."""
+
+    KEYS = {
+        "ir_reason_category": ("code",),
+        "ir_reason": ("category_id", "detail"),
+        "ir_team": ("report_name",),
+        "ir_report": ("observed_at",),
+    }
+    COLUMNS = {
+        "ir_reason_category": ("code", "label"),
+        "ir_reason": ("category_id", "detail"),
+        "ir_team": ("nba_team_id", "tricode", "report_name"),
+        "ir_report": ("observed_at", "season_year", "era", "n_rows", "parse_ok"),
+    }
+    IDS = {
+        "ir_reason_category": "category_id",
+        "ir_reason": "reason_id",
+        "ir_team": "team_id",
+        "ir_report": "report_id",
+    }
+
+    def __init__(self):
+        self.rows = {table: [] for table in self.KEYS}
+        self.sequence = {table: 0 for table in self.KEYS}
+
+    def cursor(self):
+        return _IdentityCursor(self)
+
+    def commit(self):
+        pass
+
+
+class _IdentityCursor:
+    def __init__(self, db):
+        self.db, self._result = db, []
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def execute(self, statement, params=None):
+        text = statement.as_string(None)
+        if "JOIN" in text:  # the reason map: code, detail, reason_id
+            codes = {
+                r["category_id"]: r["code"] for r in self.db.rows["ir_reason_category"]
+            }
+            self._result = [
+                (codes[r["category_id"]], r["detail"], r["reason_id"])
+                for r in self.db.rows["ir_reason"]
+            ]
+            return
+        table = next(t for t in self.db.KEYS if f".{t} " in f"{text} ")
+        if text.startswith("INSERT"):
+            self.db.sequence[table] += 1
+            row = dict(zip(self.db.COLUMNS[table], params, strict=True))
+            key = tuple(row[c] for c in self.db.KEYS[table])
+            stored = {
+                tuple(r[c] for c in self.db.KEYS[table]) for r in self.db.rows[table]
+            }
+            if key not in stored:
+                row[self.db.IDS[table]] = self.db.sequence[table]
+                self.db.rows[table].append(row)
+            return
+        selected = text.split("SELECT ", 1)[1].split(" FROM", 1)[0].split(", ")
+        self._result = [tuple(r[c] for c in selected) for r in self.db.rows[table]]
+
+    def fetchall(self):
+        return list(self._result)
+
+
+def test_upserting_known_reasons_draws_no_identity_values():
+    db = _IdentityTables()
+    pairs = [("injury", "Injury/Illness", f"detail {i}") for i in range(50)]
+    pairs += [("rest", "Rest", "")]
+    first = load_module.upsert_reasons(db, pairs)
+    drawn = dict(db.sequence)
+    second = load_module.upsert_reasons(db, pairs)
+
+    assert first == second
+    assert len(db.rows["ir_reason_category"]) == 2
+    assert drawn["ir_reason_category"] == 2  # one per new category, not per pair
+    assert drawn["ir_reason"] == 51
+    assert db.sequence == drawn  # a rerun draws nothing
+
+    more = load_module.upsert_reasons(db, pairs + [("rest", "Rest", "load")])
+    assert db.sequence["ir_reason_category"] == 2
+    assert db.sequence["ir_reason"] == 52
+    assert len(more) == 52
+
+
+def test_upserting_known_teams_and_reports_draws_no_identity_values():
+    db = _IdentityTables()
+    teams = pd.DataFrame(
+        {
+            "nba_team_id": [1610612745, 1610612747],
+            "tricode": ["HOU", "LAL"],
+            "report_name": ["Houston Rockets", "Los Angeles Lakers"],
+        }
+    )
+    reports = pd.DataFrame(
+        {
+            "observed_at": pd.to_datetime(["2026-11-04T17:30Z", "2026-11-04T18:30Z"]),
+            "season_year": [2026, 2026],
+            "era": [3, 3],
+            "n_rows": [40, 41],
+            "parse_ok": [True, True],
+        }
+    )
+    team_map = load_module.upsert_teams(db, teams)
+    report_map = load_module.upsert_reports(db, reports)
+    assert db.sequence["ir_team"] == 2 and db.sequence["ir_report"] == 2
+
+    assert load_module.upsert_teams(db, teams) == team_map
+    assert load_module.upsert_reports(db, reports) == report_map
+    assert db.sequence["ir_team"] == 2 and db.sequence["ir_report"] == 2
+
+
 # --------------------------------------------------------------------------------
 # Curated player aliases
 # --------------------------------------------------------------------------------
