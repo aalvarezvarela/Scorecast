@@ -69,11 +69,16 @@ def test_yesterday_defaults_to_live_with_final_scores_and_fixed_checkpoints(
     )
     assert len(rendered_images(app)) == 5
     assert any(text.value == "### 114 — 121" for text in app.markdown)
-    assert any("Total points **235**" in text.value for text in app.caption)
+    assert any(text.value == "Total points" for text in app.caption)
+    assert any(text.value == "**235**" for text in app.markdown)
+    assert any(text.value == "**Celtics by 7**" for text in app.markdown)
+    assert any(text.value == "Pre-game line" for text in app.caption)
+    # The final pre-game quote (235.0) equals the final total.
+    assert any(text.value == "**Push**" for text in app.markdown)
     assert any("28 Oct 2026, 03:00 Madrid" in text.value for text in app.caption)
     cards = tables(app)
     assert len(cards) == 2
-    assert all(len(card.select("tbody tr")) == 14 for card in cards)
+    assert all(len(card.select("tbody tr")) == 18 for card in cards)
     assert all("Closing · Final pre-game" in card.get_text() for card in cards)
     assert all("Intermediate · T−8h" in card.get_text() for card in cards)
     assert any("PUSH" in card.get_text() for card in cards)
@@ -185,7 +190,7 @@ def test_table_and_details_show_scores_original_outputs_and_madrid_timestamps(
     app.run()
     assert not app.exception
     detail = app.dataframe[0].value
-    assert len(detail) == 28
+    assert len(detail) == 36
     assert set(detail["Final score (away–home)"]) == {"114–121"}
     assert {
         "Original model line",
@@ -199,7 +204,7 @@ def test_table_and_details_show_scores_original_outputs_and_madrid_timestamps(
     app.run()
     app.toggle(key="yesterday_details_1").set_value(True).run()
     assert not app.exception
-    assert len(app.dataframe[0].value) == 14
+    assert len(app.dataframe[0].value) == 18
 
 
 def test_changing_threshold_regrades_picks_and_keeps_predictions(yesterday_setup):
@@ -244,9 +249,11 @@ def test_daily_summary_shows_win_rate_and_mae_per_model_before_all_cards(
         "Closing at 6h",
         "Closing at 4h",
         "Closing at closing",
+        "Intermediate at 12h",
         "Intermediate at 8h",
         "Intermediate at 6h",
         "Intermediate at 4h",
+        "Intermediate at 2h",
     ]
     assert checkpoint_summary["Games"].eq(2).all()
     assert checkpoint_summary.loc["Closing at 6h", "Bets"] == 2
@@ -286,9 +293,11 @@ def test_tabpfn_summary_keeps_its_separate_timepoints_without_inventing_closing_
     assert not app.exception
     tabpfn = app.table[1].value
     assert list(tabpfn.index) == [
+        "Intermediate at 12h",
         "Intermediate at 8h",
         "Intermediate at 6h",
         "Intermediate at 4h",
+        "Intermediate at 2h",
     ]
     assert tabpfn["Games"].eq(2).all()
     assert tabpfn["MAE"].eq("3.00 pts").all()
@@ -357,3 +366,68 @@ def test_empty_day_and_safe_aiven_error_are_handled(yesterday_setup):
     app.button(key="yesterday_refresh").click().run()
     assert not app.exception
     assert app.error[0].value == "Could not read Aiven."
+
+
+@pytest.mark.parametrize(
+    ("line", "spread", "expected"),
+    [
+        (None, False, []),
+        (
+            230.5,
+            False,
+            [("Pre-game line", "230.5"), ("Result", "Over by 4.5")],
+        ),
+        (
+            240.0,
+            False,
+            [("Pre-game line", "240.0"), ("Result", "Under by 5.0")],
+        ),
+        (
+            3.5,
+            True,
+            [
+                ("Pre-game spread", "Celtics -3.5"),
+                ("Result", "Celtics cover by 3.5"),
+            ],
+        ),
+        (
+            -2.0,
+            True,
+            [
+                ("Pre-game spread", "Celtics +2.0"),
+                ("Result", "Celtics cover by 9.0"),
+            ],
+        ),
+        (
+            9.5,
+            True,
+            [
+                ("Pre-game spread", "Celtics -9.5"),
+                ("Result", "Knicks cover by 2.5"),
+            ],
+        ),
+        (
+            7.0,
+            True,
+            [("Pre-game spread", "Celtics -7.0"), ("Result", "Push")],
+        ),
+    ],
+)
+def test_result_strip_states_total_margin_and_outcome_against_the_line(
+    line, spread, expected
+):
+    from nba_ou.dashboard.ui.teams import result_stats
+
+    game = {
+        "home_team": "Boston Celtics",
+        "away_team": "New York Knicks",
+        "home_team_id": 1610612738,
+        "away_team_id": 1610612752,
+        "home_points": 121,
+        "away_points": 114,
+    }
+    assert result_stats(game, line=line, spread=spread) == [
+        ("Total points", "235"),
+        ("Margin", "Celtics by 7"),
+        *expected,
+    ]

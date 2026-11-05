@@ -7,8 +7,20 @@ from nba_ou.dashboard.domain.dates import madrid_time, time_remaining
 from nba_ou.dashboard.domain.teams import full_team_name, team_logo_url
 
 
-def render_game_header(game, *, now=None, show_result: bool = False) -> None:
-    """A balanced matchup panel with a central score and a separate timing row."""
+def render_game_header(
+    game,
+    *,
+    now=None,
+    show_result: bool = False,
+    line: float | None = None,
+    spread: bool = False,
+) -> None:
+    """A balanced matchup panel with a central score and a separate timing row.
+
+    A final game adds a result strip: total points and home margin, plus the
+    given pre-game ``line`` (totals, or the implied home margin when
+    ``spread``) and how the game finished against it.
+    """
     game_id = int(game["game_id"])
     final = (
         show_result
@@ -45,6 +57,8 @@ def render_game_header(game, *, now=None, show_result: bool = False) -> None:
                 "Home",
                 key=f"match_team_{game_id}_home",
             )
+        if final:
+            _result_strip(game, line=line, spread=spread)
         with st.container(key=f"match_footer_{game_id}", gap="xxsmall"):
             timing = f"**{madrid_time(game['tipoff_at'])}**"
             if game["status"] == 1:
@@ -52,11 +66,67 @@ def render_game_header(game, *, now=None, show_result: bool = False) -> None:
             elif now is not None and game["status"] != 2:
                 timing += f" · {time_remaining(game['tipoff_at'], now)}"
             st.caption(timing)
-            if final:
-                st.caption(
-                    f"Total points **{int(game['home_points'] + game['away_points'])}** · "
-                    f"Home margin **{int(game['home_points'] - game['away_points']):+d}**"
-                )
+
+
+def _nickname(name: str, team_id) -> str:
+    """``Boston Celtics`` -> ``Celtics``, short enough for the result strip."""
+    return full_team_name(name, team_id).split()[-1]
+
+
+def result_stats(game, *, line=None, spread: bool = False) -> list[tuple[str, str]]:
+    """``(label, value)`` cells describing a final game against its line."""
+    total = int(game["home_points"] + game["away_points"])
+    margin = int(game["home_points"] - game["away_points"])
+    home = _nickname(game["home_team"], game.get("home_team_id"))
+    away = _nickname(game["away_team"], game.get("away_team_id"))
+    leader = home if margin >= 0 else away
+    stats = [
+        ("Total points", str(total)),
+        ("Margin", "Tied" if not margin else f"{leader} by {abs(margin)}"),
+    ]
+    if line is None:
+        return stats
+    if spread:
+        # The line is the implied home margin; the home handicap is its negation.
+        handicap = -line
+        stats.append(
+            (
+                "Pre-game spread",
+                f"{home} {'PK' if handicap == 0 else f'{handicap:+.1f}'}",
+            )
+        )
+        diff = margin - line
+        side = home if diff > 0 else away
+        outcome = "Push" if diff == 0 else f"{side} cover by {abs(diff):.1f}"
+    else:
+        stats.append(("Pre-game line", f"{line:.1f}"))
+        diff = total - line
+        outcome = (
+            "Push"
+            if diff == 0
+            else f"{'Over' if diff > 0 else 'Under'} by {abs(diff):.1f}"
+        )
+    stats.append(("Result", outcome))
+    return stats
+
+
+def _result_strip(game, *, line, spread: bool) -> None:
+    game_id = int(game["game_id"])
+    with st.container(horizontal=True, gap="small", key=f"match_result_{game_id}"):
+        for index, (label, value) in enumerate(
+            result_stats(game, line=line, spread=spread)
+        ):
+            with st.container(
+                gap="xxsmall",
+                horizontal_alignment="center",
+                key=(
+                    f"match_stat_total_{game_id}"
+                    if not index
+                    else f"match_stat_{game_id}_{index}"
+                ),
+            ):
+                st.caption(label)
+                st.markdown(f"**{value}**", text_alignment="center")
 
 
 def _game_result(game, *, final: bool) -> None:

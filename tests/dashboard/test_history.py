@@ -6,6 +6,7 @@ from nba_ou.dashboard.domain.history import (
     grade_history,
     historical_games,
     history_summary,
+    pregame_line,
     select_history,
 )
 from nba_ou.dashboard.repositories.predictions import TodayData
@@ -75,7 +76,7 @@ def historical_slate():
                             run_id=row["run_id"] + 10000,
                         )
                         predictions.append(replay)
-                for horizon in (480, 360, 240):
+                for horizon in (720, 480, 360, 240, 120):
                     cutoff = tipoff - pd.Timedelta(minutes=horizon)
                     row = make_prediction(
                         game_id=game_id,
@@ -133,7 +134,7 @@ def test_fixed_checkpoints_keep_live_and_replay_separate_with_reconstructed_clos
     data = historical_slate()
     live = selected(data)
     replay = selected(data, "Snapshot replay")
-    assert len(live) == len(replay) == 28
+    assert len(live) == len(replay) == 36
     assert live["available"].all()
     assert replay.loc[
         replay["kind"].eq(1) | replay["dataset_type"].eq(2), "available"
@@ -143,9 +144,11 @@ def test_fixed_checkpoints_keep_live_and_replay_separate_with_reconstructed_clos
         "Closing · T−6h",
         "Closing · T−4h",
         "Closing · Final pre-game",
+        "Intermediate · T−12h",
         "Intermediate · T−8h",
         "Intermediate · T−6h",
         "Intermediate · T−4h",
+        "Intermediate · T−2h",
     }
     assert set(live["prediction_value"]) == {238}
     assert set(replay.loc[replay["dataset_type"].eq(2), "prediction_value"]) == {248}
@@ -298,7 +301,7 @@ def test_latest_refit_wins_once_per_game_family_and_checkpoint():
     extra["prediction_value"] = 239
     data = TodayData(data.games, pd.concat([data.predictions, extra]), data.fetched_at)
     rows = selected(data)
-    assert len(rows) == 28
+    assert len(rows) == 36
     assert rows.loc[rows["kind"].eq(1), "prediction_value"].eq(239).all()
 
 
@@ -365,10 +368,10 @@ def test_daily_summary_pools_checkpoints_per_model_and_excludes_pushes():
     assert len(summary) == 2
     assert "Checkpoint" not in summary
     assert summary["Pushes"].eq(2).all()
-    assert summary["Wins"].eq(12).all()
+    assert summary["Wins"].eq(16).all()
     assert summary["Win rate"].eq(100).all()
     assert summary["MAE (pts)"].eq(3).all()
-    assert summary["Scored predictions"].eq(14).all()
+    assert summary["Scored predictions"].eq(18).all()
 
 
 def test_daily_summary_uses_pooled_counts_and_errors_with_unequal_checkpoint_coverage():
@@ -402,16 +405,18 @@ def test_checkpoint_summary_separates_closing_times_and_counts_unique_games():
         "Closing · T−6h",
         "Closing · T−4h",
         "Closing · Final pre-game",
+        "Intermediate · T−12h",
         "Intermediate · T−8h",
         "Intermediate · T−6h",
         "Intermediate · T−4h",
+        "Intermediate · T−2h",
     ]
     four = summary.loc[summary["Checkpoint"].eq("Closing · T−4h")].iloc[0]
     assert four["Games"] == four["Available"] == four["Wins"] == 1
     assert four["Expected"] == 2
     pooled = history_summary(rows)
     assert pooled["Games"].eq(2).all()
-    assert pooled["Scored predictions"].eq(14).all()
+    assert pooled["Scored predictions"].eq(18).all()
 
 
 def test_unknown_source_is_rejected_and_empty_slate_is_supported():
@@ -495,3 +500,150 @@ def test_replay_never_fills_missing_closing_reconstruction_with_live_output():
     rows = selected(data, "Snapshot replay")
     assert not rows.loc[rows.dataset_type.eq(1), "available"].any()
     assert rows.loc[rows.dataset_type.eq(2), "available"].all()
+
+
+def _intermediate_checkpoints(rows, kind):
+    part = rows.loc[rows["kind"].eq(kind) & rows["dataset_type"].eq(2)]
+    return list(dict.fromkeys(part.sort_values("checkpoint_order")["checkpoint"]))
+
+
+@pytest.mark.parametrize("source", ["Live predictions", "Snapshot replay"])
+def test_core_two_hour_checkpoint_stays_visible_when_missing(source):
+    data = historical_slate()
+    preds = data.predictions
+    preds.drop(
+        preds.loc[preds["kind"].eq(1) & preds["model_horizon_minutes"].eq(120)].index,
+        inplace=True,
+    )
+    rows = selected(data, source)
+    two = rows.loc[rows["kind"].eq(1) & rows["checkpoint"].eq("Intermediate · T−2h")]
+    assert len(two) == 2
+    assert not two["available"].any()
+
+
+@pytest.mark.parametrize("source", ["Live predictions", "Snapshot replay"])
+def test_long_checkpoints_appear_only_when_the_slate_has_them(source):
+    data = historical_slate()
+    preds = data.predictions
+    # XGBoost: T−12h only for game 1, no T−16h/T−10h anywhere.
+    preds.drop(
+        preds.loc[
+            preds["kind"].eq(1)
+            & preds["model_horizon_minutes"].eq(720)
+            & preds["game_id"].eq(2)
+        ].index,
+        inplace=True,
+    )
+    rows = selected(data, source)
+    assert _intermediate_checkpoints(rows, 1) == [
+        "Intermediate · T−12h",
+        "Intermediate · T−8h",
+        "Intermediate · T−6h",
+        "Intermediate · T−4h",
+        "Intermediate · T−2h",
+    ]
+    twelve = rows.loc[
+        rows["kind"].eq(1) & rows["checkpoint"].eq("Intermediate · T−12h")
+    ]
+    assert twelve.set_index("game_id")["available"].to_dict() == {1: True, 2: False}
+
+    preds.drop(
+        preds.loc[preds["kind"].eq(1) & preds["model_horizon_minutes"].eq(720)].index,
+        inplace=True,
+    )
+    assert "Intermediate · T−12h" not in _intermediate_checkpoints(
+        selected(data, source), 1
+    )
+
+
+def _shift_horizon(rows, horizon):
+    rows = rows.copy()
+    offset = pd.to_timedelta(rows["model_horizon_minutes"] - horizon, unit="min")
+    for column in ("predicted_at", "run_finished_at", "input_at"):
+        rows[column] = rows[column] + offset
+    rows["time_to_tipoff_seconds"] -= (offset.dt.total_seconds()).astype(int)
+    rows["model_horizon_minutes"] = horizon
+    rows["snapshot_horizon_minutes"] = horizon
+    rows["model_build_id"] += 70000
+    rows["run_id"] += 70000
+    return rows
+
+
+@pytest.mark.parametrize("source", ["Live predictions", "Snapshot replay"])
+def test_tabpfn_lists_every_intermediate_horizon_it_stored(source):
+    data = historical_slate()
+    preds = data.predictions
+    long = preds.loc[
+        preds["dataset_type"].eq(2) & preds["model_horizon_minutes"].eq(720)
+    ]
+    added = pd.concat([_shift_horizon(long, 1080), _shift_horizon(long, 60)])
+    data = TodayData(data.games, pd.concat([preds, added]), data.fetched_at)
+    rows = selected(data, source)
+    assert _intermediate_checkpoints(rows, 3) == [
+        "Intermediate · T−18h",
+        "Intermediate · T−12h",
+        "Intermediate · T−8h",
+        "Intermediate · T−6h",
+        "Intermediate · T−4h",
+        "Intermediate · T−2h",
+        "Intermediate · T−1h",
+    ]
+    tabpfn = rows.loc[rows["kind"].eq(3) & rows["dataset_type"].eq(2)]
+    assert tabpfn["available"].all()
+    # Registry slots keep their own grid: no T−18h or T−1h checkpoint.
+    assert "Intermediate · T−18h" not in _intermediate_checkpoints(rows, 1)
+    assert "Intermediate · T−1h" not in _intermediate_checkpoints(rows, 1)
+
+
+def test_tabpfn_closing_adds_ten_hour_checkpoint_only_when_it_ran_there():
+    data = historical_slate()
+    rows = selected(data)
+    closing = rows.loc[rows["kind"].eq(3) & rows["dataset_type"].eq(1)]
+    assert "Closing · T−10h" not in set(closing["checkpoint"])
+
+    preds = data.predictions
+    # The fixture's live T−8h closing run: run_id = 1000 + kind·100 + target·10 + 480.
+    base = preds.loc[
+        preds["kind"].eq(3)
+        & preds["dataset_type"].eq(1)
+        & preds["run_id"].eq(1300 + preds["target"] * 10 + 480)
+    ]
+    assert not base.empty
+    shifted = base.copy()
+    for column in ("predicted_at", "run_finished_at", "input_at"):
+        shifted[column] -= pd.Timedelta(minutes=120)
+    shifted["time_to_tipoff_seconds"] += 7200
+    shifted["run_id"] += 80000
+    shifted["model_build_id"] += 80000
+    data = TodayData(data.games, pd.concat([preds, shifted]), data.fetched_at)
+    rows = selected(data)
+    closing = rows.loc[rows["kind"].eq(3) & rows["dataset_type"].eq(1)]
+    assert list(
+        dict.fromkeys(closing.sort_values("checkpoint_order")["checkpoint"])
+    ) == [
+        "Closing · T−10h",
+        "Closing · T−8h",
+        "Closing · T−6h",
+        "Closing · T−4h",
+        "Closing · Final pre-game",
+    ]
+    assert closing["available"].all()
+    xgb = rows.loc[rows["kind"].eq(1) & rows["dataset_type"].eq(1)]
+    assert "Closing · T−10h" not in set(xgb["checkpoint"])
+
+
+def test_pregame_line_prefers_registry_final_checkpoint_quote():
+    rows = grade_history(selected(historical_slate(), target=1))
+    game = rows.loc[rows["game_id"].eq(1)].copy()
+    assert pregame_line(game) == 235.0
+    xgb_final = game["kind"].eq(1) & game["checkpoint"].eq("Closing · Final pre-game")
+    game.loc[xgb_final, "available"] = False
+    game.loc[
+        game["kind"].eq(3) & game["checkpoint"].eq("Closing · Final pre-game"),
+        "reference_line",
+    ] = 231.5
+    assert pregame_line(game) == 231.5
+    game["available"] = game["available"] & ~game["checkpoint"].eq(
+        "Closing · Final pre-game"
+    )
+    assert pregame_line(game) is None

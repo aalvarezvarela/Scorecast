@@ -5,7 +5,11 @@ from collections.abc import Mapping
 import numpy as np
 import pandas as pd
 
-from nba_ou.dashboard.config import DEFAULT_MIN_EDGE_BY_KIND
+from nba_ou.dashboard.config import (
+    DEFAULT_MIN_EDGE_BY_KIND,
+    YESTERDAY_INTERMEDIATE_CORE,
+    YESTERDAY_INTERMEDIATE_EXTRA,
+)
 from nba_ou.dashboard.domain.comparisons import prediction_values
 from nba_ou.dashboard.domain.dates import horizon_label, utc_timestamp
 from nba_ou.dashboard.domain.models import (
@@ -17,8 +21,39 @@ from nba_ou.dashboard.domain.teams import full_team_name
 
 HISTORY_SOURCES = ("Live predictions", "Snapshot replay")
 CHECKPOINT_TOLERANCE = pd.Timedelta(minutes=60)
+# Core checkpoints are listed for every family, so a missing slot stays
+# visible; extra ones only when the family has a prediction there on the slate.
 CLOSING_CHECKPOINTS = (480, 360, 240, 0)
-INTERMEDIATE_CHECKPOINTS = (480, 360, 240)
+INTERMEDIATE_CHECKPOINTS = YESTERDAY_INTERMEDIATE_CORE
+INTERMEDIATE_EXTRA_CHECKPOINTS = YESTERDAY_INTERMEDIATE_EXTRA
+# TabPFN runs on its own schedule: its core is the original three intermediate
+# checkpoints, and every other horizon it stored is an extra.
+TABPFN_INTERMEDIATE_CHECKPOINTS = (480, 360, 240)
+TABPFN_CLOSING_EXTRA_CHECKPOINTS = (720, 600, 120)
+
+
+def _checkpoint_grid(
+    family, dataset_type: int, candidates: pd.DataFrame
+) -> list[tuple[int, bool]]:
+    """``(horizon, core)`` pairs, longest horizon first and the close last."""
+    tabpfn = family.kind == 3
+    if dataset_type == 1:
+        core = CLOSING_CHECKPOINTS
+        extra = TABPFN_CLOSING_EXTRA_CHECKPOINTS if tabpfn else ()
+    elif tabpfn:
+        core = TABPFN_INTERMEDIATE_CHECKPOINTS
+        horizons = pd.to_numeric(
+            candidates.loc[candidates["dataset_type"].eq(2), "model_horizon_minutes"],
+            errors="coerce",
+        ).dropna()
+        extra = tuple(int(h) for h in horizons.unique() if h > 0)
+    else:
+        core = INTERMEDIATE_CHECKPOINTS
+        extra = INTERMEDIATE_EXTRA_CHECKPOINTS
+    grid = {int(h): True for h in core}
+    for horizon in extra:
+        grid.setdefault(int(horizon), False)
+    return sorted(grid.items(), key=lambda item: -item[0])
 
 
 def historical_games(frame: pd.DataFrame) -> pd.DataFrame:
@@ -71,6 +106,13 @@ def select_history(
         kind="stable",
     )
     families = model_families(work, target)
+    grids = {
+        (family.key, dataset_type): _checkpoint_grid(
+            family, dataset_type, work.loc[work["family_key"].eq(family.key)]
+        )
+        for family in families
+        for dataset_type in (1, 2)
+    }
     rows = []
     for _, game in games.iterrows():
         tipoff = game["tipoff_at"]
@@ -78,13 +120,10 @@ def select_history(
             candidates = work.loc[
                 work["game_id"].eq(game["game_id"]) & work["family_key"].eq(family.key)
             ]
-            for dataset_type, checkpoints in (
-                (1, CLOSING_CHECKPOINTS),
-                (2, INTERMEDIATE_CHECKPOINTS),
-            ):
+            for dataset_type in (1, 2):
                 if not (family.closing if dataset_type == 1 else family.intermediate):
                     continue
-                for order, horizon in enumerate(checkpoints):
+                for horizon, core in grids[family.key, dataset_type]:
                     cutoff = tipoff - pd.Timedelta(minutes=horizon)
                     eligible = candidates.loc[
                         candidates["dataset_type"].eq(dataset_type)
@@ -174,9 +213,9 @@ def select_history(
                             "target": target,
                             "dataset_type": dataset_type,
                             "checkpoint": label,
-                            "checkpoint_order": (dataset_type - 1)
-                            * len(CLOSING_CHECKPOINTS)
-                            + order,
+                            # Closing first, then the longest horizon first.
+                            "checkpoint_order": dataset_type * 10_000 - horizon,
+                            "_core_checkpoint": core,
                             "checkpoint_at": cutoff,
                             "checkpoint_horizon_minutes": horizon,
                             "available": not eligible.empty,
@@ -193,7 +232,14 @@ def select_history(
                     ):
                         row[column] = game[column]
                     rows.append(row)
-    return pd.DataFrame(rows)
+    result = pd.DataFrame(rows)
+    if result.empty:
+        return result
+    # An extra checkpoint is listed only where its family has a prediction.
+    shown = result["_core_checkpoint"] | result.groupby(["family_key", "checkpoint"])[
+        "available"
+    ].transform("any")
+    return result.loc[shown].drop(columns="_core_checkpoint").reset_index(drop=True)
 
 
 def grade_history(
@@ -304,3 +350,19 @@ def history_summary(
             rows[-1]["Checkpoint order"] = int(group["checkpoint_order"].iloc[0])
     order = ["Kind", "Model"] + (["Checkpoint order"] if by_checkpoint else [])
     return pd.DataFrame(rows).sort_values(order).reset_index(drop=True)
+
+
+def pregame_line(rows: pd.DataFrame) -> float | None:
+    """The stored quote of a game's final pre-game checkpoint.
+
+    Registry models first, then TabPFN; ``None`` when no final checkpoint has a
+    line. Used only to describe the result: picks keep their own row's quote.
+    """
+    if rows.empty or "reference_line" not in rows:
+        return None
+    final = rows.loc[
+        rows["checkpoint"].eq("Closing · Final pre-game")
+        & rows["available"].astype(bool)
+        & np.isfinite(pd.to_numeric(rows["reference_line"], errors="coerce"))
+    ].sort_values("kind", kind="stable")
+    return None if final.empty else float(final["reference_line"].iloc[0])

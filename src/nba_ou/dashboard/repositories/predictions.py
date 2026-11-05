@@ -7,6 +7,10 @@ from datetime import UTC, date, datetime
 import pandas as pd
 import psycopg
 
+from nba_ou.dashboard.config import (
+    YESTERDAY_INTERMEDIATE_CORE,
+    YESTERDAY_INTERMEDIATE_EXTRA,
+)
 from nba_ou.dashboard.repositories.connection import open_connection
 
 GAMES_QUERY = """
@@ -43,13 +47,20 @@ PREDICTIONS_QUERY = (
 """
 )
 
+# Integer constants, not user input: safe to inline in the SQL text.
+_HISTORY_HORIZONS = ", ".join(
+    str(int(minutes))
+    for minutes in sorted(YESTERDAY_INTERMEDIATE_CORE + YESTERDAY_INTERMEDIATE_EXTRA)
+)
 HISTORY_QUERY = (
     PREDICTIONS_SELECT
-    + """
+    + f"""
     WHERE v.game_date = %s
       AND v.workflow IN (1, 2, 3, 4)
       AND v.kind IN (1, 3)
-      AND (v.dataset_type = 1 OR v.model_horizon_minutes IN (240, 360, 480))
+      AND (v.dataset_type = 1
+           OR v.kind = 3
+           OR v.model_horizon_minutes IN ({_HISTORY_HORIZONS}))
       AND v.predicted_at <= %s
       AND r.finished_at <= %s
     ORDER BY v.predicted_at, v.run_id, v.input_id, v.model_build_id

@@ -15,17 +15,7 @@ RESULT_COLORS = {"WIN": "green", "LOSS": "red"}
 def checkpoint_summary_table(summary: pd.DataFrame) -> pd.DataFrame:
     """Use the same compact checkpoint breakdown for every model family."""
     display = pd.DataFrame(index=summary.index)
-    display["Snapshot"] = summary["Checkpoint"].map(
-        {
-            "Closing · T−8h": "Closing at 8h",
-            "Closing · T−6h": "Closing at 6h",
-            "Closing · T−4h": "Closing at 4h",
-            "Closing · Final pre-game": "Closing at closing",
-            "Intermediate · T−8h": "Intermediate at 8h",
-            "Intermediate · T−6h": "Intermediate at 6h",
-            "Intermediate · T−4h": "Intermediate at 4h",
-        }
-    )
+    display["Snapshot"] = summary["Checkpoint"].map(_snapshot_label)
     display["Games"] = summary["Games"].astype(int)
     display["Bets"] = (summary["Wins"] + summary["Losses"]).astype(int)
     display["Wins"] = summary["Wins"].astype(int)
@@ -36,6 +26,14 @@ def checkpoint_summary_table(summary: pd.DataFrame) -> pd.DataFrame:
         lambda n: f"{n:.2f} pts" if pd.notna(n) else "—"
     )
     return display.set_index("Snapshot")
+
+
+def _snapshot_label(checkpoint: str) -> str:
+    """``Closing · T−8h`` -> ``Closing at 8h``; the final one -> ``at closing``."""
+    phase, _, point = checkpoint.partition(" · ")
+    if point == "Final pre-game":
+        return f"{phase} at closing"
+    return f"{phase} at {point.removeprefix('T−')}"
 
 
 def game_results_table(games: pd.DataFrame) -> pd.DataFrame:

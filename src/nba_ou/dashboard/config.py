@@ -16,6 +16,12 @@ REFERENCE_COLUMNS = {
     "Market median": "books_median_line",
 }
 CACHE_TTL_SECONDS = 60
+# Yesterday's intermediate checkpoints for the registry (XGBoost) models, in
+# minutes before tip-off. The core ones are always listed, so a missing slot
+# stays visible; the long ones appear only when the slate has a prediction
+# there. TabPFN shows every intermediate horizon it has (``kind = 3``).
+YESTERDAY_INTERMEDIATE_CORE = (480, 360, 240, 120)
+YESTERDAY_INTERMEDIATE_EXTRA = (960, 720, 600)
 # Point-based levels used by the production-model evaluation campaigns, plus
 # TabPFN's 0.01. Keep this lightweight: the dashboard must not import the
 # training pipeline.
