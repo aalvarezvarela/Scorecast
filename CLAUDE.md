@@ -102,7 +102,7 @@ survived the evaluation discipline in the `experiments` skill.
   `.manifest.json` for layered versions. The `training_data_*.csv` files are
   legacy. Campaign configs name the exact file they read.
 - `docs/` — topic folders (`pipeline/`, `odds/`, `intermediate/`, `injuries/`,
-  `lineups/`, `serving/`); `docs/README.md` indexes every document with its
+  `lineups/`, `serving/`); `docs/INDEX.md` indexes every document with its
   status (Reference / Implemented / Unmaintained / Partial / Plan / Research / Superseded).
   `pipeline/training_data_processing.md` is the detailed reference for the
   closing-line feature pipeline; `pipeline/feature_engineering_overview.md` is

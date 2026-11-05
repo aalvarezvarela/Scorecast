@@ -16,7 +16,7 @@ Snapshot of the code as of 2026-10-05, schema version `2_6`
 ## Where the detail lives
 
 The feature-related documents. Every document, with its status, is listed in
-[docs/README.md](../README.md).
+[docs/INDEX.md](../INDEX.md).
 
 | Document | Scope |
 |---|---|
