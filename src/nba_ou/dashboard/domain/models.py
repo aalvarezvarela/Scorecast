@@ -6,6 +6,7 @@ import pandas as pd
 
 from nba_ou.dashboard.config import (
     DISPLAY_SCHEMA_VERSION,
+    HIDDEN_VARIANT_SUFFIXES,
     MODEL_NAMES,
     PREDICTION_TARGET_LABELS,
 )
@@ -53,14 +54,24 @@ def with_family_metadata(frame: pd.DataFrame) -> pd.DataFrame:
     return work
 
 
+def without_hidden_variants(frame: pd.DataFrame) -> pd.DataFrame:
+    """Drop deprecated variants (``HIDDEN_VARIANT_SUFFIXES``) from any page."""
+    if frame.empty or "variant" not in frame:
+        return frame.copy()
+    hidden = frame["variant"].astype(str).str.endswith(HIDDEN_VARIANT_SUFFIXES)
+    return frame.loc[~hidden].copy()
+
+
 def displayed_models(frame: pd.DataFrame) -> pd.DataFrame:
-    """Always show the 2_5 registry models and any available TabPFN outputs."""
+    """The 2_5 registry models and the TabPFN outputs, without hidden variants."""
     if frame.empty:
         return frame.copy()
-    return frame.loc[
-        (frame["kind"].eq(1) & frame["schema_version"].eq(DISPLAY_SCHEMA_VERSION))
-        | frame["kind"].eq(3)
-    ].copy()
+    return without_hidden_variants(
+        frame.loc[
+            (frame["kind"].eq(1) & frame["schema_version"].eq(DISPLAY_SCHEMA_VERSION))
+            | frame["kind"].eq(3)
+        ]
+    )
 
 
 def model_families(

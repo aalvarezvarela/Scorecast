@@ -12,6 +12,7 @@ from nba_ou.dashboard.domain.history import (
     grade_history,
     historical_games,
     history_summary,
+    pregame_line,
     select_history,
 )
 from nba_ou.dashboard.repositories.predictions import DashboardDataError
@@ -61,7 +62,9 @@ def _performance_summary(games: pd.DataFrame, rows: pd.DataFrame) -> None:
 
 def _game_card(game, rows: pd.DataFrame, *, spread: bool) -> None:
     with st.container(border=True):
-        render_game_header(game, show_result=True)
+        render_game_header(
+            game, show_result=True, line=pregame_line(rows), spread=spread
+        )
         if rows.empty:
             st.caption("No stored predictions for this target.")
         else:
@@ -148,9 +151,12 @@ def render_yesterday() -> None:
             kind: minimum_edge_select(kind, page="yesterday") for kind in MODEL_NAMES
         }
         st.caption(
-            "Closing: T−8h, T−6h, T−4h and a final checkpoint (T−0 in replay; last completed pre-game output in live). "
-            "Intermediate: the T−8h, T−6h and T−4h models at their own checkpoints. "
-            "Each pick is graded against its stored bookmaker line; missing slots do not count as losses."
+            "Closing: T−8h, T−6h, T−4h and a final checkpoint (T−0 in replay; last completed pre-game output in live); "
+            "TabPFN also T−12h, T−10h and T−2h when it ran there. "
+            "Intermediate: the T−8h, T−6h, T−4h and T−2h models at their own checkpoints, plus T−16h, T−12h and T−10h when the slate has them; "
+            "TabPFN shows every horizon it ran. "
+            "Each pick is graded against its stored bookmaker line; missing slots do not count as losses. "
+            "The header's pre-game line is the final checkpoint's stored quote."
         )
         st.caption(
             "Live checkpoints select the nearest input within ±60 minutes; publication must also fall within that window. Inputs and publication can be after the checkpoint. Final live closing uses the last completed pre-game prediction. Details show the exact times."

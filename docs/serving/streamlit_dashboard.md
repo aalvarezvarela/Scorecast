@@ -57,8 +57,9 @@ The entrypoint registers three pages using `st.navigation`. Today is the
 default. Yesterday shows stored predictions and results for a selected date.
 [Historical analysis](historical_analysis.md) shows the closing timeline, live
 model/time heatmap and own-snapshot live/replay comparisons over a date range,
-plus the best own-snapshot slot, mean-of-predictions combinations and the random
-baseline.
+plus the three best single slots, same-timepoint mean and majority-vote
+combinations and the random baseline. TabPFN thinking-high outputs are
+deprecated and hidden on every page.
 Page scripts compose
 modules in `nba_ou.dashboard`:
 
@@ -222,8 +223,19 @@ Selection is independent for every game, model family and target:
 | Closing, live | T−8h, T−6h, T−4h | Nearest input within ±60 minutes; publication must also be within that window and before tip-off. |
 | Closing | Final pre-game | Latest live output fully available before tip-off; actual time remains visible. |
 | Closing, replay | T−8h, T−6h, T−4h, T−0 | Exact stored input horizon (workflow 2/input mode 3, or workflow 4/input mode 0). T−0 requires its own reconstruction. |
-| Intermediate, live | T−8h, T−6h, T−4h | The model trained at that horizon, on the nearest input within ±60 minutes; publication must also be inside the window and before tip-off. |
-| Intermediate, replay | T−8h, T−6h, T−4h | Exact match of model and input horizon, using the latest own-snapshot reconstruction (workflows 2/4, or own-snapshot workflow 3 for TabPFN). |
+| Intermediate, live | T−8h, T−6h, T−4h, T−2h | The model trained at that horizon, on the nearest input within ±60 minutes; publication must also be inside the window and before tip-off. |
+| Intermediate, replay | T−8h, T−6h, T−4h, T−2h | Exact match of model and input horizon, using the latest own-snapshot reconstruction (workflows 2/4, or own-snapshot workflow 3 for TabPFN). |
+
+These are the **core** checkpoints: every family lists them, so a missing slot
+stays visible. **Extra** checkpoints are listed only when the family has at
+least one available prediction there on the selected slate and source:
+registry intermediate T−16h, T−12h and T−10h; TabPFN closing T−12h, T−10h and
+T−2h; and every intermediate horizon TabPFN stored for the slate. TabPFN's
+intermediate core is T−8h, T−6h and T−4h (it is not scheduled at T−2h).
+Rows run closing first, then the longest horizon first. The core and the
+registry extras are `YESTERDAY_INTERMEDIATE_CORE` / `_EXTRA` in
+`nba_ou.dashboard.config`, which also bound the Aiven read (TabPFN
+intermediate rows are read at every horizon).
 
 Availability is the later of prediction time and run completion.
 Future input snapshots are rejected even if TabPFN labeled a pre-horizon row
@@ -235,8 +247,15 @@ View details. Each slot is deduplicated across refits/reruns. Missing slots
 are explicit and never replaced with another trained horizon.
 
 Cards reuse the team header, NBA theme and wrapping/growing layout. Their
-white header includes the final away/home score, total points and home margin
-alongside the teams and Madrid tip-off time. Header text uses explicit gaps
+white header includes the final away/home score alongside the teams and
+Madrid tip-off time, and a result strip: **Total points** (highlighted),
+the margin (`Celtics by 7`), the pre-game line and the result against it
+(`Over by 4.5`, `Under by 2.0`, `Push`; for spreads the home handicap and
+`Knicks cover by 2.5`). The pre-game line is the stored quote of the Final
+pre-game checkpoint (registry model first, else TabPFN), or of T−0 in
+replay; without one the strip shows only total and margin. It describes the
+game only; every pick is still graded against its own row's quote. Today's
+cards show the same strip, without a line, once a game is final. Header text uses explicit gaps
 and full content heights; narrow headers place the score below the teams so
 long names and result labels cannot collide. Below it is one table:
 Model, Checkpoint, Predicted total (Spread error for spreads), Pick / Line,
@@ -254,8 +273,9 @@ Results are WIN, LOSS, PUSH, NO BET, NO LINE, MISSING, PENDING or VOID.
 WIN badges use green, LOSS badges use red, and other results remain neutral.
 Only games marked final with both scores are settled. There is no majority across
 hours or combined-target bet. Before the individual games, the daily summary
-separates both XGBoost and TabPFN into Closing at 6h, Closing at 4h, Closing at closing (the
-last available pre-game prediction), and Intermediate at 8h/6h/4h. Its compact
+separates both XGBoost and TabPFN into their checkpoints: Closing at 8h/6h/4h,
+Closing at closing (the last available pre-game prediction), and
+Intermediate at each listed horizon (for example 12h/8h/6h/4h/2h). Its compact
 table shows separate counts for evaluated Games, settled Bets (`wins + losses`)
 and Wins, followed by win rate and MAE per checkpoint. The caption gives the
 slate's final/total game count. NO BET, PUSH and NO LINE results do not count

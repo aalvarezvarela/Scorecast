@@ -224,6 +224,8 @@ def snapshot_comparison(cells: pd.DataFrame):
 # Fixed roles so a filter that drops a series never repaints the others.
 EFFICACY_ROLES = {
     "Best slot": "#F6C56F",
+    "2nd best slot": "#FF8E9A",
+    "3rd best slot": "#77E4A4",
     "Best combination": "#D3BDFF",
     "All own snapshots": SIGNAL_HEX_COLORS["UNDER"],
     "Random baseline": "#AFBCD4",
@@ -289,7 +291,7 @@ def efficacy_chart(curves: pd.DataFrame):
 
 
 STRATEGY_ROLES = {
-    "Best single slot": "#F6C56F",
+    "Single slot": "#F6C56F",
     "Combination": SIGNAL_HEX_COLORS["UNDER"],
     "Random baseline": "#AFBCD4",
 }
@@ -301,7 +303,7 @@ def strategy_chart(table: pd.DataFrame):
     order = data["strategy"].tolist()
     roles = [role for role in STRATEGY_ROLES if role in set(data["role"])]
     base = alt.Chart(data).encode(
-        y=alt.Y("strategy:N", title=None, sort=order, axis=alt.Axis(labelLimit=340)),
+        y=alt.Y("strategy:N", title=None, sort=order, axis=alt.Axis(labelLimit=560)),
         color=alt.Color(
             "role:N",
             title=None,

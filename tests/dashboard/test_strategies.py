@@ -1,23 +1,28 @@
-"""Best-slot selection, its selection reference and mean-of-predictions combinations."""
+"""Best-slot selection, its selection reference and same-timepoint combinations."""
 
 import math
 
 import pandas as pd
 import pytest
 from nba_ou.dashboard.domain.analysis import prepare_analysis
+from nba_ou.dashboard.domain.models import displayed_models
 from nba_ou.dashboard.domain.strategies import (
+    MAJORITY_VOTE,
+    MEAN_EDGE,
     candidate_rows,
-    combine_predictions,
     compare_with_best,
     cumulative_win_rate,
     rank_candidates,
+    rank_combinations,
+    same_timepoint_combinations,
     selection_chance,
     sign_test,
-    strategy_members,
+    timepoint_members,
     window_rows,
 )
 from nba_ou.dashboard.ui.analysis_charts import efficacy_chart, strategy_chart
 
+from .conftest import NOW
 from .test_historical import analysis_row
 
 REPLAY = "Snapshot replay"
@@ -45,29 +50,31 @@ def test_windows_split_at_six_hours_with_six_hours_early():
         window_rows(frame, "≥ 5h")
 
 
-def test_candidates_are_own_snapshots_and_closing_final_ranked_by_win_rate():
+def test_candidates_are_own_snapshots_and_closing_at_each_input_ranked_by_win_rate():
     rows = []
     for game in range(40):
         rows.append(replay_row(game, 360, 240))  # Always OVER: 40-0.
         rows.append(replay_row(game, 480, 240 if game % 2 else 220))  # 20-20.
         rows.append(replay_row(game, 480, 240, bucket=360))  # Off-diagonal.
         rows.append(replay_row(game, 0, 240, bucket=0))  # Closing Final.
-        rows.append(replay_row(game, 0, 240, bucket=240))  # Closing at T−4h.
+        rows.append(replay_row(game, 0, 220, bucket=240))  # Closing at T−4h: 0-40.
     rows.append(replay_row(99, 120, 240))  # One bet: too small to rank.
     graded = prepare_analysis(pd.DataFrame(rows))
     candidates = candidate_rows(graded, REPLAY)
     assert set(candidates["candidate"]) == {
-        "XGBoost · 2.5 · T−6h",
-        "XGBoost · 2.5 · T−8h",
-        "XGBoost · 2.5 · Closing Final",
-        "XGBoost · 2.5 · T−2h",
+        "XGBoost · 2.5 · Intermediate · T−6h",
+        "XGBoost · 2.5 · Intermediate · T−8h",
+        "XGBoost · 2.5 · Closing · Final",
+        "XGBoost · 2.5 · Closing · T−4h",
+        "XGBoost · 2.5 · Intermediate · T−2h",
     }
     assert candidate_rows(graded, "Live predictions").empty
     ranking = rank_candidates(candidates)
-    assert ranking["eligible"].tolist() == [True, True, True, False]
+    assert ranking["eligible"].tolist() == [True, True, True, True, False]
     assert ranking.loc[0, "win_pct"] == 100
-    assert ranking.loc[2, "candidate"] == "XGBoost · 2.5 · T−8h"
-    assert ranking.loc[3, "candidate"] == "XGBoost · 2.5 · T−2h"
+    assert ranking.loc[2, "candidate"] == "XGBoost · 2.5 · Intermediate · T−8h"
+    assert ranking.loc[3, "candidate"] == "XGBoost · 2.5 · Closing · T−4h"
+    assert ranking.loc[4, "candidate"] == "XGBoost · 2.5 · Intermediate · T−2h"
 
 
 def test_selection_chance_grows_with_the_number_of_cells():
@@ -87,61 +94,156 @@ def test_sign_test_is_exact_and_two_sided():
     assert sign_test(0, 10) == sign_test(10, 0)
 
 
-def test_combination_averages_edges_and_bets_at_the_latest_members_line():
-    rows = pd.DataFrame(
-        [
-            # Edge +9.5 at T−8h against 230.5.
-            replay_row(1, 480, 240),
-            # Edge −1.5 at T−30m against a moved line of 236.5: the mean
-            # +4 is bet OVER 236.5, which loses at 235.
-            replay_row(1, 30, 235, bet_line_x2=473, bet_price_over_home=120),
-            # A member without a line cannot vote or decide the bet.
-            replay_row(1, 60, 200, bet_line_x2=None),
-        ]
+def _members(rows, partner=None):
+    graded = prepare_analysis(pd.DataFrame(rows))
+    other = (
+        None
+        if partner is None
+        else candidate_rows(prepare_analysis(pd.DataFrame(partner)), REPLAY)
     )
-    combined = combine_predictions(prepare_analysis(rows))
-    assert len(combined) == 1
-    row = combined.iloc[0]
+    return timepoint_members(candidate_rows(graded, REPLAY), other)
+
+
+def _strategy(combined, method, timepoint):
+    part = combined.loc[
+        combined["method"].eq(method) & combined["timepoint"].eq(timepoint)
+    ]
+    assert part["strategy"].nunique() == 1
+    return part
+
+
+def test_combinations_only_join_slots_of_the_same_timepoint():
+    rows = [
+        replay_row(1, 480, 240),  # XGBoost intermediate T−8h.
+        replay_row(1, 480, 240, kind=3),  # TabPFN intermediate T−8h.
+        replay_row(1, 0, 240, bucket=480),  # XGBoost closing on the T−8h input.
+        replay_row(1, 360, 240),  # Alone at T−6h: never combined.
+        replay_row(1, 480, 240, bucket=360),  # Off-diagonal: not a slot.
+    ]
+    combined = same_timepoint_combinations(_members(rows))
+    assert set(combined["timepoint"]) == {480}
+    # Three pairs and one triple, each as a mean and a vote.
+    assert combined["strategy"].nunique() == 8
+    assert sorted(combined.groupby("strategy")["members"].first()) == [2] * 6 + [3] * 2
+    assert "T−8h · mean edge · TabPFN 2.5 intermediate + XGBoost 2.5 closing" in set(
+        combined["strategy"]
+    )
+    assert (
+        "T−8h · majority · TabPFN 2.5 intermediate + XGBoost 2.5 closing + "
+        "XGBoost 2.5 intermediate"
+    ) in set(combined["strategy"])
+
+
+def test_mean_edge_bets_at_the_line_of_the_member_published_last():
+    late = NOW - pd.Timedelta(hours=1)
+    rows = [
+        # Edge +9.5 against 230.5.
+        replay_row(1, 480, 240),
+        # Edge −1.5 against a moved line of 236.5, published last: the mean
+        # +4 is bet OVER 236.5, which loses at 235.
+        replay_row(
+            1,
+            480,
+            235,
+            kind=3,
+            bet_line_x2=473,
+            bet_price_over_home=120,
+            available_at=late,
+        ),
+    ]
+    row = _strategy(same_timepoint_combinations(_members(rows)), MEAN_EDGE, 480).iloc[0]
     assert row["members"] == 2
-    assert row["model_horizon_minutes"] == 30
     assert row["reference_line"] == 236.5
     assert row["comparison_edge"] == pytest.approx(4)
-    assert row["signal"] == "OVER"
-    assert row["result"] == "LOSS"
-    assert row["bet_price"] == 120
+    assert (row["signal"], row["result"], row["bet_price"]) == ("OVER", "LOSS", 120)
     assert row["absolute_error"] == pytest.approx(5.5)
 
 
-def test_combination_respects_minimum_edge_of_the_betting_member():
-    rows = pd.DataFrame([replay_row(1, 480, 231), replay_row(1, 30, 230)])
-    combined = combine_predictions(prepare_analysis(rows), min_edge={1: 0.5})
-    assert combined.iloc[0]["result"] == "NO BET"  # Mean edge 0.0 ≤ 0.5.
-    assert combine_predictions(pd.DataFrame()).empty
-
-
-def test_strategy_family_is_fixed_and_adds_cross_target_only_when_given():
-    own = prepare_analysis(
-        pd.DataFrame(
-            [replay_row(1, h, 240) for h in (60, 360)]
-            + [replay_row(1, 360, 240, kind=3)]
-        )
-    )
-    labels = list(strategy_members(own))
-    assert labels == [
-        "XGBoost · 2.5 · mean all horizons",
-        "TabPFN · 2.5 · mean all horizons",
-        "All models · mean all horizons",
-        "XGBoost · 2.5 · mean ≥ 6h",
-        "TabPFN · 2.5 · mean ≥ 6h",
-        "All models · mean ≥ 6h",
-        "XGBoost · 2.5 · mean < 6h",
-        "All models · mean < 6h",
+def test_combinations_need_every_member_with_a_line():
+    rows = [
+        replay_row(1, 480, 240),
+        replay_row(1, 480, 240, kind=3, bet_line_x2=None),
+        replay_row(2, 480, 240),
+        replay_row(2, 480, 240, kind=3),
     ]
-    partner = own.assign(target=1)
-    crossed = strategy_members(own.loc[own["kind"].eq(1)], partner)
-    assert "XGBoost · 2.5 · line error + total points · all horizons" in crossed
-    assert len(crossed["XGBoost · 2.5 · line error + total points · ≥ 6h"]) == 2
-    assert strategy_members(own.iloc[:0]) == {}
+    combined = same_timepoint_combinations(_members(rows))
+    assert set(combined["game_id"]) == {2}
+    assert same_timepoint_combinations(_members(rows[:1])).empty
+
+
+def test_mean_edge_uses_the_betting_members_minimum_edge():
+    rows = [replay_row(1, 480, 231), replay_row(1, 480, 230, kind=3)]
+    combined = same_timepoint_combinations(_members(rows), min_edge={1: 0.5, 3: 0.5})
+    assert _strategy(combined, MEAN_EDGE, 480).iloc[0]["result"] == "NO BET"
+
+
+@pytest.mark.parametrize(
+    ("values", "expected"),
+    [
+        ((240, 240), ("OVER", "WIN")),  # Both agree.
+        ((240, 220), ("NO EDGE", "NO BET")),  # Two members must agree.
+        ((240, 230.5), ("NO EDGE", "NO BET")),  # One abstains: no majority.
+        ((240, 240, 220), ("OVER", "WIN")),  # Two of three.
+        ((220, 220, 240), ("UNDER", "LOSS")),
+        ((240, 220, 230.5), ("NO EDGE", "NO BET")),
+    ],
+)
+def test_majority_vote_needs_more_than_half_of_the_members(values, expected):
+    kinds_horizons = [(1, 480, 480), (3, 480, 480), (1, 0, 480)]
+    rows = [
+        replay_row(1, horizon, value, kind=kind, bucket=bucket)
+        for value, (kind, horizon, bucket) in zip(values, kinds_horizons, strict=False)
+    ]
+    combined = same_timepoint_combinations(_members(rows))
+    votes = combined.loc[
+        combined["method"].eq(MAJORITY_VOTE) & combined["members"].eq(len(values))
+    ]
+    assert len(votes) == 1
+    assert (votes.iloc[0]["signal"], votes.iloc[0]["result"]) == expected
+    assert votes["absolute_error"].isna().all()
+
+
+def test_cross_target_members_name_their_target():
+    rows = [replay_row(1, 480, 240)]
+    partner = [replay_row(1, 480, 10, target=1)]
+    combined = same_timepoint_combinations(_members(rows, partner))
+    assert set(combined["member_names"]) == {
+        "XGBoost 2.5 intermediate (line error) + "
+        "XGBoost 2.5 intermediate (total points)"
+    }
+    assert set(combined["result"]) == {"WIN"}
+
+
+def test_rank_combinations_puts_eligible_leaders_first():
+    rows = []
+    for game in range(40):
+        rows.append(replay_row(game, 480, 240))  # Always OVER: wins.
+        rows.append(replay_row(game, 480, 240 if game % 4 else 220, kind=3))
+    ranking = rank_combinations(same_timepoint_combinations(_members(rows)))
+    assert ranking["eligible"].tolist() == [True, True]
+    # They agree (OVER) on 30 games and win them all. On the other 10 the
+    # mean edge (+9.5 and −10.5) is −0.5: UNDER, which loses.
+    lead = ranking.iloc[0]
+    assert lead["method"] == MAJORITY_VOTE
+    assert (lead["wins"], lead["losses"]) == (30, 0)
+    assert ranking.iloc[1]["method"] == MEAN_EDGE
+    assert (ranking.iloc[1]["wins"], ranking.iloc[1]["losses"]) == (30, 10)
+    assert rank_combinations(pd.DataFrame()).empty
+
+
+def test_thinking_high_variant_is_hidden_everywhere():
+    rows = pd.DataFrame(
+        [
+            replay_row(1, 480, 240, kind=3, variant="tabpfn_v3_5"),
+            replay_row(1, 480, 240, kind=3, variant="tabpfn_v3_5_thinking_high"),
+            replay_row(1, 480, 240, kind=3, variant="tabpfn_v3_5_thinking_medium"),
+        ]
+    )
+    assert set(prepare_analysis(rows)["variant"]) == {
+        "tabpfn_v3_5",
+        "tabpfn_v3_5_thinking_medium",
+    }
+    assert "tabpfn_v3_5_thinking_high" not in set(displayed_models(rows)["variant"])
 
 
 def test_comparison_with_best_is_paired_on_games_both_bet():

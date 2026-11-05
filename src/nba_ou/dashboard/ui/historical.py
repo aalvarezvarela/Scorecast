@@ -18,13 +18,17 @@ from nba_ou.dashboard.domain.analysis import (
 from nba_ou.dashboard.domain.dates import madrid_time, slate_date
 from nba_ou.dashboard.domain.strategies import (
     EARLY_WINDOW_MINUTES,
+    MAX_COMBINATION_SIZE,
+    TOP_COMBINATIONS,
+    TOP_SLOTS,
     candidate_rows,
-    combine_predictions,
     compare_with_best,
     cumulative_win_rate,
     rank_candidates,
+    rank_combinations,
+    same_timepoint_combinations,
     selection_chance,
-    strategy_members,
+    timepoint_members,
     window_rows,
 )
 from nba_ou.dashboard.repositories.predictions import DashboardDataError
@@ -69,20 +73,26 @@ METHOD_NOTES = """
   threshold. Many cells and small samples can produce apparently strong results by chance.
   Ordinary independent-sample chi-square tests do not apply here.
 - **Windows:** ≥ 6h pools intermediate models trained at T−6h or earlier; < 6h the rest.
-- **Best slot:** the highest win % among each intermediate model at its own snapshot and
-  each closing Final, with at least the minimum settled bets, in the chosen source. It is
-  picked on the same games it is scored on, so it overstates what that slot will do next.
+- **Slots:** each intermediate model at its own snapshot, and each closing model at each
+  input timepoint (Final included), with at least the minimum settled bets, in the chosen
+  source. The three with the highest win % are shown. They are picked on the same games
+  they are scored on, so they overstate what those slots will do next.
   Coin-flip chance: how often the best of the same number of coin-flip cells, with the
   same bet counts, reaches that win %. Cells share games, so it is a conservative guide,
   not a p-value. The grey band is where one coin flip lands 95% of the time.
 - **Random baseline:** stored random OVER/UNDER picks (totals only, from 2026-10-26),
   graded at their stored line. Total points shows the same bets as line error.
-- **Combinations:** a fixed set, never a search over subsets: per model, the mean of its
-  own-snapshot edges over all horizons, ≥ 6h or < 6h, all models together, and optionally
-  line error + total points. An edge is a prediction minus the line it was graded at; the
-  mean is bet at the latest member's line, price and minimum edge, so it uses only what was
-  known when the bet would be placed. The paired columns compare it with the best slot on
-  the games both bet; the sign test uses the games only one of them won.
+- **Combinations:** only slots available at the same timepoint are combined, e.g. at T−8h
+  the XGBoost and TabPFN T−8h intermediate models and the closing models on the T−8h input
+  (optionally both totals targets). Every subset of 2–4 of them, on the games where all have
+  a line, is scored two ways: the **mean edge** (an edge is a prediction minus the line it
+  was graded at; bet with the minimum edge of the member published last) and a **majority
+  vote** of the members' own signals (more than half of the members on one side; with two,
+  both must agree). Both bet at the line and price of the member published last. The ten
+  best combinations with the minimum settled bets are shown; they are picked from many, so
+  the coin-flip chance counts all of them. The paired columns compare each with the best
+  slot on the games both bet; the sign test uses the games only one of them won.
+- **Hidden variants:** TabPFN thinking-high outputs are deprecated and not shown.
 """
 
 
@@ -156,6 +166,29 @@ def _partner_rows(start, end, target, season_type, kind, thresholds, enabled):
     return prepare_analysis(raw, min_edge=thresholds)
 
 
+ORDINALS = ("Best", "2nd best", "3rd best")
+
+
+def _slot_card(rank: int, slot) -> None:
+    with st.container(border=True, gap="xxsmall"):
+        st.caption(f"{ORDINALS[rank]} slot")
+        st.markdown(f"**{slot['candidate']}**")
+        with st.container(horizontal=True, gap="small"):
+            st.metric(
+                "Win %",
+                f"{slot['win_pct']:.1f}%",
+                help=f"{slot['wins']:.0f} wins / {slot['losses']:.0f} losses / "
+                f"{slot['pushes']:.0f} pushes. 95% CI "
+                f"{slot['ci_low']:.1f}–{slot['ci_high']:.1f}%.",
+            )
+            st.metric("Bets", f"{slot['wins'] + slot['losses']:.0f}")
+            st.metric(
+                "ROI",
+                "—" if pd.isna(slot["roi"]) else f"{slot['roi']:+.1f}%",
+                help=f"{slot['priced_bets']:.0f} bets with a recorded price.",
+            )
+
+
 def _render_best_and_combinations(
     rows: pd.DataFrame,
     random_rows: pd.DataFrame,
@@ -164,7 +197,7 @@ def _render_best_and_combinations(
     thresholds,
     partner: pd.DataFrame | None,
 ) -> None:
-    st.subheader("Best own-snapshot slot")
+    st.subheader("Best single slots")
     source = (
         st.segmented_control(
             "Source",
@@ -184,82 +217,59 @@ def _render_best_and_combinations(
             f"No slot has {MIN_CELL_BETS} settled bets in {source.lower()} yet for these filters."
         )
         return
-    best = eligible.iloc[0]
-    best_rows = candidates.loc[candidates["candidate"].eq(best["candidate"])]
-    chance = selection_chance(eligible["wins"] + eligible["losses"], best["win_pct"])
-    own = candidates.loc[candidates["on_horizon"]]
-    partner_own = (
-        None
-        if partner is None or partner.empty
-        else candidate_rows(partner, source).loc[lambda frame: frame["on_horizon"]]
-    )
-    strategies = {
-        label: combine_predictions(members, min_edge=thresholds)
-        for label, members in strategy_members(own, partner_own).items()
+    top = eligible.head(TOP_SLOTS)
+    best = top.iloc[0]
+    slot_rows = {
+        slot["candidate"]: candidates.loc[candidates["candidate"].eq(slot["candidate"])]
+        for _, slot in top.iterrows()
     }
-    best_label = f"{best['candidate']} (best single slot)"
-    table = compare_with_best(
-        {
-            best_label: best_rows,
-            **strategies,
-            **({"Random baseline": random_rows} if not random_rows.empty else {}),
-        },
-        best_rows,
-    )
-    table["role"] = "Combination"
-    table.loc[table["strategy"].eq(best_label), "role"] = "Best single slot"
-    table.loc[table["strategy"].eq("Random baseline"), "role"] = "Random baseline"
-    combos = table.loc[table["role"].eq("Combination")]
-    winners = combos.loc[~combos["low_sample"] & combos["win_pct"].gt(best["win_pct"])]
-    top_combo = (
-        winners.sort_values(["win_pct", "bets"], ascending=False).iloc[0]
-        if not winners.empty
-        else None
+    best_rows = slot_rows[best["candidate"]]
+    chance = selection_chance(eligible["wins"] + eligible["losses"], best["win_pct"])
+    with st.container(horizontal=True, key="history_top_slots"):
+        for rank, (_, slot) in enumerate(top.iterrows()):
+            _slot_card(rank, slot)
+    st.caption(
+        f"Ranked among {len(eligible)} slots with at least {MIN_CELL_BETS} settled bets in "
+        f"{source.lower()}. Coin-flip chance **{100 * chance:.0f}%**: how often the best of "
+        f"{len(eligible)} coin-flip slots with these bet counts reaches "
+        f"{best['win_pct']:.1f}%. High means the best slot is indistinguishable from luck."
     )
 
-    with st.container(horizontal=True):
-        st.metric(
-            "Best slot",
-            best["candidate"],
-            border=True,
-            help=f"Highest win % among the {len(eligible)} slots "
-            f"with at least {MIN_CELL_BETS} settled bets in {source.lower()}.",
-        )
-        st.metric(
-            "Win %",
-            f"{best['win_pct']:.1f}%",
-            border=True,
-            help=f"{best['wins']:.0f} wins / {best['losses']:.0f} losses / "
-            f"{best['pushes']:.0f} pushes. 95% CI {best['ci_low']:.1f}–{best['ci_high']:.1f}%.",
-        )
-        st.metric(
-            "ROI",
-            "—" if pd.isna(best["roi"]) else f"{best['roi']:+.1f}%",
-            border=True,
-            help=f"{best['priced_bets']:.0f} bets with a recorded price.",
-        )
-        st.metric(
-            "Coin-flip chance",
-            f"{100 * chance:.0f}%",
-            border=True,
-            help=f"How often the best of {len(eligible)} coin-flip slots with these "
-            "bet counts reaches this win %. High means the best slot is "
-            "indistinguishable from luck.",
-        )
+    partner_candidates = (
+        None if partner is None or partner.empty else candidate_rows(partner, source)
+    )
+    members = timepoint_members(candidates, partner_candidates)
+    combined = same_timepoint_combinations(members, min_edge=thresholds)
+    combo_ranking = rank_combinations(combined)
+    eligible_combos = (
+        combo_ranking.loc[combo_ranking["eligible"]]
+        if not combo_ranking.empty
+        else combo_ranking
+    )
+    top_combos = eligible_combos.head(TOP_COMBINATIONS)
+    combo_rows = {
+        name: combined.loc[combined["strategy"].eq(name)]
+        for name in top_combos.get("strategy", [])
+    }
+
     game_dates = games.set_index("game_id")["game_date"]
+    roles = ("Best slot", "2nd best slot", "3rd best slot")
     curves = [
-        cumulative_win_rate(best_rows, game_dates, best["candidate"]).assign(
-            role="Best slot"
-        ),
+        cumulative_win_rate(frame, game_dates, name).assign(role=role)
+        for (name, frame), role in zip(slot_rows.items(), roles, strict=False)
+    ]
+    own = candidates.loc[candidates["on_horizon"]]
+    curves.append(
         cumulative_win_rate(own, game_dates, "All own snapshots (pooled)").assign(
             role="All own snapshots"
-        ),
-    ]
-    if top_combo is not None:
+        )
+    )
+    if combo_rows:
+        name = next(iter(combo_rows))
         curves.append(
-            cumulative_win_rate(
-                strategies[top_combo["strategy"]], game_dates, top_combo["strategy"]
-            ).assign(role="Best combination")
+            cumulative_win_rate(combo_rows[name], game_dates, name).assign(
+                role="Best combination"
+            )
         )
     if not random_rows.empty:
         curves.append(
@@ -271,12 +281,12 @@ def _render_best_and_combinations(
     st.altair_chart(
         efficacy_chart(pd.concat(curves, ignore_index=True)),
         width="stretch",
-        alt="Cumulative win % of the best slot by slate date",
+        alt="Cumulative win % of the three best slots by slate date",
     )
     st.caption(
         "Gold band: the best slot's 95% interval · Grey band: where a coin flip with the same bets lands 95% of the time · "
         "Dashed: pooled own snapshots and the random baseline · Dashed rule: 52.38% break-even at −110. "
-        "The best slot is chosen on these same games, so its curve flatters it."
+        "The slots are chosen on these same games, so their curves flatter them."
     )
     with st.expander("Slot ranking"):
         st.dataframe(
@@ -289,20 +299,40 @@ def _render_best_and_combinations(
             width="stretch",
         )
 
-    st.subheader("Combinations · mean of predictions")
-    if combos.empty:
+    st.subheader("Combinations · same timepoint")
+    if combo_ranking.empty:
         st.caption(
-            "No own-snapshot intermediate predictions to combine in this source."
+            "No timepoint has two slots with lines on the same games in this source."
         )
         return
-    if top_combo is None:
-        leader = combos.sort_values(["win_pct", "bets"], ascending=False).iloc[0]
+    if top_combos.empty:
+        st.caption(
+            f"{len(combo_ranking)} combinations tried; none has {MIN_CELL_BETS} settled bets yet."
+        )
+        return
+    leader = top_combos.iloc[0]
+    combo_chance = selection_chance(
+        eligible_combos["wins"] + eligible_combos["losses"], leader["win_pct"]
+    )
+    table = compare_with_best(
+        {
+            **{f"{name} (slot)": frame for name, frame in slot_rows.items()},
+            **combo_rows,
+            **({"Random baseline": random_rows} if not random_rows.empty else {}),
+        },
+        best_rows,
+    )
+    table["role"] = "Combination"
+    table.loc[table["strategy"].str.endswith(" (slot)"), "role"] = "Single slot"
+    table.loc[table["strategy"].eq("Random baseline"), "role"] = "Random baseline"
+    first = table.loc[table["strategy"].eq(leader["strategy"])].iloc[0]
+    if leader["win_pct"] <= best["win_pct"]:
         st.info(
             f"No combination beats the best single slot ({best['win_pct']:.1f}%). "
             f"Highest combination: {leader['strategy']} at {leader['win_pct']:.1f}%."
         )
     else:
-        p_value = top_combo["sign_test_p"]
+        p_value = first["sign_test_p"]
         verdict = (
             "a difference unlikely to be noise"
             if p_value < 0.05
@@ -310,27 +340,33 @@ def _render_best_and_combinations(
         )
         notice = st.success if p_value < 0.05 else st.info
         notice(
-            f"{top_combo['strategy']} wins {top_combo['win_pct']:.1f}% vs "
+            f"{leader['strategy']} wins {leader['win_pct']:.1f}% vs "
             f"{best['win_pct']:.1f}% for the best slot. On the "
-            f"{top_combo['matched_games']:.0f} games both bet it is "
-            f"{top_combo['matched_delta_pp']:+.1f} pp (sign test p = {p_value:.2f}), "
+            f"{first['matched_games']:.0f} games both bet it is "
+            f"{first['matched_delta_pp']:+.1f} pp (sign test p = {p_value:.2f}), "
             f"{verdict}. It is plotted above as the best combination."
         )
+    st.caption(
+        f"Top {len(top_combos)} of {len(eligible_combos)} combinations with at least "
+        f"{MIN_CELL_BETS} settled bets ({len(combo_ranking)} tried: subsets of 2–"
+        f"{MAX_COMBINATION_SIZE} slots at one timepoint, mean edge and majority vote). "
+        f"Coin-flip chance of the leader **{100 * combo_chance:.0f}%**."
+    )
     ordered = pd.concat(
         [
-            table.loc[table["role"].eq("Best single slot")],
-            combos.sort_values("win_pct", ascending=False),
+            table.loc[table["role"].eq("Single slot")],
+            table.loc[table["role"].eq("Combination")],
             table.loc[table["role"].eq("Random baseline")],
         ]
     )
     st.altair_chart(
         strategy_chart(ordered),
         width="stretch",
-        alt="Win % of the best single slot, each combination and the random baseline",
+        alt="Win % of the three best single slots, the ten best combinations and the random baseline",
     )
     st.caption(
-        f"Faded points: fewer than {MIN_CELL_BETS} wins + losses. Each combination averages "
-        "its members' edges and bets at the latest member's line. Dashed rule: 52.38% break-even."
+        "Each combination uses only slots available at that timepoint and bets at the line "
+        "of the member published last. Dashed rule: 52.38% break-even."
     )
     with st.expander("Combination data"):
         st.dataframe(
@@ -355,6 +391,25 @@ def _render_best_and_combinations(
                 }
             )
             .round(2),
+            hide_index=True,
+            width="stretch",
+        )
+    with st.expander("All combinations tried"):
+        st.dataframe(
+            combo_ranking.rename(
+                columns={
+                    "strategy": "Strategy",
+                    "method": "Method",
+                    "timepoint": "Timepoint (min; 0 = Final)",
+                    "members": "Members",
+                    "member_names": "Slots",
+                    "wins": "Wins",
+                    "losses": "Losses",
+                    "pushes": "Pushes",
+                    "win_pct": "Win %",
+                    "eligible": f"≥ {MIN_CELL_BETS} settled bets",
+                }
+            ).round(2),
             hide_index=True,
             width="stretch",
         )
@@ -417,8 +472,8 @@ def render_historical() -> None:
             "Combine line error + total points",
             key="history_cross_target",
             disabled=target == 3,
-            help="Adds combinations that average both totals targets' edges. "
-            "Reads the other totals target from Aiven once (cached).",
+            help="Adds the other totals target's slots as combination members at "
+            "each timepoint. Reads it from Aiven once (cached).",
         )
     if len(dates) != 2:
         st.info("Choose a start and end date to view historical performance.")
