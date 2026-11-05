@@ -27,8 +27,9 @@ from nba_ou.dashboard.ui.history_table import (
 from nba_ou.dashboard.ui.loaders import load_yesterday
 from nba_ou.dashboard.ui.teams import render_game_header
 
-TARGETS = {1: "Line error", 2: "Total points", 3: "Spread", 0: "Summary"}
-# The whole slate's win rate for every target, instead of one target's games.
+# Summary (the default) is the whole slate's win rate for every target; the
+# others show one target's games.
+TARGETS = {0: "Summary", 1: "Line error", 2: "Total points", 3: "Spread"}
 SUMMARY = 0
 
 
@@ -159,13 +160,13 @@ def render_yesterday() -> None:
             "Prediction target",
             list(TARGETS),
             format_func=TARGETS.get,
-            default=1,
+            default=SUMMARY,
             key="yesterday_target",
             width="stretch",
         )
         # Summary is 0, so a deselected control (None) is told apart explicitly.
         if target is None:
-            target = 1
+            target = SUMMARY
     with source_col:
         source = (
             st.segmented_control(

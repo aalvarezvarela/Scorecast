@@ -376,6 +376,22 @@ def test_best_slot_combinations_random_and_six_hour_windows(history_setup, targe
     # Slots and combinations each report the chance of their leader.
     chances = [node.value for node in app.metric if node.label == "Coin-flip chance"]
     assert len(chances) == 2 and all(value.endswith("%") for value in chances)
+    permutation = [
+        node.value for node in app.metric if node.label == "Game-permutation p"
+    ]
+    # T−6h wins 36 of 40: not luck, even as the best of several slots. For
+    # totals the T−6h mean follows it; for spreads every combination's edge
+    # leans HOME (+11 or −9 with +11), so the leader is a 50% coin flip.
+    assert permutation[0] == "< 0.001"
+    assert (permutation[1] == "< 0.001") is (target != 3)
+    if target == 3:
+        assert float(permutation[1]) > 0.2
+    profits = [node.value for node in app.metric if node.label == "P(profitable)"]
+    # Three slot cards and the leading combination.
+    assert len(profits) == 4 and all(value.endswith("%") for value in profits)
+    assert profits[1] == "29%"  # The 20-20 2nd slot.
+    data = next(t.value for t in app.dataframe if "P(profitable) %" in t.value)
+    assert data["P(profitable) %"].between(0, 100).all()
     subheaders = [node.value for node in app.subheader]
     assert subheaders.index("Best single slots") == 0
     assert "Combinations · same timepoint" in [node.value for node in app.subheader]

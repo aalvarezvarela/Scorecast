@@ -2,6 +2,7 @@
 
 import math
 
+import numpy as np
 import pandas as pd
 import pytest
 from nba_ou.dashboard.domain.analysis import prepare_analysis
@@ -12,6 +13,8 @@ from nba_ou.dashboard.domain.strategies import (
     candidate_rows,
     compare_with_best,
     cumulative_win_rate,
+    game_permutation_pvalue,
+    profit_probability,
     rank_candidates,
     rank_combinations,
     same_timepoint_combinations,
@@ -303,3 +306,61 @@ def test_strategy_chart_serializes_roles():
     )
     spec = strategy_chart(table).to_dict()
     assert spec["layer"]
+
+
+def test_profit_probability_is_the_exact_beta_tail_with_a_skeptical_prior():
+    # Beta(50, 50) is symmetric around a coin flip.
+    assert profit_probability(0, 0, threshold_pct=50) == pytest.approx(0.5)
+    # Checked against 400k Beta draws: 0.3177, 0.9851, 0.2866.
+    assert profit_probability(0, 0) == pytest.approx(0.3173, abs=1e-3)
+    assert profit_probability(36, 4) == pytest.approx(0.9848, abs=1e-3)
+    assert profit_probability(20, 20) == pytest.approx(0.2868, abs=1e-3)
+    assert profit_probability(10, 30) < profit_probability(20, 20)
+    # The prior shrinks a short streak: 10-0 is far from certain.
+    assert profit_probability(10, 0) == pytest.approx(0.677, abs=1e-3)
+    # 55% over 2,000 bets: about 2.1 SD above break-even.
+    assert profit_probability(1100, 900) == pytest.approx(0.986, abs=1e-3)
+
+
+def _cells(results_by_cell):
+    """One settled row per game and cell; ``True`` = WIN."""
+    return pd.DataFrame(
+        [
+            {"cell": cell, "game_id": game, "result": "WIN" if won else "LOSS"}
+            for cell, results in results_by_cell.items()
+            for game, won in enumerate(results)
+        ]
+    )
+
+
+def test_game_permutation_keeps_shared_games_shared():
+    hot = [game % 10 < 7 for game in range(40)]  # 28-12: 70%.
+    one = _cells({"a": hot})
+    copies = _cells({name: hot for name in "abcdefghij"})
+    alone = game_permutation_pvalue(one, "cell", ["a"], 70.0)
+    shared = game_permutation_pvalue(copies, "cell", list("abcdefghij"), 70.0)
+    # Ten copies of the same picks are one test, not ten tries ...
+    assert shared == pytest.approx(alone)
+    assert 0.003 < alone < 0.03
+    # ... while the coin-flip chance treats them as independent.
+    assert selection_chance([40] * 10, 70.0) > 3 * selection_chance([40], 70.0)
+
+
+def test_game_permutation_counts_independent_cells_as_tries():
+    rng = np.random.default_rng(3)
+    cells = {str(i): list(rng.integers(0, 2, 40).astype(bool)) for i in range(10)}
+    cells["hot"] = [game % 10 < 7 for game in range(40)]
+    frame = _cells(cells)
+    alone = game_permutation_pvalue(frame, "cell", ["hot"], 70.0)
+    among = game_permutation_pvalue(frame, "cell", list(cells), 70.0)
+    assert among > 2 * alone
+
+
+def test_game_permutation_edge_cases():
+    frame = _cells({"a": [True] * 40})
+    assert game_permutation_pvalue(frame, "cell", ["a"], 100.0) < 0.002
+    assert game_permutation_pvalue(frame, "cell", ["a"], 0.0) == 1.0
+    assert math.isnan(game_permutation_pvalue(frame, "cell", ["b"], 50.0))
+    assert math.isnan(game_permutation_pvalue(frame.iloc[:0], "cell", ["a"], 50.0))
+    pushes = frame.assign(result="PUSH")
+    assert math.isnan(game_permutation_pvalue(pushes, "cell", ["a"], 50.0))

@@ -24,6 +24,8 @@ from nba_ou.dashboard.domain.strategies import (
     candidate_rows,
     compare_with_best,
     cumulative_win_rate,
+    game_permutation_pvalue,
+    profit_probability,
     rank_candidates,
     rank_combinations,
     same_timepoint_combinations,
@@ -80,6 +82,16 @@ METHOD_NOTES = """
   Coin-flip chance: how often the best of the same number of coin-flip cells, with the
   same bet counts, reaches that win %. Cells share games, so it is a conservative guide,
   not a p-value. The grey band is where one coin flip lands 95% of the time.
+- **Game-permutation p:** the selection-aware check that keeps shared games shared. Each
+  simulation flips every game's result at random, the same flip for every slot (or
+  combination) that bet it, and takes the best win %; the p-value is the share of
+  simulations that reach the observed leader. It is computed per game, so repeated rows of
+  one game never count as extra evidence. Cells betting a game at different lines are tied
+  to one outcome, a mild overstatement of their correlation.
+- **P(profitable):** the probability that a slot's true win rate beats 52.38%, from its
+  wins and losses and a skeptical Beta(50, 50) prior (a coin flip worth 100 bets). With no
+  bets it is 32%. It does not know the slot was picked as a leader, so it reads high for
+  the best of many; the two selection-aware numbers correct for that.
 - **Random baseline:** stored random OVER/UNDER picks (totals only, from 2026-10-26),
   graded at their stored line. Total points shows the same bets as line error.
 - **Combinations:** only slots available at the same timepoint are combined, e.g. at T−8h
@@ -187,6 +199,39 @@ def _slot_card(rank: int, slot) -> None:
                 "—" if pd.isna(slot["roi"]) else f"{slot['roi']:+.1f}%",
                 help=f"{slot['priced_bets']:.0f} bets with a recorded price.",
             )
+            _profit_metric(slot["wins"], slot["losses"])
+
+
+def _profit_metric(wins, losses, **kwargs) -> None:
+    st.metric(
+        "P(profitable)",
+        f"{100 * profit_probability(wins, losses):.0f}%",
+        help="Probability that the true win rate beats 52.38% (break-even at "
+        "−110), from these wins and losses and a skeptical prior centred on a "
+        "coin flip (Beta(50, 50), worth 100 bets). It ignores that this was "
+        "picked as one of the best: read it with the coin-flip chance and the "
+        "game-permutation p.",
+        **kwargs,
+    )
+
+
+def _permutation_metric(p_value: float, tried: int, what: str) -> None:
+    st.metric(
+        "Game-permutation p",
+        # 2,000 simulations cannot resolve below 1/2001.
+        (
+            "—"
+            if pd.isna(p_value)
+            else "< 0.001" if p_value < 0.001 else f"{p_value:.3f}"
+        ),
+        border=True,
+        width="content",
+        help=f"Selection-aware p-value of the leader among {tried} {what}: each "
+        "game's result is flipped at random, the same flip for every "
+        f"{what[:-1]} that bet it, so shared games stay shared. Share of "
+        "simulations whose best reaches the observed win %. Small means the "
+        "leader is unlikely to be luck alone.",
+    )
 
 
 def _coin_flip_metric(chance: float, tried: int, win_pct: float, what: str) -> None:
@@ -237,10 +282,15 @@ def _render_best_and_combinations(
     }
     best_rows = slot_rows[best["candidate"]]
     chance = selection_chance(eligible["wins"] + eligible["losses"], best["win_pct"])
+    permutation = game_permutation_pvalue(
+        candidates, "candidate", eligible["candidate"], best["win_pct"]
+    )
     with st.container(horizontal=True, key="history_top_slots"):
         for rank, (_, slot) in enumerate(top.iterrows()):
             _slot_card(rank, slot)
-        _coin_flip_metric(chance, len(eligible), best["win_pct"], "slots")
+        with st.container(width="content", gap="small"):
+            _coin_flip_metric(chance, len(eligible), best["win_pct"], "slots")
+            _permutation_metric(permutation, len(eligible), "slots")
     st.caption(
         f"Ranked among {len(eligible)} slots with at least {MIN_CELL_BETS} settled bets "
         f"in {source.lower()}."
@@ -325,6 +375,9 @@ def _render_best_and_combinations(
     combo_chance = selection_chance(
         eligible_combos["wins"] + eligible_combos["losses"], leader["win_pct"]
     )
+    combo_permutation = game_permutation_pvalue(
+        combined, "strategy", eligible_combos["strategy"], leader["win_pct"]
+    )
     table = compare_with_best(
         {
             **{f"{name} (slot)": frame for name, frame in slot_rows.items()},
@@ -366,9 +419,11 @@ def _render_best_and_combinations(
             help=f"{leader['strategy']}: {leader['wins']:.0f} wins / "
             f"{leader['losses']:.0f} losses / {leader['pushes']:.0f} pushes.",
         )
+        _profit_metric(leader["wins"], leader["losses"], border=True, width="content")
         _coin_flip_metric(
             combo_chance, len(eligible_combos), leader["win_pct"], "combinations"
         )
+        _permutation_metric(combo_permutation, len(eligible_combos), "combinations")
     st.caption(
         f"Top {len(top_combos)} of {len(eligible_combos)} combinations with at least "
         f"{MIN_CELL_BETS} settled bets ({len(combo_ranking)} tried: subsets of 2–"
@@ -381,6 +436,10 @@ def _render_best_and_combinations(
             table.loc[table["role"].eq("Random baseline")],
         ]
     )
+    ordered["profit_pct"] = [
+        100 * profit_probability(wins, losses)
+        for wins, losses in zip(ordered["wins"], ordered["losses"], strict=True)
+    ]
     st.altair_chart(
         strategy_chart(ordered),
         width="stretch",
@@ -410,6 +469,7 @@ def _render_best_and_combinations(
                     "only_best_won": "Only best won",
                     "matched_delta_pp": "Δ vs best on those (pp)",
                     "sign_test_p": "Sign test p",
+                    "profit_pct": "P(profitable) %",
                 }
             )
             .round(2),

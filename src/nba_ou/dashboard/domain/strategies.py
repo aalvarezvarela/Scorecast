@@ -12,6 +12,7 @@ import numpy as np
 import pandas as pd
 
 from nba_ou.dashboard.domain.analysis import (
+    BREAK_EVEN,
     MIN_CELL_BETS,
     aggregate_cells,
     bucket_label,
@@ -31,6 +32,11 @@ CANDIDATE_KEYS = (
     "bucket",
 )
 NULL_SIMULATIONS = 20_000
+PERMUTATIONS = 2_000
+# Skeptical prior for the profit probability: Beta(50, 50), centred on a coin
+# flip with the weight of 100 bets (prior SD ≈ 5 pp). The market is close to
+# efficient, so a short hot streak should not read as a sure edge.
+PRIOR_STRENGTH = 50
 TOP_SLOTS = 3
 TOP_COMBINATIONS = 10
 # Subsets of 2..MAX_COMBINATION_SIZE members of one timepoint; a timepoint with
@@ -291,6 +297,81 @@ def rank_combinations(combined: pd.DataFrame) -> pd.DataFrame:
         )
         .reset_index(drop=True)
     )
+
+
+def profit_probability(
+    wins: int,
+    losses: int,
+    *,
+    threshold_pct: float = BREAK_EVEN,
+    prior: int = PRIOR_STRENGTH,
+) -> float:
+    """Posterior P(win rate > ``threshold_pct``) under a Beta(prior, prior) prior.
+
+    The posterior is Beta(a, b), a = prior + wins, b = prior + losses. For
+    integer a and b, P(X > t) = P(Binomial(a + b − 1, t) ≤ a − 1), so this is
+    exact without scipy. It ignores how the slot was selected: for a slot picked
+    as the best of many, read it with the selection-aware p-values.
+    """
+    a, b = prior + int(wins), prior + int(losses)
+    if a <= 0 or b <= 0:
+        return float("nan")
+    n, t = a + b - 1, threshold_pct / 100
+    log_t, log_u = math.log(t), math.log1p(-t)
+    terms = [
+        math.lgamma(n + 1)
+        - math.lgamma(k + 1)
+        - math.lgamma(n - k + 1)
+        + k * log_t
+        + (n - k) * log_u
+        for k in range(a)
+    ]
+    peak = max(terms)
+    return min(1.0, math.exp(peak) * sum(math.exp(x - peak) for x in terms))
+
+
+def game_permutation_pvalue(
+    frame: pd.DataFrame,
+    by: str,
+    cells,
+    best_win_pct: float,
+    *,
+    simulations: int = PERMUTATIONS,
+    seed: int = 0,
+) -> float:
+    """Selection-aware p-value of the best of ``cells``, permuting whole games.
+
+    Under the null that picks carry no information about results, each game's
+    outcome is flipped at random, the same flip for every cell that bet it, so
+    the cells' shared games stay shared (the coin-flip chance treats them as
+    independent instead). The p-value is the share of simulations whose best
+    cell reaches ``best_win_pct``, with the usual +1 correction. Cells betting
+    a game at different lines are treated as tied to one outcome, a mild
+    overstatement of their correlation.
+    """
+    if frame.empty or not np.isfinite(best_win_pct):
+        return float("nan")
+    settled = frame.loc[
+        frame[by].isin(list(cells)) & frame["result"].isin(["WIN", "LOSS"]),
+        [by, "game_id", "result"],
+    ]
+    if settled.empty:
+        return float("nan")
+    games = pd.Index(settled["game_id"].unique())
+    columns = pd.Index(settled[by].unique())
+    sign = np.zeros((len(games), len(columns)), dtype=np.float32)
+    sign[games.get_indexer(settled["game_id"]), columns.get_indexer(settled[by])] = (
+        np.where(settled["result"].eq("WIN"), 1.0, -1.0)
+    )
+    bets = np.abs(sign).sum(axis=0)
+    losses = (sign < 0).sum(axis=0).astype(np.float32)
+    rng = np.random.default_rng(seed)
+    keep = rng.integers(0, 2, size=(simulations, len(games))).astype(np.float32)
+    # A kept game keeps its result; a flipped one swaps win and loss. So a
+    # cell's simulated wins are its losses plus the kept games' signs.
+    wins = keep @ sign + losses
+    best = (100 * wins / bets).max(axis=1)
+    return float(((best >= best_win_pct - 1e-9).sum() + 1) / (simulations + 1))
 
 
 def sign_test(only_a: int, only_b: int) -> float:
