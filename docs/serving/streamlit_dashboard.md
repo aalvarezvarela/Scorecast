@@ -211,8 +211,8 @@ Pacific date boundary as Today, with every displayed time converted to Madrid.
 The selected date controls the games, prediction checkpoints and daily summary.
 The target selector separates Line error, Total points and Spread. Model
 selection remains registry schema `2_5` plus available TabPFN families.
-A fourth option, **Summary**, replaces the game cards with the slate as a
-whole: one card per target with its win rate pooled over every model and
+The first option and the default, **Summary**, replaces the game cards with
+the slate as a whole: one card per target with its win rate pooled over every model and
 checkpoint, and one table per model whose rows are all checkpoints pooled and
 then each checkpoint, with a column per target (`win % (wins–losses)`, `—`
 without settled bets). It uses the selected source and minimum edges; Display
