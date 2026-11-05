@@ -144,8 +144,11 @@ def analyze_cell(cell: str) -> dict:
     for arm in ("old", "new"):
         stab = pd.read_csv(runs[(arm, PRIMARY[cell])] / "seed_stability.csv").set_index("random_state")
         for seed in SEEDS:
-            rep = pd.read_csv(runs[(arm, seed)] / "seed_stability.csv").set_index("random_state")
-            repro[f"{arm}_{seed}"] = float(abs(rep.loc[seed, "mae"] - stab.loc[seed, "mae"]))
+            # No evaluation seeds, so no seed_stability.csv: its primary seed's
+            # holdout predictions are that seed's fit.
+            rep = pd.read_parquet(runs[(arm, seed)] / "final_test_predictions.parquet")
+            rep_mae = float((rep["y_true"] - rep["y_pred"]).abs().mean())
+            repro[f"{arm}_{seed}"] = float(abs(rep_mae - stab.loc[seed, "mae"]))
     res["replicate_vs_eval_seed_max_abs_mae_diff"] = max(repro.values())
 
     # Feature lists, from each run's own feature_schema.json.

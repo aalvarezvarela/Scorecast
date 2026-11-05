@@ -155,6 +155,73 @@ The specs are read from each slot's production pointer on 2026-11-05. The
    on with the old values and the old feature list. CV therefore favours `old`
    slightly by construction; the holdout is the cleaner read.
 
-## Results
+## Results (2026-11-05): within noise; no re-tune
 
-Pending.
+All 30 cells ran OK (runner logs `artifacts/logs/data_drift_fixed_params_2026_11_20261105_*`).
+Full tables, including every minimum edge and ROI, are in `results/summary.md` (from
+`analyze.py`; raw numbers in `results/summary.json`).
+
+**Checks that passed:**
+
+- Each `old` main cell reproduces its `report_text_last_game_2026_11` control bit
+  for bit: all five seeds, and the feature list. The close cell's primary-seed
+  holdout MAE (14.404704575753604) is the production spec's own vouching
+  `holdout_mae`. The `old` arm is the run production was promoted from.
+- Every seed replicate's holdout equals the main cell's evaluation seed
+  (|ΔMAE| ≤ 2e-15).
+- The win rates computed here match the framework's `betting_sweep.csv`.
+- Holdout 610 games and CV 624 games, identical in both arms. One closing
+  holdout game (2026-03-23) has a different line, from #107.
+
+**new - old at the primary 0.1-point threshold**, five paired seeds. The
+"seeds" CI is a t interval over the five per-seed differences. The game-level
+SE is for the seed-averaged per-game difference.
+
+| slot | split | MAE old (seed range) | MAE new (seed range) | ΔMAE, seeds [95% CI] | ΔMAE (game SE) | win% old | win% new | Δwin pp, seeds [95% CI] | Δwin pp (game SE) |
+|---|---|---|---|---|---|---|---|---|---|
+| close | CV | 14.146 (14.131-14.158) | 14.171 (14.157-14.193) | +0.025 [-0.003, +0.053] | +0.025 (0.017) | 51.7 | 49.3 | -2.3 [-3.5, -1.1] | -2.3 (1.0) |
+| close | holdout | 14.356 (14.301-14.405) | 14.361 (14.298-14.426) | +0.005 [-0.056, +0.067] | +0.005 (0.017) | 55.3 | 54.6 | -0.7 [-1.7, +0.4] | -0.6 (0.9) |
+| T-480 | CV | 14.360 (14.278-14.407) | 14.373 (14.298-14.442) | +0.013 [-0.104, +0.130] | +0.013 (0.022) | 53.4 | 51.7 | -1.7 [-6.4, +3.1] | -1.7 (1.0) |
+| T-480 | holdout | 14.440 (14.390-14.511) | 14.404 (14.375-14.436) | -0.036 [-0.105, +0.034] | -0.036 (0.024) | 56.2 | 56.1 | -0.1 [-1.6, +1.4] | -0.1 (1.0) |
+| T-720 | CV | 14.468 (14.343-14.592) | 14.483 (14.446-14.518) | +0.015 [-0.106, +0.137] | +0.015 (0.027) | 51.6 | 50.8 | -0.8 [-4.9, +3.3] | -0.8 (1.0) |
+| T-720 | holdout | 14.381 (14.362-14.405) | 14.363 (14.330-14.407) | -0.018 [-0.077, +0.041] | -0.018 (0.028) | 57.4 | 57.4 | -0.0 [-3.3, +3.3] | +0.0 (1.0) |
+
+The arms pick a different side on 22-33% of games: the colsample reshuffle a
+handful of changed features causes. The other minimum edges (0, 0.5, 1, 2)
+show the same picture: every holdout interval contains 0.
+
+**Reading, by the pre-registered rule:**
+
+- **No slot is better or worse.** No MAE difference has a seed interval that
+  excludes 0 in either split, let alone in both with the same sign. Every MAE
+  difference is inside the `old` arm's own seed range, in CV and holdout alike.
+- **One flag: close CV win rate**, -2.3 pp (seed CI [-3.5, -1.1], game-level
+  t ≈ 2.3). By the letter of the rule, close is not "within noise" in CV on
+  that criterion. It is not confirmed where it would matter:
+  - The holdout gives -0.7 [-1.7, +0.4]; its MAE difference is +0.005.
+  - The CV MAE difference (+0.025) is inside the old arm's seed range.
+  - In CV, every slot leans slightly toward `old` (ΔMAE +0.013 to +0.025;
+    Δwin -0.8 to -2.3 pp). In the holdout, MAE leans toward `new` at T-480 and
+    T-720. That split is what the pre-registered bias predicts: the
+    hyperparameters were selected on these CV folds with the old values and the
+    old feature list.
+  - Across ~30 slot x split x threshold readings, one 2-SE result is
+    expected by chance.
+- **Action:** the production specs stay valid on the current 2_5 data. Optuna is
+  not rerun for data drift. A re-tune on the current data would remove the CV
+  selection bias above, but the holdout shows nothing for it to recover.
+
+**What this does not cover:**
+
+- total_points and spread_error slots, and the other 14 intermediate horizons.
+  T-480 and T-720 bracket the horizons that serve best, and the horizons are
+  highly correlated (`intermediate-promotion-sweep`).
+- Production's exact feature list on the new data. The `new` arm re-cleans, so
+  0.3-1% of its columns differ from the spec's (see Data). Production keeps the
+  spec's list, a smaller change than this arm tests.
+
+No code bug was found in the shared pipeline. Two harness notes:
+
+- `load_config` resolves `_base.yaml` from the config's own folder, so a config
+  copied outside `experiments/` silently loses the base defaults.
+- Seed-replicate cells (no evaluation seeds) write no `seed_stability.csv`.
