@@ -90,7 +90,7 @@ def test_history_defaults_to_current_season_including_backfills(history_setup):
     assert app.session_state["history_kind"] is None
     assert [node.value for node in app.subheader] == [
         "Performance overview",
-        "Best own-snapshot slot",
+        "Best single slots",
         "Closing by prediction time",
         "Closing by input time · Replay",
         "Intermediate by model horizon · Replay",
@@ -311,6 +311,18 @@ def season_data(target, games=40):
                     **common,
                 )
             )
+        # Members to combine at T−8h and T−6h, always OVER: 20 of 40 each.
+        for kind, horizon, bucket in ((3, 480, 480), (3, 360, 360), (1, 0, 360)):
+            rows.append(
+                analysis_row(
+                    horizon=horizon,
+                    bucket=bucket,
+                    kind=kind,
+                    source="Snapshot replay",
+                    prediction_value=240 if target == 2 else 11,
+                    **common,
+                )
+            )
         if target != 3:
             baselines.append(
                 analysis_row(
@@ -344,23 +356,44 @@ def test_best_slot_combinations_random_and_six_hour_windows(history_setup, targe
     app.run()
     assert not app.exception
     metrics = {node.label: node.value for node in app.metric}
-    # T−8h always says OVER and T−2h always UNDER: 20 of 40 games each.
+    # T−2h always says UNDER: 20 of 40 games.
     assert metrics["Replay · ≥ 6h"] != metrics["Replay · < 6h"]
     assert metrics["Replay · < 6h"] == "50.0%"
-    assert metrics["Best slot"] == "XGBoost · 2.5 · T−6h"
-    assert metrics["Coin-flip chance"].endswith("%")
     assert ("Random baseline" in metrics) is (target != 3)
-    assert "Combinations · mean of predictions" in [
-        node.value for node in app.subheader
+    # Three slot cards, the best first: T−6h follows 36 of 40 results.
+    slots = [
+        node.value
+        for node in app.markdown
+        if node.value.startswith("**") and " · " in node.value
     ]
+    assert slots[0] == "**XGBoost · 2.5 · Intermediate · T−6h**"
+    assert len(slots) == 3
+    assert [node.value for node in app.caption if node.value.endswith(" slot")] == [
+        "Best slot",
+        "2nd best slot",
+        "3rd best slot",
+    ]
+    assert any("Coin-flip chance **" in node.value for node in app.caption)
+    assert "Combinations · same timepoint" in [node.value for node in app.subheader]
+    # The T−6h mean follows its strongest member: it ties, never beats it.
     assert any(
         "No combination beats the best single slot" in node.value for node in app.info
     )
-    # Efficacy, combinations, intermediate replay, live heatmap, own snapshot.
-    assert len(rendered_charts(app)) == 5
+    # Efficacy, combinations, closing replay, intermediate replay, live
+    # heatmap, own snapshot.
+    assert len(rendered_charts(app)) == 6
     combinations = next(t.value for t in app.dataframe if "Strategy" in t.value)
-    assert "XGBoost · 2.5 · mean ≥ 6h" in set(combinations["Strategy"])
-    assert ("Random baseline" in set(combinations["Strategy"])) is (target != 3)
+    strategies = set(combinations["Strategy"])
+    assert "XGBoost · 2.5 · Intermediate · T−6h (slot)" in strategies
+    assert (
+        "T−6h · mean edge · TabPFN 2.5 intermediate + XGBoost 2.5 intermediate"
+        in strategies
+    )
+    assert not any("T−2h ·" in name for name in strategies)  # Alone at T−2h.
+    assert ("Random baseline" in strategies) is (target != 3)
+    tried = next(t.value for t in app.dataframe if "Method" in t.value)
+    assert set(tried["Method"]) == {"Mean edge", "Majority vote"}
+    assert set(tried["Timepoint (min; 0 = Final)"]) == {360, 480}
     # TabPFN live cells stay out of the model × time view and its margins.
     live_tables = [
         t.value
@@ -383,7 +416,9 @@ def test_cross_target_combinations_read_the_other_totals_target(history_setup):
     app.toggle(key="history_cross_target").set_value(True).run()
     assert not app.exception
     assert [call.args[2] for call in reader.call_args_list] == [1, 2]
-    combinations = next(t.value for t in app.dataframe if "Strategy" in t.value)
-    assert "XGBoost · 2.5 · line error + total points · all horizons" in set(
-        combinations["Strategy"]
+    tried = next(t.value for t in app.dataframe if "Method" in t.value)
+    assert any(
+        "XGBoost 2.5 intermediate (line error)" in names
+        and "XGBoost 2.5 intermediate (total points)" in names
+        for names in tried["Slots"]
     )

@@ -8,7 +8,10 @@ import pandas as pd
 
 from nba_ou.dashboard.domain.dates import horizon_label
 from nba_ou.dashboard.domain.history import grade_history
-from nba_ou.dashboard.domain.models import with_family_metadata
+from nba_ou.dashboard.domain.models import (
+    with_family_metadata,
+    without_hidden_variants,
+)
 
 # Lightweight copy of the serving snapshot contract (checked in tests). Do not
 # import the training/market-data stack into the dashboard.
@@ -77,8 +80,9 @@ def prepare_analysis(
     frame: pd.DataFrame, *, min_edge: Mapping[int, float] | None = None
 ) -> pd.DataFrame:
     """Grade SQL-reduced rows using exactly Yesterday's stored-quote policy."""
+    frame = without_hidden_variants(frame)
     if frame.empty:
-        return frame.copy()
+        return frame
     work = with_family_metadata(frame)
     work["available"] = True
     work = grade_history(work, min_edge=min_edge)

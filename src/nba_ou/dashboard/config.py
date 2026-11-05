@@ -30,6 +30,9 @@ DEFAULT_MIN_EDGE_POINTS = 0.1
 # Per ``model_builds.kind``: 1 registry (XGBoost) models, 3 TabPFN, whose
 # outputs sit much closer to the line.
 MODEL_NAMES = {1: "XGBoost", 3: "TabPFN"}
+# Deprecated model variants: their stored outputs never appear on any page.
+# TabPFN's thinking-high mode is no longer scheduled (since 2026-11-02).
+HIDDEN_VARIANT_SUFFIXES = ("_thinking_high",)
 DEFAULT_MIN_EDGE_BY_KIND = {1: DEFAULT_MIN_EDGE_POINTS, 3: 0.01}
 SIGNAL_COLORS = {
     "OVER": "red",

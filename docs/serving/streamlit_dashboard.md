@@ -57,8 +57,9 @@ The entrypoint registers three pages using `st.navigation`. Today is the
 default. Yesterday shows stored predictions and results for a selected date.
 [Historical analysis](historical_analysis.md) shows the closing timeline, live
 model/time heatmap and own-snapshot live/replay comparisons over a date range,
-plus the best own-snapshot slot, mean-of-predictions combinations and the random
-baseline.
+plus the three best single slots, same-timepoint mean and majority-vote
+combinations and the random baseline. TabPFN thinking-high outputs are
+deprecated and hidden on every page.
 Page scripts compose
 modules in `nba_ou.dashboard`:
 
