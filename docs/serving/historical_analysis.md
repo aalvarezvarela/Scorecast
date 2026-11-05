@@ -66,6 +66,9 @@ Below it, a **target selector**: Line error | Total points | Spread error.
 These are the three views, each with the same sections; TabPFN appears only
 where it has outputs (no spread).
 
+The best single slots and their combinations (1b–1c) open the page, above
+the KPI strip.
+
 1. **KPI strip**: settled games, pooled win % for closing Final and closing
    replay, and the random baseline (totals only). Below, one row per source
    (live, replay): own snapshot pooled over every horizon, then split into
@@ -74,7 +77,7 @@ where it has outputs (no spread).
    highest win % among the slots with at least 30 settled bets. A slot is an
    intermediate model at its own snapshot, or a closing model at one input
    timepoint (Final included). Each card shows the slot, win %, bets and ROI.
-   The caption gives the **coin-flip chance** of the best one: the share of
+   A fourth card gives the **coin-flip chance** of the best one: the share of
    simulations in which the best of the same number of coin-flip cells, with
    the same bet counts, reaches that win %. Cells share games, so treating
    them as independent overstates the chance; it is a conservative guide, not
@@ -138,8 +141,8 @@ placed** (time T), never at a later line.
   compared with the three best single slots and the random baseline, paired
   with the best slot on the games both bet (W/L only) with an exact two-sided
   sign test on the games only one of them won. The leader is picked from all
-  combinations tried, so the page reports its coin-flip chance over all of
-  them; "All combinations tried" lists every one. The previous fixed family
+  combinations tried, so a card reports its win % and its coin-flip chance
+  over all of them; "All combinations tried" lists every one. The previous fixed family
   (per-model means across horizons, 2026-11-02) is replaced: it mixed
   snapshots that are never available together at a betting time.
   First read of that family (2026-11-02, 92 games, replay): no combination

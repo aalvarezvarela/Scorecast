@@ -1,5 +1,6 @@
 """Compact result tables and inspectable historical prediction details."""
 
+from collections.abc import Mapping
 from html import escape
 
 import pandas as pd
@@ -26,6 +27,51 @@ def checkpoint_summary_table(summary: pd.DataFrame) -> pd.DataFrame:
         lambda n: f"{n:.2f} pts" if pd.notna(n) else "—"
     )
     return display.set_index("Snapshot")
+
+
+ALL_CHECKPOINTS = "All checkpoints"
+
+
+def _win_cell(wins, losses) -> str:
+    bets = int(wins) + int(losses)
+    if not bets:
+        return "—"
+    return f"{100 * wins / bets:.1f}% ({int(wins)}–{int(losses)})"
+
+
+def slate_summary_tables(
+    pooled: Mapping[str, pd.DataFrame], by_checkpoint: Mapping[str, pd.DataFrame]
+) -> dict[str, pd.DataFrame]:
+    """One table per model: its pooled win rate, then one row per checkpoint.
+
+    ``pooled`` and ``by_checkpoint`` map a target label to ``history_summary``
+    without and with checkpoints; each target is a column.
+    """
+    cells: dict[tuple[int, str], dict[str, dict[str, str]]] = {}
+    orders: dict[str, int] = {}
+    for target, summary in pooled.items():
+        for _, row in summary.iterrows():
+            cells.setdefault((int(row["Kind"]), row["Model"]), {}).setdefault(
+                ALL_CHECKPOINTS, {}
+            )[target] = _win_cell(row["Wins"], row["Losses"])
+    for target, summary in by_checkpoint.items():
+        for _, row in summary.iterrows():
+            label = _snapshot_label(row["Checkpoint"])
+            orders[label] = int(row["Checkpoint order"])
+            cells.setdefault((int(row["Kind"]), row["Model"]), {}).setdefault(
+                label, {}
+            )[target] = _win_cell(row["Wins"], row["Losses"])
+    targets = list(dict.fromkeys([*pooled, *by_checkpoint]))
+    tables = {}
+    for (_, model), rows in sorted(cells.items()):
+        index = sorted(rows, key=lambda label: orders.get(label, -1))
+        table = pd.DataFrame(
+            [[rows[label].get(target, "—") for target in targets] for label in index],
+            index=pd.Index(index, name="Snapshot"),
+            columns=targets,
+        )
+        tables[model] = table
+    return tables
 
 
 def _snapshot_label(checkpoint: str) -> str:

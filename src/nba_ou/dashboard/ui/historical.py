@@ -189,6 +189,18 @@ def _slot_card(rank: int, slot) -> None:
             )
 
 
+def _coin_flip_metric(chance: float, tried: int, win_pct: float, what: str) -> None:
+    st.metric(
+        "Coin-flip chance",
+        "—" if pd.isna(chance) else f"{100 * chance:.0f}%",
+        border=True,
+        width="content",
+        help=f"How often the best of {tried} coin-flip {what} with these bet counts "
+        f"reaches {win_pct:.1f}%. High means the leader is indistinguishable from "
+        "luck. Cells share games, so it is a conservative guide, not a p-value.",
+    )
+
+
 def _render_best_and_combinations(
     rows: pd.DataFrame,
     random_rows: pd.DataFrame,
@@ -228,11 +240,10 @@ def _render_best_and_combinations(
     with st.container(horizontal=True, key="history_top_slots"):
         for rank, (_, slot) in enumerate(top.iterrows()):
             _slot_card(rank, slot)
+        _coin_flip_metric(chance, len(eligible), best["win_pct"], "slots")
     st.caption(
-        f"Ranked among {len(eligible)} slots with at least {MIN_CELL_BETS} settled bets in "
-        f"{source.lower()}. Coin-flip chance **{100 * chance:.0f}%**: how often the best of "
-        f"{len(eligible)} coin-flip slots with these bet counts reaches "
-        f"{best['win_pct']:.1f}%. High means the best slot is indistinguishable from luck."
+        f"Ranked among {len(eligible)} slots with at least {MIN_CELL_BETS} settled bets "
+        f"in {source.lower()}."
     )
 
     partner_candidates = (
@@ -346,11 +357,22 @@ def _render_best_and_combinations(
             f"{first['matched_delta_pp']:+.1f} pp (sign test p = {p_value:.2f}), "
             f"{verdict}. It is plotted above as the best combination."
         )
+    with st.container(horizontal=True, key="history_top_combination"):
+        st.metric(
+            "Best combination · win %",
+            f"{leader['win_pct']:.1f}%",
+            border=True,
+            width="content",
+            help=f"{leader['strategy']}: {leader['wins']:.0f} wins / "
+            f"{leader['losses']:.0f} losses / {leader['pushes']:.0f} pushes.",
+        )
+        _coin_flip_metric(
+            combo_chance, len(eligible_combos), leader["win_pct"], "combinations"
+        )
     st.caption(
         f"Top {len(top_combos)} of {len(eligible_combos)} combinations with at least "
         f"{MIN_CELL_BETS} settled bets ({len(combo_ranking)} tried: subsets of 2–"
-        f"{MAX_COMBINATION_SIZE} slots at one timepoint, mean edge and majority vote). "
-        f"Coin-flip chance of the leader **{100 * combo_chance:.0f}%**."
+        f"{MAX_COMBINATION_SIZE} slots at one timepoint, mean edge and majority vote)."
     )
     ordered = pd.concat(
         [
@@ -521,6 +543,15 @@ def render_historical() -> None:
     ]
     diagonal = rows.loc[rows["on_horizon"]]
     random_rows = _random_baseline(data.baselines)
+    _render_best_and_combinations(
+        rows,
+        random_rows,
+        data.games,
+        thresholds=thresholds,
+        partner=_partner_rows(
+            start, end, target, season_type, kind, thresholds, cross_target
+        ),
+    )
     st.subheader("Performance overview")
     with st.container(horizontal=True):
         st.metric("Final games", f"{settled_games}/{len(data.games)}", border=True)
@@ -548,15 +579,6 @@ def render_historical() -> None:
     )
     st.info(
         f"Cells with fewer than {MIN_CELL_BETS} wins + losses are grey. Intervals are per cell; cells share games."
-    )
-    _render_best_and_combinations(
-        rows,
-        random_rows,
-        data.games,
-        thresholds=thresholds,
-        partner=_partner_rows(
-            start, end, target, season_type, kind, thresholds, cross_target
-        ),
     )
     st.subheader("Closing by prediction time")
     if closing.empty:

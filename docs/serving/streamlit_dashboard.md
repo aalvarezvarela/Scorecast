@@ -211,10 +211,17 @@ Pacific date boundary as Today, with every displayed time converted to Madrid.
 The selected date controls the games, prediction checkpoints and daily summary.
 The target selector separates Line error, Total points and Spread. Model
 selection remains registry schema `2_5` plus available TabPFN families.
+A fourth option, **Summary**, replaces the game cards with the slate as a
+whole: one card per target with its win rate pooled over every model and
+checkpoint, and one table per model whose rows are all checkpoints pooled and
+then each checkpoint, with a column per target (`win % (wins–losses)`, `—`
+without settled bets). It uses the selected source and minimum edges; Display
+is disabled there.
 
-The default source is **Live predictions**. **Snapshot replay** uses stored
-exact intermediate and closing reconstructions, including Historical Backfill;
-it does not rerun any model or substitute live outputs for missing replays.
+The default source is **Snapshot replay**: stored exact intermediate and
+closing reconstructions, including Historical Backfill; it does not rerun any
+model or substitute live outputs for missing replays. **Live predictions**
+shows what the daily runs published before tip-off.
 
 Selection is independent for every game, model family and target:
 

@@ -89,8 +89,8 @@ def test_history_defaults_to_current_season_including_backfills(history_setup):
     assert app.session_state["history_metric"] == "Win %"
     assert app.session_state["history_kind"] is None
     assert [node.value for node in app.subheader] == [
-        "Performance overview",
         "Best single slots",
+        "Performance overview",
         "Closing by prediction time",
         "Closing by input time · Replay",
         "Intermediate by model horizon · Replay",
@@ -373,7 +373,11 @@ def test_best_slot_combinations_random_and_six_hour_windows(history_setup, targe
         "2nd best slot",
         "3rd best slot",
     ]
-    assert any("Coin-flip chance **" in node.value for node in app.caption)
+    # Slots and combinations each report the chance of their leader.
+    chances = [node.value for node in app.metric if node.label == "Coin-flip chance"]
+    assert len(chances) == 2 and all(value.endswith("%") for value in chances)
+    subheaders = [node.value for node in app.subheader]
+    assert subheaders.index("Best single slots") == 0
     assert "Combinations · same timepoint" in [node.value for node in app.subheader]
     # The T−6h mean follows its strongest member: it ties, never beats it.
     assert any(

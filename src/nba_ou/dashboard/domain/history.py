@@ -19,7 +19,8 @@ from nba_ou.dashboard.domain.models import (
 )
 from nba_ou.dashboard.domain.teams import full_team_name
 
-HISTORY_SOURCES = ("Live predictions", "Snapshot replay")
+# Replay first: Yesterday's default source.
+HISTORY_SOURCES = ("Snapshot replay", "Live predictions")
 CHECKPOINT_TOLERANCE = pd.Timedelta(minutes=60)
 # Core checkpoints are listed for every family, so a missing slot stays
 # visible; extra ones only when the family has a prediction there on the slate.
