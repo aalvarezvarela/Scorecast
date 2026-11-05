@@ -159,7 +159,8 @@ The specs are read from each slot's production pointer on 2026-11-05. The
 
 All 30 cells ran OK (runner logs `artifacts/logs/data_drift_fixed_params_2026_11_20261105_*`).
 Full tables, including every minimum edge and ROI, are in `results/summary.md` (from
-`analyze.py`; raw numbers in `results/summary.json`).
+`analyze.py`, which also writes the raw numbers to `results/summary.json`;
+that file is not committed, because the repo ignores `*.json`).
 
 **Checks that passed:**
 
