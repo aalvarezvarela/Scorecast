@@ -22,22 +22,20 @@ from nba_ou.dashboard.ui.history_table import (
     game_results_table,
     history_details,
     history_table_html,
+    slate_summary_tables,
 )
 from nba_ou.dashboard.ui.loaders import load_yesterday
 from nba_ou.dashboard.ui.teams import render_game_header
 
-TARGETS = {1: "Line error", 2: "Total points", 3: "Spread"}
+TARGETS = {1: "Line error", 2: "Total points", 3: "Spread", 0: "Summary"}
+# The whole slate's win rate for every target, instead of one target's games.
+SUMMARY = 0
 
 
 def _performance_summary(games: pd.DataFrame, rows: pd.DataFrame) -> None:
     st.subheader("Daily performance")
-    final = (
-        games["status"].eq(1)
-        & games["home_points"].notna()
-        & games["away_points"].notna()
-    )
     st.caption(
-        f"{int(final.sum())}/{len(games)} games final · "
+        f"{_final_games(games)}/{len(games)} games final · "
         "Games = evaluated matches · Bets = wins + losses · Win rate = Wins / Bets. "
         "No bets, pushes and missing lines are excluded from Bets."
     )
@@ -58,6 +56,62 @@ def _performance_summary(games: pd.DataFrame, rows: pd.DataFrame) -> None:
                     st.caption(
                         "Closing at closing = T−0 reconstruction in replay; last available pre-game prediction in live."
                     )
+
+
+def _final_games(games: pd.DataFrame) -> int:
+    return int(
+        (
+            games["status"].eq(1)
+            & games["home_points"].notna()
+            & games["away_points"].notna()
+        ).sum()
+    )
+
+
+def _slate_summary(data, games: pd.DataFrame, source: str, thresholds) -> None:
+    """Win rate of every target and model over the slate, not per game."""
+    st.subheader("Slate summary")
+    st.caption(
+        f"{_final_games(games)}/{len(games)} games final · {source} · "
+        "Win rate = Wins / Bets (wins–losses). No bets, pushes and missing lines "
+        "are excluded. Each prediction is graded against its own stored line."
+    )
+    pooled, by_checkpoint = {}, {}
+    now = datetime.now(UTC)
+    for target, label in TARGETS.items():
+        if target == SUMMARY:
+            continue
+        rows = grade_history(
+            select_history(data.predictions, games, target, source, now),
+            min_edge=thresholds,
+        )
+        if rows.empty:
+            continue
+        pooled[label] = history_summary(rows)
+        by_checkpoint[label] = history_summary(rows, by_checkpoint=True)
+    if not pooled:
+        st.info("No stored model predictions are available for this slate yet.")
+        return
+    with st.container(horizontal=True, key="yesterday_summary_targets"):
+        for label, summary in pooled.items():
+            wins, losses = int(summary["Wins"].sum()), int(summary["Losses"].sum())
+            st.metric(
+                label,
+                f"{100 * wins / (wins + losses):.1f}%" if wins + losses else "—",
+                border=True,
+                help=f"{wins} wins / {losses} losses over every model and "
+                "checkpoint. Rows repeat games across checkpoints, so they are not "
+                "independent bets.",
+            )
+    with st.container(horizontal=True, gap="medium", key="yesterday_summary"):
+        for model, table in slate_summary_tables(pooled, by_checkpoint).items():
+            with st.container(border=True, width="content"):
+                st.markdown(f"**{model}**")
+                st.table(
+                    table,
+                    border="horizontal",
+                    alt=f"Slate win rate by checkpoint and target for {model}",
+                )
 
 
 def _game_card(game, rows: pd.DataFrame, *, spread: bool) -> None:
@@ -98,20 +152,20 @@ def render_yesterday() -> None:
     )
     st.caption(f"NBA slate · {game_date.strftime('%d %b %Y')} · All times in Madrid")
     target_col, source_col, view_col, refresh_col = st.columns(
-        [3, 3, 2, 1], vertical_alignment="bottom"
+        [4, 3, 2, 1], vertical_alignment="bottom"
     )
     with target_col:
-        target = (
-            st.segmented_control(
-                "Prediction target",
-                list(TARGETS),
-                format_func=TARGETS.get,
-                default=1,
-                key="yesterday_target",
-                width="stretch",
-            )
-            or 1
+        target = st.segmented_control(
+            "Prediction target",
+            list(TARGETS),
+            format_func=TARGETS.get,
+            default=1,
+            key="yesterday_target",
+            width="stretch",
         )
+        # Summary is 0, so a deselected control (None) is told apart explicitly.
+        if target is None:
+            target = 1
     with source_col:
         source = (
             st.segmented_control(
@@ -131,6 +185,7 @@ def render_yesterday() -> None:
                 default="Cards",
                 key="yesterday_view",
                 width="stretch",
+                disabled=target == SUMMARY,
             )
             or "Cards"
         )
@@ -174,6 +229,12 @@ def render_yesterday() -> None:
     games = historical_games(data.games)
     if games.empty:
         st.info("No games were recorded in Aiven for the selected NBA slate.")
+        return
+    if target == SUMMARY:
+        _slate_summary(data, games, source, thresholds)
+        st.caption(
+            f"Results and predictions read {madrid_time(data.fetched_at)} · updates every minute."
+        )
         return
     rows = grade_history(
         select_history(data.predictions, games, target, source, datetime.now(UTC)),

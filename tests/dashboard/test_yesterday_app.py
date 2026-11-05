@@ -38,10 +38,29 @@ def yesterday_setup(monkeypatch):
     loaders.load_yesterday.clear()
 
 
-def open_yesterday():
+def open_yesterday(source="Live predictions"):
+    """The page, switched to ``source`` (None keeps the default, replay)."""
     app = AppTest.from_file(str(ENTRYPOINT)).run()
     app.switch_page("app_pages/yesterday.py").run()
+    if source is not None:
+        app.session_state["yesterday_source"] = source
+        app.run()
     return app
+
+
+def test_yesterday_defaults_to_snapshot_replay(yesterday_setup):
+    reader, _ = yesterday_setup
+    app = open_yesterday(source=None)
+    assert not app.exception
+    assert app.session_state["yesterday_source"] == "Snapshot replay"
+    assert app.info and "reconstructed after the game" in app.info[0].value
+    values = {
+        cell.get_text()
+        for card in tables(app)
+        for cell in card.select(".prediction strong")
+    }
+    assert values == {"248.0"}
+    assert reader.call_count == 1
 
 
 def tables(app):
@@ -54,14 +73,13 @@ def tables(app):
     ]
 
 
-def test_yesterday_defaults_to_live_with_final_scores_and_fixed_checkpoints(
+def test_live_shows_final_scores_and_fixed_checkpoints(
     yesterday_setup,
 ):
     reader, _ = yesterday_setup
     app = open_yesterday()
     assert not app.exception
     assert app.title[0].value == "Yesterday's predictions"
-    assert app.session_state["yesterday_source"] == "Live predictions"
     assert app.session_state["yesterday_target"] == 1
     assert (
         app.date_input(key="yesterday_date").value
@@ -431,3 +449,66 @@ def test_result_strip_states_total_margin_and_outcome_against_the_line(
         ("Margin", "Celtics by 7"),
         *expected,
     ]
+
+
+def test_summary_shows_every_targets_slate_win_rate_without_game_cards(
+    yesterday_setup,
+):
+    reader, _ = yesterday_setup
+    app = open_yesterday()
+    app.session_state["yesterday_target"] = 0
+    app.run()
+    assert not app.exception
+    assert "Slate summary" in [node.value for node in app.subheader]
+    assert not tables(app)
+    assert not app.toggle
+    metrics = {node.label: node.value for node in app.metric}
+    assert list(metrics) == ["Line error", "Total points", "Spread"]
+    assert metrics["Total points"] == "100.0%"
+    assert len(app.table) == 2
+    xgboost = app.table[0].value
+    assert list(xgboost.columns) == ["Line error", "Total points", "Spread"]
+    assert list(xgboost.index)[:2] == ["All checkpoints", "Closing at 8h"]
+    assert "Intermediate at 12h" in xgboost.index
+    assert xgboost.loc["All checkpoints", "Total points"] == "100.0% (16–0)"
+    # The final pre-game total pushes: no bets at that checkpoint.
+    assert xgboost.loc["Closing at closing", "Total points"] == "—"
+    assert any(text.value == "**TabPFN · 2.5**" for text in app.markdown)
+    assert app.session_state["yesterday_view"] == "Cards"
+    app.session_state["yesterday_target"] = 1
+    app.run()
+    assert not app.exception
+    assert len(tables(app)) == 2
+    assert reader.call_count == 1
+
+
+def test_slate_summary_tables_pool_first_then_checkpoints_by_order():
+    from nba_ou.dashboard.ui.history_table import slate_summary_tables
+
+    def summary(rows, by_checkpoint):
+        frame = pd.DataFrame(rows, columns=["Kind", "Model", "Wins", "Losses"])
+        if by_checkpoint:
+            frame["Checkpoint"] = ["Intermediate · T−2h", "Closing · Final pre-game"]
+            frame["Checkpoint order"] = [20000 - 120, 10000]
+        return frame
+
+    pooled = {
+        "Line error": summary([(1, "XGBoost · 2.5", 3, 1)], False),
+        "Spread": summary([(1, "XGBoost · 2.5", 0, 0)], False),
+    }
+    by_checkpoint = {
+        "Line error": summary(
+            [(1, "XGBoost · 2.5", 2, 0), (1, "XGBoost · 2.5", 1, 1)], True
+        )
+    }
+    table = slate_summary_tables(pooled, by_checkpoint)["XGBoost · 2.5"]
+    assert list(table.index) == [
+        "All checkpoints",
+        "Closing at closing",
+        "Intermediate at 2h",
+    ]
+    assert list(table.columns) == ["Line error", "Spread"]
+    assert table.loc["All checkpoints", "Line error"] == "75.0% (3–1)"
+    assert table.loc["All checkpoints", "Spread"] == "—"
+    assert table.loc["Intermediate at 2h", "Line error"] == "100.0% (2–0)"
+    assert table.loc["Closing at closing", "Spread"] == "—"
