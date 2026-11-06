@@ -91,6 +91,8 @@ CONFIG_SCHEMA = {
     "odds_api_key": ("Odds", "ODDS_API_KEY", "secret", None),
     "db_password": ("DatabaseSupabase", "DB_PASSWORD", "secret", None),
     "nebius_api_key": ("Nebius", "NEBIUS_API_KEY", "secret", None),
+    # Coach presser archive LLM tie-break (lab/coach_pressers/llm_judge.py).
+    "openai_api_key": ("OpenAI", "OPENAI_API_KEY", "secret", None),
     # S3 (Note: s3_aws_profile has custom @property logic below)
     "s3_aws_region": ("S3", "AWS_REGION", str, None),
     "s3_bucket": ("S3", "BUCKET", str, None),

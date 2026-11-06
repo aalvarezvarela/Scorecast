@@ -38,6 +38,7 @@ STATE_DEFAULTS = {
     "coach_expected": None,
     "status": "pending",
     "selection": None,
+    "llm": None,
     "archive": None,
     "attempts": 0,
     "last_attempt_at": None,
