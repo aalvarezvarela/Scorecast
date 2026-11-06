@@ -9,16 +9,14 @@ from __future__ import annotations
 import base64
 import fcntl
 import hashlib
-import importlib.util
 import json
 import math
 import re
-import shutil
 import subprocess
 import tempfile
 from collections import Counter
 from dataclasses import dataclass
-from datetime import UTC, date, datetime, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from urllib.parse import urlencode
 from zoneinfo import ZoneInfo
@@ -36,9 +34,16 @@ from lab.game_reports.season_reports import (
     season_games,
     utc_now,
 )
+from lab.youtube_downloader import youtube_media as media
+from lab.youtube_downloader.youtube_media import (  # noqa: F401 - re-exported
+    encode_audio,
+    inspect_audio,
+    publication,
+    select_audio,
+)
 
 CHANNEL_ID = "UCLd4dSmXdrJykO_hgOzbfPw"
-PROFILE = {"codec": "opus", "bitrate_kbps": 48, "channels": 1, "sample_rate": 48000}
+PROFILE = media.PROFILE
 STATE_FIELDS = (
     "status",
     "attempts",
@@ -232,26 +237,11 @@ def prepare_manifest(config: AudioConfig, payload: dict | None = None) -> dict:
 
 
 def require_tools(config: AudioConfig) -> None:
-    for name in ("ffmpeg", "ffprobe", config.js_runtime):
-        if not shutil.which(name):
-            raise RuntimeError(f"Install {name} and add it to PATH")
-    for name in ("yt_dlp", "yt_dlp_ejs"):
-        if importlib.util.find_spec(name) is None:
-            raise RuntimeError(
-                "Install the media dependency group: poetry install --with media"
-            )
+    media.require_tools(config.js_runtime)
 
 
 def youtube_options(config: AudioConfig) -> dict:
-    return {
-        "quiet": True,
-        "noplaylist": True,
-        "socket_timeout": 30,
-        "retries": 3,
-        "extractor_retries": 2,
-        "js_runtimes": {config.js_runtime: {}},
-        "cachedir": str(config.directory / ".yt-dlp-cache"),
-    }
+    return media.youtube_options(config.directory, config.js_runtime)
 
 
 def normalized(value: str) -> str:
@@ -271,21 +261,6 @@ def matches_game(title: str, entry: dict) -> bool:
     return True
 
 
-def publication(info: dict) -> tuple[date | None, str | None]:
-    timestamp = info.get("release_timestamp") or info.get("timestamp")
-    if timestamp is not None:
-        instant = datetime.fromtimestamp(timestamp, UTC)
-        return (
-            instant.astimezone(ZoneInfo("America/New_York")).date(),
-            instant.isoformat(),
-        )
-    try:
-        # upload_date has UTC day precision only; never invent an exact instant.
-        return datetime.strptime(info.get("upload_date") or "", "%Y%m%d").date(), None
-    except ValueError:
-        return None, None
-
-
 def verify_video(info: dict, entry: dict, config: AudioConfig) -> bool:
     uploaded, _ = publication(info)
     day = date.fromisoformat(entry["date"])
@@ -299,22 +274,14 @@ def verify_video(info: dict, entry: dict, config: AudioConfig) -> bool:
 
 def list_channel(config: AudioConfig, pacer: RequestPacer) -> list[dict]:
     """Flat listing (ID and title) of every upload on the channel."""
-    from yt_dlp import YoutubeDL
-
-    pacer.wait()
-    with YoutubeDL(
-        {**youtube_options(config), "extract_flat": True, "skip_download": True}
-    ) as ydl:
-        result = ydl.extract_info(
-            f"https://www.youtube.com/channel/{CHANNEL_ID}/videos", download=False
-        )
-    if not isinstance(result, dict) or not result.get("entries"):
+    videos = media.list_tab(
+        f"https://www.youtube.com/channel/{CHANNEL_ID}/videos",
+        youtube_options(config),
+        pacer,
+    )
+    if not videos:
         raise RuntimeError("YouTube returned no channel listing")
-    return [
-        {"id": e["id"], "title": e.get("title") or ""}
-        for e in result["entries"]
-        if e and e.get("id")
-    ]
+    return [{"id": v["id"], "title": v["title"]} for v in videos]
 
 
 def index_covers(index: dict, entry: dict, config: AudioConfig) -> bool:
@@ -496,143 +463,6 @@ def find_recap(
     return None
 
 
-def select_audio(info: dict, language: str) -> dict:
-    """Select an audio-only track; do not silently substitute another language."""
-    formats = [
-        f
-        for f in info.get("formats", [])
-        if f.get("vcodec") == "none"
-        and f.get("acodec") not in (None, "none")
-        and f.get("url")
-    ]
-    matching = [
-        f
-        for f in formats
-        if (f.get("language") or "").lower().split("-")[0]
-        == language.lower().split("-")[0]
-    ]
-    # Older videos may have no per-track language tags. Only accept untagged
-    # tracks if the video's language agrees, or no language is known anywhere.
-    if (
-        not matching
-        and (
-            not info.get("language")
-            or info["language"].split("-")[0] == language.split("-")[0]
-        )
-        and not any(f.get("language") for f in formats)
-    ):
-        matching = formats
-    if not matching:
-        raise RuntimeError(f"No audio-only track for language {language}")
-    return max(
-        matching,
-        key=lambda f: (
-            f.get("language_preference") or 0,
-            f.get("quality") or 0,
-            f.get("abr") or f.get("tbr") or 0,
-        ),
-    )
-
-
-def inspect_audio(
-    path: Path, expected_duration: float | None = None, *, decode: bool = False
-) -> float:
-    result = subprocess.run(
-        [
-            "ffprobe",
-            "-v",
-            "error",
-            "-show_entries",
-            "stream=codec_name,codec_type,channels,sample_rate:format=duration",
-            "-of",
-            "json",
-            str(path),
-        ],
-        capture_output=True,
-        text=True,
-        check=True,
-        timeout=60,
-    )
-    info = json.loads(result.stdout)
-    streams = info.get("streams", [])
-    duration = float(info["format"]["duration"])
-    if (
-        len(streams) != 1
-        or streams[0].get("codec_name") != "opus"
-        or streams[0].get("channels") != 1
-        or streams[0].get("sample_rate") != "48000"
-        or not math.isfinite(duration)
-        or duration <= 0
-    ):
-        raise ValueError("Audio does not match the Opus mono 48 kHz profile")
-    if expected_duration and abs(duration - expected_duration) > max(
-        2, expected_duration * 0.02
-    ):
-        raise ValueError("Audio duration differs from the recap")
-    if decode:
-        subprocess.run(
-            [
-                "ffmpeg",
-                "-nostdin",
-                "-v",
-                "error",
-                "-xerror",
-                "-i",
-                str(path),
-                "-f",
-                "null",
-                "-",
-            ],
-            capture_output=True,
-            check=True,
-            timeout=300,
-        )
-    return duration
-
-
-def encode_audio(
-    source: Path, destination: Path, expected_duration: float | None = None
-) -> float:
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    with tempfile.TemporaryDirectory(prefix=".encode-", dir=destination.parent) as tmp:
-        temporary = Path(tmp) / "audio.opus"
-        result = subprocess.run(
-            [
-                "ffmpeg",
-                "-nostdin",
-                "-hide_banner",
-                "-loglevel",
-                "error",
-                "-i",
-                str(source),
-                "-map",
-                "0:a:0",
-                "-vn",
-                "-map_metadata",
-                "-1",
-                "-ac",
-                "1",
-                "-ar",
-                "48000",
-                "-c:a",
-                "libopus",
-                "-b:a",
-                "48k",
-                "-vbr",
-                "on",
-                str(temporary),
-            ],
-            capture_output=True,
-            text=True,
-            timeout=600,
-        )
-        if result.returncode:
-            raise RuntimeError(f"FFmpeg encoding failed: {result.stderr.strip()}")
-        duration = inspect_audio(temporary, expected_duration, decode=True)
-        temporary.replace(destination)
-    return duration
-
-
 def fetch_audio(
     entry: dict, config: AudioConfig, pacer: RequestPacer, index: dict | None = None
 ) -> bool:
@@ -777,43 +607,21 @@ class S3AudioStore:
         return body, recap
 
     def put_audio(self, entry: dict, body: bytes) -> None:
-        digest = hashlib.sha256(body).digest()
-        metadata = {
-            "sha256": digest.hex(),
-            "game-id": entry["game_id"],
-            "date": entry["date"],
-            "profile": "opus-mono-48k-v1",
-            "language": self.config.language,
-            "recap": base64.b64encode(json_bytes(entry["recap"])).decode(),
-        }
-        try:
-            self.client.put_object(
-                Bucket=self.config.bucket,
-                Key=entry["s3_key"],
-                Body=body,
-                ContentType="audio/ogg",
-                StorageClass="STANDARD",
-                ChecksumSHA256=base64.b64encode(digest).decode(),
-                IfNoneMatch="*",
-                Metadata=metadata,
-            )
-        except ClientError as exc:
-            if exc.response["Error"]["Code"] not in {
-                "PreconditionFailed",
-                "412",
-                "ConditionalRequestConflict",
-                "409",
-            }:
-                raise
-            existing = self.client.head_object(
-                Bucket=self.config.bucket, Key=entry["s3_key"]
-            )
-            if existing.get("Metadata", {}).get("sha256") != digest.hex() or existing[
-                "ContentLength"
-            ] != len(body):
-                raise ValueError(
-                    f"Refusing to overwrite different S3 audio for {entry['game_id']}"
-                ) from exc
+        media.put_immutable(
+            self.client,
+            self.config.bucket,
+            entry["s3_key"],
+            body,
+            content_type="audio/ogg",
+            metadata={
+                "game-id": entry["game_id"],
+                "date": entry["date"],
+                "profile": media.PROFILE_LABEL,
+                "language": self.config.language,
+                "recap": base64.b64encode(json_bytes(entry["recap"])).decode(),
+            },
+            label=f"audio for {entry['game_id']}",
+        )
 
     def save_manifest(self, manifest: dict) -> None:
         condition = (
@@ -970,9 +778,7 @@ def run_archive(
             if config.use_channel_index and entries:
                 index = channel_index(config, pacer, entries)
             for entry in progress:
-                progress.set_postfix_str(
-                    f"{entry['game_id']} {entry['status']}"
-                )
+                progress.set_postfix_str(f"{entry['game_id']} {entry['status']}")
                 if (
                     not store
                     and entry["status"] == "downloaded"
