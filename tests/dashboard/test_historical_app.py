@@ -68,15 +68,20 @@ def history_setup(monkeypatch):
     loaders.load_history.clear()
 
 
-def open_history():
-    app = AppTest.from_file(str(ENTRYPOINT)).run()
-    app.switch_page("app_pages/historical.py").run()
-    return app
+def open_history(**state):
+    """The page opened directly, with ``state`` preset, in one run: every app
+    run costs ~0.5 s. Navigating from Today is covered by the defaults test."""
+    app = AppTest.from_file(str(ENTRYPOINT))
+    app.switch_page("app_pages/historical.py")
+    for key, value in state.items():
+        app.session_state[key] = value
+    return app.run()
 
 
 def test_history_defaults_to_current_season_including_backfills(history_setup):
     reader, today_reader = history_setup
-    app = open_history()
+    app = AppTest.from_file(str(ENTRYPOINT)).run()
+    app.switch_page("app_pages/historical.py").run()
     assert not app.exception
     assert app.title[0].value == "Historical analysis"
     assert app.date_input(key="history_dates").value == (
@@ -215,9 +220,7 @@ def test_backfill_only_closing_outputs_are_visible_without_entering_live_metrics
     ].copy()
     reader.side_effect = None
     reader.return_value = AnalysisData(data.games, rows, data.fetched_at)
-    app = open_history()
-    app.session_state["history_target"] = target
-    app.run()
+    app = open_history(history_target=target)
     assert not app.exception
     metrics = {node.label: node.value for node in app.metric}
     assert metrics["Closing · Replay"] != "—"
@@ -351,9 +354,7 @@ def test_best_slot_combinations_random_and_six_hour_windows(history_setup, targe
     reader.side_effect = lambda start, end, target, season_type, **kwargs: (
         season_data(target)
     )
-    app = open_history()
-    app.session_state["history_target"] = target
-    app.run()
+    app = open_history(history_target=target)
     assert not app.exception
     metrics = {node.label: node.value for node in app.metric}
     # T−2h always says UNDER: 20 of 40 games.
@@ -423,8 +424,8 @@ def test_best_slot_combinations_random_and_six_hour_windows(history_setup, targe
     ]
     assert live_tables
     assert not any(t["Model"].str.startswith("TabPFN").any() for t in live_tables)
-    # The page opens on line error; cross-target combinations stay off.
-    assert [call.args[2] for call in reader.call_args_list] == sorted({1, target})
+    # One read of the selected target; cross-target combinations stay off.
+    assert [call.args[2] for call in reader.call_args_list] == [target]
 
 
 def test_cross_target_combinations_read_the_other_totals_target(history_setup):

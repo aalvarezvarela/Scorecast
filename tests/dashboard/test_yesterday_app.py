@@ -40,16 +40,29 @@ def yesterday_setup(monkeypatch):
 
 def open_yesterday(source="Live predictions", target=1):
     """The page on ``source`` and ``target``; None keeps the default (replay,
-    Summary)."""
-    app = AppTest.from_file(str(ENTRYPOINT)).run()
-    app.switch_page("app_pages/yesterday.py").run()
+    Summary).
+
+    Opens the page directly, in one run: every app run costs ~0.5 s, and
+    navigating from Today is covered by ``test_navigation_from_today``.
+    """
+    app = AppTest.from_file(str(ENTRYPOINT))
+    app.switch_page("app_pages/yesterday.py")
     if source is not None:
         app.session_state["yesterday_source"] = source
     if target is not None:
         app.session_state["yesterday_target"] = target
-    if source is not None or target is not None:
-        app.run()
-    return app
+    return app.run()
+
+
+def test_navigation_from_today(yesterday_setup):
+    reader, _ = yesterday_setup
+    app = AppTest.from_file(str(ENTRYPOINT)).run()
+    app.switch_page("app_pages/yesterday.py").run()
+    assert not app.exception
+    assert app.title[0].value == "Yesterday's predictions"
+    assert app.session_state["yesterday_source"] == "Snapshot replay"
+    assert app.session_state["yesterday_target"] == 0
+    assert reader.call_count == 1
 
 
 def test_yesterday_defaults_to_the_replay_summary(yesterday_setup):
@@ -472,9 +485,7 @@ def test_summary_shows_every_targets_slate_win_rate_without_game_cards(
     yesterday_setup,
 ):
     reader, _ = yesterday_setup
-    app = open_yesterday()
-    app.session_state["yesterday_target"] = 0
-    app.run()
+    app = open_yesterday(target=0)
     assert not app.exception
     assert "Slate summary" in [node.value for node in app.subheader]
     assert not tables(app)
