@@ -1,4 +1,6 @@
 name: Predictions - Upcoming Games with TabPFN
+# A dashboard request names itself in the run list (docs/serving/manual_predictions.md).
+run-name: ${{ inputs.request_id && format('Manual request #{0} (TabPFN {1})', inputs.request_id, inputs.line) || '' }}
 
 # TabPFN on its own: one or more targets and one line per run, each fitted on
 # the rows and features of its slot's production build (closing: the frame the daily refit
@@ -80,6 +82,17 @@ on:
                 description: "Run even with PREDICTIONS_ENABLED set to false"
                 type: boolean
                 default: false
+            input:
+                description: "Intermediate rows: own (the horizon's row) or latest (each game's latest snapshot; with horizon_minutes=nearest each game its nearest horizon's fit)"
+                type: choice
+                options:
+                    - own
+                    - latest
+                default: own
+            request_id:
+                description: "The dashboard request this run answers (app.prediction_requests); empty = a scheduled run"
+                type: string
+                default: ""
 
 # Queue, never cancel: a fit already paid for must finish.
 concurrency:
@@ -166,11 +179,14 @@ jobs:
                   TABPFN_GAME_IDS: ${{ inputs.game_ids }}
                   TABPFN_AS_OF: ${{ inputs.as_of }}
                   TABPFN_SNAPSHOT_GAME_IDS: ${{ inputs.snapshot_game_ids }}
+                  TABPFN_INPUT: ${{ inputs.input || 'own' }}
+                  REQUEST_ID: ${{ inputs.request_id }}
               run: |
                   args=()
                   if [[ "$TABPFN_LINE" == intermediate ]]; then
-                      args+=(--horizon-minutes "$TABPFN_HORIZON")
+                      args+=(--horizon-minutes "$TABPFN_HORIZON" --input "${TABPFN_INPUT:-own}")
                   fi
+                  if [[ -n "$REQUEST_ID" ]]; then args+=(--request-id "$REQUEST_ID"); fi
                   if [[ -n "$TABPFN_GAME_DATE" ]]; then args+=(--game-date "$TABPFN_GAME_DATE"); fi
                   if [[ -n "$TABPFN_GAME_IDS" ]]; then args+=(--game-ids "$TABPFN_GAME_IDS"); fi
                   if [[ -n "$TABPFN_AS_OF" ]]; then args+=(--as-of "$TABPFN_AS_OF"); fi
@@ -208,3 +224,14 @@ jobs:
                   python scripts/predict_tabpfn.py \
                       --line closing --skip-db-update "${args[@]}" \
                       ${{ !inputs.persist && '--no-persist' || '' }}
+
+            # The script reports its own outcome; this covers a job that died
+            # before it could (setup, timeout, cancel).
+            - name: Mark the dashboard request failed
+              if: ${{ (failure() || cancelled()) && inputs.request_id != '' }}
+              env:
+                  REQUEST_ID: ${{ inputs.request_id }}
+              run: |
+                  python -m nba_ou.postgre_db.app_aiven.requests \
+                      --request-id "$REQUEST_ID" --status failed \
+                      --error "Workflow run ${{ github.run_id }} failed or was cancelled"

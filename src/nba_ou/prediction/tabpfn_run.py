@@ -51,6 +51,7 @@ from nba_ou.modeling.registry_paths import (
 from nba_ou.modeling.registry_store import resolve_channel
 from nba_ou.postgre_db.line_history_aiven.ingest import TIPOFF_TOLERANCE_MINUTES
 from nba_ou.postgre_db.predictions_aiven.schema import WORKFLOW_TABPFN
+from nba_ou.prediction.input_limits import LATEST_INPUT_COLUMN
 from nba_ou.prediction.intermediate_frame import (
     PASSTHROUGH_COLUMNS,
     tonight_intermediate_frame,
@@ -174,7 +175,10 @@ class TabPFNJob:
     ``wanted_games`` keeps only those games (manual runs). ``feature_slot``
     (one target only) replaces each target's enabled slot at the line.
     ``mode_targets`` limits a mode to some of the targets (``parse_fits``);
-    a mode it does not name fits every target.
+    a mode it does not name fits every target. ``latest_input``
+    (intermediate, live): the T-``horizon`` spec and training rows predict
+    each game's latest snapshot instead of its T-``horizon`` row (manual runs,
+    ``latest_rows``).
     """
 
     targets: tuple[str, ...] = DEFAULT_TARGETS
@@ -188,6 +192,7 @@ class TabPFNJob:
     feature_slot: ModelSlot | None = None
     model_version: str = DEFAULT_MODEL_VERSION
     train_games: int | None = None
+    latest_input: bool = False
 
     def __post_init__(self) -> None:
         if self.dataset_type not in (CLOSING_LINE, INTERMEDIATE_LINE):
@@ -201,6 +206,13 @@ class TabPFNJob:
         ):
             raise ValueError(
                 "--as-of requires --line intermediate and a timestamp with timezone."
+            )
+        if self.latest_input and (
+            self.dataset_type != INTERMEDIATE_LINE or self.as_of is not None
+        ):
+            raise ValueError(
+                "Latest input is a live intermediate run: --line intermediate, "
+                "no --as-of."
             )
         if self.feature_slot is not None and len(self.targets) != 1:
             raise ValueError("--feature-slot requires exactly one target.")
@@ -541,6 +553,17 @@ def tonight_rows(
         return TonightRows(df, frame_version, latest_quotes)
 
     horizon = job.horizon
+    if job.latest_input:
+        log.step(f"{step_prefix}Preparing Tonight's Latest Snapshot Rows")
+        df = latest_rows(
+            scheduled_data, date_to_predict=date_to_predict, games=job.wanted_games
+        )
+        if df.empty:
+            _status("No game left before tip-off; nothing to predict.")
+            return None
+        return TonightRows(
+            df, BASE_SCHEMA_VERSION, scheduled_games=scheduled_data["scheduled_games"]
+        )
     log.step(f"{step_prefix}Preparing Tonight's T-{horizon} Rows")
     if job.as_of is not None:
         # Current reports were synchronized by the caller. For a queued
@@ -577,6 +600,39 @@ def tonight_rows(
     )
 
 
+def latest_rows(
+    scheduled_data: dict,
+    *,
+    date_to_predict: str,
+    games: Collection[str] | None = None,
+) -> pd.DataFrame:
+    """Each game's latest snapshot row at this moment, for games not yet
+    started (and among ``games`` when given): the rows a manual run predicts.
+    """
+    df = tonight_intermediate_frame(
+        scheduled_data,
+        game_date=date_to_predict,
+        latest_input=True,
+        latest_only=True,
+    )
+    df = df.loc[
+        df[LATEST_INPUT_COLUMN].fillna(False).astype(bool)
+        & pd.to_numeric(df["TIME_TO_MATCH_MIN"], errors="coerce").gt(0)
+    ]
+    if games is not None:
+        df = df.loc[df["GAME_ID"].astype(str).isin(set(games))]
+    _status(
+        f"{len(df)} game(s) before tip-off: "
+        + ", ".join(
+            f"{game} T-{minutes}"
+            for game, minutes in df[["GAME_ID", "TIME_TO_MATCH_MIN"]].itertuples(
+                index=False
+            )
+        )
+    )
+    return df.copy()
+
+
 @dataclass
 class JobOutcome:
     """What a job predicted (labels) and what failed, of ``n_fits`` fits."""
@@ -599,16 +655,18 @@ def fit_and_store(
     log: RunLog,
     persist: bool,
     step_prefix: str = "",
+    request_id: int | None = None,
 ) -> JobOutcome:
     """Each target in each mode fitted and predicted on tonight's rows, then
-    stored as one run (``persist=False``: nothing stored).
+    stored as one run (``persist=False``: nothing stored). ``request_id``: the
+    dashboard request the run answers (``runs.request_id``).
 
     A fit that fails costs only itself: the others are still stored, as a
     partial run.
     """
     failures: list[str] = []
     recorder = PredictionRunRecorder(
-        workflow=WORKFLOW_TABPFN, game_date=date_to_predict
+        workflow=WORKFLOW_TABPFN, game_date=date_to_predict, request_id=request_id
     )
     recorder.set_schedule(
         rows.scheduled_games
@@ -657,6 +715,7 @@ def fit_and_store(
                     prediction_datetime=datetime.now(ZoneInfo("Europe/Madrid")),
                     passthrough_columns=passthrough,
                     cleaned=clean_rows is not None,
+                    latest_input=job.latest_input,
                 )
             if predictions.empty:
                 _status(f"{target}: no game survived the spec's NaN budget.")

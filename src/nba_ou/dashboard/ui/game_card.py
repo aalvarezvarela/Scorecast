@@ -205,6 +205,15 @@ def render_game_card(
                     madrid_time
                 )
                 details["Fit"] = predictions["fit_id"]
+                details["Run"] = (
+                    predictions["request_id"].map(
+                        lambda rid: (
+                            "Scheduled" if pd.isna(rid) else f"Manual #{int(rid)}"
+                        )
+                    )
+                    if "request_id" in predictions
+                    else "Scheduled"
+                )
                 st.dataframe(details, hide_index=True, width="stretch")
                 st.caption(
                     "Market comparisons preserve the original model anchor and use the shared snapshot above. Closing identifies a model type, not a final market close."

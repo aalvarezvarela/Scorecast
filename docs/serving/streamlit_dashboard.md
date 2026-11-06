@@ -4,7 +4,10 @@ Status: **Implemented** — the Aiven dashboard is the supported application;
 the legacy Supabase applications have been removed.
 
 The unified app reads **Aiven only**. It never calls Supabase, S3, a scraper,
-the predictor, or a results updater. Logos retain the ESPN images used by the
+the predictor, or a results updater. Only signed-in, approved accounts see it
+(Google sign-in, see "Accounts"); they can also launch manual predictions,
+which run as GitHub Actions workflows, and record their bets
+([manual_predictions.md](manual_predictions.md)). Logos retain the ESPN images used by the
 original apps. Every displayed timestamp, including tip-off, prediction times
 and market snapshots, uses `Europe/Madrid` with automatic DST changes.
 
@@ -36,11 +39,26 @@ Advanced settings. Cloud finds `streamlit/requirements.txt` next to that
 entrypoint before considering the root Poetry configuration. It uses the
 existing root `.streamlit/config.toml` theme and the committed local NBA mark.
 
-Add this setting in the app's **Secrets** field, using the real Aiven URI:
+Add these settings in the app's **Secrets** field, using the real values:
 
 ```toml
 AIVEN_DB_URL = "postgresql://USER:PASSWORD@HOST:PORT/DATABASE?sslmode=require"
+AIVEN_APP_DB_URL = "postgresql://dashboard_app:PASSWORD@HOST:PORT/DATABASE?sslmode=require"
+GITHUB_DISPATCH_TOKEN = "github_pat_..."
+ADMIN_EMAILS = ["admin@example.com"]
+
+[auth]
+redirect_uri = "https://<app>.streamlit.app/oauth2callback"
+cookie_secret = "<long random string>"
+client_id = "<Google OAuth client id>"
+client_secret = "<Google OAuth client secret>"
+server_metadata_url = "https://accounts.google.com/.well-known/openid-configuration"
 ```
+
+`AIVEN_DB_URL` serves the read-only pages; `AIVEN_APP_DB_URL` is the
+dashboard's own role (accounts, requests, bets); the token is a fine-grained
+PAT on this repository with "Actions: Read and write". Setup steps:
+[manual_predictions.md](manual_predictions.md#setup).
 
 Credentials stay outside Git. No Supabase credentials, S3 credentials, model
 files or `packages.txt` are needed for the dashboard runtime.
@@ -51,10 +69,26 @@ Dependency-file selection follows the
 The original Supabase applications and their shared UI helpers have been
 removed. Their historical implementations remain available in Git history.
 
+## Accounts
+
+`streamlit_app.py` registers pages by access (`dashboard/ui/auth.py`):
+
+- signed out: only a welcome page with "Sign in with Google" (`st.login`);
+- signed in, not approved (or disabled): only an "Access pending" page;
+- approved: Today, Bets, Yesterday and Historical analysis, plus Accounts for
+  admins, where pending accounts are approved or disabled.
+
+A first sign-in creates the `app.users` row as pending; emails in
+`ADMIN_EMAILS` start active and admin. An approved account's status is read
+again every two minutes, so disabling it takes effect without a new session.
+Pages that are not registered cannot be opened by URL.
+
 ## Pages and architecture
 
-The entrypoint registers three pages using `st.navigation`. Today is the
-default. Yesterday shows stored predictions and results for a selected date.
+The entrypoint registers four pages using `st.navigation` for approved
+accounts. Today is the default. Bets launches manual predictions, lists
+their status and predictions, and records and grades the user's bets
+([manual_predictions.md](manual_predictions.md)). Yesterday shows stored predictions and results for a selected date.
 [Historical analysis](historical_analysis.md) shows the closing timeline, live
 model/time heatmap and own-snapshot live/replay comparisons over a date range,
 plus the three best single slots, same-timepoint mean and majority-vote

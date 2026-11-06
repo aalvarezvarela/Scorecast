@@ -19,6 +19,9 @@ Codes (``SMALLINT``):
 * ``runs.workflow``: 1 daily predictor, 2 past-snapshot run, 3 TabPFN run,
   4 past-only refit and historical backfill.
 * ``runs.status``: 1 ok, 2 partial (some slot failed), 3 S3 upload failed.
+* ``runs.request_id``: the dashboard request a manual run answers
+  (``app.prediction_requests``, ``docs/serving/manual_predictions.md``); NULL
+  for every scheduled run. The foreign key is added by the ``app`` schema.
 * ``model_builds.kind``: 1 registry model, 2 baseline, 3 TabPFN (fitted per
   run on a registry slot's spec; ``spec_id`` is that spec).
 * ``inputs.line_source``: where the row's lines came from -- 1 SBR, 2 Covers
@@ -168,6 +171,10 @@ DDL_STATEMENTS: tuple[str, ...] = (
         ADD COLUMN IF NOT EXISTS spread_books_median_line REAL,
         ADD COLUMN IF NOT EXISTS spread_books_count       SMALLINT
     """,
+    # Added 2026-11-06: manual runs requested from the dashboard.
+    """
+    ALTER TABLE {schema}.runs ADD COLUMN IF NOT EXISTS request_id INTEGER
+    """,
     # No key: a B-tree on (input_id, model_build_id) would weigh about as much
     # as the table. The run transaction prevents duplicates, and rows arrive in
     # input_id order, so a BRIN index finds a run's or a date's rows.
@@ -202,6 +209,7 @@ DDL_STATEMENTS: tuple[str, ...] = (
                i.tipoff_at                               AS tipoff_at_prediction,
                r.run_uuid, r.workflow, r.status          AS run_status,
                r.started_at                              AS run_started_at,
+               r.request_id,
                m.kind, m.schema_version, m.dataset_type, m.target,
                m.horizon_minutes                         AS model_horizon_minutes,
                m.variant, m.fit_id, m.training_code_tag,

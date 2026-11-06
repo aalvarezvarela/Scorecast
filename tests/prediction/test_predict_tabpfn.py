@@ -1459,3 +1459,174 @@ def test_a_jobs_fits_replace_the_runs_targets_and_modes():
 def test_a_malformed_job_is_refused(text, message):
     with pytest.raises(ValueError, match=message):
         tabpfn_run.parse_jobs(text)
+
+
+# --- manual runs: latest snapshot, each game its nearest horizon ------------
+
+
+def _latest_tonight(minutes=(250, 470)) -> pd.DataFrame:
+    tonight = _tonight().assign(
+        TOTAL_POINTS=np.nan,
+        ODDS_SPREAD_LINE_HOME_bet365=-4.5,
+        TIME_TO_MATCH_MIN=list(minutes),
+        LATEST_INPUT=True,
+        SNAPSHOT_PASSED=False,
+    )
+    tonight["SNAPSHOT_TS_UTC"] = pd.to_datetime(
+        tonight["GAME_TIME"], utc=True
+    ) - pd.to_timedelta(tonight["TIME_TO_MATCH_MIN"], unit="min")
+    return tonight
+
+
+def _nearest_dependencies(monkeypatch, horizons=(240, 480)):
+    deps = _run_dependencies(monkeypatch, horizon=horizons[0])
+    specs = {
+        (target, h): _spec(target=target, horizon=h)
+        for target in ("line_error", "total_points", "spread_error")
+        for h in horizons
+    }
+    job.SETTINGS.prediction_model_slots = [s.identity.slot() for s in specs.values()]
+    deps["resolve_channel"].side_effect = lambda **kw: SimpleNamespace(
+        spec=specs[(kw["slot"].target.value, kw["slot"].horizon_minutes)]
+    )
+    history = _snapshots(
+        _history().assign(
+            HOME_MARGIN=np.arange(8, dtype=float), ODDS_SPREAD_LINE_HOME_bet365=-4.5
+        ),
+        horizons=horizons,
+    )
+    deps["resolve_training_frame"].return_value = SimpleNamespace(
+        df=history, build_id="frame", checksum="sha256:test"
+    )
+    deps["tonight_intermediate_frame"].return_value = _latest_tonight()
+    reports = Mock()
+    monkeypatch.setattr(job, "report_request", reports)
+    return deps, reports
+
+
+def test_nearest_fits_each_games_horizon_on_its_latest_snapshot(monkeypatch):
+    """Games 4 and 8 hours out: a T-240 and a T-480 fit, one game each."""
+    deps, reports = _nearest_dependencies(monkeypatch)
+    job.predict_tabpfn(
+        targets=["line_error"],
+        line="intermediate",
+        input_mode="latest",
+        nearest=True,
+        request_id=9,
+    )
+    # One latest build for the slate, never a horizon's own rows.
+    deps["tonight_intermediate_frame"].assert_called_once()
+    built = deps["tonight_intermediate_frame"].call_args.kwargs
+    assert built["latest_input"] is True and built["latest_only"] is True
+    assert "horizon" not in built
+    assert deps["fit_tabpfn"].call_count == 2
+    runs = [call.args[0] for call in deps["persist_prediction_run"].call_args_list]
+    assert [run.request_id for run in runs] == [9, 9]
+    stored = {}
+    for run in runs:
+        tables = run.tables(status=store_schema.RUN_STATUS_OK)
+        [horizon] = tables.model_builds["horizon_minutes"].tolist()
+        stored[horizon] = (
+            tables.inputs["game_id"].tolist(),
+            tables.inputs["input_mode"].tolist(),
+            tables.inputs["snapshot_horizon_minutes"].tolist(),
+        )
+        assert tables.run["request_id"] == 9
+    assert stored == {
+        480: ([22600002], [store_schema.INPUT_MODE_LATEST], [470]),
+        240: ([22600001], [store_schema.INPUT_MODE_LATEST], [250]),
+    }
+    statuses = [call.args[1] for call in reports.call_args_list]
+    assert statuses[0] == 1  # running
+    assert statuses[-1] == 2  # done
+
+
+def test_a_fixed_horizon_predicts_every_latest_row(monkeypatch):
+    deps, _ = _nearest_dependencies(monkeypatch)
+    job.predict_tabpfn(
+        targets=["line_error"],
+        line="intermediate",
+        horizon_minutes=480,
+        input_mode="latest",
+    )
+    assert deps["fit_tabpfn"].call_count == 1
+    [call] = deps["persist_prediction_run"].call_args_list
+    tables = call.args[0].tables(status=store_schema.RUN_STATUS_OK)
+    assert tables.model_builds["horizon_minutes"].tolist() == [480]
+    assert sorted(tables.inputs["snapshot_horizon_minutes"]) == [250, 470]
+    assert call.args[0].request_id is None
+
+
+def test_started_games_are_left_out_of_a_manual_run(monkeypatch):
+    deps, reports = _nearest_dependencies(monkeypatch)
+    deps["tonight_intermediate_frame"].return_value = _latest_tonight(minutes=(0, 0))
+    result = job.predict_tabpfn(
+        targets=["line_error"],
+        line="intermediate",
+        input_mode="latest",
+        nearest=True,
+        request_id=3,
+    )
+    assert result is None
+    deps["fit_tabpfn"].assert_not_called()
+    assert reports.call_args_list[-1].args[1] == 4  # failed: nothing to predict
+
+
+@pytest.mark.parametrize(
+    ("args", "expected"),
+    [
+        (
+            [
+                "--line",
+                "intermediate",
+                "--input",
+                "latest",
+                "--horizon-minutes",
+                "nearest",
+            ],
+            {"input_mode": "latest", "nearest": True, "horizon_minutes": None},
+        ),
+        (
+            ["--line", "intermediate", "--horizon-minutes", "480", "--request-id", "4"],
+            {
+                "input_mode": "own",
+                "nearest": False,
+                "horizon_minutes": 480,
+                "request_id": 4,
+            },
+        ),
+    ],
+)
+def test_cli_reads_manual_run_inputs(monkeypatch, args, expected):
+    predict = Mock()
+    monkeypatch.setattr(job, "predict_tabpfn", predict)
+    job.main(args)
+    assert expected.items() <= predict.call_args.kwargs.items()
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        ["--line", "closing", "--input", "latest"],
+        ["--line", "intermediate", "--horizon-minutes", "soon"],
+        [
+            "--line",
+            "intermediate",
+            "--input",
+            "latest",
+            "--as-of",
+            "2026-10-21T17:00:00Z",
+        ],
+    ],
+)
+def test_cli_refuses_bad_manual_inputs(monkeypatch, args):
+    predict = Mock()
+    monkeypatch.setattr(job, "predict_tabpfn", predict)
+    with pytest.raises(SystemExit):
+        job.main(args)
+    predict.assert_not_called()
+
+
+def test_a_latest_job_must_be_live_intermediate():
+    with pytest.raises(ValueError, match="Latest input"):
+        tabpfn_run.TabPFNJob(latest_input=True)
