@@ -41,6 +41,8 @@ class PresserConfig:
     # LLM tie-break (step 7).
     use_llm: bool = True
     llm_model: str = "gpt-6-luna"
+    # gpt-6-luna accepts none, low, medium, high, xhigh, max (not minimal).
+    llm_reasoning: str = "none"
     llm_budget_usd: float = 5.0
     llm_price_in_per_m: float = 0.10
     llm_price_out_per_m: float = 0.50

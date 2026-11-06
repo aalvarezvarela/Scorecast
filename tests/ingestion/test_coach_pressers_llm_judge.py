@@ -80,6 +80,7 @@ def test_request_uses_a_strict_schema_with_the_candidates(tmp_path):
     assert fmt["schema"]["additionalProperties"] is False
     assert set(fmt["schema"]["required"]) == set(properties)
     assert request["store"] is False and request["model"] == "gpt-6-luna"
+    assert request["reasoning"] == {"effort": "none"}
 
 
 def test_cache_hit_costs_nothing(tmp_path):

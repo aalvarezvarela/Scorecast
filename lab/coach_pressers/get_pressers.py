@@ -82,6 +82,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     run.add_argument("--no-llm", action="store_true", help="ambiguous cases -> review")
     run.add_argument("--llm-model", default="gpt-6-luna")
+    run.add_argument("--llm-reasoning", default="none", help="reasoning effort")
     run.add_argument("--llm-budget", type=float, default=5.0, help="USD per run")
     run.add_argument("--captions-only", action="store_true")
     run.add_argument("--no-captions", action="store_true")
@@ -104,6 +105,7 @@ def build_parser() -> argparse.ArgumentParser:
     check = sub.add_parser("llm-check", help="live LLM check on the labelled cases")
     common(check)
     check.add_argument("--llm-model", default="gpt-6-luna")
+    check.add_argument("--llm-reasoning", default="none", help="reasoning effort")
     return parser
 
 
@@ -182,6 +184,7 @@ def main(argv: list[str] | None = None) -> int:
             js_runtime=args.js_runtime,
             use_llm=not args.no_llm,
             llm_model=args.llm_model,
+            llm_reasoning=args.llm_reasoning,
             llm_budget_usd=args.llm_budget,
             captions=not args.no_captions,
             audio=not args.captions_only,

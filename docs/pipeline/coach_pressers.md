@@ -326,7 +326,9 @@ skipped with `--dry-run`. Deterministic rules decide whenever they can; the LLM
      (`client.responses.create`, `store=False`) with Structured Outputs:
      `text.format` is a strict `json_schema` built per call, so `video_id` is
      an enum of the candidates (or null) and `coach_chapter` an enum of their
-     chapter titles. Model and spending cap are CLI options (`--llm-model`,
+     chapter titles. Reasoning effort is `none` (`--llm-reasoning`; the model
+     accepts none, low, medium, high, xhigh, max, not minimal) and is part of
+     the cache key. Model and spending cap are CLI options (`--llm-model`,
      `--llm-budget`); the key is `OPENAI_API_KEY` (env var, or `[OpenAI]` in
      `config.secrets.ini`) and is never logged. Confirm the model ID and price
      with `get_pressers.py llm-check` once the key exists.

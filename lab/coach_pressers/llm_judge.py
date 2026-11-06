@@ -133,9 +133,14 @@ def build_input(
     }
 
 
-def input_hash(payload: dict, model: str) -> str:
+def input_hash(payload: dict, model: str, reasoning: str = "none") -> str:
     canonical = json.dumps(
-        {"prompt_version": PROMPT_VERSION, "model": model, "input": payload},
+        {
+            "prompt_version": PROMPT_VERSION,
+            "model": model,
+            "reasoning": reasoning,
+            "input": payload,
+        },
         sort_keys=True,
         separators=(",", ":"),
     )
@@ -214,7 +219,7 @@ class Judge:
 
     def ask(self, payload: dict, *, game_id: str = "", team: str = "") -> dict:
         """The cached or fresh decision record for one input."""
-        key = input_hash(payload, self.config.llm_model)
+        key = input_hash(payload, self.config.llm_model, self.config.llm_reasoning)
         cached = self.cache.get(key)
         if cached is not None:
             self.cached += 1
@@ -231,6 +236,7 @@ class Judge:
             model=self.config.llm_model,
             instructions=SYSTEM,
             input=json.dumps(payload, ensure_ascii=False),
+            reasoning={"effort": self.config.llm_reasoning},
             text={
                 "format": {
                     "type": "json_schema",
@@ -255,6 +261,7 @@ class Judge:
             "game_id": game_id,
             "team": team,
             "model": self.config.llm_model,
+            "reasoning": self.config.llm_reasoning,
             "tokens_in": tokens_in,
             "tokens_out": tokens_out,
             "cost_usd": round(cost, 6),
@@ -362,7 +369,12 @@ def check_main(args) -> int:
     """Run the labelled cases against the live API: agreement, tokens, cost."""
     from lab.coach_pressers.llm_cases import CASES
 
-    config = PresserConfig(2025, args.local_root, llm_model=args.llm_model)
+    config = PresserConfig(
+        2025,
+        args.local_root,
+        llm_model=args.llm_model,
+        llm_reasoning=args.llm_reasoning,
+    )
     judge = Judge(config, cache=DecisionCache(config.root / "llm_check.jsonl"))
     agree, rows = 0, []
     for case in CASES:
@@ -382,7 +394,9 @@ def check_main(args) -> int:
         )
     print("\n".join(rows))
     tokens_in = sum(
-        judge.cache.get(input_hash(c["input"], config.llm_model))["tokens_in"]
+        judge.cache.get(input_hash(c["input"], config.llm_model, config.llm_reasoning))[
+            "tokens_in"
+        ]
         for c in CASES
     )
     print(
