@@ -69,6 +69,8 @@ optional = true
 [tool.poetry.group.media.dependencies]
 yt-dlp = "2026.10.26"
 yt-dlp-ejs = "0.8.0"
+# Coach presser archive: LLM tie-break (lab/coach_pressers/llm_judge.py).
+openai = "^2"
 
 # training_pipeline: campaign configs, Optuna search, reports.
 [tool.poetry.group.train.dependencies]
