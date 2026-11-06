@@ -1,8 +1,10 @@
 # NBA coach postgame presser archive
 
-Status: Plan — not implemented. Reviewed 2026-11-06: audio is archived in S3,
-state follows the recap archive (JSON manifests, no database), and the code
-reuses the recap and written-report collectors.
+Status: Partial — code implemented 2026-11-06 in `lab/coach_pressers/` (run
+guide: its `README.md`; tests: `tests/ingestion/test_coach_pressers_*.py`).
+No live run beyond checks yet: checkpoint 1 (the channel list), the pilot and
+the season runs are pending. The sections below are the design; where the
+implementation differs from the first plan it says so.
 
 One resumable command, run per season, finds the head coach's postgame press
 conference for both teams of every NBA game from 2019-20 on, archives its audio
@@ -108,15 +110,15 @@ leaves `recap_audio.py` importing them, and keeps
 
 ## Environment and project layout
 
-Poetry environment with `poetry install --with media`. Add to the `media`
-group: `rapidfuzz` (fuzzy names in titles) and `openai` (step 7). `requests`,
-`pandas`, `lxml` and `nba_api` are already installed. No YAML, `typer`,
-`python-dateutil` or `faster-whisper`: the CLI uses `argparse` like the other
-collectors, small reference tables are CSV, and title dates are parsed with
-explicit regexes (fuzzy date parsing misreads titles like "Game 1"). After
-changing dependencies run `poetry lock` and `scripts/export_requirements.py`,
-and add the new packages to `requirements/recap-audio.txt` through the export
-(the job file covers all manual audio archives).
+Poetry environment with `poetry install --with media`; the `media` group
+gained `openai` (step 7). `requests`, `pandas`, `lxml` and `nba_api` were
+already installed. No YAML, `typer`, `python-dateutil`, `rapidfuzz` or
+`faster-whisper`: the CLI uses `argparse` like the other collectors, small
+reference tables are CSV, title dates are parsed with explicit regexes (fuzzy
+date parsing misreads titles like "Game 1"), and names are matched as whole
+words after normalisation (accents, punctuation, initials), which the 24
+fixture titles need and which keeps the tests runnable in CI (CI does not
+install the `media` group; `openai` and `yt_dlp` are imported lazily).
 
 System tools: FFmpeg/FFprobe with `libopus`, Node >=22 (or Deno with
 `--js-runtime deno`). yt-dlp is pinned; bump the pin (and the lock) when
@@ -128,25 +130,31 @@ loader moves to `src/nba_ou/data_processing/` like `game_texts/`.
 
 ```
 lab/coach_pressers/
-  README.md              # run instructions, written with the implementation
-  get_pressers.py        # CLI: run / status
-  channels.csv           # team, channel_id, handle, name, kind, priority, verified_by_human
+  README.md              # run guide
+  get_pressers.py        # CLI: run / status / channels / llm-check
+  pipeline.py            # the steps of one season in order
+  config.py              # PresserConfig, local and S3 layout
+  manifest.py            # the season manifest, statuses, season lock
+  teams.py, names.py     # tricodes and Wikipedia names; name normalisation
+  channels.csv           # step 3 (written by `channels --resolve`)
   coaches_overrides.csv  # team, coach, start_date, end_date, kind, note
   catalog.py             # step 1: expected pressers from the season schedule
-  coaches.py             # step 2: coach spells, staff and roster names
+  coaches.py             # step 2: coach spells, staff and player names
+  channels.py            # step 3: resolving and checking handles
   crawl.py               # step 4: channel index and video metadata cache
   classify.py            # step 5: is this a coach presser?
   title_dates.py         # dates written in titles
   match.py               # step 6: video -> (game, team)
   llm_judge.py           # step 7: LLM picks among candidates
-  report.py              # step 8: coverage, missing, review, coach changes
-  archive.py             # steps 9-10: audio, cut, captions, S3
+  llm_cases.py           # 20 hand-labelled judge inputs (tests and llm-check)
+  report.py              # step 8: reports and the review loop
+  archive.py             # steps 9-10: audio, cut, captions, S3, state backup
+lab/youtube_downloader/youtube_media.py  # helpers shared with the recap archive
 tests/ingestion/
-  test_coach_pressers_classify.py
-  test_coach_pressers_dates.py
-  test_coach_pressers_match.py      # publication windows, back-to-backs
-  test_coach_pressers_llm_judge.py  # schema validation + 20 hand-labelled cases
-  test_coach_pressers_archive.py    # simulated S3, as in test_recap_audio.py
+  test_coach_pressers_{catalog,coaches,channels,crawl,classify,dates,match,
+                       llm_judge,report,archive,pipeline}.py
+  test_youtube_media.py
+tests/support/coach_pressers.py          # schedule, Wikipedia and config builders
 ```
 
 CLI examples, from the repository root:
@@ -178,8 +186,8 @@ rename) and checkpointed after every processed item.
 ```
 data/coach_pressers/                       # gitignored (data/)
   raw/schedule/season=2025-26.json         # ScheduleLeagueV2 response
-  raw/rosters/season=2025-26/<TEAM>.json   # CommonTeamRoster responses
-  raw/wikipedia/season=2025-26.html        # season article (coaching changes)
+  raw/wikipedia/<article title>.html       # league- and team-season articles
+  raw/players/season=2025-26.json          # box-score player names per team
   channels/<channel_id>/index.json         # flat listing: id, title, duration, tab
   channels/<channel_id>/videos.jsonl.gz    # full metadata of pre-filtered videos
   llm_decisions.jsonl                      # cache keyed by input hash
@@ -187,7 +195,9 @@ data/coach_pressers/                       # gitignored (data/)
     coaches.json                           # coach spells + staff + roster names
     candidates.json                        # per (game, team): videos, class, score, evidence
     manifest.json                          # one entry per expected presser
-    reports/coverage.csv, missing.csv, review.csv, coach_changes.csv, trim_manual.csv
+    reports/coverage.csv, missing.csv, review.csv, review_decisions.csv,
+            coach_changes.csv, proposed_overrides.csv,
+            coach_timeline_issues.csv, trim_manual.csv
   tmp/                                     # source audio while encoding; emptied after upload
   logs/<utc>.log
 
@@ -197,7 +207,7 @@ s3://<SETTINGS.s3_bucket>/train_data/coach_pressers/v1/
   season=2025-26/
     manifest.json
     coaches.json, candidates.json
-    reports/review_decisions.csv           # human decisions: cannot be recreated
+    reports/*.csv                          # review_decisions.csv cannot be recreated
     audio/<game_id>_<TEAM>_<video_id>.opus
     audio/<game_id>_<TEAM>_<video_id>.coach.opus   # coach segment of a combined video
     captions/<game_id>_<TEAM>_<video_id>.en.vtt
@@ -216,10 +226,11 @@ new key; the old object stays and the manifest points to the new one.
 | --- | --- |
 | identity | `game_id`, `team`, `opponent`, `is_home`, `date` (US Eastern), `tip_utc`, `phase`, `playoff_game_no`, scores |
 | `coach_expected` | from the coach spells (step 2) |
-| `status` | `pending`, `not_final`, `not_found`, `review`, `selected`, `uploaded`, `fetch_error`, `upload_error`, `unavailable` |
-| selection | `video_id`, `channel_id`, `title`, `published_at_utc`, `kind` (coach, combined), `coach_actual`, `decided_by` (rules, llm, human), `confidence`, `coach_chapter`, `trim_start_s`, `trim_end_s`, `needs_trim` |
-| `chapters` | the video's chapters as yt-dlp returns them, `[{start_time, end_time, title}]` in seconds of the full video, or `[]`; `coach_chapters` = the same list shifted to the coach cut (only the chapters inside it) |
-| archive | `s3_key`, `coach_s3_key`, `captions_key`, `info_key`, `sha256`, `stored_bytes`, `duration_s`, `source_codec`, `format_id`, `retrieved_at` |
+| `status` | `pending`, `not_final`, `not_found`, `review`, `selected`, `uploaded`, `downloaded` (local only), `fetch_error`, `upload_error`, `unavailable` |
+| `selection` | `video_id`, `channel_id`, `title`, `published_at_utc`, `duration_s`, `kind` (coach, combined), `coach_actual`, `decided_by` (rules, llm, human), `confidence`, `reason`, `coach_chapter`, `trim_start_s`, `trim_end_s`, `needs_trim`, `chapters` |
+| `chapters` | inside `selection`: the video's chapters as yt-dlp returns them, `[{start_time, end_time, title}]` in seconds of the full video, or `[]`; the coach cut gets the chapters inside its range, shifted to start at 0 |
+| `llm` | the judge's raw answer, model, input hash and error, when step 7 ran |
+| `archive` | `audio`, `coach`, `captions`, `info`, each `{key, local_path, sha256, bytes}` (`coach` adds `start_s`, `end_s`, `duration_s`); `duration_s`, `chapters_embedded`, `source_codec`, `format_id`, `language`, `source_duration_s`, `retrieved_at_utc` |
 | bookkeeping | `attempts`, `last_attempt_at`, `error` |
 
 Validation follows `season_reports.validate_manifest`: a changed game identity
@@ -253,7 +264,9 @@ skipped with `--dry-run`. Deterministic rules decide whenever they can; the LLM
      handles: resolve each with yt-dlp (`extract_info(url, download=False,
      process=False)`), store the `channel_id`, and confirm that
      `channel`/`uploader` names the team.
-   - Every row starts with `verified_by_human = false` until checkpoint 1.
+   - Every row starts with `verified_by_human = false` until checkpoint 1;
+     step 4 only reads rows the user set to `true`, so a season run stops
+     after step 2 until the list is confirmed.
    - Secondary channels start empty and are added only in step 8b.
 4. **Video inventory** (`crawl.py`, cached across seasons)
    - For each channel, a flat listing of the `/videos` and `/streams` tabs
@@ -263,22 +276,27 @@ skipped with `--dry-run`. Deterministic rules decide whenever they can; the LLM
      paged to a date cut-off. Re-list only when a pending game's window has
      closed after the cached listing; refuse a listing more than 1% shorter
      than the cached one.
-   - Pre-filter on the title alone with the classifier (step 5), using every
-     coach and staff name of that team across all seasons in scope. Fetch full
+   - Pre-filter on the title alone with the classifier (step 5), using that
+     season's staff and player names. Fetch full
      metadata (`extract_info(video_url, download=False)`) only for titles that
      come out `coach`, `combined`, or a postgame cue with an unknown name.
      Store id, title, description, `timestamp`/`release_timestamp`,
      `upload_date`, duration, chapters, `live_status` and `availability` in
      `videos.jsonl.gz`; never store format lists or signed URLs. Re-runs fetch
      only ids not yet cached.
-   - Expect on the order of 10,000-20,000 full extractions for 2019-26; at the
-     metadata pace below that is one or two days of wall time, so run it in
-     pieces (per team or season) and let the cache carry it.
+   - Each tab is ordered by publication, newest first, so the survivors that
+     belong to one season are found with a binary search on their listing
+     position (each probe is a cached metadata request), plus a margin of five
+     on each side. A season run costs its own uploads plus a few dozen probes
+     per channel, not the channel's whole history; 2019-26 is still on the
+     order of 10,000-20,000 extractions in total.
 5. **Classify** (`classify.py`)
    - Class `coach`, `combined`, `player` or `other`, with a score from 0 to 1.
      Rules and test titles are in the classifier section.
-   - Names: rapidfuzz against every coach and staff name for that team-season
-     (not only the expected head coach) and against the team's player names.
+   - Names: whole-word match of the normalised title against every coach and
+     staff name for that team-season (full name, joined initials, "coach
+     <last>", or the last name alone when no player shares it) and against the
+     team's player names.
    - Duration guard: a coach presser is usually 2-20 minutes; a combined video
      can run to 40.
 6. **Match to a game** (`match.py`)
@@ -304,10 +322,14 @@ skipped with `--dry-run`. Deterministic rules decide whenever they can; the LLM
      between 0.4 and 0.8, a name on the staff that is not `coach_expected`, an
      unknown name with a postgame cue, or an ambiguous back-to-back.
 7. **LLM tie-break** (`llm_judge.py`)
-   - **Model:** GPT-6 Luna (`gpt-6-luna`) through the `openai` SDK. Model name
-     and spending cap are CLI options with defaults in the config dataclass;
-     the API key comes from `config.secrets.ini` (or `OPENAI_API_KEY`) and is
-     never logged. Confirm the model ID and price when implementing.
+   - **Model:** GPT-6 Luna (`gpt-6-luna`) through the OpenAI Responses API
+     (`client.responses.create`, `store=False`) with Structured Outputs:
+     `text.format` is a strict `json_schema` built per call, so `video_id` is
+     an enum of the candidates (or null) and `coach_chapter` an enum of their
+     chapter titles. Model and spending cap are CLI options (`--llm-model`,
+     `--llm-budget`); the key is `OPENAI_API_KEY` (env var, or `[OpenAI]` in
+     `config.secrets.ini`) and is never logged. Confirm the model ID and price
+     with `get_pressers.py llm-check` once the key exists.
    - **Input, one call per (game, team):** compact JSON with the game (date,
      tip-off, home/away, opponent, score, phase, playoff game number), the
      team's other games within 3 days, `coach_expected`, the team's staff list,
@@ -342,7 +364,11 @@ skipped with `--dry-run`. Deterministic rules decide whenever they can; the LLM
      the manifest (`decided_by = human`) and copies the file to S3 as
      `review_decisions.csv`.
    - `coach_changes.csv`: coach switches found in the data that the timeline
-     did not expect (coach section).
+     did not expect, and `proposed_overrides.csv` for runs of 3 or more games
+     (coach section).
+   - `coach_timeline_issues.csv`: Wikipedia change sentences that could not be
+     parsed and infobox coaches without a dated change; fix them with
+     `coaches_overrides.csv`.
    - **8b. Gap filling (optional, after checkpoint 2).** For teams and seasons
      with low coverage, propose secondary channels: CLNS Media (Celtics),
      LetsGoWarriors (Warriors), and the NBC Sports Bay Area and Boston websites
@@ -396,32 +422,40 @@ and catch what it missed.
 
 | Kind of change | Example | How it is caught |
 | --- | --- | --- |
-| Firing; an interim coach takes over | Nuggets fired Michael Malone days before the 2025 playoffs | Wikipedia's in-season coaching changes table |
-| Long absence; an acting coach for weeks or months | Mitch Johnson acting for the Spurs in 2024-25 | Wikipedia table, plus `coaches_overrides.csv` if missing |
+| Firing; an interim coach takes over | Nuggets fired Michael Malone days before the 2025 playoffs | Wikipedia's in-season coaching changes |
+| Long absence; an acting coach for weeks or months | Mitch Johnson acting for the Spurs in 2024-25 | Wikipedia's in-season coaching changes, plus `coaches_overrides.csv` if missing |
 | Short absence of 1-10 games: illness, suspension, health-and-safety protocols, family leave | Many acting coaches during the Dec 2021 to Jan 2022 protocol wave | Rarely listed anywhere: accept any staff name, then detect from the videos |
 
 **How `coaches.py` builds and checks the timeline** (output: `coaches.json` per
 season, with `spells`, `staff` and `players` per team):
 
-1. **Staff from rosters.** `commonteamroster.CommonTeamRoster(team_id=...,
-   season=...)`, `Coaches` dataset: head coach and assistants with aliases
-   (last name, "Coach \<last name>", known nicknames). Any of them can be at
-   the podium. Pace stats.nba.com at 3 s per call and back off at least 90 s on
-   a block (both measured on this machine).
-2. **Player names.** The same endpoint's player dataset is an end-of-season
-   snapshot and misses traded players, so add every player who appeared for
-   the team that season from the box scores already in the database (2018 on).
-   The classifier needs them to tell a player video from a coach video.
-3. **Dated changes from Wikipedia.** Fetch the season article (e.g. "2021–22
-   NBA season") through the MediaWiki API (`action=parse&prop=text`), read the
-   in-season coaching changes table with `pandas.read_html`, and map team names
-   to tricodes. Each row becomes two spells: the outgoing coach ends the day
-   before the change, the incoming coach (interim or permanent) starts on that
-   date. A coach found this way joins the staff if the roster missed him.
+1. **Staff from Wikipedia.** The team-season article ("2021–22 Sacramento
+   Kings season") lists the season's head coaches in order in its infobox
+   ("Luke Walton (fired)", "Alvin Gentry (interim)") and the head coach and
+   assistants at season end in its roster template. Each name gets aliases
+   (full name, joined initials, last name, "Coach \<last name>"). Any of them
+   can be at the podium; assistants of the previous season's roster are added
+   too. stats.nba.com `CommonTeamRoster` was the first plan, but for past
+   seasons it returns a later staff (2021-22 Kings: Mike Brown's staff, hired
+   in 2022), so it is not used.
+2. **Player names.** Every player who appeared for the team that season, from
+   the box scores in the database (`load_players_from_db`). The classifier
+   needs them to tell a player video from a coach video. Without database
+   access the run goes on with a warning and no player names.
+3. **Dated changes from Wikipedia.** The league-season article ("2021–22 NBA
+   season", MediaWiki `action=parse`) lists in-season changes as sentences
+   ("On November 21, 2021, the Sacramento Kings fired head coach Luke Walton
+   and named Alvin Gentry as their interim head coach."). Each parsed sentence
+   gives the team, the date and the incoming coach; the outgoing spell ends the
+   day before. A sentence without a team name ("Gregg Popovich suffered a mild
+   stroke...") is placed through the coaches each team lists. Anything still
+   unparsed goes to `coach_timeline_issues.csv`, never guessed. Some seasons
+   (2022-23) have no such section; the infobox then shows whether a change
+   needs an override.
 4. **Manual overrides last.** `coaches_overrides.csv` (team, coach, start_date,
    end_date, kind, note) always wins over the first sources.
 5. **Expected coach per game.** `coach_expected` = the spell covering the game
-   date; with no change that season, simply the roster's head coach.
+   date; with no change that season, simply the infobox's head coach.
 6. **Accept, don't force.** The classifier and the LLM accept any staff name,
    not only `coach_expected`. Whoever actually speaks is stored as
    `coach_actual`.
