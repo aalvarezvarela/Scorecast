@@ -94,6 +94,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     channels = sub.add_parser("channels", help="show or resolve the channel registry")
     channels.add_argument("--resolve", action="store_true")
+    channels.add_argument(
+        "--refresh", action="store_true", help="re-resolve unverified rows"
+    )
     channels.add_argument("--csv", type=Path, default=CHANNELS_CSV)
     common(channels)
     channels.add_argument("--js-runtime", choices=("node", "deno"), default="node")

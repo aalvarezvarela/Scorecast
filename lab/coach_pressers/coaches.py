@@ -23,6 +23,7 @@ from __future__ import annotations
 import csv
 import html as html_lib
 import json
+import logging
 import re
 import time
 from collections.abc import Callable
@@ -33,6 +34,8 @@ from lab.coach_pressers.config import PresserConfig, season_label
 from lab.coach_pressers.names import full_forms, last_name, normalize
 from lab.coach_pressers.teams import TEAMS
 from lab.game_reports.season_reports import RequestPacer, atomic_write, json_bytes
+
+log = logging.getLogger("coach_pressers")
 
 WIKIPEDIA_API = "https://en.wikipedia.org/w/api.php"
 USER_AGENT = "NBAPresserArchive/0.1 (personal research script)"
@@ -73,8 +76,16 @@ def team_title(season_year: int, team: str) -> str:
 class Wikipedia:
     """Article HTML through the MediaWiki parse API, cached on disk."""
 
-    def __init__(self, cache_dir: Path, pacer: RequestPacer, *, max_age_days=None):
+    def __init__(
+        self,
+        cache_dir: Path,
+        pacer: RequestPacer,
+        *,
+        max_age_days=None,
+        sleep=time.sleep,
+    ):
         self.cache_dir, self.pacer, self.max_age_days = cache_dir, pacer, max_age_days
+        self.sleep = sleep
 
     def path(self, title: str) -> Path:
         return self.cache_dir / (re.sub(r"[^\w.-]+", "_", title) + ".html")
@@ -86,28 +97,42 @@ class Wikipedia:
             or time.time() - path.stat().st_mtime < self.max_age_days * 86400
         ):
             return path.read_text(encoding="utf-8") or None
-        import requests
-
-        self.pacer.wait()
-        response = requests.get(
-            WIKIPEDIA_API,
-            params={
-                "action": "parse",
-                "page": title,
-                "prop": "text",
-                "format": "json",
-                "formatversion": "2",
-                "redirects": "1",
-            },
-            headers={"User-Agent": USER_AGENT},
-            timeout=30,
-        )
-        response.raise_for_status()
-        payload = response.json()
+        payload = self.request(title)
         text = "" if "error" in payload else payload["parse"]["text"]
         path.parent.mkdir(parents=True, exist_ok=True)
         atomic_write(path, text.encode("utf-8"))
         return text or None
+
+    def request(self, title: str) -> dict:
+        """One parse request; 429/503 wait (Retry-After or 30, 60, 120, 240 s)."""
+        import requests
+
+        for attempt in range(5):
+            self.pacer.wait()
+            response = requests.get(
+                WIKIPEDIA_API,
+                params={
+                    "action": "parse",
+                    "page": title,
+                    "prop": "text",
+                    "format": "json",
+                    "formatversion": "2",
+                    "redirects": "1",
+                    "maxlag": "5",
+                },
+                headers={"User-Agent": USER_AGENT},
+                timeout=30,
+            )
+            if response.status_code not in (429, 503) or attempt == 4:
+                response.raise_for_status()
+                payload = response.json()
+                if payload.get("error", {}).get("code") != "maxlag":
+                    return payload
+            retry = response.headers.get("Retry-After", "")
+            pause = float(retry) if retry.isdigit() else 30.0 * 2**attempt
+            log.info("Wikipedia busy (%s); waiting %.0f s", response.status_code, pause)
+            self.sleep(min(pause, 600.0))
+        raise RuntimeError(f"Wikipedia kept refusing {title!r}")
 
 
 def _clean(text: str) -> str:

@@ -32,7 +32,10 @@ FIELDS = (
     "resolved_at_utc",
 )
 
-# Candidate handles per team, most likely first. Resolution decides.
+# Candidate handles per team. Resolution decides: a handle must name the team
+# and have MIN_FOLLOWERS (fake channels with the exact team name exist, e.g. a
+# 117-follower "Dallas Mavericks" at @dallasmavs); the biggest one wins.
+MIN_FOLLOWERS = 10_000
 CANDIDATE_HANDLES: dict[str, tuple[str, ...]] = {
     "ATL": ("ATLHawks", "hawks"),
     "BOS": ("celtics", "BostonCeltics"),
@@ -40,11 +43,11 @@ CANDIDATE_HANDLES: dict[str, tuple[str, ...]] = {
     "CHA": ("hornets", "CharlotteHornets"),
     "CHI": ("chicagobulls", "bulls"),
     "CLE": ("cavs", "Cavaliers"),
-    "DAL": ("dallasmavs", "mavs"),
+    "DAL": ("mavericks", "dallasmavs"),
     "DEN": ("nuggets", "DenverNuggets"),
-    "DET": ("DetroitPistons", "pistons"),
+    "DET": ("PistonsTV", "DetroitPistons"),
     "GSW": ("warriors", "GoldenStateWarriors"),
-    "HOU": ("HoustonRockets", "rockets"),
+    "HOU": ("OfficialRockets", "HoustonRockets"),
     "IND": ("Pacers", "IndianaPacers"),
     "LAC": ("LAClippers", "clippers"),
     "LAL": ("Lakers", "LosAngelesLakers"),
@@ -52,7 +55,7 @@ CANDIDATE_HANDLES: dict[str, tuple[str, ...]] = {
     "MIA": ("MiamiHEAT", "heat"),
     "MIL": ("Bucks", "MilwaukeeBucks"),
     "MIN": ("Timberwolves", "MinnesotaTimberwolves"),
-    "NOP": ("PelicansNBA", "Pelicans"),
+    "NOP": ("NBAPelicans", "PelicansNBA"),
     "NYK": ("NYKnicks", "knicks"),
     "OKC": ("OKCThunder", "thunder"),
     "ORL": ("OrlandoMagic", "magic"),
@@ -61,9 +64,9 @@ CANDIDATE_HANDLES: dict[str, tuple[str, ...]] = {
     "POR": ("trailblazers", "PortlandTrailBlazers"),
     "SAC": ("SacramentoKings", "kings"),
     "SAS": ("Spurs", "SanAntonioSpurs"),
-    "TOR": ("Raptors", "TorontoRaptors"),
+    "TOR": ("TorontoRaptors", "Raptors"),
     "UTA": ("utahjazz", "jazz"),
-    "WAS": ("WashWizards", "wizards"),
+    "WAS": ("WashingtonWizards", "WashWizards"),
 }
 
 
@@ -121,10 +124,33 @@ def matches_team(info: dict, team: str) -> bool:
     return any(nickname in normalize(str(n or "")) for n in names)
 
 
+def channel_row(team: str, info: dict, handle: str) -> dict:
+    return {
+        "team": team,
+        "channel_id": info.get("channel_id") or info.get("id"),
+        "handle": handle,
+        "name": info.get("channel") or info.get("uploader") or "",
+        "kind": "team",
+        "priority": 1,
+        "verified_by_human": False,
+        "followers": info.get("channel_follower_count") or "",
+        "resolved_at_utc": utc_now(),
+    }
+
+
+def qualifies(info: dict | None, team: str) -> bool:
+    followers = (info or {}).get("channel_follower_count") or 0
+    return bool(info) and matches_team(info, team) and followers >= MIN_FOLLOWERS
+
+
 def resolve_team(
-    team: str, extract: Callable[[str], dict], pacer: RequestPacer
+    team: str,
+    extract: Callable[[str], dict],
+    pacer: RequestPacer,
+    search: Callable[[str], list[dict]] | None = None,
 ) -> tuple[dict | None, list[str]]:
-    tried = []
+    """The team's official channel: best qualifying handle, else a search."""
+    tried, found = [], []
     for handle in CANDIDATE_HANDLES[team]:
         pacer.wait()
         try:
@@ -132,24 +158,55 @@ def resolve_team(
         except Exception as exc:
             tried.append(f"@{handle}: {type(exc).__name__}")
             continue
-        if not info or not matches_team(info, team):
-            tried.append(f"@{handle}: {(info or {}).get('channel')!r} is not the team")
-            continue
-        return (
-            {
-                "team": team,
-                "channel_id": info.get("channel_id") or info.get("id"),
-                "handle": f"@{handle}",
-                "name": info.get("channel") or info.get("uploader") or "",
-                "kind": "team",
-                "priority": 1,
-                "verified_by_human": False,
-                "followers": info.get("channel_follower_count") or "",
-                "resolved_at_utc": utc_now(),
-            },
-            tried,
-        )
-    return None, tried
+        if qualifies(info, team):
+            found.append(channel_row(team, info, f"@{handle}"))
+        else:
+            tried.append(
+                f"@{handle}: {(info or {}).get('channel')!r}, "
+                f"{(info or {}).get('channel_follower_count')} followers"
+            )
+    if not found and search is not None:
+        pacer.wait()
+        entries = search(f"{TEAMS[team][0]} postgame press conference")
+        counts: dict[str, int] = {}
+        for entry in entries:
+            if entry.get("channel_id") and matches_team(entry, team):
+                counts[entry["channel_id"]] = counts.get(entry["channel_id"], 0) + 1
+        for channel_id in sorted(counts, key=counts.get, reverse=True)[:3]:
+            pacer.wait()
+            try:
+                info = extract(f"https://www.youtube.com/channel/{channel_id}")
+            except Exception as exc:
+                tried.append(f"{channel_id}: {type(exc).__name__}")
+                continue
+            if qualifies(info, team):
+                handle = info.get("uploader_id") or channel_id
+                found.append(channel_row(team, info, handle))
+            else:
+                tried.append(f"{channel_id} (search): not qualifying")
+    if not found:
+        return None, tried
+    best = max(found, key=lambda r: int(r["followers"] or 0))
+    return best, tried
+
+
+def default_search(js_runtime: str, cache_dir: Path) -> Callable[[str], list[dict]]:
+    from yt_dlp import YoutubeDL
+
+    from lab.youtube_downloader.youtube_media import youtube_options
+
+    options = {
+        **youtube_options(cache_dir, js_runtime),
+        "extract_flat": True,
+        "skip_download": True,
+    }
+
+    def search(query: str) -> list[dict]:
+        with YoutubeDL(options) as ydl:
+            result = ydl.extract_info(f"ytsearch20:{query}", download=False)
+        return [e for e in (result or {}).get("entries", []) if e]
+
+    return search
 
 
 def resolve_all(
@@ -157,15 +214,23 @@ def resolve_all(
     extract: Callable[[str], dict],
     pacer: RequestPacer,
     teams: list[str] | None = None,
+    *,
+    search: Callable[[str], list[dict]] | None = None,
+    refresh: bool = False,
 ) -> tuple[list[dict], dict[str, list[str]]]:
-    """Resolve the official channel of every team that has none yet."""
+    """Resolve the official channel of every team that has none yet.
+
+    ``refresh`` re-resolves every official row not yet verified by a human.
+    """
     rows = read_channels(path)
+    if refresh:
+        rows = [r for r in rows if r["kind"] != "team" or r["verified_by_human"]]
     have = {r["team"] for r in rows if r["kind"] == "team" and r.get("channel_id")}
     failures = {}
     for team in teams or sorted(TEAMS):
         if team in have:
             continue
-        row, tried = resolve_team(team, extract, pacer)
+        row, tried = resolve_team(team, extract, pacer, search)
         if row:
             rows.append(row)
             log.info("%s -> %s (%s)", team, row["handle"], row["name"])
@@ -195,7 +260,9 @@ def main(args) -> int:
         rows, failures = resolve_all(
             args.csv,
             default_extract(args.js_runtime, args.local_root),
-            RequestPacer(1.0),
+            RequestPacer(2.0),
+            search=default_search(args.js_runtime, args.local_root),
+            refresh=args.refresh,
         )
     else:
         rows, failures = read_channels(args.csv), {}

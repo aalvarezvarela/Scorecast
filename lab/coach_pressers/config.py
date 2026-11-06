@@ -34,7 +34,7 @@ class PresserConfig:
     js_runtime: str = "node"
     # Pacing, in seconds.
     youtube_interval: float = 1.0
-    wikipedia_interval: float = 1.0
+    wikipedia_interval: float = 2.0
     download_sleep: tuple[float, float] = (5.0, 15.0)
     pause_every: int = 200
     pause_seconds: float = 600.0

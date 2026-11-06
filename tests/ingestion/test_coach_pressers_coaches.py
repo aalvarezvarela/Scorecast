@@ -165,3 +165,37 @@ def test_names():
     assert normalize("De'Aaron Fox") == "deaaron fox"
     assert full_forms("J.B. Bickerstaff") == ["j b bickerstaff", "jb bickerstaff"]
     assert last_name("Gary Payton II") == "payton"
+
+
+def test_wikipedia_waits_on_429_and_caches(tmp_path, monkeypatch):
+    import requests
+
+    from lab.game_reports.season_reports import RequestPacer
+
+    class Response:
+        def __init__(self, status, payload=None, retry=""):
+            self.status_code, self.payload = status, payload
+            self.headers = {"Retry-After": retry} if retry else {}
+
+        def raise_for_status(self):
+            if self.status_code >= 400:
+                raise requests.HTTPError(str(self.status_code))
+
+        def json(self):
+            return self.payload
+
+    replies = [
+        Response(429, retry="7"),
+        Response(429),
+        Response(200, {"parse": {"text": "<p>ok</p>"}}),
+    ]
+    calls, sleeps = [], []
+    monkeypatch.setattr(
+        requests, "get", lambda *a, **k: calls.append(k) or replies.pop(0)
+    )
+    wiki = coaches.Wikipedia(tmp_path, RequestPacer(0), sleep=sleeps.append)
+    assert wiki.article("2021–22 NBA season") == "<p>ok</p>"
+    assert sleeps == [7.0, 60.0]
+    assert calls[0]["headers"]["User-Agent"] == coaches.USER_AGENT
+    assert wiki.article("2021–22 NBA season") == "<p>ok</p>"  # cached
+    assert len(calls) == 3
