@@ -7,6 +7,7 @@ Baselines run only in the retrospective end-of-day workflow.
 from __future__ import annotations
 
 from types import SimpleNamespace
+from unittest.mock import Mock
 
 import numpy as np
 import pandas as pd
@@ -522,7 +523,6 @@ def _tabpfn_job(**changes):
 def _with_tabpfn(monkeypatch, order: list, *, failing: set[int] = frozenset()):
     """The side-by-side job, sequential, with the store and the TabPFN run's
     parts faked: what is under test is where and on what each job runs."""
-    from unittest.mock import Mock
 
     from nba_ou.prediction.tabpfn_run import JobOutcome
 
@@ -646,7 +646,6 @@ def test_a_run_without_tabpfn_jobs_fits_nothing(monkeypatch):
 
 def _manual_job(monkeypatch, *, minutes=(250, 470)):
     """A manual run's predictor: closing + T-240/T-480 slots, two games."""
-    from unittest.mock import Mock
 
     from nba_ou.modeling.registry_paths import ModelSlot
 
@@ -783,3 +782,35 @@ def test_scheduled_runs_still_predict_every_slot(monkeypatch):
     job.predict_nba_games(persist=False)
     assert len(run.served) == 6
     assert run.recorders[0].request_id is None
+
+
+def test_a_request_reads_and_predicts_only_its_targets_nearest_models(monkeypatch):
+    run = _manual_job(monkeypatch)
+    updated, reads = Mock(), Mock(return_value={})
+    monkeypatch.setattr(job, "update_all_databases", updated)
+    monkeypatch.setattr(job, "read_slot_builds", reads)
+    job.predict_nba_games(
+        scope="nearest", request_id=14, targets=["line_error"], update_db=False
+    )
+    assert sorted(run.served) == [("line_error", 240, True), ("line_error", 480, True)]
+    read = reads.call_args.kwargs["slots"]
+    assert sorted((str(s.target), s.horizon_minutes) for s in read) == [
+        ("line_error", 240),
+        ("line_error", 480),
+    ]
+    updated.assert_not_called()
+
+
+def test_a_scheduled_run_still_updates_the_databases(monkeypatch):
+    _manual_job(monkeypatch)
+    updated = Mock()
+    monkeypatch.setattr(job, "update_all_databases", updated)
+    job.predict_nba_games(persist=False)
+    updated.assert_called_once()
+
+
+def test_a_target_without_slots_stops_the_request(monkeypatch):
+    run = _manual_job(monkeypatch)
+    with pytest.raises(SystemExit):
+        job.predict_nba_games(scope=480, request_id=15, targets=["spread_error"])
+    assert run.reports.call_args.args[1] == 4  # failed

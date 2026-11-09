@@ -52,25 +52,45 @@ def test_default_choice_is_tabpfn_intermediate():
     ],
 )
 def test_dispatch_inputs(kind, dataset_type, horizon, workflow, inputs):
-    got_workflow, got = manual.dispatch_inputs(12, kind, dataset_type, horizon)
+    got_workflow, got = manual.dispatch_inputs(
+        12, kind, dataset_type, horizon, ("line_error",)
+    )
     assert got_workflow == workflow
-    assert got == {"request_id": "12", **inputs}
+    targets = (
+        {"targets": "line_error", "update_db": "false"}
+        if workflow == manual.PREDICTOR_WORKFLOW
+        else {"target": "line_error"}
+    )
+    assert got == {"request_id": "12", **inputs, **targets}
     # Every value is a string: the dispatch API requires it.
     assert all(isinstance(value, str) for value in got.values())
 
 
 def test_dispatch_rejects_bad_requests():
+    target = ("line_error",)
     with pytest.raises(ValueError):
-        manual.dispatch_inputs(1, 1, 1, 360)
+        manual.dispatch_inputs(1, 1, 1, 360, target)
     with pytest.raises(ValueError):
-        manual.dispatch_inputs(1, 3, 2, 999)
+        manual.dispatch_inputs(1, 3, 2, 999, target)
     with pytest.raises(ValueError):
-        manual.dispatch_inputs(1, 2, 1, None)
+        manual.dispatch_inputs(1, 2, 1, None, target)
+    with pytest.raises(ValueError):
+        manual.dispatch_inputs(1, 1, 1, None, ())
+    with pytest.raises(ValueError):
+        manual.dispatch_inputs(1, 1, 1, None, ("over_under",))
+
+
+def test_requests_default_to_line_error_in_a_fixed_target_order():
+    assert manual.DEFAULT_TARGETS == ("line_error",)
+    _, inputs = manual.dispatch_inputs(1, 3, 1, None, ("spread_error", "line_error"))
+    assert inputs["target"] == "line_error spread_error"
 
 
 def test_workflow_inputs_exist():
     for kind, dataset_type, horizon in [(1, 2, None), (3, 2, None), (3, 1, None)]:
-        workflow, inputs = manual.dispatch_inputs(1, kind, dataset_type, horizon)
+        workflow, inputs = manual.dispatch_inputs(
+            1, kind, dataset_type, horizon, manual.DEFAULT_TARGETS
+        )
         spec = yaml.safe_load((REPO_ROOT / ".github/workflows" / workflow).read_text())
         # An unquoted " #" would cut the expression: GitHub then rejects the file.
         assert spec["run-name"].endswith("}}"), workflow
@@ -105,6 +125,39 @@ def test_access_levels():
     assert admin_emails(" A@x.com, b@y.com ,") == {"a@x.com", "b@y.com"}
     assert admin_emails(["C@z.com"]) == {"c@z.com"}
     assert admin_emails(None) == frozenset()
+
+
+def _card_rows() -> pd.DataFrame:
+    return pd.DataFrame(
+        {
+            "predicted_at": pd.to_datetime(
+                ["2026-11-09 17:00", "2026-11-09 18:00", "2026-11-09 19:00"], utc=True
+            ),
+            "bet_line_x2": [449.0, 451.0, float("nan")],
+            "bet_edge": [1.5, -4.0, -2.0],
+            "bet_side": [1, -1, -1],
+            "model_build_id": [11, 12, 13],
+        }
+    )
+
+
+def test_a_card_offers_its_newest_stored_line():
+    assert bet_rules.newest_quote(_card_rows())["bet_line_x2"] == 451.0
+    no_line = _card_rows().assign(bet_line_x2=float("nan"))
+    assert bet_rules.newest_quote(no_line)["model_build_id"] == 13
+
+
+def test_a_bet_follows_the_largest_edge_on_its_side():
+    rows = _card_rows()
+    assert bet_rules.followed_prediction(rows, 1)["model_build_id"] == 11
+    assert bet_rules.followed_prediction(rows, -1)["model_build_id"] == 12
+    assert bet_rules.followed_prediction(rows.iloc[:1], -1) is None
+
+
+def test_the_favored_side_is_the_majority():
+    rows = _card_rows()
+    assert bet_rules.favored_side(rows) == -1
+    assert bet_rules.favored_side(rows.iloc[:2]) is None
 
 
 def test_bet_form_defaults():

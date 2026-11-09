@@ -28,11 +28,11 @@ self-hosted runner, as cron-job.org does for the scheduled runs
    card details say "Manual #id"; Yesterday and Historical analysis leave
    them out (`r.request_id IS NULL`), so the evaluated series stays the
    scheduled runs.
-4. **Bet.** The Bets page lists the user's own manual predictions of games
-   not yet started, newest per game, model, target and horizon. Optionally it
-   adds the scheduled predictions Today selects (each closing slot and the
-   horizon nearest the tip); other users' manual runs are never listed. Only
-   an active account can store a bet. A bet records side, line,
+4. **Bet.** The Bets page shows one card per game not yet started, with the
+   user's own manual predictions, newest per game, model, target and horizon.
+   Optionally it adds the scheduled predictions Today selects (each closing
+   slot and the horizon nearest the tip); other users' manual runs are never
+   listed. Only an active account can store a bet. A bet records side, line,
    decimal odds, stake and book in `app.bets`, with the prediction it
    followed (`model_build_id`, `input_id`, `request_id`). `app.bets_full`
    grades it against `prediction.games`.
@@ -46,15 +46,21 @@ computed when the job starts, not when it was requested.
 
 | Choice | Workflow | Inputs | What runs |
 |---|---|---|---|
-| XGBoost closing | `nba_predictor_daily.yml` | `slots=closing` | The closing slots on tonight's closing rows (latest lines). |
-| XGBoost intermediate, each game's horizon | `nba_predictor_daily.yml` | `slots=nearest` | Per game and target, the slot of the nearest horizon: games at 4, 8 and 12 hours use the T-240, T-480 and T-720 models. |
-| XGBoost intermediate, fixed T-H | `nba_predictor_daily.yml` | `slots=H` | The T-H slots for every game. |
+| XGBoost closing | `nba_predictor_daily.yml` | `slots=closing targets=… update_db=false` | The closing slots on tonight's closing rows (latest lines). |
+| XGBoost intermediate, each game's horizon | `nba_predictor_daily.yml` | `slots=nearest targets=… update_db=false` | Per game and target, the slot of the nearest horizon: games at 4, 8 and 12 hours use the T-240, T-480 and T-720 models. |
+| XGBoost intermediate, fixed T-H | `nba_predictor_daily.yml` | `slots=H targets=… update_db=false` | The T-H slots for every game. |
 | TabPFN closing | `nba_predictor_daily_tabpfn_client.yml` | `line=closing` | The closing fit, as the scheduled closing job. |
 | **TabPFN intermediate, each game's horizon** (default) | `nba_predictor_daily_tabpfn_client.yml` | `line=intermediate input=latest horizon_minutes=nearest` | Games grouped by nearest horizon; one fit per group on that horizon's training rows, each predicting its games. One stored run per group. |
 | TabPFN intermediate, fixed T-H | `nba_predictor_daily_tabpfn_client.yml` | `line=intermediate input=latest horizon_minutes=H` | One fit on the T-H rows for every game. |
 
-TabPFN requests pass `update_db=false` and fit all three targets in standard
-mode. "Nearest" is `argmin |H − minutes to tip|` over the enabled horizons,
+Each request also names its targets: **line error alone by default**, any of
+line error, total points and spread error on the Bets page (`target=…` for
+TabPFN). A run does only that work: TabPFN fits each chosen target once per
+group of games, in standard mode, and XGBoost reads and predicts only those
+targets' slots (with `nearest`, only the slots nearest a game). No manual run
+updates the databases (`update_db=false`): they read what the morning update
+wrote. The requests table does not store the targets; the launch message and
+the Target column of the predictions show them. "Nearest" is `argmin |H − minutes to tip|` over the enabled horizons,
 ties to the longer one (`nba_ou.prediction.horizon_choice`), the rule the
 dashboard already uses to pick among stored outputs. A latest row predicted
 by a T-H model is limited to what its training rows carried
@@ -91,13 +97,25 @@ DDL in `nba_ou.postgre_db.app_aiven.schema`, created by
 The dashboard connects as its own role `dashboard_app`: read on `prediction`,
 read and write (no DELETE) on `app`.
 
-## The bet form
+## The bet card
 
-Defaults, all editable: the model's pick as side, the stored bet365 line of
-the prediction (spread shown as the home handicap), the stored bet365 price of
-that side as decimal odds (−110 when missing, and the form says so), the
-user's last stake or 10 €, and bet365 as book. Without a stored line the field
-starts empty and the bet cannot be saved until it is filled.
+A card has a section per market with predictions: totals (Over/Under) and,
+only when the game has spread-error predictions, spread (Home/Away). Each
+section lists the models with their target, prediction, edge and pick, and
+highlights the side most of them back. Its line and prices are those of the
+market's newest prediction with a stored line. Each model's edge stays the one
+stored against its own line.
+
+A click on a side opens a short form, editable before saving: the stake (the
+user's last stake or 10 €), the bet365 line (spread shown as the home
+handicap) and, in a small field, the decimal odds (the stored bet365 price of
+that side, or −110 when missing, and the form says so). Without a stored line
+the field starts empty and the bet cannot be saved until it is filled. The
+book is always bet365. The bet is linked to the prediction backing that side
+with the largest edge, or to none when no model backs it.
+
+The form is opened by the page's full run, not by the section that refreshes
+every 30 seconds, whose next refresh would close it.
 
 ## Setup
 
@@ -133,10 +151,12 @@ starts empty and the bet cannot be saved until it is filled.
 ## Code
 
 - `nba_ou.prediction.horizon_choice`: scopes and the nearest horizon.
-- `scripts/predict_nba_games.py` `--slots`, `--request-id`;
+- `scripts/predict_nba_games.py` `--slots`, `--targets`, `--skip-db-update`,
+  `--request-id`;
   `scripts/predict_tabpfn.py` `--input latest`, `--horizon-minutes nearest`,
   `--request-id` (`fit_nearest`, `tabpfn_run.latest_rows`).
 - `nba_ou.postgre_db.app_aiven`: schema and request status writes.
 - `nba_ou.dashboard.domain.{access,manual,bets}`,
-  `repositories.{app_store,dispatch}`, `ui.{auth,bets,admin,app_loaders}`,
+  `repositories.{app_store,dispatch}`,
+  `ui.{auth,bets,bet_table,admin,app_loaders}`,
   pages `welcome`, `pending`, `bets`, `admin`.

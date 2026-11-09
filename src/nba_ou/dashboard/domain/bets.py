@@ -13,6 +13,8 @@ from __future__ import annotations
 import math
 from decimal import ROUND_HALF_UP, Decimal
 
+import pandas as pd
+
 from nba_ou.postgre_db.app_aiven.schema import MARKET_SPREAD, MARKET_TOTALS
 
 DEFAULT_STAKE = 10.0
@@ -49,6 +51,32 @@ def proposed_line(target: int, bet_line_x2: float | None) -> float | None:
         if market_of_target(target) == MARKET_SPREAD
         else line
     )
+
+
+def newest_quote(rows: pd.DataFrame) -> pd.Series:
+    """The newest prediction of a card's market with a stored line (the newest
+    of all without one): its line and prices are the ones the card offers."""
+    quoted = rows.loc[rows["bet_line_x2"].notna()]
+    source = quoted if not quoted.empty else rows
+    return source.sort_values("predicted_at", kind="stable").iloc[-1]
+
+
+def followed_prediction(rows: pd.DataFrame, side: int) -> pd.Series | None:
+    """The prediction backing ``side`` with the largest edge, None without one."""
+    edges = pd.to_numeric(rows["bet_edge"], errors="coerce")
+    backing = pd.to_numeric(rows["bet_side"], errors="coerce").eq(side) & edges.notna()
+    if not backing.any():
+        return None
+    return rows.loc[backing].iloc[int(edges[backing].abs().to_numpy().argmax())]
+
+
+def favored_side(rows: pd.DataFrame) -> int | None:
+    """The side most predictions back, None on a tie."""
+    sides = pd.to_numeric(rows["bet_side"], errors="coerce")
+    over, under = int(sides.eq(1).sum()), int(sides.eq(-1).sum())
+    if over == under:
+        return None
+    return 1 if over > under else -1
 
 
 def american_to_decimal(price: float | None) -> float | None:
