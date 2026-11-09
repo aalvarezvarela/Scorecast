@@ -5,6 +5,7 @@ from datetime import date
 import streamlit as st
 from nba_ou.dashboard.config import CACHE_TTL_SECONDS
 from nba_ou.dashboard.repositories.analysis import AnalysisData, read_history_range
+from nba_ou.dashboard.repositories.clock import ClockData, read_clock_history
 from nba_ou.dashboard.repositories.predictions import (
     TodayData,
     read_today,
@@ -37,5 +38,14 @@ def load_history(
     start: date, end: date, target: int, season_type: int | None
 ) -> AnalysisData:
     return read_history_range(
+        start, end, target, season_type, dsn_override=_aiven_secret()
+    )
+
+
+@st.cache_data(ttl=900, max_entries=4, show_spinner=False)
+def load_clock_history(
+    start: date, end: date, target: int, season_type: int | None
+) -> ClockData:
+    return read_clock_history(
         start, end, target, season_type, dsn_override=_aiven_secret()
     )

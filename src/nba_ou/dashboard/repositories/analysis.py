@@ -32,7 +32,7 @@ ANALYSIS_GAMES_QUERY = """
     ORDER BY game_date, game_id
 """
 
-ANALYSIS_QUERY = """
+HISTORY_SOURCE_CTES = """
     WITH base AS (
         SELECT v.game_id, v.kind, v.schema_version, v.target, v.dataset_type,
                v.model_horizon_minutes, v.variant, v.workflow, v.input_mode,
@@ -81,7 +81,14 @@ ANALYSIS_QUERY = """
         WHERE sources.eligible AND input_at <= predicted_at
           AND (input_minutes > 0 OR source = 'Snapshot replay'
                AND dataset_type = 1 AND input_minutes = 0)
-    ), bucketed AS (
+    )
+"""
+
+ANALYSIS_QUERY = (
+    (
+        HISTORY_SOURCE_CTES
+        + """
+    , bucketed AS (
         SELECT sources.*, BUCKET_CASE AS bucket FROM sources
     ), ranked AS (
         SELECT bucketed.*, ROW_NUMBER() OVER (
@@ -116,7 +123,11 @@ ANALYSIS_QUERY = """
         FROM final WHERE priority = 1
     )
     SELECT * FROM reduced LIMIT %s
-""".replace("BUCKET_CASE", _BUCKET_CASE).replace("SLOT", _SLOT)
+"""
+    )
+    .replace("BUCKET_CASE", _BUCKET_CASE)
+    .replace("SLOT", _SLOT)
+)
 
 # Stored by the past-snapshot workflow (2) on reconstructed T-0 lines, and by
 # daily runs (1) before 2026-10-29; one row per game, preferring workflow 2.

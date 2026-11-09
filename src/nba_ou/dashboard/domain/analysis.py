@@ -55,8 +55,10 @@ CELL_KEYS = (
 )
 
 
-def season_start(day: date) -> date:
-    return date(day.year if day.month >= 10 else day.year - 1, 10, 1)
+def history_default_start(day: date) -> date:
+    """Start the default range at the most recent 28 October."""
+    start = date(day.year, 10, 28)
+    return start if start <= day else start.replace(year=day.year - 1)
 
 
 def bucket_label(bucket: int) -> str:
@@ -170,9 +172,11 @@ def aggregate_cells(
             mae=group.loc[settled & group["available"], "absolute_error"].mean(),
             median_lag_minutes=group["publication_lag_minutes"].median(),
             priced_bets=int(group["priced_bet"].sum()),
-            roi=100 * group["unit_profit"].sum() / group["priced_bet"].sum()
-            if group["priced_bet"].any()
-            else np.nan,
+            roi=(
+                100 * group["unit_profit"].sum() / group["priced_bet"].sum()
+                if group["priced_bet"].any()
+                else np.nan
+            ),
             no_bet=int(counts.get("NO BET", 0)),
             no_line=int(counts.get("NO LINE", 0)),
             pending=int(counts.get("PENDING", 0)),
