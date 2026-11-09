@@ -215,7 +215,10 @@
 .prediction-comparison .pick-red { color: #ff8e9a; background: #4d2340; }
 .prediction-comparison .pick-green { color: #77e4a4; background: #164b39; }
 .prediction-comparison .pick-gray { color: #afbcd4; background: #afbcd426; }
-.history-comparison small {
+.bet-predictions thead th:first-child { text-align: left; }
+.bet-predictions thead th:not(:first-child) { text-align: right; }
+.bet-predictions tbody th { font-weight: 600; }
+:is(.history-comparison, .bet-predictions) small {
     display: block; margin-top: 0.15rem; font-size: 0.75rem;
     color: var(--text-color, #afbcd4); opacity: 0.75; font-weight: 400;
 }

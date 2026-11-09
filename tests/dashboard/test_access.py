@@ -116,13 +116,19 @@ def test_bets_page_lists_requests_and_candidates(bets_page, today_data):
     assert app.get("button_group")[0].value == ["tabpfn_intermediate"]
     # Line error alone is the default target.
     assert app.get("button_group")[1].value == ["line_error"]
-    requests, candidates = (frame.value for frame in app.dataframe)
+    [requests] = [frame.value for frame in app.dataframe]
     assert requests["Status"].tolist() == ["done"]
     assert requests["Model"].tolist() == ["TabPFN intermediate · per game"]
-    # One candidate per game, model, dataset type and target: the newest.
+    # One row per game, model, dataset type and target: the newest.
     expected = _manual_rows(today_data).drop_duplicates(bets_ui.CANDIDATE_KEY)
-    assert len(candidates) == len(expected)
-    assert set(candidates["Source"]) == {"Request #5"}
+    tables = "".join(html.proto.body for html in app.get("html"))
+    assert tables.count('scope="row"') == len(expected)
+    assert "Scheduled" not in tables
+    # Each game offers both sides of both markets, Over 230.5 first.
+    assert app.button(key="bet_1_1_1").label == "Over 230.5"
+    assert app.button(key="bet_1_1_-1").label == "Under 230.5"
+    assert app.button(key="bet_1_2_1").label == "Boston Celtics -3.5"
+    assert app.button(key="bet_1_2_-1").label == "New York Knicks +3.5"
 
 
 def test_launch_creates_a_request_and_dispatches_it(bets_page, monkeypatch):
@@ -219,16 +225,42 @@ def test_own_candidates_keep_the_newest_per_horizon(today_data):
     assert rows["model_horizon_minutes"].nunique() > 1
 
 
-def test_a_refreshed_table_drops_the_selected_position(today_data):
+def test_only_requested_targets_get_their_market(bets_page, monkeypatch, today_data):
     rows = _manual_rows(today_data)
-    assert bets_ui._selection_key(rows) == bets_ui._selection_key(rows.copy())
-    assert bets_ui._selection_key(rows) != bets_ui._selection_key(rows.iloc[1:])
+    monkeypatch.setattr(
+        bets_ui, "load_manual_predictions", lambda *_: rows.loc[rows["target"].eq(1)]
+    )
+    app = AppTest.from_file(str(ENTRYPOINT)).run()
+    app.switch_page(BETS_PAGE).run()
+    assert not app.exception
+    keys = {button.key for button in app.button}
+    assert {"bet_1_1_1", "bet_1_1_-1"} <= keys
+    assert not any(key.startswith("bet_1_2_") for key in keys)
 
 
-def _open_bet_dialog(row, user):
+def test_a_bet_button_opens_the_form_with_the_last_stake(bets_page):
+    app = AppTest.from_file(str(ENTRYPOINT)).run()
+    app.switch_page(BETS_PAGE).run()
+    app.button(key="bet_1_1_1").click().run()
+    assert not app.exception
+    stakes = [box for box in app.number_input if box.key.startswith("bet_stake_")]
+    assert [box.value for box in stakes] == [25.0]
+    # The form opens once; the page's next run does not bring it back.
+    app.run()
+    assert not any(box.key.startswith("bet_stake_") for box in app.number_input)
+
+
+def _offer(today_data, side=1):
+    rows = _manual_rows(today_data)
+    rows = rows.loc[rows["game_id"].eq(1) & rows["target"].ne(3)].reset_index(drop=True)
+    game = today_data.games.loc[today_data.games["game_id"].eq(1)].iloc[0]
+    return bets_ui._offer(game, rows, bets_ui.MARKET_TOTALS, side)
+
+
+def _open_bet_dialog(offer, user):
     from nba_ou.dashboard.ui.bets import _bet_dialog
 
-    _bet_dialog(row, user, 25.0)
+    _bet_dialog(offer, user, 25.0)
 
 
 @pytest.fixture
@@ -241,20 +273,16 @@ def bet_dialog(monkeypatch, today_data):
     monkeypatch.setattr(bets_ui, "open_app_connection", connection)
     monkeypatch.setattr(bets_ui, "app_secrets", lambda: Mock(app_db_url="dsn"))
     monkeypatch.setattr(bets_ui.app_store, "insert_bet", insert)
-    row = _manual_rows(today_data).iloc[0].to_dict()
-    form = "_".join(
-        str(int(row[name]))
-        for name in ("game_id", "target", "input_id", "model_build_id")
-    )
-    return row, form, insert
+    offer = _offer(today_data)
+    form = f"1_1_1_{offer['quote_id']}"
+    return offer, form, insert
 
 
 def test_a_bet_without_a_line_needs_one_typed(bet_dialog):
-    row, form, insert = bet_dialog
-    row = {**row, "bet_line_x2": float("nan"), "bet_side": 1}
-    row.update(bet_price_over_home=float("nan"), bet_price_under_away=float("nan"))
+    offer, form, insert = bet_dialog
+    offer = {**offer, "line": None, "prices": (float("nan"), float("nan"))}
     app = AppTest.from_function(
-        _open_bet_dialog, kwargs={"row": row, "user": ACTIVE_USER}
+        _open_bet_dialog, kwargs={"offer": offer, "user": ACTIVE_USER}
     ).run()
     assert not app.exception
     line = app.number_input(key=f"bet_line_{form}")
@@ -271,24 +299,48 @@ def test_a_bet_without_a_line_needs_one_typed(bet_dialog):
     assert (bet["line"], bet["stake"]) == (224.5, 25.0)
 
 
-def test_a_bet_starts_from_the_prediction(bet_dialog):
-    row, form, insert = bet_dialog
+def test_a_bet_starts_from_the_quote_and_follows_the_largest_edge(bet_dialog):
+    offer, form, insert = bet_dialog
     app = AppTest.from_function(
-        _open_bet_dialog, kwargs={"row": row, "user": ACTIVE_USER}
+        _open_bet_dialog, kwargs={"offer": offer, "user": ACTIVE_USER}
     ).run()
     assert not app.exception
-    expected = bets_ui.bet_rules.proposed_line(row["target"], row["bet_line_x2"])
-    assert expected is not None
-    assert app.number_input(key=f"bet_line_{form}").value == expected
-    assert not app.button(key=f"bet_save_{form}").disabled
+    assert app.number_input(key=f"bet_line_{form}").value == 230.5
+    assert app.number_input(key=f"bet_odds_{form}").value == 1.909
     assert not any("assumed" in caption.value for caption in app.caption)
+    app.number_input(key=f"bet_odds_{form}").set_value(2.05).run()
+    app.number_input(key=f"bet_line_{form}").set_value(231.0).run()
+    app.button(key=f"bet_save_{form}").click().run()
+    assert not app.exception
+    bet = insert.call_args.args[1]
+    assert (bet["line"], bet["odds_decimal"], bet["stake"]) == (231.0, 2.05, 25.0)
+    assert bet["book"] == "bet365"
+    assert bet["model_build_id"] == offer["followed"]["model_build_id"]
+    assert bet["request_id"] == 5
+
+
+def test_a_side_no_model_backs_is_stored_without_a_prediction(bet_dialog, today_data):
+    offer, _, insert = bet_dialog
+    offer = {**offer, "followed": None}
+    form = f"1_1_1_{offer['quote_id']}"
+    app = AppTest.from_function(
+        _open_bet_dialog, kwargs={"offer": offer, "user": ACTIVE_USER}
+    ).run()
+    assert any("No model" in caption.value for caption in app.caption)
+    app.button(key=f"bet_save_{form}").click().run()
+    bet = insert.call_args.args[1]
+    assert (bet["model_build_id"], bet["input_id"], bet["request_id"]) == (
+        None,
+        None,
+        None,
+    )
 
 
 def test_a_rejected_bet_is_reported(bet_dialog):
-    row, form, insert = bet_dialog
+    offer, form, insert = bet_dialog
     insert.return_value = None
     app = AppTest.from_function(
-        _open_bet_dialog, kwargs={"row": row, "user": ACTIVE_USER}
+        _open_bet_dialog, kwargs={"offer": offer, "user": ACTIVE_USER}
     ).run()
     app.button(key=f"bet_save_{form}").click().run()
     assert not app.exception

@@ -127,6 +127,39 @@ def test_access_levels():
     assert admin_emails(None) == frozenset()
 
 
+def _card_rows() -> pd.DataFrame:
+    return pd.DataFrame(
+        {
+            "predicted_at": pd.to_datetime(
+                ["2026-11-09 17:00", "2026-11-09 18:00", "2026-11-09 19:00"], utc=True
+            ),
+            "bet_line_x2": [449.0, 451.0, float("nan")],
+            "bet_edge": [1.5, -4.0, -2.0],
+            "bet_side": [1, -1, -1],
+            "model_build_id": [11, 12, 13],
+        }
+    )
+
+
+def test_a_card_offers_its_newest_stored_line():
+    assert bet_rules.newest_quote(_card_rows())["bet_line_x2"] == 451.0
+    no_line = _card_rows().assign(bet_line_x2=float("nan"))
+    assert bet_rules.newest_quote(no_line)["model_build_id"] == 13
+
+
+def test_a_bet_follows_the_largest_edge_on_its_side():
+    rows = _card_rows()
+    assert bet_rules.followed_prediction(rows, 1)["model_build_id"] == 11
+    assert bet_rules.followed_prediction(rows, -1)["model_build_id"] == 12
+    assert bet_rules.followed_prediction(rows.iloc[:1], -1) is None
+
+
+def test_the_favored_side_is_the_majority():
+    rows = _card_rows()
+    assert bet_rules.favored_side(rows) == -1
+    assert bet_rules.favored_side(rows.iloc[:2]) is None
+
+
 def test_bet_form_defaults():
     assert bet_rules.market_of_target(1) == bet_rules.MARKET_TOTALS
     assert bet_rules.market_of_target(2) == bet_rules.MARKET_TOTALS
