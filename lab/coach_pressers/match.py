@@ -18,7 +18,7 @@ import logging
 import re
 from datetime import UTC, date, datetime, timedelta
 
-from lab.coach_pressers.classify import classify
+from lab.coach_pressers.classify import classify, names_team
 from lab.coach_pressers.config import PresserConfig
 from lab.coach_pressers.manifest import MATCHABLE, entry_key
 from lab.coach_pressers.names import contains_phrase, full_forms, last_name, normalize
@@ -160,7 +160,38 @@ def find_coach_chapter(chapters: list[dict], staff: list[dict]) -> dict | None:
     return hits[0] if len(hits) == 1 else None
 
 
-def candidates_for_team(team: str, videos: list[dict], manifest: dict, data: dict):
+def rival_head_coaches(teams: dict, team: str) -> set[str]:
+    """Normalised full names of the other teams' head coaches, not on our staff.
+
+    Outlets post both coaches of a game; the opponent's presser shares the
+    window and often names our team, so a rival head coach in the title or in
+    the judge's answer means the video is not ours.
+    """
+    own = {f for p in teams.get(team, {}).get("staff", []) for f in _forms(p)}
+    rivals = set()
+    for code, data in teams.items():
+        if code == team:
+            continue
+        for person in data.get("staff", []):
+            if person.get("role") == "head":
+                rivals.update(_forms(person))
+        for spell in data.get("spells", []):
+            if spell.get("coach"):
+                rivals.update(full_forms(spell["coach"]))
+    return rivals - own
+
+
+def _forms(person: dict) -> list[str]:
+    return person.get("forms") or full_forms(person["name"])
+
+
+def candidates_for_team(
+    team: str,
+    videos: list[dict],
+    manifest: dict,
+    data: dict,
+    rivals: set[str] = frozenset(),
+):
     """(entry key -> list of candidates) for one team's videos."""
     games = team_games(manifest, team)
     out: dict[str, list[dict]] = {}
@@ -176,6 +207,13 @@ def candidates_for_team(team: str, videos: list[dict], manifest: dict, data: dic
         keep = verdict.label in KEPT_CLASSES or "unknown_name" in verdict.notes
         if not keep or verdict.score < MIN_SCORE:
             continue
+        if video.get("channel_kind", "team") != "team" and not names_team(
+            video.get("title") or "", team, data["staff"], data["players"]
+        ):
+            continue  # an outlet's video about another team
+        text = normalize(video.get("title") or "")
+        if not verdict.coach_guess and any(contains_phrase(text, f) for f in rivals):
+            continue  # the opponent's head coach at the podium
         window, how = window_games(video, games)
         titled, evidence = title_evidence(video, games, team)
         if titled:
@@ -282,7 +320,13 @@ def match_season(
     candidates: dict[str, list[dict]] = {}
     for team, team_videos in videos.items():
         candidates.update(
-            candidates_for_team(team, team_videos, manifest, coaches["teams"][team])
+            candidates_for_team(
+                team,
+                team_videos,
+                manifest,
+                coaches["teams"][team],
+                rival_head_coaches(coaches["teams"], team),
+            )
         )
     for found in candidates.values():
         found.sort(key=lambda c: (-c["score"], c["channel_priority"], c["video_id"]))

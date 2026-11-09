@@ -57,6 +57,10 @@ KEEP = (
 NEW_YORK = ZoneInfo("America/New_York")
 
 
+# Uploads that need a membership or a login (outlets often gate pressers).
+RESTRICTED = {"subscriber_only", "premium_only", "needs_auth"}
+
+
 def trim_info(info: dict) -> dict:
     """The metadata kept for matching; never formats or signed URLs."""
     record = {k: info.get(k) for k in KEEP}
@@ -308,16 +312,30 @@ def crawl_season(
             cache = ChannelCache(config.channels_dir, row["channel_id"])
             index = channel_index(cache, entries, lister, today)
             source = MetadataSource(cache, extractor)
+            outlet = row.get("kind", "team") != "team"
             for tab in TABS:
                 ids = [
                     v["id"]
                     for v in index["tabs"].get(tab, [])
-                    if prefilter(v["title"], team_data["staff"], team_data["players"])
+                    if prefilter(
+                        v["title"],
+                        team_data["staff"],
+                        team_data["players"],
+                        team=team if outlet else None,
+                    )
                 ]
                 for record in in_window(ids, first, last, source):
                     if record.get("live_status") in ("is_upcoming", "is_live"):
                         continue
-                    records.append({**record, "channel_priority": row["priority"]})
+                    if record.get("availability") in RESTRICTED:
+                        continue  # members-only uploads cannot be archived
+                    records.append(
+                        {
+                            **record,
+                            "channel_priority": row["priority"],
+                            "channel_kind": row.get("kind", "team"),
+                        }
+                    )
             log.info(
                 "step 4 %s %s: %d candidates in %s..%s, %d new metadata requests",
                 config.season,

@@ -174,6 +174,12 @@ def test_apply_decision():
     llm_judge.apply_decision(entry, found_for(case), record(none))
     assert entry["status"] == "review"
 
+    entry = {"coach_expected": "Darko Rajaković"}
+    llm_judge.apply_decision(
+        entry, found_for(case), record(answer), rivals={"darko rajakovic"}
+    )
+    assert entry["status"] == "review" and "another team" in entry["error"]
+
 
 def test_without_llm_everything_goes_to_review(tmp_path):
     config = config_2021(tmp_path, use_llm=False)

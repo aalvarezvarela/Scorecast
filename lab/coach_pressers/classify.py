@@ -31,9 +31,74 @@ EXCLUDE = (
     "3rd quarter",
     "4th quarter",
     "shorts",
+    "media day",
+    "training camp",
+    "previews",
+    "preview",
+    "ahead of",
+    "tonights",
+    "end of season",
+    "exit interview",
+    "introductory",
+    "draft",
+    "content day",
+    "podcast",
+    "pod squad",
+    "sit down",
+    "sits down",
+    "all access",
+    "behind the scenes",
 )
-CUES = ("postgame", "post game", "presser", "press conference", "availability")
-RECAP_VERBS = ("recaps", "reacts", "breaks down", "discusses")
+CUES = (
+    "postgame",
+    "post game",
+    "presser",
+    "press conference",
+    "availability",
+    "speaks to the media",
+    "speaks to media",
+    "speaks with the media",
+    "speaks with media",
+    "talks with media",
+    "talks with the media",
+    "talks to the media",
+    "talks to media",
+    "meets the media",
+    "meets with the media",
+    "addresses the media",
+    "media after",
+)
+RECAP_VERBS = (
+    "recaps",
+    "reacts",
+    "breaks down",
+    "discusses",
+    "reflects",
+    "reviews",
+    "explains",
+)
+# A coach's name with one of these and no cue ("Steve Kerr on Warriors Loss to
+# Cavaliers | Apr. 2, 2026", "Mitch Johnson on Spurs Chasing ... Game 2"): many
+# official channels title their pressers this way. Weak evidence: always judged.
+GAME_WORDS = (
+    "win",
+    "wins",
+    "won",
+    "loss",
+    "losses",
+    "lose",
+    "beat",
+    "beats",
+    "victory",
+    "defeat",
+    "comeback",
+    "after",
+    "following",
+    "overtime",
+    "vs",
+    "against",
+    "game",
+)
 COMBINED_PHRASES = (
     "full postgame media",
     "full post game media",
@@ -191,6 +256,16 @@ def classify(
             verdict = Verdict("combined", 0.85, None, people)
         else:
             verdict = Verdict("combined", 0.6, None, people, ["no_name"])
+    elif (
+        staff_hits
+        and staff_hits[0][1] >= 0.9
+        and any(contains_phrase(text, w) for w in GAME_WORDS)
+    ):
+        person = staff_hits[0][0]
+        label = "combined" if many >= 2 else "coach"
+        verdict = Verdict(label, 0.6, person["name"], people, ["game_words_no_cue"])
+        if person.get("role") != "head":
+            verdict.notes.append("assistant_or_acting")
     elif staff_hits:
         verdict = Verdict(
             "other", 0.5, staff_hits[0][0]["name"], people, ["coach_name_no_cue"]
@@ -207,7 +282,34 @@ def classify(
     return verdict
 
 
-def prefilter(title: str, staff: list[dict], players: list[str]) -> bool:
-    """Is a flat-listing title worth a full metadata request?"""
+def names_team(title: str, team: str, staff: list[dict], players: list[str]) -> bool:
+    """Does the title name the team, one of its staff or a player (full name)?
+
+    Outlets and re-uploaders post every team's pressers; without this, another
+    team's presser in the same night would be a candidate for this team.
+    """
+    text = normalize(title)
+    if any(contains_phrase(text, normalize(n)) for n in team_names(team)):
+        return True
+    player_lasts = {last_name(p) for p in players}
+    if _staff_hits(text, staff, player_lasts):
+        return True
+    return bool(_player_hits(text, players, set())[0])
+
+
+def prefilter(
+    title: str,
+    staff: list[dict],
+    players: list[str],
+    *,
+    team: str | None = None,
+) -> bool:
+    """Is a flat-listing title worth a full metadata request?
+
+    ``team`` is given for channels that are not the team's own: the title must
+    then name the team, its staff or a player.
+    """
+    if team is not None and not names_team(title, team, staff, players):
+        return False
     verdict = classify(title, staff, players)
     return verdict.label in {"coach", "combined"} or "unknown_name" in verdict.notes

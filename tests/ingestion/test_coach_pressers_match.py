@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from lab.coach_pressers import catalog, match
@@ -122,6 +124,46 @@ def test_another_staff_member_goes_to_the_judge(setup):
     assert list(to_judge) == ["0022100020:SAC"]
 
 
+def test_coach_name_without_a_cue_is_always_judged(setup):
+    config, manifest = setup
+    videos = {
+        "SAC": [
+            video(
+                "v5",
+                "Alvin Gentry on Kings Win vs Nuggets | Nov. 19, 2021",
+                "2021-11-20T05:00:00+00:00",
+            )
+        ]
+    }
+    to_judge = match.match_season(config, manifest, COACHES, videos)
+    assert list(to_judge) == ["0022100020:SAC"]
+    assert to_judge["0022100020:SAC"][0]["match_method"] == "title+window"
+    assert manifest["entries"]["0022100020:SAC"]["status"] == "pending"
+
+
+def test_outlet_videos_about_another_team_are_dropped(setup):
+    config, manifest = setup
+    videos = {
+        "SAC": [
+            video(
+                "o1",
+                "Michael Malone Postgame | Nuggets vs Suns",
+                "2021-11-20T05:00:00+00:00",
+                channel_kind="outlet",
+            ),
+            video(
+                "o2",
+                "Alvin Gentry Postgame | Kings vs Nuggets",
+                "2021-11-20T05:10:00+00:00",
+                channel_kind="outlet",
+            ),
+        ]
+    }
+    match.match_season(config, manifest, COACHES, videos)
+    found = json.loads(config.candidates_path.read_bytes())
+    assert [c["video_id"] for c in found["0022100020:SAC"]] == ["o2"]
+
+
 def test_two_candidates_go_to_the_judge(setup):
     config, manifest = setup
     videos = {
@@ -192,3 +234,26 @@ def test_playoff_game_number_and_opponent_evidence():
     }
     hits, evidence = match.title_evidence(late, games, "LAC")
     assert [g["game_id"] for g in hits] == ["1"] and evidence["game_no"] == 1
+
+
+def test_the_opponents_head_coach_is_never_a_candidate(setup):
+    config, manifest = setup
+    coaches = {
+        "teams": {
+            **COACHES["teams"],
+            "DEN": {"staff": [staff_entry("Michael Malone", "head", "t")]},
+        }
+    }
+    assert "michael malone" in match.rival_head_coaches(coaches["teams"], "SAC")
+    videos = {
+        "SAC": [
+            video(
+                "r1",
+                "Michael Malone PostGame Interview | Sacramento Kings vs Denver Nuggets",
+                "2021-11-20T05:00:00+00:00",
+                channel_kind="outlet",
+            )
+        ]
+    }
+    match.match_season(config, manifest, coaches, videos)
+    assert manifest["entries"]["0022100020:SAC"]["status"] == "not_found"

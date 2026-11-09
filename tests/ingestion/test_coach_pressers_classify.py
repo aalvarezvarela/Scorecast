@@ -179,3 +179,57 @@ def test_prefilter_skips_players_and_other():
     )
     assert not prefilter("Suns Top Plays of the Week", staff("PHX"), PLAYERS["PHX"])
     assert prefilter("Jordan Ott Postgame Availability", staff("PHX"), PLAYERS["PHX"])
+
+
+def test_media_phrases_are_cues():
+    uta = [staff_entry("Will Hardy", "head", "test")]
+    verdict = classify(
+        '"We\'ll get back to work tomorrow" | Coach Hardy speaks to the media after '
+        "Memphis",
+        uta,
+        [],
+    )
+    assert verdict.label == "coach" and verdict.score >= 0.8
+
+
+@pytest.mark.parametrize(
+    "title,team",
+    [
+        ("Steve Kerr on Warriors Loss to Cavaliers | Apr. 2, 2026", "GSW"),
+        ("Mitch Johnson On Spurs Game 1 Performance in the NBA Finals", "SAS"),
+    ],
+)
+def test_coach_name_with_game_words_is_a_weak_candidate(title, team):
+    verdict = classify(title, staff(team), PLAYERS.get(team, []))
+    assert verdict.label == "coach" and verdict.score == 0.6
+    assert "game_words_no_cue" in verdict.notes
+    assert prefilter(title, staff(team), PLAYERS.get(team, []))
+
+
+@pytest.mark.parametrize(
+    "title,team",
+    [
+        ("Steve Kerr Previews Warriors 2026-27 Season | Media Day", "GSW"),
+        ("Steve Kerr on Tragic Shooting at Brown University", "GSW"),
+        (
+            "Mitch Johnson on Spurs Playing to Their Strengths and Their Competitive "
+            "Response Ahead of Game 2",
+            "SAS",
+        ),
+        ("Chauncey Billups On Tonight's Playoff Game vs San Antonio Spurs", "POR"),
+        ("Steve Kerr | Warriors 2026 End of Season Interview", "GSW"),
+    ],
+)
+def test_pregame_and_offseason_titles_stay_out(title, team):
+    assert classify(title, staff(team), PLAYERS.get(team, [])).label == "other"
+
+
+def test_outlet_titles_must_name_the_team():
+    dal = [staff_entry("Jason Kidd", "head", "test")]
+    other = "Jamahl Mosley Head Coach of Magic | Press Conference | 12 12 2025"
+    ours = "Jason Kidd Head Coach of Mavericks | Press Conference | 12 12 2025"
+    nameless = "Postgame Interview | Mavericks vs Lakers"
+    assert prefilter(other, dal, [])  # the team's own channel: the judge decides
+    assert not prefilter(other, dal, [], team="DAL")
+    assert prefilter(ours, dal, [], team="DAL")
+    assert prefilter(nameless, dal, [], team="DAL")

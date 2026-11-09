@@ -17,7 +17,13 @@ from datetime import timedelta
 from pathlib import Path
 
 from lab.coach_pressers.config import PresserConfig
-from lab.coach_pressers.match import parse_instant, selection_from, team_games
+from lab.coach_pressers.match import (
+    parse_instant,
+    rival_head_coaches,
+    selection_from,
+    team_games,
+)
+from lab.coach_pressers.names import normalize
 from lab.coach_pressers.teams import TEAMS
 from lab.game_reports.season_reports import utc_now
 
@@ -285,7 +291,9 @@ class Judge:
         return record
 
 
-def apply_decision(entry: dict, found: list[dict], record: dict) -> None:
+def apply_decision(
+    entry: dict, found: list[dict], record: dict, rivals: set[str] = frozenset()
+) -> None:
     answer, error = record.get("answer"), record.get("error")
     llm = {
         "model": record["model"],
@@ -298,6 +306,14 @@ def apply_decision(entry: dict, found: list[dict], record: dict) -> None:
         return
     if answer["kind"] == "none" or answer["confidence"] < MIN_CONFIDENCE:
         entry.update(status="review", selection=None, llm=llm, error="")
+        return
+    if normalize(answer.get("coach_name") or "") in rivals:
+        entry.update(
+            status="review",
+            selection=None,
+            llm=llm,
+            error=f"judge chose another team's head coach: {answer['coach_name']}",
+        )
         return
     chosen = next(c for c in found if c["video_id"] == answer["video_id"])
     chapter = None
@@ -346,7 +362,8 @@ def judge_season(
                 entry, found, manifest, coaches["teams"][entry["team"]]
             )
             record = judge.ask(payload, game_id=entry["game_id"], team=entry["team"])
-            apply_decision(entry, found, record)
+            rivals = rival_head_coaches(coaches["teams"], entry["team"])
+            apply_decision(entry, found, record, rivals)
             stats["llm_selected" if entry["status"] == "selected" else "review"] += 1
     except BudgetExceeded as exc:
         log.warning("step 7 %s: %s; the rest goes to review", config.season, exc)

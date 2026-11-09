@@ -134,6 +134,23 @@ def test_unavailable_videos_are_cached_as_errors(setup):
     assert "Private video" in cache.videos()["c50"]["error"]
 
 
+def test_members_only_uploads_are_not_candidates(setup):
+    channel, root, coaches, rows = setup
+    extract = channel.extractor
+
+    def gated(video_id):
+        info = extract(video_id)
+        if video_id == "c105":
+            info["availability"] = "subscriber_only"
+        return info
+
+    channel.extractor = gated
+    first, last = BASE + timedelta(days=100), BASE + timedelta(days=120)
+    found = run(channel, root, coaches, rows, entries(first, last), date(2022, 9, 1))
+    ids = {r["id"] for r in found["SAC"]}
+    assert "c105" not in ids and "c104" in ids
+
+
 def test_listing_is_refreshed_only_when_a_window_closed_after_it():
     index = {"listed_at_utc": "2022-01-10T12:00:00+00:00"}
     old = [{"date": "2022-01-01", "status": "pending"}]
