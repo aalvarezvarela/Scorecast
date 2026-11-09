@@ -54,15 +54,15 @@ def judge(tmp_path, answer_for, **config):
     return llm_judge.Judge(cfg, client=FakeClient(answer_for))
 
 
-def test_twenty_labelled_cases_validate(tmp_path):
-    assert len(CASES) == 20
+def test_labelled_cases_validate(tmp_path):
+    assert len(CASES) == 23
     j = judge(tmp_path, labelled)
     for case in CASES:
         record = j.ask(case["input"])
         assert record["error"] is None, case["name"]
         assert record["answer"]["video_id"] == case["expected"]["video_id"]
-    assert j.calls == 20
-    assert j.spent_usd == pytest.approx(20 * (1500 * 0.10 + 100 * 0.50) / 1e6)
+    assert j.calls == 23
+    assert j.spent_usd == pytest.approx(23 * (1500 * 0.10 + 100 * 0.50) / 1e6)
 
 
 def test_request_uses_a_strict_schema_with_the_candidates(tmp_path):

@@ -272,6 +272,27 @@ def in_window(
     return records
 
 
+def archivable(record: dict) -> bool:
+    """A finished, public upload (members-only uploads cannot be archived)."""
+    return (
+        record.get("live_status")
+        not in (
+            "is_upcoming",
+            "is_live",
+        )
+        and record.get("availability") not in RESTRICTED
+    )
+
+
+def tagged(record: dict, row: dict) -> dict:
+    """A metadata record with the priority and kind of the channel it came from."""
+    return {
+        **record,
+        "channel_priority": row["priority"],
+        "channel_kind": row.get("kind", "team"),
+    }
+
+
 def team_window(entries: list[dict], today: date) -> tuple[date, date]:
     first = min(date.fromisoformat(e["date"]) for e in entries)
     last = max(date.fromisoformat(e["date"]) for e in entries)
@@ -324,18 +345,11 @@ def crawl_season(
                         team=team if outlet else None,
                     )
                 ]
-                for record in in_window(ids, first, last, source):
-                    if record.get("live_status") in ("is_upcoming", "is_live"):
-                        continue
-                    if record.get("availability") in RESTRICTED:
-                        continue  # members-only uploads cannot be archived
-                    records.append(
-                        {
-                            **record,
-                            "channel_priority": row["priority"],
-                            "channel_kind": row.get("kind", "team"),
-                        }
-                    )
+                records.extend(
+                    tagged(record, row)
+                    for record in in_window(ids, first, last, source)
+                    if archivable(record)
+                )
             log.info(
                 "step 4 %s %s: %d candidates in %s..%s, %d new metadata requests",
                 config.season,

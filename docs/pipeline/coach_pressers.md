@@ -279,7 +279,10 @@ skipped with `--dry-run`. Deterministic rules decide whenever they can; the LLM
    - Pre-filter on the title alone with the classifier (step 5), using that
      season's staff and player names. Fetch full
      metadata (`extract_info(video_url, download=False)`) only for titles that
-     come out `coach`, `combined`, or a postgame cue with an unknown name.
+     come out `coach`, `combined`, a postgame cue with an unknown name, or
+     `requires_llm` (a plausible presser with a warning keyword, no postgame
+     cue, or unusual duration). A cached listing also admits newly eligible
+     titles on rerun; no cache deletion is needed.
      Store id, title, description, `timestamp`/`release_timestamp`,
      `upload_date`, duration, chapters, `live_status` and `availability` in
      `videos.jsonl.gz`; never store format lists or signed URLs. Re-runs fetch
@@ -297,8 +300,11 @@ skipped with `--dry-run`. Deterministic rules decide whenever they can; the LLM
      staff name for that team-season (full name, joined initials, "coach
      <last>", or the last name alone when no player shares it) and against the
      team's player names.
-   - Duration guard: a coach presser is usually 2-20 minutes; a combined video
-     can run to 40.
+   - Warning terms and a coach name without a postgame cue set `requires_llm`
+     on plausible pressers instead of dropping them. Duration under 45 seconds
+     or over 25 minutes (coach) / 45 minutes (combined) also requires the judge.
+     These referrals survive the minimum-score filter, even after a length
+     penalty, and are never auto-accepted.
 6. **Match to a game** (`match.py`)
    - A video from team T's channel can only belong to one of T's games. The
      window is by instant, not by date: published at or after `tip_utc` + 90
@@ -316,11 +322,24 @@ skipped with `--dry-run`. Deterministic rules decide whenever they can; the LLM
      uploads; it never auto-accepts.
    - **Auto-accept** when exactly one candidate for a (game, team) has class
      `coach` or `combined`, score 0.8 or higher, and a title date or opponent
-     that agrees with the window. The entry becomes `selected` with
+     that agrees with the window, and no `requires_llm` flag. The entry becomes `selected` with
      `decided_by = rules`.
    - Everything else goes to step 7: two or more candidates, a best score
      between 0.4 and 0.8, a name on the staff that is not `coach_expected`, an
-     unknown name with a postgame cue, or an ambiguous back-to-back.
+     unknown name with a postgame cue, an ambiguous back-to-back, or an
+     explicit `requires_llm` referral regardless of its score.
+   - **Gap fill (step 6b, `gap_fill.py`).** A game left `not_found` (no
+     candidate at all; not one a person closed in `review.csv`) gets a second
+     look: every upload of the team's official channels published from the
+     game date to 3 days later gets metadata, whatever its title says, and
+     every one the window assigns to the game goes to step 7 with
+     `requires_llm` and the note `gap_fill` (at most 15, coach-like titles
+     first). Outlet channels get no new requests: their pressers nearly always
+     name the coach, so step 4 finds them, and their step 4 videos join the
+     pool at no cost. The window is located
+     from the dates already cached for the channel, plus a few binary-search
+     probes, so the cost is the uploads of the gap games' own windows. Skipped
+     with `--no-llm` or `--no-gap-fill`.
 7. **LLM tie-break** (`llm_judge.py`)
    - **Model:** GPT-6 Luna (`gpt-6-luna`) through the OpenAI Responses API
      (`client.responses.create`, `store=False`) with Structured Outputs:
@@ -336,12 +355,20 @@ skipped with `--dry-run`. Deterministic rules decide whenever they can; the LLM
      tip-off, home/away, opponent, score, phase, playoff game number), the
      team's other games within 3 days, `coach_expected`, the team's staff list,
      and each candidate: video_id, channel, title, publication instant,
-     duration, the first 500 characters of the description and the chapter
-     titles.
+     duration, the first 500 characters of the description, the chapter
+     titles, `requires_llm` and `rule_flags` explaining the classifier's doubts.
    - **Instruction:** pick the video in which this team's head coach (or the
      acting coach that night) speaks to the media after this game, or answer
      none. Say whether it is coach-only or combined, and if combined, which
-     chapter is the coach.
+     chapter is the coach. Warning words can describe postgame discussion
+     topics (the locker room, a quarter, tonight's win, the next opponent);
+     neither those words, missing postgame keywords nor unusual duration alone
+     disqualifies a video. Actual pregame/practice/player-only content is
+     still rejected based on all available context.
+     Step 6b candidates (`gap_fill`) are all the window's uploads: pick one
+     only if its title, description, chapters, duration or timing show the
+     coach after this game; a player-titled video can be the full
+     availability with the coach in a chapter.
    - **Output** (strict JSON schema / structured outputs): `video_id` or null,
      `kind` (coach, combined, none), `coach_name`, `coach_chapter` or null,
      `confidence` 0-1, `reason` (one sentence).
@@ -351,6 +378,11 @@ skipped with `--dry-run`. Deterministic rules decide whenever they can; the LLM
      model, tokens and cost), so re-runs cost nothing; stop and report at the
      spending cap. `--no-llm` sends every ambiguous case to `review.csv`, so
      the pipeline works before the LLM is wired in.
+   - **Gaps:** a step 6b game the judge answers "none" for stays
+     `not_found` (the answer is kept in the entry's `llm`); a pick becomes
+     `selected` like any other, and an error or a pick under 0.6 confidence
+     goes to `review.csv`. Gaps the spending cap leaves unjudged stay
+     `not_found` and are retried on the next run.
    - **Cost:** about 1,500 input and 100 output tokens per call; at the listed
      $0.10 per million input and $0.50 per million output tokens, 10,000 calls
      cost about $2. [source](https://llmgateway.io/models/gpt-6-luna)
@@ -480,9 +512,8 @@ a postgame cue is the strongest signal; keywords alone are not enough.
 
 **Rules, applied in order:**
 
-1. **Exclude** if the title contains: pregame, shootaround, practice, mic'd up,
-   locker room, speech, highlights, full game, game recap, game rewind,
-   quarter clips (`1st Quarter`), shorts.
+1. Identify staff names, players and postgame cues before considering warning
+   words. Unrelated titles and known player-only videos are not candidates.
 2. **Coach** if a coach alias for that team-season is present, plus one cue:
    postgame, post game, post-game, presser, press conference, media
    availability, availability, postgame sound, postgame interview. A coach name
@@ -495,7 +526,17 @@ a postgame cue is the strongest signal; keywords alone are not enough.
    list. A person-like name that is neither staff nor player, with a postgame
    cue, is `player` with score at most 0.5 and the note `unknown_name`, so an
    acting coach missing from the staff still reaches step 7.
-5. Everything else is **other**.
+5. A staff name without a postgame cue is **other** with `requires_llm = true`:
+   it still gets metadata and reaches the judge when matched to a game.
+6. Former exclusion terms (pregame, shootaround, practice, mic'd up, locker
+   room, speech, highlights, full game, game recap, game rewind, quarter
+   references, shorts, previews, `Tonight's`, and other offseason terms) are
+   warnings. For a plausible presser, retain it as **other** with
+   `requires_llm = true` and `keyword:<term>` notes; they cannot veto it or
+   allow automatic acceptance. Without presser evidence it remains filtered.
+7. Very short or long plausible pressers also get `requires_llm = true` and
+   `too_short` / `long` notes. Everything else is **other**. The judge decides
+   the flagged cases; `--no-llm` or an exhausted budget sends them to review.
 
 Minimum fixtures for `tests/ingestion/test_coach_pressers_classify.py`, all seen
 on team channels during research:

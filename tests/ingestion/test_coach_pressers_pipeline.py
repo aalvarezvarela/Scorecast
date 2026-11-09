@@ -80,10 +80,14 @@ def first_candidate(payload):
 class Responses:
     def __init__(self):
         self.calls = 0
+        self.payloads = []
+        self.answer_for = first_candidate
 
     def create(self, **kwargs):
         self.calls += 1
-        answer = first_candidate(json.loads(kwargs["input"]))
+        payload = json.loads(kwargs["input"])
+        self.payloads.append(payload)
+        answer = self.answer_for(payload)
         return SimpleNamespace(
             output_text=json.dumps(answer),
             status="completed",
@@ -168,7 +172,10 @@ def test_dry_run_then_archive(world):
     assert entries["0022100030:SAC"]["selection"]["video_id"] == "v3"
     assert entries["0042100101:SAC"]["status"] == "not_found"
     assert result["llm"]["calls"] == 1
-    assert "v4" not in channel.extractions  # highlights never fetched
+    # Step 4 skips the highlights; step 6b fetches them while looking for the
+    # playoff game's presser, finds them outside its window and asks nothing.
+    assert channel.extractions.count("v4") == 1
+    assert "0042100101:SAC" not in json.loads(config.candidates_path.read_bytes())
     assert downloader.calls == []
     for name in ("coverage.csv", "missing.csv", "review.csv", "coach_changes.csv"):
         assert (config.reports_dir / name).is_file()
@@ -208,3 +215,39 @@ def test_unverified_channels_stop_at_checkpoint_one(world):
     assert result["stopped"] == "checkpoint 1: channels not verified"
     assert channel.listings == 0
     assert result["summary"]["by_status"] == {"pending": 8}
+
+
+@pytest.mark.parametrize("decision", ["coach", "none", "disabled"])
+def test_flagged_video_is_decided_by_the_llm_or_left_for_review(
+    world, monkeypatch, decision
+):
+    title = "Alvin Gentry on Tonight's Win vs Suns | 12.01.2021"
+    monkeypatch.setitem(
+        globals(),
+        "VIDEOS",
+        [(vid, title if vid == "v3" else text, pub) for vid, text, pub in VIDEOS],
+    )
+    make, channel, downloader = world
+    config, hooks, client = make(use_llm=decision != "disabled")
+    if decision == "none":
+        client.responses.answer_for = lambda payload: {
+            **first_candidate(payload),
+            "video_id": None,
+            "kind": "none",
+            "coach_name": None,
+        }
+    run_season(config, dry_run=True, hooks=hooks)
+    entry = json.loads(config.manifest_path.read_bytes())["entries"]["0022100030:SAC"]
+    assert "v3" in channel.extractions and downloader.calls == []
+    if decision == "coach":
+        assert entry["status"] == "selected"
+        assert entry["selection"]["decided_by"] == "llm"
+        assert entry["selection"]["video_id"] == "v3"
+    else:
+        assert entry["status"] == "review" and entry["selection"] is None
+    if decision != "disabled":
+        payload = next(
+            p for p in client.responses.payloads if p["game"]["date"] == "2021-12-01"
+        )
+        assert payload["candidates"][0]["requires_llm"] is True
+        assert "keyword:tonights" in payload["candidates"][0]["rule_flags"]

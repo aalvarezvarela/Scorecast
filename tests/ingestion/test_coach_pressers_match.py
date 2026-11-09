@@ -141,6 +141,46 @@ def test_coach_name_without_a_cue_is_always_judged(setup):
     assert manifest["entries"]["0022100020:SAC"]["status"] == "pending"
 
 
+@pytest.mark.parametrize(
+    "title,duration,flag",
+    [
+        (
+            "Alvin Gentry on Tonight's Win vs Nuggets | 11.19.2021",
+            300,
+            "keyword:tonights",
+        ),
+        (
+            "Alvin Gentry Postgame on Kings Locker Room | 11.19.2021",
+            300,
+            "keyword:locker room",
+        ),
+        ("Alvin Gentry | 11.19.2021", 300, "coach_name_no_cue"),
+        ("Alvin Gentry Postgame | 11.19.2021", 32, "too_short"),
+        ("Alvin Gentry Postgame | 11.19.2021", 3000, "long"),
+        # The length penalty puts this below MIN_SCORE; it must still be judged.
+        ("Kings Postgame Availability | 11.19.2021", 3000, "long"),
+    ],
+)
+def test_warning_candidates_reach_the_judge_despite_title_window_agreement(
+    setup, title, duration, flag
+):
+    config, manifest = setup
+    videos = {
+        "SAC": [video("flagged", title, "2021-11-20T05:00:00+00:00", duration=duration)]
+    }
+    to_judge = match.match_season(config, manifest, COACHES, videos)
+    found = to_judge["0022100020:SAC"]
+    assert len(found) == 1 and found[0]["video_id"] == "flagged"
+    assert found[0]["match_method"] == "title+window"
+    assert found[0]["requires_llm"] and flag in found[0]["notes"]
+    entry = manifest["entries"]["0022100020:SAC"]
+    assert entry["status"] == "pending" and entry["selection"] is None
+    # Even a strong classification must not override an explicit LLM referral.
+    assert (
+        match.auto_accept(entry, [{**found[0], "class": "coach", "score": 1}]) is None
+    )
+
+
 def test_outlet_videos_about_another_team_are_dropped(setup):
     config, manifest = setup
     videos = {

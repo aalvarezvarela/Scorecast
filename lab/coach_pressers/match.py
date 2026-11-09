@@ -18,7 +18,7 @@ import logging
 import re
 from datetime import UTC, date, datetime, timedelta
 
-from lab.coach_pressers.classify import classify, names_team
+from lab.coach_pressers.classify import classify, is_candidate, names_team
 from lab.coach_pressers.config import PresserConfig
 from lab.coach_pressers.manifest import MATCHABLE, entry_key
 from lab.coach_pressers.names import contains_phrase, full_forms, last_name, normalize
@@ -191,8 +191,14 @@ def candidates_for_team(
     manifest: dict,
     data: dict,
     rivals: set[str] = frozenset(),
+    *,
+    keep_all: bool = False,
 ):
-    """(entry key -> list of candidates) for one team's videos."""
+    """(entry key -> list of candidates) for one team's videos.
+
+    ``keep_all`` skips the classifier's verdict (step 6b): every video in a
+    game's window is a candidate, whatever its title says.
+    """
     games = team_games(manifest, team)
     out: dict[str, list[dict]] = {}
     for video in videos:
@@ -204,8 +210,10 @@ def candidates_for_team(
             data["players"],
             video.get("duration"),
         )
-        keep = verdict.label in KEPT_CLASSES or "unknown_name" in verdict.notes
-        if not keep or verdict.score < MIN_SCORE:
+        if not keep_all and (
+            not is_candidate(verdict)
+            or (verdict.score < MIN_SCORE and not verdict.requires_llm)
+        ):
             continue
         if video.get("channel_kind", "team") != "team" and not names_team(
             video.get("title") or "", team, data["staff"], data["players"]
@@ -296,6 +304,8 @@ def auto_accept(entry: dict, found: list[dict]) -> dict | None:
     if len(strong) != 1 or len(found) != 1:
         return None
     best = strong[0]
+    if best.get("requires_llm"):
+        return None
     agrees = best["match_method"] == "title+window"
     expected = normalize(entry.get("coach_expected") or "")
     named = normalize(best.get("coach_guess") or "")

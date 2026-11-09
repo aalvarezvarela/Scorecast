@@ -46,6 +46,8 @@ class PresserConfig:
     llm_budget_usd: float = 5.0
     llm_price_in_per_m: float = 0.10
     llm_price_out_per_m: float = 0.50
+    # Step 6b: judge every window upload of a game without a candidate.
+    gap_fill: bool = True
     # Archive (step 9).
     captions: bool = True
     audio: bool = True

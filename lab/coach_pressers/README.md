@@ -31,6 +31,26 @@ OPENAI_API_KEY = sk-...
 
 Without a key, run with `--no-llm`: ambiguous cases go to `review.csv`.
 
+Plausible pressers with warning words (`locker room`, `Tonight's`, quarter
+references, previews, even pregame/practice terms), a coach name without a
+postgame cue, or unusual duration are sent to the LLM rather than discarded.
+They can never be accepted by rules alone. The judge receives the warning
+reasons alongside the title, dates, duration, description and chapters; it can
+accept or reject the video. Without the LLM, or when its budget is exhausted,
+these cases remain in review. Clearly unrelated and known player-only videos
+are still filtered out.
+
+Games still without any candidate get a second look (step 6b, `gap_fill.py`):
+every upload of the team's official channels in that game's window gets
+metadata and goes to the LLM, whatever its title says (outlets get no new
+requests), so a player-titled full availability
+or an untitled presser can still be found. A judge's "none" leaves the game
+`not_found`. Skip it with `--no-gap-fill`; `--no-llm` skips it too.
+
+Re-run a season to reconsider `not_found` entries under the current rules;
+cached channel listings are reused and newly eligible titles get metadata.
+`--dry-run` skips media downloads but still fetches metadata and can call the LLM.
+
 ## Run, in checkpoint order
 
 ```bash
@@ -42,7 +62,7 @@ Without a key, run with `--no-llm`: ambiguous cases go to `review.csv`.
 # verified_by_human=true in lab/coach_pressers/channels.csv.
 .venv/bin/python lab/coach_pressers/get_pressers.py channels --resolve
 
-# Quick LLM check on 20 labelled cases (tokens and cost are printed).
+# Quick LLM check on 23 labelled cases (tokens and cost are printed).
 .venv/bin/python lab/coach_pressers/get_pressers.py llm-check
 
 # M3: pilot, metadata only, one team-season each.

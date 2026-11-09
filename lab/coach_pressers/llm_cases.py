@@ -1,4 +1,4 @@
-"""Twenty hand-labelled judge inputs for tests and the live ``llm-check``.
+"""Twenty-three hand-labelled judge inputs for tests and the live ``llm-check``.
 
 Each case is the exact payload ``llm_judge.build_input`` produces, built from
 titles seen on team channels during research (some rearranged into hard
@@ -9,7 +9,7 @@ label is the answer a person gives from the same information.
 from __future__ import annotations
 
 
-def video(vid, title, published, duration=600, description="", chapters=()):
+def video(vid, title, published, duration=600, description="", chapters=(), flags=()):
     return {
         "video_id": vid,
         "channel_priority": 1,
@@ -17,6 +17,8 @@ def video(vid, title, published, duration=600, description="", chapters=()):
         "published_at_utc": published,
         "published_date": published[:10],
         "duration_s": duration,
+        "requires_llm": bool(flags),
+        "rule_flags": list(flags),
         "description": description,
         "chapters": [{"start_s": s, "title": t} for s, t in chapters],
     }
@@ -71,6 +73,8 @@ RAPTORS = [("Darko Rajaković", "head")]
 NUGGETS = [("Michael Malone", "head"), ("David Adelman", "assistant")]
 WARRIORS = [("Steve Kerr", "head")]
 CAVS = [("Kenny Atkinson", "head")]
+CELTICS = [("Joe Mazzulla", "head")]
+NETS = [("Jordi Fernández", "head")]
 
 CASES = [
     case(
@@ -589,5 +593,85 @@ CASES = [
         ),
         "x1",
         "coach",
+    ),
+    # Flagged by the rules (requires_llm): warnings, not verdicts.
+    case(
+        "flagged_name_without_cue",
+        payload(
+            "Brooklyn Nets",
+            "Phoenix Suns",
+            "2026-01-10",
+            "2026-01-11T00:30:00Z",
+            "Jordi Fernández",
+            NETS,
+            [
+                video(
+                    "f1",
+                    "Fernández comments on loss to Suns",
+                    "2026-01-11T03:05:00Z",
+                    420,
+                    flags=("coach_name_no_cue",),
+                ),
+            ],
+            score="104-117",
+        ),
+        "f1",
+        "coach",
+    ),
+    case(
+        "flagged_pregame_of_next_game",
+        payload(
+            "Boston Celtics",
+            "Atlanta Hawks",
+            "2026-01-14",
+            "2026-01-15T00:30:00Z",
+            "Joe Mazzulla",
+            CELTICS,
+            [
+                video(
+                    "g1",
+                    "Joe Mazzulla Pregame Interview | Celtics vs Pistons",
+                    "2026-01-16T23:10:00Z",
+                    240,
+                    flags=("coach_name_no_cue", "keyword:pregame"),
+                ),
+            ],
+            nearby=[("2026-01-16", "2026-01-17T00:30:00Z", "Detroit Pistons", True)],
+        ),
+        None,
+        "none",
+    ),
+    case(
+        "gap_fill_player_title_with_coach_chapter",
+        payload(
+            "Brooklyn Nets",
+            "Denver Nuggets",
+            "2026-02-03",
+            "2026-02-04T00:30:00Z",
+            "Jordi Fernández",
+            NETS,
+            [
+                video(
+                    "h1",
+                    "Nets vs Nuggets Highlights | February 3, 2026",
+                    "2026-02-04T02:50:00Z",
+                    600,
+                    flags=("gap_fill",),
+                ),
+                video(
+                    "h2",
+                    "Cam Thomas after the win over Denver",
+                    "2026-02-04T03:20:00Z",
+                    1080,
+                    description="Postgame media availability after Brooklyn's "
+                    "win over Denver.",
+                    chapters=((0, "Jordi Fernández"), (520, "Cam Thomas")),
+                    flags=("gap_fill",),
+                ),
+            ],
+            score="121-115",
+        ),
+        "h2",
+        "combined",
     ),
 ]

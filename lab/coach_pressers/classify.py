@@ -2,7 +2,8 @@
 
 Classes: ``coach``, ``combined`` (coach and players in one video), ``player``
 and ``other``, each with a score from 0 to 1. A coach name plus a postgame cue
-is the strongest signal; keywords alone are not enough.
+is the strongest signal. Plausible pressers with conflicting keywords, missing
+cues or unusual duration are kept with ``requires_llm`` instead of discarded.
 """
 
 from __future__ import annotations
@@ -13,7 +14,7 @@ from dataclasses import dataclass, field
 from lab.coach_pressers.names import contains_phrase, full_forms, last_name, normalize
 from lab.coach_pressers.teams import TEAMS, team_names
 
-EXCLUDE = (
+REVIEW_TERMS = (
     "pregame",
     "pre game",
     "shootaround",
@@ -128,6 +129,7 @@ class Verdict:
     coach_guess: str | None = None
     people: list[str] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
+    requires_llm: bool = False
 
     def as_dict(self) -> dict:
         return {
@@ -136,7 +138,17 @@ class Verdict:
             "coach_guess": self.coach_guess,
             "people": self.people,
             "notes": self.notes,
+            "requires_llm": self.requires_llm,
         }
+
+
+def is_candidate(verdict: Verdict) -> bool:
+    """Keep plausible pressers, including explicit referrals to the judge."""
+    return (
+        verdict.requires_llm
+        or verdict.label in {"coach", "combined"}
+        or "unknown_name" in verdict.notes
+    )
 
 
 def _staff_hits(text: str, staff: list[dict], player_lasts: set[str]) -> list[tuple]:
@@ -217,11 +229,12 @@ def classify(
 ) -> Verdict:
     """Classify one title against a team's coaching staff and players."""
     text = normalize(title)
-    for term in EXCLUDE:
-        if contains_phrase(text, term) or (
-            term == "shorts" and "#shorts" in title.lower()
-        ):
-            return Verdict("other", 0.95, notes=[f"excluded:{term}"])
+    warnings = [
+        f"keyword:{term}"
+        for term in REVIEW_TERMS
+        if contains_phrase(text, term)
+        or (term == "shorts" and "#shorts" in title.lower())
+    ]
     player_lasts = {last_name(p) for p in players}
     staff_lasts = {p.get("last") or last_name(p["name"]) for p in staff}
     cue = any(contains_phrase(text, c) for c in CUES)
@@ -241,7 +254,9 @@ def classify(
         elif cue:
             verdict = Verdict("coach", strength, person["name"], people)
         else:
-            verdict = Verdict("coach", 0.7, person["name"], people, ["recap_verb"])
+            verdict = Verdict(
+                "coach", 0.7, person["name"], people, ["recap_verb"], requires_llm=True
+            )
         if person.get("role") != "head":
             verdict.notes.append("assistant_or_acting")
     elif cue:
@@ -263,22 +278,38 @@ def classify(
     ):
         person = staff_hits[0][0]
         label = "combined" if many >= 2 else "coach"
-        verdict = Verdict(label, 0.6, person["name"], people, ["game_words_no_cue"])
+        verdict = Verdict(
+            label, 0.6, person["name"], people, ["game_words_no_cue"], requires_llm=True
+        )
         if person.get("role") != "head":
             verdict.notes.append("assistant_or_acting")
     elif staff_hits:
         verdict = Verdict(
-            "other", 0.5, staff_hits[0][0]["name"], people, ["coach_name_no_cue"]
+            "other",
+            0.5,
+            staff_hits[0][0]["name"],
+            people,
+            ["coach_name_no_cue"],
+            requires_llm=True,
         )
     else:
-        return Verdict("other", 0.9)
+        return Verdict("other", 0.9, notes=warnings)
+    limit = 25 * 60 if verdict.label == "coach" else 45 * 60
+    if warnings:
+        plausible = is_candidate(verdict)
+        verdict.label = "other"
+        verdict.notes.extend(warnings)
+        verdict.requires_llm = plausible
     if duration:
         if duration < 45:
-            return Verdict("other", 0.8, verdict.coach_guess, people, ["too_short"])
-        limit = 25 * 60 if verdict.label == "coach" else 45 * 60
+            plausible = is_candidate(verdict)
+            verdict.label = "other"
+            verdict.notes.append("too_short")
+            verdict.requires_llm = plausible
         if duration > limit:
             verdict.score = max(0.0, verdict.score - 0.3)
             verdict.notes.append("long")
+            verdict.requires_llm = is_candidate(verdict)
     return verdict
 
 
@@ -312,4 +343,4 @@ def prefilter(
     if team is not None and not names_team(title, team, staff, players):
         return False
     verdict = classify(title, staff, players)
-    return verdict.label in {"coach", "combined"} or "unknown_name" in verdict.notes
+    return is_candidate(verdict)

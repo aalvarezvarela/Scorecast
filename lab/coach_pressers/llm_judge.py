@@ -29,7 +29,7 @@ from lab.game_reports.season_reports import utc_now
 
 log = logging.getLogger("coach_pressers")
 
-PROMPT_VERSION = 1
+PROMPT_VERSION = 3
 MIN_CONFIDENCE = 0.6
 SYSTEM = """\
 You match NBA team YouTube videos to postgame press conferences.
@@ -42,6 +42,21 @@ numbers written in titles and descriptions, and the team's other games within
 three days (back-to-backs). Pregame, practice, shootaround, highlight, recap
 and player-only videos are not the answer. If no candidate is the coach's
 postgame press conference for this game, answer video_id null and kind "none".
+
+Some candidates have requires_llm and rule_flags because title keywords or
+duration would previously have filtered them out. These flags are warnings,
+not proof that a video is unsuitable. For example, a postgame coach can discuss
+the locker room, the fourth quarter, tonight's win or preview the next opponent.
+A coach's name without a postgame keyword, or a short or long duration, is not
+enough to reject a video. Decide from all the available context; actual pregame,
+practice and player-only content must still be rejected.
+
+Candidates flagged gap_fill come from a second look at a game where no title
+looked like a coach presser: they are all the uploads of the team's channels
+published around the game. Most are not the answer. Pick one only if its title,
+description, chapters, duration or timing show this team's coach speaking to
+the media after this game; a video titled after a player can still be the full
+postgame availability with the coach in a chapter or in the description.
 
 kind is "coach" for a coach-only video and "combined" when coach and players
 share one video; for "combined", coach_chapter is the exact title of the
@@ -128,6 +143,8 @@ def build_input(
                 "published_at_utc": c["published_at_utc"],
                 "published_date": c["published_date"],
                 "duration_s": c["duration_s"],
+                "requires_llm": c.get("requires_llm", False),
+                "rule_flags": c.get("notes", []),
                 "description": (c.get("description") or "")[:500],
                 "chapters": [
                     {"start_s": ch["start_time"], "title": ch["title"]}
@@ -346,9 +363,17 @@ def judge_season(
     to_judge: dict[str, list[dict]],
     *,
     judge: Judge | None = None,
+    gaps: dict[str, list[dict]] | None = None,
 ) -> dict:
-    """Decide every entry the rules left open; ambiguous ones go to review."""
+    """Decide every entry the rules left open; ambiguous ones go to review.
+
+    ``gaps`` (step 6b) are judged after them; a gap the judge answers "none"
+    for, or one left undecided, stays ``not_found``.
+    """
+    gaps = gaps or {}
     stats = {"llm_selected": 0, "review": 0, "calls": 0, "cached": 0, "cost_usd": 0.0}
+    if gaps:
+        stats.update(gaps_selected=0, gaps_review=0, gaps_none=0)
     if not config.use_llm:
         for key in to_judge:
             manifest["entries"][key].update(status="review", selection=None)
@@ -365,6 +390,22 @@ def judge_season(
             rivals = rival_head_coaches(coaches["teams"], entry["team"])
             apply_decision(entry, found, record, rivals)
             stats["llm_selected" if entry["status"] == "selected" else "review"] += 1
+        for key, found in sorted(gaps.items()):
+            entry = manifest["entries"][key]
+            payload = build_input(
+                entry, found, manifest, coaches["teams"][entry["team"]]
+            )
+            record = judge.ask(payload, game_id=entry["game_id"], team=entry["team"])
+            rivals = rival_head_coaches(coaches["teams"], entry["team"])
+            apply_decision(entry, found, record, rivals)
+            answer = record.get("answer") or {}
+            if entry["status"] == "selected":
+                stats["gaps_selected"] += 1
+            elif not record.get("error") and answer.get("kind") == "none":
+                entry.update(status="not_found")
+                stats["gaps_none"] += 1
+            else:
+                stats["gaps_review"] += 1
     except BudgetExceeded as exc:
         log.warning("step 7 %s: %s; the rest goes to review", config.season, exc)
         for key in to_judge:

@@ -125,6 +125,25 @@ def test_rerun_uses_the_caches(setup):
     assert len(again["SAC"]) == 24
 
 
+def test_cached_listing_recovers_a_previously_filtered_title(setup):
+    channel, root, coaches, rows = setup
+    item = next(v for v in channel.videos if v["id"] == "c110")
+    item["title"] = "Mike Brown on Tonight's Win | 02.07.2022"
+    cache = crawl.ChannelCache(root, "UC1")
+    cache.save_index(
+        {
+            "channel_id": "UC1",
+            "listed_at_utc": "2022-08-01T12:00:00+00:00",
+            "tabs": {"videos": channel.lister("/videos"), "streams": []},
+        }
+    )
+    listed = channel.listings
+    first, last = BASE + timedelta(days=100), BASE + timedelta(days=120)
+    found = run(channel, root, coaches, rows, entries(first, last), date(2022, 9, 1))
+    assert "c110" in {r["id"] for r in found["SAC"]}
+    assert "c110" in channel.extractions and channel.listings == listed
+
+
 def test_unavailable_videos_are_cached_as_errors(setup):
     channel, root, coaches, rows = setup
     first, last = BASE + timedelta(days=45), BASE + timedelta(days=55)

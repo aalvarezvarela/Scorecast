@@ -131,7 +131,7 @@ def test_fixture_titles(title, team, expected):
         threshold = 0.7 if "Recaps" in title else 0.8
         assert verdict.score >= threshold
     if "Recaps" in title:
-        assert verdict.score == 0.7
+        assert verdict.score == 0.7 and verdict.requires_llm
 
 
 def test_shared_last_name_needs_the_full_name():
@@ -168,9 +168,11 @@ def test_assistant_at_the_podium_is_a_coach_with_a_note():
 
 def test_duration_guard():
     sac = [staff_entry("Mike Brown", "head", "test")]
-    assert classify("Mike Brown Postgame", sac, [], duration=30).label == "other"
+    short = classify("Mike Brown Postgame", sac, [], duration=30)
+    assert short.label == "other" and short.requires_llm
     long = classify("Mike Brown Postgame", sac, [], duration=40 * 60)
     assert long.label == "coach" and "long" in long.notes and long.score < 0.8
+    assert long.requires_llm
 
 
 def test_prefilter_skips_players_and_other():
@@ -202,6 +204,7 @@ def test_media_phrases_are_cues():
 def test_coach_name_with_game_words_is_a_weak_candidate(title, team):
     verdict = classify(title, staff(team), PLAYERS.get(team, []))
     assert verdict.label == "coach" and verdict.score == 0.6
+    assert verdict.requires_llm
     assert "game_words_no_cue" in verdict.notes
     assert prefilter(title, staff(team), PLAYERS.get(team, []))
 
@@ -220,8 +223,65 @@ def test_coach_name_with_game_words_is_a_weak_candidate(title, team):
         ("Steve Kerr | Warriors 2026 End of Season Interview", "GSW"),
     ],
 )
-def test_pregame_and_offseason_titles_stay_out(title, team):
-    assert classify(title, staff(team), PLAYERS.get(team, [])).label == "other"
+def test_pregame_and_offseason_titles_with_a_coach_are_judged(title, team):
+    verdict = classify(title, staff(team), PLAYERS.get(team, []))
+    assert verdict.label == "other" and verdict.requires_llm
+    assert prefilter(title, staff(team), PLAYERS.get(team, []))
+
+
+@pytest.mark.parametrize(
+    "coach,title,flag",
+    [
+        (
+            "Joe Mazzulla",
+            "Joe Mazzulla Has 1000% FAITH in Celtics Locker Room | Celtics vs "
+            "Raptors Postgame Interview 12/29/23",
+            "keyword:locker room",
+        ),
+        (
+            "Darvin Ham",
+            "Lakers Darvin Ham discusses the overtime win against the Wizards "
+            "and previews the Nuggets | 2.29.24",
+            "keyword:previews",
+        ),
+        (
+            "Tiago Splitter",
+            "Tiago Splitter On Tonight's Win vs Bucks & Postseason | "
+            "Portland Trail Blazers | March 25, 2026",
+            "keyword:tonights",
+        ),
+        (
+            "Tiago Splitter",
+            "Tiago Splitter On the 4th Quarter & Caleb Love | "
+            "Trail Blazers vs Grizzlies | February 7th, 2026",
+            "keyword:4th quarter",
+        ),
+        (
+            "Chris Finch",
+            "“We Need To Tighten Up Our Defense.” | Chris Finch 10.24.25",
+            "coach_name_no_cue",
+        ),
+        (
+            "J. B. Bickerstaff",
+            "J.B. Bickerstaff | Cavs at Raptors | 2.10.2024",
+            "coach_name_no_cue",
+        ),
+    ],
+)
+def test_audited_false_negatives_are_kept_for_the_judge(coach, title, flag):
+    people = [staff_entry(coach, "head", "test")]
+    verdict = classify(title, people, [], duration=300)
+    assert verdict.requires_llm and flag in verdict.notes
+    assert verdict.coach_guess == coach
+    assert verdict.as_dict()["requires_llm"] is True
+    assert prefilter(title, people, [])
+
+
+def test_warnings_do_not_turn_known_player_videos_into_coach_candidates():
+    title = "Royce O'Neale Practice Media Availability"
+    verdict = classify(title, staff("PHX"), PLAYERS["PHX"], duration=30)
+    assert not verdict.requires_llm
+    assert not prefilter(title, staff("PHX"), PLAYERS["PHX"])
 
 
 def test_outlet_titles_must_name_the_team():

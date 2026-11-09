@@ -6,7 +6,15 @@ import json
 import logging
 from dataclasses import dataclass
 
-from lab.coach_pressers import catalog, coaches, crawl, llm_judge, match, report
+from lab.coach_pressers import (
+    catalog,
+    coaches,
+    crawl,
+    gap_fill,
+    llm_judge,
+    match,
+    report,
+)
 from lab.coach_pressers.channels import read_channels
 from lab.coach_pressers.config import PresserConfig
 from lab.coach_pressers.manifest import checkpoint, season_lock, summarize
@@ -92,8 +100,15 @@ def _steps(
     checkpoint(config, manifest)
     if until_step < 7:
         return
+    gaps = (
+        gap_fill.fill_gaps(
+            config, manifest, built, rows, videos, extractor=hooks.extractor
+        )
+        if config.use_llm and config.gap_fill
+        else {}
+    )
     result["llm"] = llm_judge.judge_season(
-        config, manifest, built, to_judge, judge=hooks.judge
+        config, manifest, built, to_judge, judge=hooks.judge, gaps=gaps
     )
     checkpoint(config, manifest)
     if until_step < 8:
