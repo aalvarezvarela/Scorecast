@@ -46,15 +46,21 @@ computed when the job starts, not when it was requested.
 
 | Choice | Workflow | Inputs | What runs |
 |---|---|---|---|
-| XGBoost closing | `nba_predictor_daily.yml` | `slots=closing` | The closing slots on tonight's closing rows (latest lines). |
-| XGBoost intermediate, each game's horizon | `nba_predictor_daily.yml` | `slots=nearest` | Per game and target, the slot of the nearest horizon: games at 4, 8 and 12 hours use the T-240, T-480 and T-720 models. |
-| XGBoost intermediate, fixed T-H | `nba_predictor_daily.yml` | `slots=H` | The T-H slots for every game. |
+| XGBoost closing | `nba_predictor_daily.yml` | `slots=closing targets=… update_db=false` | The closing slots on tonight's closing rows (latest lines). |
+| XGBoost intermediate, each game's horizon | `nba_predictor_daily.yml` | `slots=nearest targets=… update_db=false` | Per game and target, the slot of the nearest horizon: games at 4, 8 and 12 hours use the T-240, T-480 and T-720 models. |
+| XGBoost intermediate, fixed T-H | `nba_predictor_daily.yml` | `slots=H targets=… update_db=false` | The T-H slots for every game. |
 | TabPFN closing | `nba_predictor_daily_tabpfn_client.yml` | `line=closing` | The closing fit, as the scheduled closing job. |
 | **TabPFN intermediate, each game's horizon** (default) | `nba_predictor_daily_tabpfn_client.yml` | `line=intermediate input=latest horizon_minutes=nearest` | Games grouped by nearest horizon; one fit per group on that horizon's training rows, each predicting its games. One stored run per group. |
 | TabPFN intermediate, fixed T-H | `nba_predictor_daily_tabpfn_client.yml` | `line=intermediate input=latest horizon_minutes=H` | One fit on the T-H rows for every game. |
 
-TabPFN requests pass `update_db=false` and fit all three targets in standard
-mode. "Nearest" is `argmin |H − minutes to tip|` over the enabled horizons,
+Each request also names its targets: **line error alone by default**, any of
+line error, total points and spread error on the Bets page (`target=…` for
+TabPFN). A run does only that work: TabPFN fits each chosen target once per
+group of games, in standard mode, and XGBoost reads and predicts only those
+targets' slots (with `nearest`, only the slots nearest a game). No manual run
+updates the databases (`update_db=false`): they read what the morning update
+wrote. The requests table does not store the targets; the launch message and
+the Target column of the predictions show them. "Nearest" is `argmin |H − minutes to tip|` over the enabled horizons,
 ties to the longer one (`nba_ou.prediction.horizon_choice`), the rule the
 dashboard already uses to pick among stored outputs. A latest row predicted
 by a T-H model is limited to what its training rows carried
@@ -133,7 +139,8 @@ starts empty and the bet cannot be saved until it is filled.
 ## Code
 
 - `nba_ou.prediction.horizon_choice`: scopes and the nearest horizon.
-- `scripts/predict_nba_games.py` `--slots`, `--request-id`;
+- `scripts/predict_nba_games.py` `--slots`, `--targets`, `--skip-db-update`,
+  `--request-id`;
   `scripts/predict_tabpfn.py` `--input latest`, `--horizon-minutes nearest`,
   `--request-id` (`fit_nearest`, `tabpfn_run.latest_rows`).
 - `nba_ou.postgre_db.app_aiven`: schema and request status writes.

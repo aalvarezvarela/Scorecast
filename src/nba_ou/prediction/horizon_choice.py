@@ -17,7 +17,7 @@ model (XGBoost) or the training rows (TabPFN). "Nearest" is
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Collection, Iterable, Mapping, Sequence
 
 SCOPE_ALL = "all"
 SCOPE_CLOSING = "closing"
@@ -82,6 +82,13 @@ def scope_slots(slots: Sequence, scope: str | int) -> list:
     if scope == SCOPE_NEAREST:
         return [slot for slot in slots if slot.horizon_minutes]
     return [slot for slot in slots if slot.horizon_minutes == int(scope)]
+
+
+def target_slots(slots: Sequence, targets: Collection[str]) -> list:
+    """The slots of ``targets``; no targets means every slot."""
+    if not targets:
+        return list(slots)
+    return [slot for slot in slots if str(slot.target) in targets]
 
 
 def slot_games(

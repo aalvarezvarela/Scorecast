@@ -33,6 +33,14 @@ on:
                 description: "Which slots predict: all, closing, nearest (each game its nearest horizon) or a horizon in minutes; anything but all reads the latest snapshot (dashboard requests)"
                 type: string
                 default: all
+            targets:
+                description: "Only the slots of these targets, separated by spaces or commas: line_error, total_points, spread_error (empty = every target)"
+                type: string
+                default: ""
+            update_db:
+                description: "Update the databases first (off when another job just did)"
+                type: boolean
+                default: true
             request_id:
                 description: "The dashboard request this run answers (app.prediction_requests); empty = a scheduled run"
                 type: string
@@ -136,13 +144,16 @@ jobs:
                   # Empty (a dispatch from before the input existed): standard.
                   TABPFN_MODES: ${{ inputs.tabpfn_modes || 'standard' }}
                   SLOTS: ${{ inputs.slots || 'all' }}
+                  TARGETS: ${{ inputs.targets }}
                   REQUEST_ID: ${{ inputs.request_id }}
               run: |
                   python scripts/predict_nba_games.py \
                       ${TABPFN_JOBS:+--tabpfn "$TABPFN_JOBS" --tabpfn-modes $TABPFN_MODES} \
                       --slots "${SLOTS:-all}" \
+                      ${TARGETS:+--targets $TARGETS} \
                       ${REQUEST_ID:+--request-id "$REQUEST_ID"} \
                       ${{ inputs.tabpfn_refresh && '--tabpfn-refresh' || '' }} \
+                      ${{ !inputs.update_db && '--skip-db-update' || '' }} \
                       ${{ github.event_name == 'workflow_dispatch' && !inputs.persist && '--no-persist' || '' }}
 
             # The script reports its own outcome; this covers a job that died

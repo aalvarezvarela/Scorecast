@@ -41,6 +41,7 @@ from nba_ou.prediction.horizon_choice import (
     parse_scope,
     scope_slots,
     slot_games,
+    target_slots,
 )
 from nba_ou.prediction.input_limits import LATEST_INPUT_COLUMN
 from nba_ou.prediction.intermediate_frame import (
@@ -70,6 +71,7 @@ from nba_ou.prediction.tabpfn_run import (
     fit_and_store,
     load_fit_inputs,
     parse_jobs,
+    parse_targets,
     tonight_rows,
 )
 from nba_ou.utils import history_cache
@@ -178,6 +180,8 @@ def run_prediction_pipeline(
     timer: PhaseTimer | None = None,
     scope: str | int = SCOPE_ALL,
     request_id: int | None = None,
+    targets: Sequence[str] = (),
+    update_db: bool = True,
 ) -> None:
     """
     Main execution function for the NBA prediction pipeline.
@@ -224,6 +228,9 @@ def run_prediction_pipeline(
     its nearest horizon) or one horizon. Its intermediate slots read each
     game's latest snapshot, whatever ``intermediate_input``. ``request_id``
     is the dashboard request it answers, stored as ``runs.request_id``.
+    ``targets`` keeps only the slots of those targets (empty: every target).
+    ``update_db=False`` skips the database update: a manual run reads what the
+    morning update wrote, as a manual TabPFN run does.
     """
     configure_tqdm_for_environment()
 
@@ -231,7 +238,7 @@ def run_prediction_pipeline(
 
     # Print welcome banner
     print_banner(date_to_predict)
-    configured_slots = SETTINGS.prediction_model_slots
+    configured_slots = target_slots(SETTINGS.prediction_model_slots, targets)
     manual = scope != SCOPE_ALL
     if manual:
         configured_slots = scope_slots(configured_slots, scope)
@@ -241,8 +248,11 @@ def run_prediction_pipeline(
             f"  Manual run (request {request_id}), scope {scope}: "
             f"{len(configured_slots)} candidate slot(s)"
         )
-        if not configured_slots:
-            raise SystemExit(f"No enabled slot matches the scope {scope!r}.")
+    if (manual or targets) and not configured_slots:
+        raise SystemExit(
+            f"No enabled slot matches the scope {scope!r} and the targets "
+            f"{list(targets) or 'all'}."
+        )
     if not configured_slots:
         # A valid state, not an error: nothing has been promoted yet. The rest
         # of the pipeline (database update, feature build, TabPFN) is still
@@ -272,22 +282,25 @@ def run_prediction_pipeline(
     timer = timer if timer is not None else PhaseTimer()
 
     # Step 1: Update the database
-    log.step("Updating All Databases")
-    with timer.phase("database update"):
-        season_to_update = get_season_year_from_date(date_to_predict)
-        try:
-            update_all_databases(
-                start_season_year=int(season_to_update),
-                end_season_year=int(season_to_update),
-                only_new_games=True,
-                headless=SETTINGS.headless,
-                exclude_game_date=date_to_predict,
-            )
-            print_status("Databases updated")
+    season_to_update = get_season_year_from_date(date_to_predict)
+    if update_db:
+        log.step("Updating All Databases")
+        with timer.phase("database update"):
+            try:
+                update_all_databases(
+                    start_season_year=int(season_to_update),
+                    end_season_year=int(season_to_update),
+                    only_new_games=True,
+                    headless=SETTINGS.headless,
+                    exclude_game_date=date_to_predict,
+                )
+                print_status("Databases updated")
 
-        except Exception as e:
-            print_status(f"Failed to update databases: {e}", ok=False)
-            raise
+            except Exception as e:
+                print_status(f"Failed to update databases: {e}", ok=False)
+                raise
+    else:
+        print_status("Database update skipped (--skip-db-update)")
 
     # Step 1b: SBR's lines must still be moving, or every prediction below is
     # made on lines frozen hours ago; Covers stands in when it is not. The
@@ -501,15 +514,8 @@ def run_prediction_pipeline(
             frames, passthrough_columns=PASSTHROUGH_COLUMNS
         )
 
-    with timer.phase("model reads"):
-        builds = read_slot_builds(
-            s3_client=s3, bucket=SETTINGS.s3_bucket, slots=configured_slots
-        )
-
-    predicted: list[str] = []
-    skipped: list[str] = []
     # nearest: the games each intermediate slot predicts; a slot nearest no
-    # game is not run.
+    # game is not run, and its model is not read.
     chosen_games = None
     if scope == SCOPE_NEAREST and intermediate_df is not None:
         # Games already under way have no horizon left: none predicts them.
@@ -527,6 +533,16 @@ def run_prediction_pipeline(
         chosen_games = slot_games(configured_slots, minutes_left)
         for slot, games in chosen_games.items():
             print_status(f"{slot.describe()}: {', '.join(games)}")
+
+    with timer.phase("model reads"):
+        builds = read_slot_builds(
+            s3_client=s3,
+            bucket=SETTINGS.s3_bucket,
+            slots=configured_slots if chosen_games is None else list(chosen_games),
+        )
+
+    predicted: list[str] = []
+    skipped: list[str] = []
     log.step(f"Generating Predictions ({len(configured_slots)} slots)")
     slots_started = time.perf_counter()
     for index, slot in enumerate(configured_slots, start=1):
@@ -986,6 +1002,19 @@ if __name__ == "__main__":
         ),
     )
     parser.add_argument(
+        "--targets",
+        nargs="+",
+        help=(
+            "Only the slots of these targets, separated by spaces or commas "
+            "(default: every target). TabPFN jobs keep --tabpfn-targets."
+        ),
+    )
+    parser.add_argument(
+        "--skip-db-update",
+        action="store_true",
+        help="Do not update the databases first (another job already did).",
+    )
+    parser.add_argument(
         "--request-id",
         type=int,
         help="The dashboard request this run answers (stored as runs.request_id).",
@@ -993,6 +1022,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
     try:
         scope = parse_scope(args.slots)
+        targets = parse_targets(args.targets) if args.targets else []
     except ValueError as exc:
         parser.error(str(exc))
     if args.request_id is not None and args.tabpfn:
@@ -1018,4 +1048,6 @@ if __name__ == "__main__":
         tabpfn_refresh=args.tabpfn_refresh,
         scope=scope,
         request_id=args.request_id,
+        targets=targets,
+        update_db=not args.skip_db_update,
     )

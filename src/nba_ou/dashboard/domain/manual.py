@@ -8,7 +8,8 @@ as ``queued`` and dispatches the workflow with its id; the run marks it
 Every request covers the whole slate (the games not yet started) and reads
 each game's latest snapshot. An intermediate request chooses, by default, the
 model (XGBoost) or training rows (TabPFN) of each game's nearest horizon, or
-one fixed horizon for every game.
+one fixed horizon for every game. A run predicts only the request's targets
+(line error by default) and skips the database update.
 """
 
 from __future__ import annotations
@@ -17,12 +18,14 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 
+from nba_ou.dashboard.config import PREDICTION_TARGET_LABELS
 from nba_ou.dashboard.domain.dates import horizon_label
 from nba_ou.postgre_db.app_aiven.schema import (
     REQUEST_QUEUED,
     REQUEST_RUNNING,
     REQUEST_STATUS_NAMES,
 )
+from nba_ou.postgre_db.predictions_aiven.schema import TARGET_CODES
 from nba_ou.prediction.horizon_choice import nearest_horizon
 
 PREDICTOR_WORKFLOW = "nba_predictor_daily.yml"
@@ -82,6 +85,9 @@ MODEL_CHOICES = (
 )
 CHOICES_BY_KEY = {choice.key: choice for choice in MODEL_CHOICES}
 DEFAULT_CHOICES = ("tabpfn_intermediate",)
+#: The targets a request may predict, as the workflows name them.
+TARGETS = tuple(TARGET_CODES)
+DEFAULT_TARGETS = ("line_error",)
 
 
 def choice_of(kind: int, dataset_type: int) -> ModelChoice:
@@ -89,6 +95,20 @@ def choice_of(kind: int, dataset_type: int) -> ModelChoice:
         if (choice.kind, choice.dataset_type) == (kind, dataset_type):
             return choice
     raise ValueError(f"No model choice for kind {kind}, dataset type {dataset_type}")
+
+
+def target_label(target: str) -> str:
+    return PREDICTION_TARGET_LABELS[TARGET_CODES[target]]
+
+
+def ordered_targets(targets: Sequence[str]) -> tuple[str, ...]:
+    """``targets`` in the canonical order, however they were picked."""
+    unknown = set(targets) - set(TARGETS)
+    if unknown:
+        raise ValueError(f"Unknown target(s): {', '.join(sorted(unknown))}")
+    if not targets:
+        raise ValueError("A request needs at least one target.")
+    return tuple(target for target in TARGETS if target in targets)
 
 
 def horizon_choice_label(minutes: int | None) -> str:
@@ -104,7 +124,11 @@ def request_label(kind: int, dataset_type: int, horizon: int | None) -> str:
 
 
 def dispatch_inputs(
-    request_id: int, kind: int, dataset_type: int, horizon: int | None
+    request_id: int,
+    kind: int,
+    dataset_type: int,
+    horizon: int | None,
+    targets: Sequence[str],
 ) -> tuple[str, dict[str, str]]:
     """The workflow file and ``workflow_dispatch`` inputs of a request."""
     if dataset_type == CLOSING and horizon is not None:
@@ -112,14 +136,20 @@ def dispatch_inputs(
     if horizon is not None and int(horizon) not in HORIZONS:
         raise ValueError(f"T-{horizon} is not an enabled horizon.")
     rid = str(int(request_id))
+    names = " ".join(ordered_targets(targets))
     if kind == KIND_XGBOOST:
         if dataset_type == CLOSING:
             slots = "closing"
         else:
             slots = "nearest" if horizon is None else str(int(horizon))
-        return PREDICTOR_WORKFLOW, {"request_id": rid, "slots": slots}
+        return PREDICTOR_WORKFLOW, {
+            "request_id": rid,
+            "slots": slots,
+            "targets": names,
+            "update_db": "false",
+        }
     if kind == KIND_TABPFN:
-        inputs = {"request_id": rid, "update_db": "false"}
+        inputs = {"request_id": rid, "update_db": "false", "target": names}
         if dataset_type == CLOSING:
             inputs["line"] = "closing"
         else:

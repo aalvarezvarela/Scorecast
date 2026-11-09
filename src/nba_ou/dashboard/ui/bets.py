@@ -1,8 +1,9 @@
 """The Bets page: launch manual predictions, bet on them, keep the history.
 
-1. New prediction: the models to run (TabPFN intermediate by default) and,
-   for the intermediate ones, each game's own horizon or a fixed one. Each
-   model is a request dispatched to GitHub Actions.
+1. New prediction: the models to run (TabPFN intermediate by default), the
+   targets (line error by default) and, for the intermediate models, each
+   game's own horizon or a fixed one. Each model is a request dispatched to
+   GitHub Actions.
 2. Today's requests and their status.
 3. The predictions of those requests (optionally every live prediction of
    the slate), to bet on: side, line, odds and stake start from the
@@ -72,7 +73,13 @@ def _minutes_left(games: pd.DataFrame, now: datetime) -> dict[str, float]:
     return dict(zip(games["game_id"].astype(str), minutes, strict=True))
 
 
-def _launch(user: AppUser, choices: list[str], horizon: int | None, game_date) -> None:
+def _launch(
+    user: AppUser,
+    choices: list[str],
+    targets: list[str],
+    horizon: int | None,
+    game_date,
+) -> None:
     secrets = app_secrets()
     launched, failed = [], []
     with open_app_connection(secrets.app_db_url) as conn:
@@ -90,7 +97,7 @@ def _launch(user: AppUser, choices: list[str], horizon: int | None, game_date) -
                 game_date=game_date,
             )
             workflow, inputs = manual.dispatch_inputs(
-                request_id, choice.kind, choice.dataset_type, request_horizon
+                request_id, choice.kind, choice.dataset_type, request_horizon, targets
             )
             try:
                 dispatch_workflow(secrets.dispatch_token, workflow, inputs)
@@ -105,7 +112,10 @@ def _launch(user: AppUser, choices: list[str], horizon: int | None, game_date) -
                 )
     clear_requests()
     if launched:
-        st.session_state[FLASH_KEY] = "Launched: " + ", ".join(launched)
+        names = ", ".join(
+            manual.target_label(target) for target in manual.ordered_targets(targets)
+        )
+        st.session_state[FLASH_KEY] = f"Launched: {', '.join(launched)} ({names})"
     for message in failed:
         st.error(message, icon=":material/error:")
 
@@ -124,6 +134,15 @@ def _new_prediction(user: AppUser, games: pd.DataFrame, game_date, now) -> None:
             selection_mode="multi",
             default=list(manual.DEFAULT_CHOICES),
             key="manual_models",
+        )
+        targets = st.pills(
+            "Targets",
+            options=list(manual.TARGETS),
+            format_func=manual.target_label,
+            selection_mode="multi",
+            default=list(manual.DEFAULT_TARGETS),
+            key="manual_targets",
+            help="Only these targets are fitted and predicted.",
         )
         intermediate = any(
             manual.CHOICES_BY_KEY[key].dataset_type == manual.INTERMEDIATE
@@ -158,10 +177,10 @@ def _new_prediction(user: AppUser, games: pd.DataFrame, game_date, now) -> None:
             "Launch",
             icon=":material/rocket_launch:",
             type="primary",
-            disabled=not choices,
+            disabled=not choices or not targets,
             key="manual_launch",
         ):
-            _launch(user, list(choices), horizon, game_date)
+            _launch(user, list(choices), list(targets), horizon, game_date)
             st.rerun()
 
 

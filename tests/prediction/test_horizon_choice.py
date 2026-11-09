@@ -12,6 +12,7 @@ from nba_ou.prediction.horizon_choice import (
     parse_scope,
     scope_slots,
     slot_games,
+    target_slots,
 )
 
 HORIZONS = (30, 60, 120, 240, 360, 480, 720)
@@ -65,6 +66,14 @@ def test_scope_slots():
     assert {(str(s.target), s.horizon_minutes) for s in fixed} == {
         ("line_error", 360),
         ("total_points", 360),
+    }
+
+
+def test_target_slots():
+    every = slots()
+    assert target_slots(every, ()) == every
+    assert {str(s.target) for s in target_slots(every, ["line_error"])} == {
+        "line_error"
     }
 
 

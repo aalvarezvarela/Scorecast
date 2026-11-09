@@ -52,25 +52,45 @@ def test_default_choice_is_tabpfn_intermediate():
     ],
 )
 def test_dispatch_inputs(kind, dataset_type, horizon, workflow, inputs):
-    got_workflow, got = manual.dispatch_inputs(12, kind, dataset_type, horizon)
+    got_workflow, got = manual.dispatch_inputs(
+        12, kind, dataset_type, horizon, ("line_error",)
+    )
     assert got_workflow == workflow
-    assert got == {"request_id": "12", **inputs}
+    targets = (
+        {"targets": "line_error", "update_db": "false"}
+        if workflow == manual.PREDICTOR_WORKFLOW
+        else {"target": "line_error"}
+    )
+    assert got == {"request_id": "12", **inputs, **targets}
     # Every value is a string: the dispatch API requires it.
     assert all(isinstance(value, str) for value in got.values())
 
 
 def test_dispatch_rejects_bad_requests():
+    target = ("line_error",)
     with pytest.raises(ValueError):
-        manual.dispatch_inputs(1, 1, 1, 360)
+        manual.dispatch_inputs(1, 1, 1, 360, target)
     with pytest.raises(ValueError):
-        manual.dispatch_inputs(1, 3, 2, 999)
+        manual.dispatch_inputs(1, 3, 2, 999, target)
     with pytest.raises(ValueError):
-        manual.dispatch_inputs(1, 2, 1, None)
+        manual.dispatch_inputs(1, 2, 1, None, target)
+    with pytest.raises(ValueError):
+        manual.dispatch_inputs(1, 1, 1, None, ())
+    with pytest.raises(ValueError):
+        manual.dispatch_inputs(1, 1, 1, None, ("over_under",))
+
+
+def test_requests_default_to_line_error_in_a_fixed_target_order():
+    assert manual.DEFAULT_TARGETS == ("line_error",)
+    _, inputs = manual.dispatch_inputs(1, 3, 1, None, ("spread_error", "line_error"))
+    assert inputs["target"] == "line_error spread_error"
 
 
 def test_workflow_inputs_exist():
     for kind, dataset_type, horizon in [(1, 2, None), (3, 2, None), (3, 1, None)]:
-        workflow, inputs = manual.dispatch_inputs(1, kind, dataset_type, horizon)
+        workflow, inputs = manual.dispatch_inputs(
+            1, kind, dataset_type, horizon, manual.DEFAULT_TARGETS
+        )
         spec = yaml.safe_load((REPO_ROOT / ".github/workflows" / workflow).read_text())
         # An unquoted " #" would cut the expression: GitHub then rejects the file.
         assert spec["run-name"].endswith("}}"), workflow

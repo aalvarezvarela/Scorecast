@@ -114,6 +114,8 @@ def test_bets_page_lists_requests_and_candidates(bets_page, today_data):
     assert "Bets" in titles(app)
     # TabPFN intermediate is preselected.
     assert app.get("button_group")[0].value == ["tabpfn_intermediate"]
+    # Line error alone is the default target.
+    assert app.get("button_group")[1].value == ["line_error"]
     requests, candidates = (frame.value for frame in app.dataframe)
     assert requests["Status"].tolist() == ["done"]
     assert requests["Model"].tolist() == ["TabPFN intermediate · per game"]
@@ -147,6 +149,7 @@ def test_launch_creates_a_request_and_dispatches_it(bets_page, monkeypatch):
     assert workflow == "nba_predictor_daily_tabpfn_client.yml"
     assert inputs["request_id"] == "41"
     assert inputs["horizon_minutes"] == "nearest"
+    assert inputs["target"] == "line_error"
     assert any("Launched" in text.value for text in app.success)
 
 
