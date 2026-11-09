@@ -274,10 +274,9 @@ def test_a_bet_starts_from_the_prediction(bet_dialog):
         _open_bet_dialog, kwargs={"row": row, "user": ACTIVE_USER}
     ).run()
     assert not app.exception
-    assert (
-        app.number_input(key=f"bet_line_{form}").value == float(row["bet_line_x2"]) / 2
-        or int(row["target"]) == 3
-    )
+    expected = bets_ui.bet_rules.proposed_line(row["target"], row["bet_line_x2"])
+    assert expected is not None
+    assert app.number_input(key=f"bet_line_{form}").value == expected
     assert not app.button(key=f"bet_save_{form}").disabled
     assert not any("assumed" in caption.value for caption in app.caption)
 
