@@ -11,9 +11,9 @@ from nba_ou.dashboard.domain.analysis import (
     MIN_CELL_BETS,
     SEASON_TYPES,
     aggregate_cells,
+    history_default_start,
     paired_snapshot_summary,
     prepare_analysis,
-    season_start,
 )
 from nba_ou.dashboard.domain.dates import madrid_time, slate_date
 from nba_ou.dashboard.domain.strategies import (
@@ -44,6 +44,7 @@ from nba_ou.dashboard.ui.analysis_charts import (
     snapshot_comparison,
     strategy_chart,
 )
+from nba_ou.dashboard.ui.clock import render_clock_analysis
 from nba_ou.dashboard.ui.controls import minimum_edge_select
 from nba_ou.dashboard.ui.loaders import load_history
 
@@ -499,14 +500,23 @@ def _render_best_and_combinations(
 
 def render_historical() -> None:
     today = slate_date()
+    view = (
+        st.segmented_control(
+            "Analysis view",
+            ["Models and snapshots", "Betting hour · Madrid"],
+            default="Models and snapshots",
+            key="history_view",
+        )
+        or "Models and snapshots"
+    )
     with st.container(horizontal=True, vertical_alignment="bottom"):
         dates = st.date_input(
             "NBA slate dates",
-            value=(season_start(today), today),
+            value=(history_default_start(today), today),
             format="DD/MM/YYYY",
             key="history_dates",
             width=280,
-            help="Defaults to the current NBA season through today, including historical backfills. Inclusive NBA slate dates use the same Pacific date boundary as Today. Displayed timestamps use Madrid time.",
+            help="Defaults to 28 October through today, including historical backfills. Inclusive NBA slate dates use the same Pacific date boundary as Today. Displayed timestamps use Madrid time.",
         )
         season_type = st.selectbox(
             "Season type",
@@ -550,18 +560,25 @@ def render_historical() -> None:
             model_kind: minimum_edge_select(model_kind, page="history")
             for model_kind in MODEL_NAMES
         }
-        cross_target = st.toggle(
-            "Combine line error + total points",
-            key="history_cross_target",
-            disabled=target == 3,
-            help="Adds the other totals target's slots as combination members at "
-            "each timepoint. Reads it from Aiven once (cached).",
-        )
+        cross_target = False
+        if view == "Models and snapshots":
+            cross_target = st.toggle(
+                "Combine line error + total points",
+                key="history_cross_target",
+                disabled=target == 3,
+                help="Adds the other totals target's slots as combination members at "
+                "each timepoint. Reads it from Aiven once (cached).",
+            )
     if len(dates) != 2:
         st.info("Choose a start and end date to view historical performance.")
         return
     start, end = dates
     st.caption(f"NBA slates · {start:%d %b %Y} – {end:%d %b %Y} · All times in Madrid")
+    if view == "Betting hour · Madrid":
+        render_clock_analysis(
+            start, end, target, season_type, kind, thresholds, metric, refresh
+        )
+        return
     if refresh:
         load_history.clear(start, end, target, season_type)
     try:

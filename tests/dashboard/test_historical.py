@@ -12,9 +12,9 @@ from nba_ou.dashboard.domain.analysis import (
     TIME_GRID,
     aggregate_cells,
     bucket_label,
+    history_default_start,
     paired_snapshot_summary,
     prepare_analysis,
-    season_start,
     wilson_interval,
 )
 from nba_ou.dashboard.domain.comparisons import signal
@@ -60,8 +60,8 @@ def test_grid_matches_serving_contract_and_season_boundary():
     assert bucket_label(0) == "Final"
     assert bucket_label(EARLY_BUCKET) == "T−18h+"
     assert bucket_label(30) == "T−30m"
-    assert season_start(date(2026, 9, 30)) == date(2025, 10, 1)
-    assert season_start(date(2026, 10, 1)) == date(2026, 10, 1)
+    assert history_default_start(date(2026, 10, 27)) == date(2025, 10, 28)
+    assert history_default_start(date(2026, 10, 28)) == date(2026, 10, 28)
     assert BREAK_EVEN == pytest.approx(52.38095238)
 
 

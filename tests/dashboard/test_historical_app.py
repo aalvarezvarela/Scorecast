@@ -78,18 +78,18 @@ def open_history(**state):
     return app.run()
 
 
-def test_history_defaults_to_current_season_including_backfills(history_setup):
+def test_history_defaults_to_october_28_including_backfills(history_setup):
     reader, today_reader = history_setup
     app = AppTest.from_file(str(ENTRYPOINT)).run()
     app.switch_page("app_pages/historical.py").run()
     assert not app.exception
     assert app.title[0].value == "Historical analysis"
     assert app.date_input(key="history_dates").value == (
-        date(2026, 10, 1),
+        date(2026, 10, 28),
         date(2026, 10, 28),
     )
     assert reader.call_count == 1
-    assert reader.call_args.args == (date(2026, 10, 1), date(2026, 10, 28), 1, 2)
+    assert reader.call_args.args == (date(2026, 10, 28), date(2026, 10, 28), 1, 2)
     assert today_reader.call_count == 1  # navigation itself never re-reads Today
     assert app.session_state["history_metric"] == "Win %"
     assert app.session_state["history_kind"] is None
@@ -131,10 +131,10 @@ def test_default_end_date_tracks_today(history_setup, monkeypatch):
     app = open_history()
     assert not app.exception
     assert app.date_input(key="history_dates").value == (
-        date(2026, 10, 1),
+        date(2026, 10, 28),
         date(2026, 11, 2),
     )
-    assert reader.call_args.args[:2] == (date(2026, 10, 1), date(2026, 11, 2))
+    assert reader.call_args.args[:2] == (date(2026, 10, 28), date(2026, 11, 2))
 
 
 def test_replay_timeline_handles_no_replay_without_using_live_rows(history_setup):
@@ -198,7 +198,7 @@ def test_range_target_and_season_type_load_separate_cache_entries(history_setup)
     assert reader.call_args.args == (*changed_range, 3, 4)
     # Refreshing one selection does not evict the original cached range.
     app.date_input(key="history_dates").set_value(
-        (date(2026, 10, 1), date(2026, 10, 28))
+        (date(2026, 10, 28), date(2026, 10, 28))
     )
     app.session_state["history_target"] = 1
     app.session_state["history_season_type"] = 2

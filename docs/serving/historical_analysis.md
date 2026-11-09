@@ -6,6 +6,10 @@ windows, best slot, mean-of-predictions combinations and the random baseline
 2026-11-05. Consensus/agreement views across all slots and a full-season
 performance measurement remain.
 
+The **Betting hour · Madrid** view adds a separate clock-time analysis. Its
+selection and grading rules are documented below; the model/snapshot views
+retain their existing definitions.
+
 ## Context
 
 The dashboard's third page (`streamlit/app_pages/historical.py`) was initially
@@ -59,7 +63,7 @@ snapshots" fill just the model-horizon = time diagonal. No predictor changes.
 
 ## 3. Page layout
 
-A shared filter bar: date range (default current season's 1 October through today's NBA slate), season type
+A shared filter bar: date range (default most recent 28 October through today's NBA slate), season type
 (regular), model family (XGBoost 2.5 / TabPFN), per-kind min edge
 (`minimum_edge_select`), and a metric switch (Win % / Bets / MAE / ROI).
 Below it, a **target selector**: Line error | Total points | Spread error.
@@ -126,6 +130,83 @@ the KPI strip.
 6. **Combined across time** (secondary, collapsed, loaded on demand). See §4.
 7. **Method notes** expander: the definitions above, the exclusions and the
    noise warning.
+
+## Betting hour · Madrid
+
+Select **Betting hour · Madrid** in the Historical analysis view selector.
+It shares the inclusive NBA slate range, season type, target, model-family
+filter, minimum edges and chart metric. The initial selected hour is **19:00**.
+The hourly chart covers **12:00–23:00 on each NBA slate date, then 00:00
+at the following midnight**, inclusive. Hours after midnight are not offered.
+Cutoffs use `Europe/Madrid`, including daylight-saving changes, not a fixed UTC
+offset. Cutoffs at/after tip-off, or after the read time,
+are excluded rather than counted as missing predictions.
+The **Hours to compare** range narrows the chart and common-game cohort locally,
+without another database read. The selected-hour detail remains independent
+of this chart window.
+
+Two sources are selectable and never fill each other's gaps:
+
+- **Live predictions** requires the input and completed publication to be
+  available by the cutoff. Publication is `max(predicted_at, runs.finished_at)`.
+- **Snapshot replay** selects on reconstructed input time, independently of
+  when the backfill ran. Only builds with `train_date_max < game_date` enter
+  this view. This is retrospective: saved features can include later
+  corrections, and the existing daily-training cutoff is not a guarantee
+  that every previous-day game had finished at the snapshot time.
+
+There is at most one bet per game, hour, source and series:
+
+| Series | Selection |
+| --- | --- |
+| TabPFN | One output from the closest input snapshot at/before the cutoff, among outputs eligible for that source. No averaging across snapshots. |
+| Closing | Latest eligible output for each XGBoost closing slot; equal-weight mean if multiple active slots/variants exist. |
+| Intermediate | Latest eligible output for each XGBoost intermediate slot/horizon; equal-weight mean across those slots. Earlier outputs of the same slot are replaced. |
+
+A slot retains kind, schema, target, phase, trained horizon and variant, but
+not build/refit identity. TabPFN ties prefer later publication, then
+intermediate phase, longer horizon, variant and stored IDs. Hidden variants
+are excluded. Intermediate replay retains the existing own-horizon-only
+contract; live intermediate can use a newer `latest` input for each model.
+
+Convert line-error outputs using their **original model anchors** to absolute
+points (or home margin for spread) before averaging. All three series use the
+**same last stored Bet365 quote** for that game/hour/source: choose the newest
+eligible input with a quote, before reducing predictions to slots. Both line
+and prices come from that one quote. The chosen quote need not be exactly at
+the betting hour: display its input time and its stored age plus elapsed time
+since input. Unknown age stays unknown; missing prices never become −110.
+The page makes no claim that an old quote remained executable at the cutoff.
+
+The existing target-specific grader applies the per-kind minimum edge to the
+aggregate against this common line. One unit is staked per priced bet; ROI
+uses stored American odds, pushes return zero, and missing prices are excluded
+from ROI. Win % is W/(W+L), with per-cell Wilson 95% intervals. MAE includes
+available predictions on final games even without a bet/quote.
+
+Missing predictions remain explicit rows. Coverage is final eligible games
+with both prediction and line / all final eligible games, including no-bet
+signals in the numerator. The **Compare common games only** filter requires
+a prediction and line for every displayed hour and series, without requiring
+a directional bet. It can produce an empty cohort, especially with sparse
+TabPFN coverage; filtering the model family narrows the required series.
+The selected-hour game audit and snapshot-member table always show all eligible
+games at that hour, even when the chart uses the common cohort.
+
+The hourly repository reuses the existing source-eligibility CTEs, but applies
+clock cutoffs **before** ranking outputs. It never selects from the already
+bucket-reduced model analysis. PostgreSQL returns at most one row per
+slot/game/source/hour; means and metrics are computed locally. Reads are
+read-only, bounded to 200,000 selected rows with a 45-second timeout, and
+cached for 15 minutes (four ranges/targets). Exceeding the bound fails without
+displaying partial results. Hour, source, metric, edge and family changes reuse
+that read; Refresh invalidates the selected range/target/season cache entry.
+No new predictions, remote inference, backfills or database writes are run.
+
+The highest historical hour is exploratory: cells share games, available
+horizons change, and selecting the maximum across hours introduces selection
+bias. Counts, coverage and uncertainty accompany the curves; small samples
+are labelled. No automatic claim of a profitable/best future hour is made.
 
 ## 4. Combining predictions across time (secondary)
 
@@ -262,7 +343,7 @@ refreshed by the finished-games job. That is out of scope until measured.
 Implemented:
 
 - The Historical analysis navigation page now renders the actual dashboard.
-- Inclusive date range (current season's 1 October through today by default), season type (regular
+- Inclusive date range (most recent 28 October through today by default), season type (regular
   by default), model family, three targets, per-kind minimum edges and the
   Win % / Bets / MAE / ROI switch. Family, metric and edge changes reuse source
   data; range, target and season type are cache keys. Refresh evicts that key.
