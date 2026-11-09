@@ -28,8 +28,11 @@ self-hosted runner, as cron-job.org does for the scheduled runs
    card details say "Manual #id"; Yesterday and Historical analysis leave
    them out (`r.request_id IS NULL`), so the evaluated series stays the
    scheduled runs.
-4. **Bet.** The Bets page lists the user's manual predictions (optionally the
-   scheduled ones too) of games not yet started. A bet records side, line,
+4. **Bet.** The Bets page lists the user's own manual predictions of games
+   not yet started, newest per game, model, target and horizon. Optionally it
+   adds the scheduled predictions Today selects (each closing slot and the
+   horizon nearest the tip); other users' manual runs are never listed. Only
+   an active account can store a bet. A bet records side, line,
    decimal odds, stake and book in `app.bets`, with the prediction it
    followed (`model_build_id`, `input_id`, `request_id`). `app.bets_full`
    grades it against `prediction.games`.
@@ -92,8 +95,9 @@ read and write (no DELETE) on `app`.
 
 Defaults, all editable: the model's pick as side, the stored bet365 line of
 the prediction (spread shown as the home handicap), the stored bet365 price of
-that side as decimal odds (−110 when missing), the user's last stake or 10 €,
-and bet365 as book.
+that side as decimal odds (−110 when missing, and the form says so), the
+user's last stake or 10 €, and bet365 as book. Without a stored line the field
+starts empty and the bet cannot be saved until it is filled.
 
 ## Setup
 

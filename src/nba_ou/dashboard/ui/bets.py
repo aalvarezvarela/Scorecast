@@ -12,6 +12,7 @@
 
 from __future__ import annotations
 
+import hashlib
 from datetime import UTC, datetime
 
 import pandas as pd
@@ -22,7 +23,7 @@ from nba_ou.dashboard.domain import bets as bet_rules
 from nba_ou.dashboard.domain import manual
 from nba_ou.dashboard.domain.access import AppUser
 from nba_ou.dashboard.domain.dates import horizon_label, madrid_clock, madrid_time
-from nba_ou.dashboard.domain.selection import live_predictions
+from nba_ou.dashboard.domain.selection import select_predictions
 from nba_ou.dashboard.repositories import app_store
 from nba_ou.dashboard.repositories.connection import open_app_connection
 from nba_ou.dashboard.repositories.dispatch import DispatchError, dispatch_workflow
@@ -35,12 +36,20 @@ from nba_ou.dashboard.ui.app_loaders import (
     load_manual_predictions,
     load_requests,
 )
-from nba_ou.dashboard.ui.auth import app_secrets
+from nba_ou.dashboard.ui.auth import app_secrets, still_allowed
 from nba_ou.dashboard.ui.loaders import load_today
 from nba_ou.postgre_db.app_aiven.schema import MARKET_SPREAD
 
-#: One bet candidate per game, model and target: the newest output.
-CANDIDATE_KEY = ["game_id", "kind", "dataset_type", "target", "variant"]
+#: The user's requests give one candidate per game, model, target and horizon:
+#: the newest output. A fixed-horizon request stays beside a per-game one.
+CANDIDATE_KEY = [
+    "game_id",
+    "kind",
+    "dataset_type",
+    "target",
+    "variant",
+    "model_horizon_minutes",
+]
 FLASH_KEY = "bets_flash"
 
 
@@ -202,17 +211,39 @@ def _model_label(row: pd.Series) -> str:
     return f"{name} {horizon_label(row['model_horizon_minutes'])}"
 
 
-def _candidates(manual_rows: pd.DataFrame, now) -> pd.DataFrame:
-    if manual_rows.empty:
-        return manual_rows
-    rows = manual_rows.loc[
-        pd.to_datetime(manual_rows["tipoff_at"], utc=True) > pd.Timestamp(now)
-    ]
-    rows = rows.sort_values(["predicted_at", "run_id", "input_id"], kind="stable")
-    rows = rows.drop_duplicates(CANDIDATE_KEY, keep="last")
+def _scheduled_candidates(today: pd.DataFrame, now) -> pd.DataFrame:
+    """What Today shows: each closing slot and, per family, the horizon nearest
+    the tip. Manual runs go first, or another user's run could take a slot."""
+    scheduled = today.loc[today["request_id"].isna()]
+    return select_predictions(scheduled, tuple(PREDICTION_TARGET_LABELS), now)
+
+
+def _candidates(
+    manual_rows: pd.DataFrame, scheduled_rows: pd.DataFrame, now
+) -> pd.DataFrame:
+    """The user's own outputs beside the scheduled ones, games not yet started."""
+    own = manual_rows.sort_values(
+        ["predicted_at", "run_id", "input_id"], kind="stable"
+    ).drop_duplicates(CANDIDATE_KEY, keep="last")
+    parts = [frame for frame in (own, scheduled_rows) if not frame.empty]
+    if not parts:
+        return own
+    rows = pd.concat(parts, ignore_index=True)
+    rows = rows.loc[pd.to_datetime(rows["tipoff_at"], utc=True) > pd.Timestamp(now)]
     return rows.sort_values(["tipoff_at", "game_id", "kind", "target"]).reset_index(
         drop=True
     )
+
+
+def _selection_key(candidates: pd.DataFrame) -> str:
+    """A selection is a row position: new rows get a new table, so a refresh
+    cannot leave it pointing at another prediction."""
+    ids = (
+        candidates[["run_id", "input_id", "model_build_id", "target"]]
+        .astype(str)
+        .agg("-".join, axis=1)
+    )
+    return "bet_candidates_" + hashlib.sha1("|".join(ids).encode()).hexdigest()[:12]
 
 
 def _candidate_table(rows: pd.DataFrame) -> pd.DataFrame:
@@ -250,6 +281,12 @@ def _bet_dialog(row: dict, user: AppUser, stake: float) -> None:
     market = bet_rules.market_of_target(row["target"])
     sides = bet_rules.SIDE_LABELS[market]
     home, away = row["home_team"], row["away_team"]
+    # Per prediction: a dialog closed with its X must not lend its values to
+    # the next one.
+    form = "_".join(
+        str(int(row[name]))
+        for name in ("game_id", "target", "input_id", "model_build_id")
+    )
     st.markdown(f"**{away} @ {home}** · {madrid_time(row['tipoff_at'])}")
     st.caption(
         f"{_model_label(pd.Series(row))} · "
@@ -265,38 +302,58 @@ def _bet_dialog(row: dict, user: AppUser, stake: float) -> None:
             (home if s == 1 else away) if market == MARKET_SPREAD else sides[s]
         ),
         default=default_side,
-        key="bet_side",
+        key=f"bet_side_{form}",
     )
     side = default_side if side is None else int(side)
     proposed = bet_rules.proposed_line(row["target"], row["bet_line_x2"])
     line = st.number_input(
         "Home handicap" if market == MARKET_SPREAD else "Total",
-        value=float(proposed if proposed is not None else 0.0),
+        value=proposed,
         step=0.5,
         format="%.1f",
-        key="bet_line",
+        placeholder="Enter the line you got",
+        key=f"bet_line_{form}",
         help=(
             "The line you got, as the book shows the home side (home -3.5 is -3.5)."
             if market == MARKET_SPREAD
             else "The total you got."
         ),
     )
+    prices = (row.get("bet_price_over_home"), row.get("bet_price_under_away"))
     odds = st.number_input(
         "Odds (decimal)",
         min_value=1.01,
-        value=bet_rules.proposed_odds(
-            side, row.get("bet_price_over_home"), row.get("bet_price_under_away")
-        ),
+        value=bet_rules.proposed_odds(side, *prices),
         step=0.01,
         format="%.3f",
-        key=f"bet_odds_{side}",
+        key=f"bet_odds_{form}_{side}",
     )
+    if bet_rules.stored_odds(side, *prices) is None:
+        st.caption(
+            f"No stored price for this side: {bet_rules.DEFAULT_ODDS} is assumed, "
+            "enter the odds you got."
+        )
     amount = st.number_input(
-        "Stake (€)", min_value=0.5, value=float(stake), step=1.0, key="bet_stake"
+        "Stake (€)",
+        min_value=0.5,
+        value=float(stake),
+        step=1.0,
+        key=f"bet_stake_{form}",
     )
-    book = st.text_input("Book", value=bet_rules.DEFAULT_BOOK, key="bet_book")
-    st.caption("Bet: " + bet_rules.describe_bet(market, side, float(line), home, away))
-    if st.button("Save bet", icon=":material/save:", type="primary", key="bet_save"):
+    book = st.text_input("Book", value=bet_rules.DEFAULT_BOOK, key=f"bet_book_{form}")
+    if line is not None:
+        st.caption(
+            "Bet: " + bet_rules.describe_bet(market, side, float(line), home, away)
+        )
+    if st.button(
+        "Save bet",
+        icon=":material/save:",
+        type="primary",
+        disabled=line is None,
+        key=f"bet_save_{form}",
+    ):
+        if not still_allowed():
+            st.rerun()
         bet = {
             "user_id": user.user_id,
             "game_id": int(row["game_id"]),
@@ -313,7 +370,10 @@ def _bet_dialog(row: dict, user: AppUser, stake: float) -> None:
             ),
         }
         with open_app_connection(app_secrets().app_db_url) as conn:
-            app_store.insert_bet(conn, bet)
+            saved = app_store.insert_bet(conn, bet)
+        if saved is None:
+            st.error("This account can no longer place bets.")
+            return
         clear_bets()
         st.session_state[FLASH_KEY] = (
             f"Saved: {bet_rules.describe_bet(market, side, float(line), home, away)} "
@@ -328,15 +388,15 @@ def _bet_candidates(user: AppUser, game_date, now) -> None:
         "Include the scheduled predictions",
         value=False,
         key="bets_include_scheduled",
-        help="Also list the latest scheduled prediction of every model, as on Today.",
+        help="Also list the scheduled predictions Today shows for each game.",
     )
     rows = load_manual_predictions(user.user_id, game_date)
-    if include_all:
-        today = load_today(game_date).predictions
-        scheduled = live_predictions(today, now)
-        if not scheduled.empty:
-            rows = pd.concat([rows, scheduled], ignore_index=True)
-    candidates = _candidates(rows, now)
+    scheduled = (
+        _scheduled_candidates(load_today(game_date).predictions, now)
+        if include_all
+        else pd.DataFrame()
+    )
+    candidates = _candidates(rows, scheduled, now)
     if candidates.empty:
         st.caption(
             "No prediction to bet on yet: launch one above, or include the "
@@ -349,7 +409,7 @@ def _bet_candidates(user: AppUser, game_date, now) -> None:
         width="stretch",
         on_select="rerun",
         selection_mode="single-row",
-        key="bet_candidates",
+        key=_selection_key(candidates),
         alt="Predictions to bet on",
     )
     selected = event.selection.rows
@@ -443,6 +503,9 @@ def _bet_option(bets: pd.DataFrame, bet_id: int) -> str:
 
 @st.fragment(run_every="30s")
 def _live_sections(user: AppUser, game_date) -> None:
+    # Fragment runs skip the gate in streamlit_app.py.
+    if not still_allowed():
+        st.rerun()
     now = _now()
     _requests(user, game_date, now)
     _bet_candidates(user, game_date, now)

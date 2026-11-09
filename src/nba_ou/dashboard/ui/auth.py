@@ -19,6 +19,7 @@ from nba_ou.dashboard.domain.access import (
     AppUser,
     access_of,
     admin_emails,
+    can_use_app,
     normalize_email,
 )
 from nba_ou.dashboard.repositories.app_store import ensure_user, read_user
@@ -108,6 +109,14 @@ def resolve_access() -> tuple[Access, AppUser | None]:
         )
         return Access.PENDING, None
     return access_of(user), user
+
+
+def still_allowed() -> bool:
+    """The gate for what reruns without it (fragments, dialogs)."""
+    try:
+        return can_use_app(access_of(current_user()))
+    except (psycopg.Error, ValueError):
+        return False
 
 
 def sign_in_button() -> None:

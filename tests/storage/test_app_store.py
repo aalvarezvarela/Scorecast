@@ -65,6 +65,11 @@ def _bet(user: AppUser, **changes) -> dict:
     }
 
 
+def _active_fan(conn) -> AppUser:
+    email = "fan@example.com"
+    return app_store.ensure_user(conn, email, "Fan", admins=frozenset({email}))
+
+
 def _final(conn, home: int, away: int) -> None:
     with conn.cursor() as cur:
         cur.execute(
@@ -153,8 +158,19 @@ def test_a_manual_run_must_name_an_existing_request(conn):
     conn.rollback()
 
 
-def test_last_stake_and_void_before_tip(conn):
+def test_only_active_accounts_store_bets(conn):
     fan = app_store.ensure_user(conn, "fan@example.com", "Fan", admins=ADMINS)
+    admin = app_store.ensure_user(conn, "admin@example.com", None, admins=ADMINS)
+    assert app_store.insert_bet(conn, _bet(fan)) is None
+    app_store.set_user_status(conn, fan.user_id, 1, by=admin)
+    assert app_store.insert_bet(conn, _bet(fan)) is not None
+    app_store.set_user_status(conn, fan.user_id, 2, by=admin)
+    assert app_store.insert_bet(conn, _bet(fan)) is None
+    assert len(app_store.user_bets(conn, fan.user_id)) == 1
+
+
+def test_last_stake_and_void_before_tip(conn):
+    fan = _active_fan(conn)
     assert app_store.last_stake(conn, fan.user_id) is None
     first = app_store.insert_bet(conn, _bet(fan, stake=10))
     app_store.insert_bet(conn, _bet(fan, stake=25))
@@ -180,7 +196,7 @@ def test_last_stake_and_void_before_tip(conn):
     ],
 )
 def test_view_grades_as_the_domain_rules(conn, market, side, line, home, away):
-    fan = app_store.ensure_user(conn, "fan@example.com", "Fan", admins=ADMINS)
+    fan = _active_fan(conn)
     app_store.insert_bet(
         conn, _bet(fan, market=market, side=side, line=line, odds_decimal=2.1)
     )
@@ -199,7 +215,7 @@ def test_view_grades_as_the_domain_rules(conn, market, side, line, home, away):
 
 
 def test_pending_bets_have_no_profit(conn):
-    fan = app_store.ensure_user(conn, "fan@example.com", "Fan", admins=ADMINS)
+    fan = _active_fan(conn)
     app_store.insert_bet(conn, _bet(fan))
     row = app_store.user_bets(conn, fan.user_id).iloc[0]
     assert row["result"] == "pending" and pd.isna(row["profit"])

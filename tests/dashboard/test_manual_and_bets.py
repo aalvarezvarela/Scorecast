@@ -118,6 +118,8 @@ def test_bet_form_defaults():
     assert bet_rules.american_to_decimal(None) is None
     assert bet_rules.proposed_odds(-1, -110, 120) == 2.2
     assert bet_rules.proposed_odds(1, None, None) == bet_rules.DEFAULT_ODDS
+    assert bet_rules.stored_odds(1, None, -110) is None
+    assert bet_rules.stored_odds(-1, None, -110) == 1.909
     assert bet_rules.default_stake(None) == 10
     assert bet_rules.default_stake(25.0) == 25
 

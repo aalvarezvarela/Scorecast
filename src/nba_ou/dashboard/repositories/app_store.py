@@ -72,12 +72,15 @@ LAST_STAKE = """
     ORDER BY placed_at DESC LIMIT 1
 """
 
-INSERT_BET = """
+INSERT_BET = f"""
     INSERT INTO app.bets (user_id, game_id, market, side, line, odds_decimal,
                           stake, book, model_build_id, input_id, request_id)
-    VALUES (%(user_id)s, %(game_id)s, %(market)s, %(side)s, %(line)s,
-            %(odds_decimal)s, %(stake)s, %(book)s, %(model_build_id)s,
-            %(input_id)s, %(request_id)s)
+    SELECT u.user_id, %(game_id)s::integer, %(market)s::smallint,
+           %(side)s::smallint, %(line)s::numeric, %(odds_decimal)s::numeric,
+           %(stake)s::numeric, %(book)s::text, %(model_build_id)s::integer,
+           %(input_id)s::integer, %(request_id)s::integer
+    FROM app.users u
+    WHERE u.user_id = %(user_id)s AND u.status = {USER_ACTIVE}
     RETURNING bet_id
 """
 
@@ -209,9 +212,10 @@ def last_stake(conn: psycopg.Connection, user_id: int) -> float | None:
     return None if row is None else float(row[0])
 
 
-def insert_bet(conn: psycopg.Connection, bet: dict) -> int:
+def insert_bet(conn: psycopg.Connection, bet: dict) -> int | None:
     """``bet``: user_id, game_id, market, side, line, odds_decimal, stake,
-    book, and the optional model_build_id, input_id, request_id."""
+    book, and the optional model_build_id, input_id, request_id. None, and
+    nothing stored, when the account is not active."""
     values = {
         "model_build_id": None,
         "input_id": None,
@@ -220,9 +224,9 @@ def insert_bet(conn: psycopg.Connection, bet: dict) -> int:
     }
     with conn.cursor() as cur:
         cur.execute(INSERT_BET, values)
-        bet_id = int(cur.fetchone()[0])
+        row = cur.fetchone()
     conn.commit()
-    return bet_id
+    return None if row is None else int(row[0])
 
 
 def user_bets(conn: psycopg.Connection, user_id: int, limit: int = 500) -> pd.DataFrame:

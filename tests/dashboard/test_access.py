@@ -12,7 +12,7 @@ from nba_ou.dashboard.ui import auth, loaders
 from nba_ou.dashboard.ui import bets as bets_ui
 from streamlit.testing.v1 import AppTest
 
-from .conftest import ADMIN_USER, NOW
+from .conftest import ACTIVE_USER, ADMIN_USER, NOW
 
 ENTRYPOINT = Path(__file__).resolve().parents[2] / "streamlit/streamlit_app.py"
 BETS_PAGE = str(ENTRYPOINT.parent / "app_pages/bets.py")
@@ -168,6 +168,156 @@ def test_failed_dispatch_marks_the_request_failed(bets_page, monkeypatch):
     app.switch_page(BETS_PAGE).run()
     app.button(key="manual_launch").click().run()
     assert failed.call_args.args[1:] == (8, "GitHub refused (HTTP 403)")
+
+
+def _scheduled(today_data) -> pd.DataFrame:
+    return today_data.predictions.assign(request_id=float("nan"))
+
+
+def test_scheduled_candidates_are_todays_selection(today_data):
+    chosen = bets_ui._scheduled_candidates(_scheduled(today_data), NOW)
+    intermediate = chosen.loc[chosen["dataset_type"].eq(2)]
+    # Game 1 tips in 4 hours, game 2 in 2: T-240 and T-120, whatever ran last.
+    horizons = intermediate.groupby("game_id")["model_horizon_minutes"].unique()
+    assert [list(h) for h in horizons.loc[[1, 2]]] == [[240], [120]]
+    assert chosen["dataset_type"].eq(1).sum() == 6
+
+
+def test_another_users_manual_run_cannot_take_a_scheduled_slot(today_data):
+    rows = _scheduled(today_data)
+    rows.loc[
+        rows["game_id"].eq(1) & rows["model_horizon_minutes"].eq(240), "request_id"
+    ] = 9
+    chosen = bets_ui._scheduled_candidates(rows, NOW)
+    assert chosen["request_id"].isna().all()
+    game = chosen.loc[chosen["game_id"].eq(1) & chosen["dataset_type"].eq(2)]
+    assert set(game["model_horizon_minutes"]) != {240}
+    assert len(game) == 3
+
+
+def test_own_and_scheduled_predictions_stay_side_by_side(today_data):
+    scheduled = bets_ui._scheduled_candidates(_scheduled(today_data), NOW)
+    own = scheduled.assign(request_id=5)
+    both = bets_ui._candidates(own, scheduled, NOW)
+    assert len(both) == 2 * len(scheduled)
+    assert both["request_id"].notna().sum() == len(scheduled)
+
+
+def test_own_candidates_keep_the_newest_per_horizon(today_data):
+    own = _manual_rows(today_data)
+    older = own.assign(
+        predicted_at=own["predicted_at"] - pd.Timedelta(hours=1),
+        run_id=own["run_id"] - 1,
+        predicted_value=-1.0,
+    )
+    rows = bets_ui._candidates(pd.concat([older, own]), pd.DataFrame(), NOW)
+    assert len(rows) == len(own.drop_duplicates(bets_ui.CANDIDATE_KEY))
+    assert rows["predicted_value"].ne(-1.0).all()
+    assert rows["model_horizon_minutes"].nunique() > 1
+
+
+def test_a_refreshed_table_drops_the_selected_position(today_data):
+    rows = _manual_rows(today_data)
+    assert bets_ui._selection_key(rows) == bets_ui._selection_key(rows.copy())
+    assert bets_ui._selection_key(rows) != bets_ui._selection_key(rows.iloc[1:])
+
+
+def _open_bet_dialog(row, user):
+    from nba_ou.dashboard.ui.bets import _bet_dialog
+
+    _bet_dialog(row, user, 25.0)
+
+
+@pytest.fixture
+def bet_dialog(monkeypatch, today_data):
+    @contextmanager
+    def connection(dsn):
+        yield object()
+
+    insert = Mock(return_value=77)
+    monkeypatch.setattr(bets_ui, "open_app_connection", connection)
+    monkeypatch.setattr(bets_ui, "app_secrets", lambda: Mock(app_db_url="dsn"))
+    monkeypatch.setattr(bets_ui.app_store, "insert_bet", insert)
+    row = _manual_rows(today_data).iloc[0].to_dict()
+    form = "_".join(
+        str(int(row[name]))
+        for name in ("game_id", "target", "input_id", "model_build_id")
+    )
+    return row, form, insert
+
+
+def test_a_bet_without_a_line_needs_one_typed(bet_dialog):
+    row, form, insert = bet_dialog
+    row = {**row, "bet_line_x2": float("nan"), "bet_side": 1}
+    row.update(bet_price_over_home=float("nan"), bet_price_under_away=float("nan"))
+    app = AppTest.from_function(
+        _open_bet_dialog, kwargs={"row": row, "user": ACTIVE_USER}
+    ).run()
+    assert not app.exception
+    line = app.number_input(key=f"bet_line_{form}")
+    assert line.value is None
+    assert app.button(key=f"bet_save_{form}").disabled
+    assert any("assumed" in caption.value for caption in app.caption)
+
+    line.set_value(224.5).run()
+    assert not app.exception
+    assert not app.button(key=f"bet_save_{form}").disabled
+    app.button(key=f"bet_save_{form}").click().run()
+    assert not app.exception
+    bet = insert.call_args.args[1]
+    assert (bet["line"], bet["stake"]) == (224.5, 25.0)
+
+
+def test_a_bet_starts_from_the_prediction(bet_dialog):
+    row, form, insert = bet_dialog
+    app = AppTest.from_function(
+        _open_bet_dialog, kwargs={"row": row, "user": ACTIVE_USER}
+    ).run()
+    assert not app.exception
+    assert (
+        app.number_input(key=f"bet_line_{form}").value == float(row["bet_line_x2"]) / 2
+        or int(row["target"]) == 3
+    )
+    assert not app.button(key=f"bet_save_{form}").disabled
+    assert not any("assumed" in caption.value for caption in app.caption)
+
+
+def test_a_rejected_bet_is_reported(bet_dialog):
+    row, form, insert = bet_dialog
+    insert.return_value = None
+    app = AppTest.from_function(
+        _open_bet_dialog, kwargs={"row": row, "user": ACTIVE_USER}
+    ).run()
+    app.button(key=f"bet_save_{form}").click().run()
+    assert not app.exception
+    assert any("no longer" in alert.value for alert in app.error)
+
+
+@pytest.mark.parametrize("failure", [None, ValueError("no url")])
+def test_still_allowed_refuses_lost_access(monkeypatch, failure):
+    disabled = AppUser(2, "fan@example.com", "Fan", 2, False)
+    current = Mock(return_value=disabled, side_effect=failure)
+    monkeypatch.setattr(auth, "current_user", current)
+    assert not auth.still_allowed()
+
+
+def test_a_disabled_account_leaves_the_live_sections(bets_page, monkeypatch):
+    state = {"disabled": False}
+    disabled = AppUser(2, "fan@example.com", "Fan", 2, False)
+    monkeypatch.setattr(
+        auth, "current_user", lambda: disabled if state["disabled"] else ACTIVE_USER
+    )
+    # Disabled once the gate has passed: what a fragment run sees.
+    monkeypatch.setattr(
+        bets_ui, "_new_prediction", lambda *args: state.update(disabled=True)
+    )
+    candidates = Mock(return_value=pd.DataFrame())
+    monkeypatch.setattr(bets_ui, "load_manual_predictions", candidates)
+    app = AppTest.from_file(str(ENTRYPOINT)).run()
+    app.switch_page(BETS_PAGE).run()
+    assert not app.exception
+    assert titles(app) == ["Access pending"]
+    candidates.assert_not_called()
 
 
 def test_accounts_page_is_for_admins(monkeypatch, today_data):

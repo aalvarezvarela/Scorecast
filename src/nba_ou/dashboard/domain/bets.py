@@ -62,12 +62,18 @@ def american_to_decimal(price: float | None) -> float | None:
     return round(decimal, 3)
 
 
+def stored_odds(
+    side: int, price_over_home: float | None, price_under_away: float | None
+) -> float | None:
+    """The stored bet365 price of the side as decimal odds, None without one."""
+    return american_to_decimal(price_over_home if side == 1 else price_under_away)
+
+
 def proposed_odds(
     side: int, price_over_home: float | None, price_under_away: float | None
 ) -> float:
     """The stored bet365 price of the side, as decimal odds (else -110)."""
-    price = price_over_home if side == 1 else price_under_away
-    return american_to_decimal(price) or DEFAULT_ODDS
+    return stored_odds(side, price_over_home, price_under_away) or DEFAULT_ODDS
 
 
 def default_stake(last_stake: float | None) -> float:
