@@ -185,7 +185,7 @@ def clock_sql_fixture():
     prefix = """WITH fixture_predictions AS (
         SELECT * FROM jsonb_to_recordset(%s) AS rows(COLUMNS)
     ), fixture_runs AS (
-        SELECT * FROM jsonb_to_recordset(%s) AS rows(run_id integer, finished_at timestamptz)
+        SELECT * FROM jsonb_to_recordset(%s) AS rows(run_id integer, finished_at timestamptz, request_id integer)
     ), fixture_games AS (
         SELECT * FROM jsonb_to_recordset(%s) AS rows(game_id integer, game_date date,
             season_type integer, tipoff_at timestamptz, home_team text, away_team text,

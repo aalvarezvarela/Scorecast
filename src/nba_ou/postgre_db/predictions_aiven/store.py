@@ -208,7 +208,8 @@ def write_run(
             cur.execute(
                 sql.SQL(
                     "INSERT INTO {} (run_uuid, started_at, finished_at, workflow, "
-                    "status, git_sha) VALUES (%s, %s, %s, %s, %s, %s) "
+                    "status, git_sha, request_id) "
+                    "VALUES (%s, %s, %s, %s, %s, %s, %s) "
                     "ON CONFLICT (run_uuid) DO NOTHING RETURNING run_id"
                 ).format(_table("runs")),
                 (
@@ -218,6 +219,7 @@ def write_run(
                     run["workflow"],
                     run["status"],
                     run["git_sha"],
+                    run.get("request_id"),
                 ),
             )
             inserted = cur.fetchone()

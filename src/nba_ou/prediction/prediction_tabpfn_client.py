@@ -48,6 +48,7 @@ from nba_ou.modeling.refit import (
 from nba_ou.modeling.registry_models import ModelSpec
 from nba_ou.modeling.registry_paths import ModelSlot, ModelTarget, format_horizon
 from nba_ou.modeling.retraining_utils import _coerce_feature_column_for_xgboost
+from nba_ou.prediction.input_limits import limit_to_training_support
 from nba_ou.prediction.prediction import (
     load_and_predict_model_for_nba_games,
     resolve_prediction_target,
@@ -327,11 +328,15 @@ def predict_with_tabpfn(
     prediction_datetime: datetime | None = None,
     passthrough_columns: Sequence[str] = (),
     cleaned: bool = False,
+    latest_input: bool = False,
 ) -> pd.DataFrame:
     """Tonight's rows of ``spec`` predicted by ``model``, shaped as a slot's
     output: every closing row, or the intermediate rows of the spec's horizon.
     ``cleaned``: ``df`` is ``clean_prediction_frame`` of tonight's rows, shared
-    by the run's targets.
+    by the run's targets. ``latest_input`` (intermediate): ``df`` holds each
+    game's latest snapshot, predicted whatever its horizon and limited to what
+    the spec's training rows could carry (``limit_to_training_support``), as a
+    registry slot reads it in ``latest`` mode.
 
     The build is (spec, training cutoff, window size, extra SEASON_YEAR feature,
     TabPFN's NaN budget):
@@ -339,16 +344,24 @@ def predict_with_tabpfn(
     runs repeat it.
     """
     dataset_type = str(spec.identity.dataset_type)
-    rows = rows_of_horizon(df, spec)
+    target = str(spec.identity.target)
+    horizon = spec.identity.horizon_minutes
+    latest_input = latest_input and dataset_type == INTERMEDIATE_LINE
+    if latest_input:
+        rows = limit_to_training_support(df, horizon_minutes=horizon)
+    else:
+        rows = rows_of_horizon(df, spec)
     if rows.empty:
         return pd.DataFrame()
     rows = rows.assign(SEASON_YEAR=_season_year(rows))
-    target = str(spec.identity.target)
-    horizon = spec.identity.horizon_minutes
     variant = model_variant(model.model_version, model.mode)
     train_date_max = training_set.train_date_max
     # As load_registry_model_and_predict marks an intermediate slot's rows.
-    input_mode = {} if dataset_type == CLOSING_LINE else {"INPUT_MODE": "own"}
+    input_mode = (
+        {}
+        if dataset_type == CLOSING_LINE
+        else {"INPUT_MODE": "latest" if latest_input else "own"}
+    )
     return load_and_predict_model_for_nba_games(
         df=rows,
         regressor=model,

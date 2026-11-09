@@ -82,7 +82,7 @@ matplotlib = "3.10.0"
 tabpfn-client = "0.6.1"
 
 [tool.poetry.group.dashboard.dependencies]
-streamlit = "^1.54.0"
+streamlit = { version = "^1.54.0", extras = ["auth"] }
 
 # Exploration only (lab/, notebooks).
 [tool.poetry.group.lab.dependencies]

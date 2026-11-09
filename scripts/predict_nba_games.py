@@ -25,9 +25,23 @@ from nba_ou.create_training_data.schema_layers import (
     newest_version,
 )
 from nba_ou.fetch_data.scheduled_game.get_schedule_games import get_schedule_games
+from nba_ou.postgre_db.app_aiven.requests import final_status, report_request
+from nba_ou.postgre_db.app_aiven.schema import (
+    REQUEST_DONE,
+    REQUEST_FAILED,
+    REQUEST_RUNNING,
+)
 from nba_ou.postgre_db.config.connection_keep import kept_connections
 from nba_ou.postgre_db.predictions_aiven.schema import WORKFLOW_DAILY
 from nba_ou.postgre_db.update_all.update_all_databases import update_all_databases
+from nba_ou.prediction.horizon_choice import (
+    SCOPE_ALL,
+    SCOPE_CLOSING,
+    SCOPE_NEAREST,
+    parse_scope,
+    scope_slots,
+    slot_games,
+)
 from nba_ou.prediction.input_limits import LATEST_INPUT_COLUMN
 from nba_ou.prediction.intermediate_frame import (
     PASSTHROUGH_COLUMNS,
@@ -121,16 +135,31 @@ def predict_nba_games(**kwargs) -> None:
     """``run_prediction_pipeline`` with its log in numbered steps
     (``nba_ou.utils.run_log``), its builds sharing their loads of stored
     history (``nba_ou.utils.history_cache``) and its database connections
-    (``connection_keep``)."""
+    (``connection_keep``).
+
+    With a ``request_id`` (a dashboard request) the request is marked
+    running now and finished at the end; a run that dies on the way marks it
+    failed.
+    """
     log = RunLog()
     timer = PhaseTimer()
+    request_id = kwargs.get("request_id")
+    report_request(request_id, REQUEST_RUNNING)
     with timer.report("Prediction phase timings"):
         try:
             with history_cache.history_cache(), kept_connections():
-                return run_prediction_pipeline(log, timer=timer, **kwargs)
+                result = run_prediction_pipeline(log, timer=timer, **kwargs)
+        except BaseException as exc:
+            # A no-op when the pipeline already wrote its final status.
+            report_request(
+                request_id, REQUEST_FAILED, error=f"{type(exc).__name__}: {exc}"
+            )
+            raise
         finally:
             # Timings and tracebacks stay outside the step's group.
             log.end_group()
+    report_request(request_id, REQUEST_DONE)
+    return result
 
 
 def run_prediction_pipeline(
@@ -147,6 +176,8 @@ def run_prediction_pipeline(
     tabpfn_jobs: Sequence[TabPFNJob] = (),
     tabpfn_refresh: bool = False,
     timer: PhaseTimer | None = None,
+    scope: str | int = SCOPE_ALL,
+    request_id: int | None = None,
 ) -> None:
     """
     Main execution function for the NBA prediction pipeline.
@@ -187,6 +218,12 @@ def run_prediction_pipeline(
     referees, reports and line source fetched above; ``tabpfn_refresh``
     fetches those again and builds the rows at that moment instead of at each
     job's snapshot. A failed job fails the run at the end, as a slot does.
+
+    ``scope`` (``nba_ou.prediction.horizon_choice``) restricts a manual run to
+    some slots: ``closing``, ``nearest`` (each game the intermediate slot of
+    its nearest horizon) or one horizon. Its intermediate slots read each
+    game's latest snapshot, whatever ``intermediate_input``. ``request_id``
+    is the dashboard request it answers, stored as ``runs.request_id``.
     """
     configure_tqdm_for_environment()
 
@@ -195,6 +232,17 @@ def run_prediction_pipeline(
     # Print welcome banner
     print_banner(date_to_predict)
     configured_slots = SETTINGS.prediction_model_slots
+    manual = scope != SCOPE_ALL
+    if manual:
+        configured_slots = scope_slots(configured_slots, scope)
+        # Every model of a manual run reads the data of this moment.
+        intermediate_input = "latest"
+        print(
+            f"  Manual run (request {request_id}), scope {scope}: "
+            f"{len(configured_slots)} candidate slot(s)"
+        )
+        if not configured_slots:
+            raise SystemExit(f"No enabled slot matches the scope {scope!r}.")
     if not configured_slots:
         # A valid state, not an error: nothing has been promoted yet. The rest
         # of the pipeline (database update, feature build, TabPFN) is still
@@ -204,7 +252,11 @@ def run_prediction_pipeline(
         print(f"  Enabled model slots ({len(configured_slots)}):")
         for line in slot_overview(configured_slots):
             print(f"    - {line}")
-    latest_slots = latest_input_slots(configured_slots, intermediate_input)
+    latest_slots = (
+        [slot for slot in configured_slots if slot.horizon_minutes]
+        if manual
+        else latest_input_slots(configured_slots, intermediate_input)
+    )
     print(
         f"  Intermediate input: {len(latest_slots)} slot(s) read the latest "
         "snapshot, the others their own"
@@ -263,6 +315,7 @@ def run_prediction_pipeline(
             print_status("Fetched scheduled games, refs, injuries and odds")
             if scheduled_data["scheduled_games"].empty:
                 log.warning("No scheduled games found for the specified date.")
+                report_request(request_id, REQUEST_FAILED, error="No games today")
                 return 0
 
         except Exception as e:
@@ -291,7 +344,17 @@ def run_prediction_pipeline(
         normalize_spread_lines=normalize_spread_lines,
         null_extreme_spread_prices=null_extreme_spread_prices,
     )
-    wants_intermediate = any(slot.horizon_minutes for slot in configured_slots)
+    # A closing-only manual run still builds each game's latest snapshot: the
+    # closing rows take their bet line and prices from it (_latest_quotes).
+    wants_intermediate = scope == SCOPE_CLOSING or any(
+        slot.horizon_minutes for slot in configured_slots
+    )
+    # A manual run of intermediate models builds no closing row.
+    wants_closing = not manual or any(
+        not slot.horizon_minutes for slot in configured_slots
+    )
+    if not wants_closing:
+        closing_ids = []
 
     # The two builds are independent until the predictions. On a warm run the
     # closing rows build in a side process while this one builds the
@@ -313,7 +376,10 @@ def run_prediction_pipeline(
                 **closing_kwargs,
             )
             side_started = time.perf_counter()
-    if side is None:
+    if not wants_closing:
+        print_status("No closing slot in this run: no closing rows")
+        df_to_predict, layer_inputs = pd.DataFrame(), None
+    elif side is None:
         log.step("Preparing Closing Rows")
         if reason is not None:
             print_status(f"Closing and intermediate rows one after the other: {reason}")
@@ -343,7 +409,7 @@ def run_prediction_pipeline(
                     intermediate_df = tonight_intermediate_frame(
                         scheduled_data,
                         game_date=date_to_predict,
-                        latest_input=bool(latest_slots),
+                        latest_input=bool(latest_slots) or manual,
                         # Every intermediate slot reads the latest row: build
                         # it alone.
                         latest_only=all(
@@ -393,7 +459,9 @@ def run_prediction_pipeline(
 
     # Everything this run predicts, stored at the end in one piece: the S3 run
     # archive and the Aiven prediction store (docs/serving/prediction_storage.md).
-    recorder = PredictionRunRecorder(workflow=WORKFLOW_DAILY, game_date=date_to_predict)
+    recorder = PredictionRunRecorder(
+        workflow=WORKFLOW_DAILY, game_date=date_to_predict, request_id=request_id
+    )
     recorder.set_schedule(scheduled_data["scheduled_games"])
     # No closing frame when no closing row was built: the closing slots then
     # skip ("not this model's turn"), as a slot of an unbuilt frame does.
@@ -440,10 +508,32 @@ def run_prediction_pipeline(
 
     predicted: list[str] = []
     skipped: list[str] = []
+    # nearest: the games each intermediate slot predicts; a slot nearest no
+    # game is not run.
+    chosen_games = None
+    if scope == SCOPE_NEAREST and intermediate_df is not None:
+        # Games already under way have no horizon left: none predicts them.
+        latest_rows = intermediate_df[
+            intermediate_df[LATEST_INPUT_COLUMN]
+            & intermediate_df["TIME_TO_MATCH_MIN"].gt(0)
+        ]
+        minutes_left = dict(
+            zip(
+                latest_rows["GAME_ID"].astype(str),
+                latest_rows["TIME_TO_MATCH_MIN"],
+                strict=True,
+            )
+        )
+        chosen_games = slot_games(configured_slots, minutes_left)
+        for slot, games in chosen_games.items():
+            print_status(f"{slot.describe()}: {', '.join(games)}")
     log.step(f"Generating Predictions ({len(configured_slots)} slots)")
     slots_started = time.perf_counter()
     for index, slot in enumerate(configured_slots, start=1):
         label = slot.describe()
+        if chosen_games is not None and slot not in chosen_games:
+            print(f"[slot {index}/{len(configured_slots)}] {label}: no game nearest")
+            continue
         print(f"[slot {index}/{len(configured_slots)}] {label}", flush=True)
         slot_started = time.perf_counter()
         try:
@@ -470,6 +560,10 @@ def run_prediction_pipeline(
             failures.append(f"{label}: {e}")
             recorder.record_slot(label, "failed", reason=str(e))
             continue
+        if chosen_games is not None and predictions_df is not None:
+            predictions_df = predictions_df[
+                predictions_df["GAME_ID"].astype(str).isin(chosen_games[slot])
+            ]
         rejected = recorder.add_predictions(predictions_df, label=label)
         if predictions_df is None or predictions_df.empty:
             # No frame of this model's dataset type, or no row of its
@@ -548,6 +642,12 @@ def run_prediction_pipeline(
             ]
         )
     )
+    if request_id is not None:
+        report_request(
+            request_id,
+            final_status(failures, len(predicted)),
+            error="; ".join(failures) or None,
+        )
     if failures:
         raise SystemExit(1)
 
@@ -874,7 +974,29 @@ if __name__ == "__main__":
             "and build their rows at that moment instead of at their snapshot."
         ),
     )
+    parser.add_argument(
+        "--slots",
+        default=SCOPE_ALL,
+        metavar="SCOPE",
+        help=(
+            "Which enabled slots predict: all (default), closing, nearest (each "
+            "game the intermediate slot of its nearest horizon) or a horizon in "
+            "minutes (e.g. 360). Anything but all is a manual run: its "
+            "intermediate slots read each game's latest snapshot."
+        ),
+    )
+    parser.add_argument(
+        "--request-id",
+        type=int,
+        help="The dashboard request this run answers (stored as runs.request_id).",
+    )
     args = parser.parse_args()
+    try:
+        scope = parse_scope(args.slots)
+    except ValueError as exc:
+        parser.error(str(exc))
+    if args.request_id is not None and args.tabpfn:
+        parser.error("--request-id runs carry no TabPFN job (use predict_tabpfn.py).")
     try:
         tabpfn_jobs = parse_jobs(
             args.tabpfn, targets=args.tabpfn_targets, modes=args.tabpfn_modes
@@ -894,4 +1016,6 @@ if __name__ == "__main__":
         parallel_builds=False if args.sequential_builds else None,
         tabpfn_jobs=tabpfn_jobs,
         tabpfn_refresh=args.tabpfn_refresh,
+        scope=scope,
+        request_id=args.request_id,
     )

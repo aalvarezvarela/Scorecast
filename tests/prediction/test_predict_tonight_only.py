@@ -642,3 +642,144 @@ def test_a_run_without_tabpfn_jobs_fits_nothing(monkeypatch):
     job.predict_nba_games(persist=True)
     assert calls == {"rows": [], "fits": []}
     assert order[-1] == "stored"
+
+
+def _manual_job(monkeypatch, *, minutes=(250, 470)):
+    """A manual run's predictor: closing + T-240/T-480 slots, two games."""
+    from unittest.mock import Mock
+
+    from nba_ou.modeling.registry_paths import ModelSlot
+
+    slots = [
+        ModelSlot("2_5", target, horizon)
+        for target in ("line_error", "total_points")
+        for horizon in (0, 240, 480)
+    ]
+    monkeypatch.setattr(
+        job,
+        "SETTINGS",
+        SimpleNamespace(
+            prediction_model_slots=slots,
+            intermediate_input_mode="own",
+            latest_input_slots=None,
+            report_required_max_horizon=None,
+            parallel_builds=False,
+            headless=True,
+            nba_injury_reports_url="",
+            s3_aws_profile=None,
+            s3_aws_region="eu-west-1",
+            s3_bucket="bucket",
+        ),
+    )
+    games = pd.DataFrame({"GAME_ID": ["g4", "g8"]})
+    latest = pd.DataFrame(
+        {
+            "GAME_ID": ["g4", "g8"],
+            "TIME_TO_MATCH_MIN": list(minutes),
+            "LATEST_INPUT": [True, True],
+            "SNAPSHOT_PASSED": [False, False],
+        }
+    )
+    built = Mock(return_value=latest)
+    closing = Mock(return_value=(games.assign(GAME_DATE="2025-11-03"), _history()))
+    monkeypatch.setattr(job, "update_all_databases", lambda **_: None)
+    monkeypatch.setattr(job, "check_line_feed", _sbr_lines)
+    monkeypatch.setattr(
+        job,
+        "get_all_info_for_scheduled_games",
+        lambda **_: {"scheduled_games": games, "games_not_updated": []},
+    )
+    monkeypatch.setattr(job, "tonight_intermediate_frame", built)
+    monkeypatch.setattr(job, "create_df_to_predict", closing)
+    monkeypatch.setattr(job, "clean_prediction_frames", lambda frames, **_: frames)
+    monkeypatch.setattr(job, "make_s3_client", lambda **_: object())
+    monkeypatch.setattr(job, "read_slot_builds", lambda **_: {})
+    served = []
+
+    def serve(*, slot, frames, latest_input, **_):
+        served.append((str(slot.target), slot.horizon_minutes, latest_input))
+        rows = frames["intermediate_line" if slot.horizon_minutes else "closing_line"]
+        return pd.DataFrame({"GAME_ID": rows["GAME_ID"], "SLOT": slot.describe()})
+
+    monkeypatch.setattr(job, "load_registry_model_and_predict", serve)
+    recorders = []
+
+    class _Recorder(_NullRecorder):
+        def __init__(self, **kwargs):
+            super().__init__()
+            self.request_id = kwargs.get("request_id")
+            recorders.append(self)
+
+    monkeypatch.setattr(job, "PredictionRunRecorder", _Recorder)
+    monkeypatch.setattr(job, "persist_prediction_run", lambda *_, **__: [])
+    reports = Mock()
+    monkeypatch.setattr(job, "report_request", reports)
+
+    class _Now:
+        @staticmethod
+        def now(tz=None):
+            return pd.Timestamp("2025-11-03 12:00", tz=tz).to_pydatetime()
+
+    monkeypatch.setattr(job, "datetime", _Now)
+    return SimpleNamespace(
+        served=served,
+        recorders=recorders,
+        reports=reports,
+        built=built,
+        closing=closing,
+    )
+
+
+def test_nearest_predicts_each_game_with_its_own_horizons_model(monkeypatch):
+    """Games 4 and 8 hours out: the T-240 model predicts the first, the T-480
+    model the second, both from their latest snapshot; no closing slot runs."""
+    run = _manual_job(monkeypatch)
+    job.predict_nba_games(scope="nearest", request_id=11)
+    assert sorted(run.served) == [
+        ("line_error", 240, True),
+        ("line_error", 480, True),
+        ("total_points", 240, True),
+        ("total_points", 480, True),
+    ]
+    [recorder] = run.recorders
+    assert recorder.request_id == 11
+    games = {out["SLOT"].iloc[0]: out["GAME_ID"].tolist() for out in recorder.outputs}
+    assert games == {
+        "2_5/line_error/t0240/main": ["g4"],
+        "2_5/line_error/t0480/main": ["g8"],
+        "2_5/total_points/t0240/main": ["g4"],
+        "2_5/total_points/t0480/main": ["g8"],
+    }
+    # Every model reads the latest snapshot, built alone; no closing row.
+    kwargs = run.built.call_args.kwargs
+    assert kwargs["latest_input"] is True and kwargs["latest_only"] is True
+    run.closing.assert_not_called()
+    statuses = [call.args[1] for call in run.reports.call_args_list]
+    assert statuses[0] == 1 and 2 in statuses  # running, then done
+
+
+def test_a_fixed_horizon_predicts_every_game(monkeypatch):
+    run = _manual_job(monkeypatch)
+    job.predict_nba_games(scope=480, request_id=12)
+    assert sorted(run.served) == [
+        ("line_error", 480, True),
+        ("total_points", 480, True),
+    ]
+    assert all(
+        out["GAME_ID"].tolist() == ["g4", "g8"] for out in run.recorders[0].outputs
+    )
+
+
+def test_a_closing_request_builds_the_latest_quotes_for_the_bet_line(monkeypatch):
+    run = _manual_job(monkeypatch)
+    job.predict_nba_games(scope="closing", request_id=13)
+    assert sorted(run.served) == [("line_error", 0, False), ("total_points", 0, False)]
+    run.closing.assert_called_once()
+    assert run.built.call_args.kwargs["latest_input"] is True
+
+
+def test_scheduled_runs_still_predict_every_slot(monkeypatch):
+    run = _manual_job(monkeypatch)
+    job.predict_nba_games(persist=False)
+    assert len(run.served) == 6
+    assert run.recorders[0].request_id is None

@@ -51,12 +51,15 @@ this moment either way.
 from __future__ import annotations
 
 import argparse
+import gc
 import os
 from collections.abc import Sequence
+from dataclasses import replace
 from datetime import date, datetime
 from zoneinfo import ZoneInfo
 
 import pandas as pd
+from nba_ou.config.dataset_versions import BASE_SCHEMA_VERSION
 from nba_ou.config.settings import SETTINGS
 from nba_ou.create_training_data.get_all_info_for_scheduled_games import (
     get_all_info_for_scheduled_games,
@@ -64,8 +67,15 @@ from nba_ou.create_training_data.get_all_info_for_scheduled_games import (
 from nba_ou.create_training_data.schema_layers import CLOSING_LINE
 from nba_ou.fetch_data.scheduled_game.get_schedule_games import get_schedule_games
 from nba_ou.modeling.registry_paths import ModelSlot, format_horizon
+from nba_ou.postgre_db.app_aiven.requests import final_status, report_request
+from nba_ou.postgre_db.app_aiven.schema import (
+    REQUEST_DONE,
+    REQUEST_FAILED,
+    REQUEST_RUNNING,
+)
 from nba_ou.postgre_db.config.connection_keep import kept_connections
 from nba_ou.postgre_db.update_all.update_all_databases import update_all_databases
+from nba_ou.prediction.horizon_choice import assign_horizons, group_by_horizon
 from nba_ou.prediction.line_source import check_line_feed
 from nba_ou.prediction.prediction_tabpfn_client import (
     DEFAULT_INTERMEDIATE_HORIZON,
@@ -78,9 +88,12 @@ from nba_ou.prediction.prediction_tabpfn_client import (
 from nba_ou.prediction.tabpfn_run import (
     DEFAULT_MAX_FRAME_AGE_DAYS,
     DEFAULT_TARGETS,
+    JobOutcome,
     TabPFNJob,
     TabPFNUnavailable,
+    TonightRows,
     fit_and_store,
+    latest_rows,
     load_fit_inputs,
     parse_fits,
     parse_game_ids,
@@ -109,15 +122,33 @@ def configure_tqdm_for_environment() -> None:
 
 
 def predict_tabpfn(**kwargs) -> None:
-    """``run_tabpfn`` with its log in numbered steps (``nba_ou.utils.run_log``)."""
+    """``run_tabpfn`` with its log in numbered steps (``nba_ou.utils.run_log``).
+
+    With a ``request_id`` (a dashboard request) the request is marked
+    running now and finished at the end; a run that predicts nothing or dies
+    on the way marks it failed.
+    """
     log = RunLog()
     timer = PhaseTimer()
+    request_id = kwargs.get("request_id")
+    report_request(request_id, REQUEST_RUNNING)
     with timer.report("TabPFN phase timings"):
         try:
-            return run_tabpfn(log, timer=timer, **kwargs)
+            result = run_tabpfn(log, timer=timer, **kwargs)
+        except BaseException as exc:
+            # A no-op when the run already wrote its final status.
+            report_request(
+                request_id, REQUEST_FAILED, error=f"{type(exc).__name__}: {exc}"
+            )
+            raise
         finally:
             # Timings and tracebacks stay outside the step's group.
             log.end_group()
+    if result is None:
+        report_request(request_id, REQUEST_FAILED, error="Nothing to predict")
+    else:
+        report_request(request_id, REQUEST_DONE)
+    return result
 
 
 def run_tabpfn(
@@ -140,8 +171,20 @@ def run_tabpfn(
     update_db: bool = True,
     allow_stale_lines: bool = False,
     persist: bool = True,
-) -> None:
+    input_mode: str = "own",
+    nearest: bool = False,
+    request_id: int | None = None,
+) -> bool | None:
     """Fit TabPFN for each target and predict shared tonight's rows at ``line``.
+
+    ``input_mode="latest"`` (intermediate, live; the dashboard's manual runs)
+    predicts each game's latest snapshot with the T-``horizon_minutes`` spec
+    and training rows. ``nearest`` (latest only) fits instead, per group of
+    games, the horizon nearest their minutes to tip-off
+    (``nba_ou.prediction.horizon_choice``): games at 4, 8 and 12 hours are
+    three fits on the T-240, T-480 and T-720 rows, each one run, all with
+    ``request_id``. True once the run has predicted; None when there was
+    nothing to predict.
 
     ``line`` is ``closing`` or ``intermediate``; ``horizon_minutes`` is the
     intermediate slot's time before tip-off (default
@@ -160,11 +203,18 @@ def run_tabpfn(
     ``game_ids`` (manual runs) keeps only those games.
     """
     dataset_type = LINES[line]
+    latest = input_mode == "latest"
     if dataset_type == CLOSING_LINE:
-        if horizon_minutes is not None:
+        if horizon_minutes is not None or nearest:
             raise SystemExit("--horizon-minutes applies to --line intermediate only.")
+        if latest:
+            raise SystemExit("--input latest applies to --line intermediate only.")
         horizon = 0
     else:
+        if nearest and not latest:
+            raise SystemExit("--horizon-minutes nearest requires --input latest.")
+        if nearest and feature_slot is not None:
+            raise SystemExit("--horizon-minutes nearest picks its own feature slots.")
         horizon = horizon_minutes or DEFAULT_INTERMEDIATE_HORIZON
     job = TabPFNJob(
         targets=tuple(parse_targets(targets)),
@@ -186,6 +236,7 @@ def run_tabpfn(
         feature_slot=feature_slot,
         model_version=model_version,
         train_games=train_games,
+        latest_input=latest,
     )
     configure_tqdm_for_environment()
     date_to_predict = (
@@ -193,32 +244,35 @@ def run_tabpfn(
         if game_date is not None
         else datetime.now(ZoneInfo("US/Pacific")).strftime("%Y-%m-%d")
     )
+    at = "each game's nearest horizon" if nearest else format_horizon(horizon)
     print(
-        f"TabPFN {model_version} ({job.plan}) "
-        f"at {format_horizon(horizon)}, for {date_to_predict}"
+        f"TabPFN {model_version} ({job.plan}) at {at}"
+        + (", latest snapshots" if latest else "")
+        + f", for {date_to_predict}"
+        + ("" if request_id is None else f" (request {request_id})")
     )
 
     # Each phase prints a [time] line as it ends, the summary their list.
     timer = timer if timer is not None else PhaseTimer()
 
     # Step 1: everything the fit needs from S3, before any other work.
-    log.step("Loading the Feature Spec and Training Frame")
-    with timer.phase("spec and training rows"):
-        s3 = make_s3_client(
-            profile=SETTINGS.s3_aws_profile, region=SETTINGS.s3_aws_region
-        )
-        bucket = SETTINGS.s3_bucket
-        try:
-            inputs = load_fit_inputs(
-                job,
-                s3_client=s3,
-                bucket=bucket,
-                slots=SETTINGS.prediction_model_slots,
-                date_to_predict=date_to_predict,
-                max_frame_age_days=max_frame_age_days,
-            )
-        except TabPFNUnavailable as exc:
-            raise SystemExit(str(exc)) from None
+    # (nearest: once the groups are known, after tonight's rows.)
+    s3 = make_s3_client(profile=SETTINGS.s3_aws_profile, region=SETTINGS.s3_aws_region)
+    bucket = SETTINGS.s3_bucket
+    if not nearest:
+        log.step("Loading the Feature Spec and Training Frame")
+        with timer.phase("spec and training rows"):
+            try:
+                inputs = load_fit_inputs(
+                    job,
+                    s3_client=s3,
+                    bucket=bucket,
+                    slots=SETTINGS.prediction_model_slots,
+                    date_to_predict=date_to_predict,
+                    max_frame_age_days=max_frame_age_days,
+                )
+            except TabPFNUnavailable as exc:
+                raise SystemExit(str(exc)) from None
 
     # Step 2: tonight's rows, with the lines of this moment.
     if update_db:
@@ -256,27 +310,48 @@ def run_tabpfn(
     if job.wanted_games is not None:
         scheduled_data = restrict_to_games(scheduled_data, job.wanted_games)
 
-    # The build's two reads of the closing odds (base features, referees) load
-    # once, and its reads share their connections.
-    with timer.phase("tonight's rows"), history_cache(), kept_connections():
-        rows = tonight_rows(
-            job, scheduled_data, inputs.specs, date_to_predict=date_to_predict, log=log
+    if nearest:
+        outcome = fit_nearest(
+            job,
+            scheduled_data,
+            s3_client=s3,
+            bucket=bucket,
+            date_to_predict=date_to_predict,
+            max_frame_age_days=max_frame_age_days,
+            timer=timer,
+            log=log,
+            persist=persist,
+            request_id=request_id,
         )
-    if rows is None:
-        return
+        if outcome is None:
+            return None
+    else:
+        # The build's two reads of the closing odds (base features, referees)
+        # load once, and its reads share their connections.
+        with timer.phase("tonight's rows"), history_cache(), kept_connections():
+            rows = tonight_rows(
+                job,
+                scheduled_data,
+                inputs.specs,
+                date_to_predict=date_to_predict,
+                log=log,
+            )
+        if rows is None:
+            return None
 
-    outcome = fit_and_store(
-        job,
-        inputs,
-        rows,
-        scheduled_data,
-        s3_client=s3,
-        bucket=bucket,
-        date_to_predict=date_to_predict,
-        timer=timer,
-        log=log,
-        persist=persist,
-    )
+        outcome = fit_and_store(
+            job,
+            inputs,
+            rows,
+            scheduled_data,
+            s3_client=s3,
+            bucket=bucket,
+            date_to_predict=date_to_predict,
+            timer=timer,
+            log=log,
+            persist=persist,
+            request_id=request_id,
+        )
     failures = outcome.failures
     log.step("Summary", group=False)
     print_status(f"{len(outcome.predicted)} of {outcome.n_fits} model(s) predicted")
@@ -287,7 +362,7 @@ def run_tabpfn(
         "\n".join(
             [
                 f"### TabPFN {model_version} ({job.plan}) for "
-                f"{date_to_predict}, {format_horizon(horizon)}",
+                f"{date_to_predict}, {at}",
                 "",
                 f"{len(outcome.predicted)} of {outcome.n_fits} model(s) predicted, "
                 f"{len(failures)} failure(s)"
@@ -297,8 +372,118 @@ def run_tabpfn(
             ]
         )
     )
+    if request_id is not None:
+        report_request(
+            request_id,
+            final_status(failures, len(outcome.predicted)),
+            error="; ".join(failures) or None,
+        )
     if failures:
         raise SystemExit(1)
+    return True
+
+
+def fit_nearest(
+    job: TabPFNJob,
+    scheduled_data: dict,
+    *,
+    s3_client,
+    bucket: str,
+    date_to_predict: str,
+    max_frame_age_days: int,
+    timer: PhaseTimer,
+    log: RunLog,
+    persist: bool,
+    request_id: int | None,
+) -> JobOutcome | None:
+    """Each game's latest snapshot, predicted by TabPFN fitted on the rows of
+    its nearest horizon: one fit (and one stored run) per group of games.
+
+    The latest rows are built once for the slate; a group whose spec or
+    training rows cannot be read fails alone. None when no game is left
+    before tip-off.
+    """
+    log.step("Preparing Tonight's Latest Snapshot Rows")
+    with timer.phase("tonight's rows"), history_cache(), kept_connections():
+        rows = latest_rows(
+            scheduled_data, date_to_predict=date_to_predict, games=job.wanted_games
+        )
+    if rows.empty:
+        print_status("No game left before tip-off; nothing to predict.", ok=False)
+        return None
+    horizons = tabpfn_horizons(job.targets, SETTINGS.prediction_model_slots)
+    minutes_left = dict(
+        zip(rows["GAME_ID"].astype(str), rows["TIME_TO_MATCH_MIN"], strict=True)
+    )
+    groups = group_by_horizon(assign_horizons(minutes_left, horizons))
+    for horizon, games in groups.items():
+        print_status(f"{format_horizon(horizon)}: {', '.join(games)}")
+
+    predicted: list[str] = []
+    failures: list[str] = []
+    n_fits = 0
+    for horizon, games in groups.items():
+        group_job = replace(job, horizon=horizon, wanted_games=frozenset(games))
+        prefix = f"{format_horizon(horizon)}: "
+        log.step(f"{prefix}Loading the Feature Spec and Training Frame")
+        try:
+            with timer.phase(f"{prefix}spec and training rows"):
+                inputs = load_fit_inputs(
+                    group_job,
+                    s3_client=s3_client,
+                    bucket=bucket,
+                    slots=SETTINGS.prediction_model_slots,
+                    date_to_predict=date_to_predict,
+                    max_frame_age_days=max_frame_age_days,
+                )
+        except Exception as exc:  # noqa: BLE001 -- the other groups still run
+            failures.append(f"{prefix}{type(exc).__name__}: {exc}")
+            print_status(failures[-1], ok=False)
+            n_fits += len(group_job.fits)
+            continue
+        group_rows = TonightRows(
+            rows.loc[rows["GAME_ID"].astype(str).isin(set(games))].copy(),
+            BASE_SCHEMA_VERSION,
+            scheduled_games=scheduled_data["scheduled_games"],
+        )
+        outcome = fit_and_store(
+            group_job,
+            inputs,
+            group_rows,
+            scheduled_data,
+            s3_client=s3_client,
+            bucket=bucket,
+            date_to_predict=date_to_predict,
+            timer=timer,
+            log=log,
+            persist=persist,
+            step_prefix=prefix,
+            request_id=request_id,
+        )
+        del inputs
+        gc.collect()
+        predicted += outcome.predicted
+        failures += outcome.failures
+        n_fits += outcome.n_fits
+    return JobOutcome(predicted=predicted, failures=failures, n_fits=n_fits)
+
+
+def tabpfn_horizons(targets: Sequence[str], slots: Sequence[ModelSlot]) -> list[int]:
+    """The intermediate horizons every target has an enabled slot at."""
+    per_target = [
+        {
+            int(slot.horizon_minutes)
+            for slot in slots
+            if slot.horizon_minutes and str(slot.target) == target
+        }
+        for target in targets
+    ]
+    common = set.intersection(*per_target) if per_target else set()
+    if not common:
+        raise SystemExit(
+            f"No intermediate horizon is enabled for every target ({', '.join(targets)})."
+        )
+    return sorted(common)
 
 
 def _parse_slot(value: str) -> ModelSlot:
@@ -327,11 +512,26 @@ def main(argv: Sequence[str] | None = None) -> None:
     )
     parser.add_argument(
         "--horizon-minutes",
-        type=int,
         help=(
             "With --line intermediate: the slot's minutes before tip-off "
-            f"(default: {DEFAULT_INTERMEDIATE_HORIZON})."
+            f"(default: {DEFAULT_INTERMEDIATE_HORIZON}), or nearest (with "
+            "--input latest): each game the horizon nearest its time to tip-off."
         ),
+    )
+    parser.add_argument(
+        "--input",
+        choices=("own", "latest"),
+        default="own",
+        dest="input_mode",
+        help=(
+            "With --line intermediate: predict each game's row of the horizon "
+            "(own, default) or its latest snapshot (latest, live manual runs)."
+        ),
+    )
+    parser.add_argument(
+        "--request-id",
+        type=int,
+        help="The dashboard request this run answers (stored as runs.request_id).",
     )
     parser.add_argument(
         "--game-date",
@@ -417,6 +617,20 @@ def main(argv: Sequence[str] | None = None) -> None:
         help="Predict without storing: no prediction store rows, no S3 archive",
     )
     args = parser.parse_args(argv)
+    nearest = False
+    horizon_minutes = None
+    if args.horizon_minutes is not None:
+        if args.horizon_minutes.strip().lower() == "nearest":
+            nearest = True
+        else:
+            try:
+                horizon_minutes = int(args.horizon_minutes)
+            except ValueError:
+                parser.error("--horizon-minutes takes a number or nearest.")
+    if args.input_mode == "latest" and (
+        args.line != "intermediate" or args.as_of is not None
+    ):
+        parser.error("--input latest requires --line intermediate and no --as-of.")
     try:
         if args.fits is not None:
             if args.targets is not None or args.modes is not None:
@@ -449,7 +663,7 @@ def main(argv: Sequence[str] | None = None) -> None:
     predict_tabpfn(
         targets=targets,
         line=args.line,
-        horizon_minutes=args.horizon_minutes,
+        horizon_minutes=horizon_minutes,
         game_date=None if args.game_date is None else args.game_date.isoformat(),
         game_ids=game_ids,
         as_of=args.as_of,
@@ -463,6 +677,9 @@ def main(argv: Sequence[str] | None = None) -> None:
         update_db=not args.skip_db_update,
         allow_stale_lines=args.allow_stale_lines,
         persist=not args.no_persist,
+        input_mode=args.input_mode,
+        nearest=nearest,
+        request_id=args.request_id,
     )
 
 

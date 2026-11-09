@@ -4,9 +4,12 @@ from datetime import UTC, datetime
 
 import pandas as pd
 import pytest
+from nba_ou.dashboard.domain.access import AppUser
 from nba_ou.dashboard.repositories.predictions import TodayData
 
 NOW = pd.Timestamp("2026-10-28T18:00:00Z")
+ACTIVE_USER = AppUser(2, "fan@example.com", "Fan", 1, False)
+ADMIN_USER = AppUser(1, "admin@example.com", "Admin", 1, True)
 
 
 def rendered_images(app):
@@ -98,3 +101,12 @@ class FrozenDateTime(datetime):
     def now(cls, tz=None):
         value = NOW.to_pydatetime()
         return value.astimezone(tz or UTC)
+
+
+@pytest.fixture(autouse=True)
+def signed_in(monkeypatch):
+    """Every page test runs signed in and approved unless it says otherwise
+    (``tests/dashboard/test_access.py`` tests the gate itself)."""
+    from nba_ou.dashboard.ui import auth
+
+    monkeypatch.setattr(auth, "current_user", lambda: ACTIVE_USER)

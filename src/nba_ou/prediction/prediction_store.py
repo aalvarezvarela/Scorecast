@@ -399,6 +399,9 @@ class PredictionRunRecorder:
 
     workflow: int
     game_date: str
+    #: The dashboard request this run answers (``runs.request_id``); None for
+    #: every scheduled run.
+    request_id: int | None = None
     started_at: datetime = field(default_factory=lambda: datetime.now(UTC))
     run_uuid: uuid.UUID = field(default_factory=uuid.uuid4)
     book: str = field(default_factory=get_main_book)
@@ -863,6 +866,7 @@ class PredictionRunRecorder:
             "workflow": int(self.workflow),
             "status": int(status),
             "git_sha": git_sha(),
+            "request_id": None if self.request_id is None else int(self.request_id),
         }
         return RunTables(
             run=run,

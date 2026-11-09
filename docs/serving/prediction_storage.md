@@ -278,10 +278,11 @@ fields; `status = 0`, scores null), and completed by the finished-games job.
 | --- | --- | --- |
 | `run_id` | `INTEGER` identity PK | |
 | `run_uuid` | `UUID` unique | Also the end of the S3 run folder's name. |
-| `workflow` | `SMALLINT` | `1` daily predictor, `2` past-snapshot run, `3` TabPFN run (`scripts/predict_tabpfn.py`). |
+| `workflow` | `SMALLINT` | `1` daily predictor, `2` past-snapshot run, `3` TabPFN run (`scripts/predict_tabpfn.py`), `4` past-only refit and historical backfill. |
 | `started_at`, `finished_at` | `TIMESTAMPTZ` | UTC. |
 | `git_sha` | `TEXT` | |
 | `status` | `SMALLINT` | `1` ok, `2` partial, `3` S3 upload failed. |
+| `request_id` | `INTEGER`, nullable | The dashboard request a manual run answers (`app.prediction_requests`, [manual_predictions.md](manual_predictions.md)); null for every scheduled run. Added 2026-11-06; the foreign key comes with schema `app`. `predictions_full` exposes it. |
 
 ### `prediction.model_builds`
 
@@ -300,7 +301,7 @@ fields; `status = 0`, scores null), and completed by the finished-games job.
 | `anchor_book` | `TEXT` | Book of the stored lines. |
 | `s3_build_prefix` | `TEXT`, nullable | |
 
-Unique on `(schema_version, target, horizon_minutes, variant, fit_id)`.
+Unique on `(kind, schema_version, dataset_type, target, horizon_minutes, variant, fit_id)`.
 Closing slots refit daily, so this grows by a few rows per day.
 
 ### `prediction.inputs`

@@ -154,6 +154,7 @@ def upload_prediction_run(
         "started_at": run["started_at"].isoformat(),
         "finished_at": run["finished_at"].isoformat(),
         "git_sha": run["git_sha"],
+        "request_id": run.get("request_id"),
         "main_book": recorder.book,
         "frame_versions": recorder.frame_versions,
         "support_table_version": support_table_version(),

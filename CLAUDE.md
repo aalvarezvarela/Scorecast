@@ -254,6 +254,15 @@ results. In short:
   uses completed games from the current and previous seasons, excluding
   the evaluated date and later dates. Both are stored with `kind=2` and
   `workflow=2` in Aiven. Details: `docs/intermediate/live_prediction.md`.
+- Manual runs (`docs/serving/manual_predictions.md`): signed-in dashboard
+  users (Google `st.login`, approved in `app.users`) dispatch the predictor
+  (`--slots closing|nearest|H`) or TabPFN (`--input latest`,
+  `--horizon-minutes nearest|H`) with a `--request-id`. Every game reads its
+  latest snapshot; `nearest` gives each game the model (or TabPFN training
+  rows) of the horizon nearest its time to tip. Stored like any run with
+  `runs.request_id`, which keeps them out of Yesterday/Historical. Bets go to
+  `app.bets` (graded in `app.bets_full`); schema `app` in
+  `postgre_db/app_aiven/`.
 - TabPFN runs on its own (`scripts/predict_tabpfn.py`, dispatch-only workflow
   `nba_predictor_daily_tabpfn_client.yml`): one or more targets (`--targets`)
   and one line per run (default `line_error`, `total_points` and `spread_error` at the closing line;

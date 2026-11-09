@@ -1047,3 +1047,32 @@ def test_closing_replay_marker_is_rejected_in_live_run():
     assert "past-snapshot" in recorder.add_predictions(
         predictions, label="bad live replay"
     )
+
+
+@pytest.mark.postgres
+@needs_db
+def test_a_manual_run_stores_its_request(conn):
+    from nba_ou.postgre_db.predictions_aiven.store import write_run
+
+    scheduled = daily_recorder()
+    manual = daily_recorder()
+    manual.request_id = 7
+    assert manual.tables(status=1).run["request_id"] == 7
+    assert write_run(conn, scheduled.tables(status=1))
+    assert write_run(conn, manual.tables(status=1))
+    runs = _rows(conn, "SELECT run_uuid, request_id FROM prediction.runs")
+    by_run = dict(zip(runs["run_uuid"].astype(str), runs["request_id"], strict=True))
+    assert pd.isna(by_run[str(scheduled.run_uuid)])
+    assert by_run[str(manual.run_uuid)] == 7
+    views = _rows(
+        conn,
+        "SELECT DISTINCT request_id FROM prediction.predictions_full "
+        "WHERE request_id IS NOT NULL",
+    )
+    assert views["request_id"].tolist() == [7]
+
+
+def test_request_id_column_is_added_to_existing_stores():
+    ddl = store_schema.ddl_script()
+    assert "ALTER TABLE prediction.runs ADD COLUMN IF NOT EXISTS request_id" in ddl
+    assert "r.request_id" in ddl

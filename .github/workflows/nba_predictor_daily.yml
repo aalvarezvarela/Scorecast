@@ -1,4 +1,6 @@
 name: Predictions - Upcoming NBA Games
+# A dashboard request names itself in the run list (docs/serving/manual_predictions.md).
+run-name: ${{ inputs.request_id && format('Manual request #{0} ({1})', inputs.request_id, inputs.slots) || '' }}
 
 on:
     workflow_dispatch:
@@ -27,6 +29,14 @@ on:
                 description: "Fetch reports and odds again before the TabPFN jobs and predict at that moment, not at their snapshot"
                 type: boolean
                 default: false
+            slots:
+                description: "Which slots predict: all, closing, nearest (each game its nearest horizon) or a horizon in minutes; anything but all reads the latest snapshot (dashboard requests)"
+                type: string
+                default: all
+            request_id:
+                description: "The dashboard request this run answers (app.prediction_requests); empty = a scheduled run"
+                type: string
+                default: ""
     # schedule:
     #     # Every day at 23:00 UTC (1 hour before midnight)
     #     - cron: "11 00 * * *"
@@ -125,8 +135,23 @@ jobs:
                   TABPFN_JOBS: ${{ inputs.tabpfn }}
                   # Empty (a dispatch from before the input existed): standard.
                   TABPFN_MODES: ${{ inputs.tabpfn_modes || 'standard' }}
+                  SLOTS: ${{ inputs.slots || 'all' }}
+                  REQUEST_ID: ${{ inputs.request_id }}
               run: |
                   python scripts/predict_nba_games.py \
                       ${TABPFN_JOBS:+--tabpfn "$TABPFN_JOBS" --tabpfn-modes $TABPFN_MODES} \
+                      --slots "${SLOTS:-all}" \
+                      ${REQUEST_ID:+--request-id "$REQUEST_ID"} \
                       ${{ inputs.tabpfn_refresh && '--tabpfn-refresh' || '' }} \
                       ${{ github.event_name == 'workflow_dispatch' && !inputs.persist && '--no-persist' || '' }}
+
+            # The script reports its own outcome; this covers a job that died
+            # before it could (setup, timeout, cancel).
+            - name: Mark the dashboard request failed
+              if: ${{ (failure() || cancelled()) && inputs.request_id != '' }}
+              env:
+                  REQUEST_ID: ${{ inputs.request_id }}
+              run: |
+                  python -m nba_ou.postgre_db.app_aiven.requests \
+                      --request-id "$REQUEST_ID" --status failed \
+                      --error "Workflow run ${{ github.run_id }} failed or was cancelled"

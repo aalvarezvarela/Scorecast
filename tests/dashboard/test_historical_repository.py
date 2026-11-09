@@ -238,7 +238,7 @@ def synthetic_query():
     prefix = """WITH fixture_predictions AS (
         SELECT * FROM jsonb_to_recordset(%s) AS rows(COLUMNS)
     ), fixture_runs AS (
-        SELECT * FROM jsonb_to_recordset(%s) AS rows(run_id integer, finished_at timestamptz)
+        SELECT * FROM jsonb_to_recordset(%s) AS rows(run_id integer, finished_at timestamptz, request_id integer)
     ), base AS""".replace("COLUMNS", FIXTURE_COLUMNS)
     query = (
         analysis.ANALYSIS_QUERY.replace("WITH base AS", prefix)
