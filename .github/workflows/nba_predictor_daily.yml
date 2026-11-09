@@ -1,6 +1,6 @@
 name: Predictions - Upcoming NBA Games
 # A dashboard request names itself in the run list (docs/serving/manual_predictions.md).
-run-name: ${{ inputs.request_id && format('Manual request #{0} ({1})', inputs.request_id, inputs.slots) || '' }}
+run-name: "${{ inputs.request_id && format('Manual request #{0} ({1})', inputs.request_id, inputs.slots) || '' }}"
 
 on:
     workflow_dispatch:

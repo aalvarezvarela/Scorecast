@@ -72,6 +72,8 @@ def test_workflow_inputs_exist():
     for kind, dataset_type, horizon in [(1, 2, None), (3, 2, None), (3, 1, None)]:
         workflow, inputs = manual.dispatch_inputs(1, kind, dataset_type, horizon)
         spec = yaml.safe_load((REPO_ROOT / ".github/workflows" / workflow).read_text())
+        # An unquoted " #" would cut the expression: GitHub then rejects the file.
+        assert spec["run-name"].endswith("}}"), workflow
         declared = spec[True]["workflow_dispatch"]["inputs"]
         assert set(inputs) <= set(declared), workflow
 
