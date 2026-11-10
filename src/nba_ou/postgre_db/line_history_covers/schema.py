@@ -9,9 +9,11 @@ one for another per game. Two differences, both in content:
 * ``lh_game.event_id`` is the Covers game id, and ``tipoff_utc`` the NBA
   schedule feed's (Covers' finished games carry no tip time).
 
-One table is Covers' own (``COVERS_DDL_STATEMENTS``): ``lh_consensus``, each
-stored game's Covers Consensus pick counts, the counts SBR's
-``*_consensus_pct_*`` shares are taken from.
+One table is Covers' own (``COVERS_DDL_STATEMENTS``): ``lh_consensus``, a
+game's Covers Consensus pick counts, the counts SBR's ``*_consensus_pct_*``
+shares are taken from. It is keyed by NBA game id and does not reference
+``lh_game``: a game can have its counts without its lines being stored here
+(the 2023-24 backfill, ``scripts/line_history/covers/backfill_consensus.py``).
 
 The SBR modules are not parameterised for another schema on purpose: they are
 in the code closure that keys the training-data caches, and any edit there
@@ -37,7 +39,7 @@ SCHEMA = "line_history_covers"
 COVERS_DDL_STATEMENTS: tuple[str, ...] = (
     """
     CREATE TABLE IF NOT EXISTS {schema}.lh_consensus (
-        game_id           TEXT PRIMARY KEY REFERENCES {schema}.lh_game (game_id),
+        game_id           TEXT PRIMARY KEY,
         season_year       SMALLINT    NOT NULL,
         spread_away_picks INTEGER     NOT NULL,
         spread_home_picks INTEGER     NOT NULL,
@@ -100,6 +102,21 @@ def create_season_partition(conn: psycopg.Connection, season_year: int) -> None:
                 sql.Identifier(partition_name(season_year)),
                 sql.Identifier(SCHEMA),
                 sql.Literal(int(season_year)),
+            )
+        )
+    conn.commit()
+
+
+#: The reference ``lh_consensus`` was first created with.
+CONSENSUS_GAME_REFERENCE = "lh_consensus_game_id_fkey"
+
+
+def drop_consensus_game_reference(conn: psycopg.Connection) -> None:
+    """Drop ``lh_consensus``'s reference to ``lh_game`` (safe if already gone)."""
+    with conn.cursor() as cur:
+        cur.execute(
+            sql.SQL("ALTER TABLE {}.lh_consensus DROP CONSTRAINT IF EXISTS {}").format(
+                sql.Identifier(SCHEMA), sql.Identifier(CONSENSUS_GAME_REFERENCE)
             )
         )
     conn.commit()

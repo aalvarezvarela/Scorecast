@@ -6,7 +6,9 @@ fixed on `fix/training-data-defects`.
 
 Status: **Implemented** (checked 2026-10-22) — the fixes are merged, the `2_5`
 data was rebuilt on 2026-10-16, and all 51 production slots were retrained on it
-and promoted on 2026-10-20. Item A is accepted and not fixed.
+and promoted on 2026-10-20. Item A is accepted and not fixed. Items 10 to 12
+came later; items 11 and 12 (2026-11-10) are fixed in code and wait for a
+rebuild and retrain.
 
 | # | Problem | Status |
 |---|---|---|
@@ -21,6 +23,8 @@ and promoted on 2026-10-20. Item A is accepted and not fixed.
 | 9 | Available players without a target box-score row lose their last game | Fixed (date-based `_AFTER` selection) |
 | A | Intermediate `GLOBAL_*` can include results after the snapshot | **Accepted, not fixed** |
 | 10 | Closing repair takes a book's stale opener as its close (2026-27 Fanatics) | Fixed (repair rule, 2026-10-31) |
+| 11 | Season-opener travel starts from the previous season's last city | Fixed (code, 2026-11-10); rebuild pending |
+| 12 | Season standard deviation is 0.0 after one game | Fixed (code, 2026-11-10); rebuild pending |
 
 ## Decisions
 
@@ -273,6 +277,64 @@ Fanatics closes 2.5+ points off the median went from 24 to 5 of 80, and only
 Fanatics, BetMGM and cross-book columns changed. Earlier seasons keep their
 memoised repair (`closing_line_repair` history memo, frozen key) until they are
 rebuilt. Tests: the stale-book cases in `tests/features/test_closing_line_repair.py`.
+
+## 11. Season-opener travel starts from the previous season's last city
+
+**Problem.** `add_travel_distance` took a team's previous city with
+`groupby("TEAM_ID").shift(1)`, so the first game of a season followed the last
+game of the season before, months earlier. In the 2026-10-16 closing file 53%
+of home openers showed a trip in the last day (a team that ended the previous
+season away "flew home" for its opener), and away openers started from
+wherever the previous season ended. A team's first game in the whole frame had
+no previous city and got 0 either way.
+
+**Fix** (`data_processing/travel/travel_processing.py`). The previous game is
+looked up per `(TEAM_ID, SEASON_YEAR)`. For a team's first game of a season:
+
+- at home: no trip, no jetlag;
+- away: one trip from the team's own city (`HOME_CITY` in the team log), taken
+  the day before, so it counts in every rolling window and its timezone change
+  is the jetlag.
+
+A frame without `SEASON_YEAR` is treated as one season per team.
+
+**Effect.** Recomputing the travel columns of the 2026-10-16 closing file
+changes 841 of 11,543 rows, all within the first 17 days of a season (the
+14-day window carries the opener trip forward): 134 home openers go to zero
+travel, 136 away openers get the trip from home (mean 1,052 km) and 60 of them
+a non-zero jetlag. The closing and intermediate datasets and the season
+partitions need a rebuild, and the slots a retrain, before the stored rows
+match the code. Travel now reads only the current season's games, so it no
+longer depends on how many past seasons a build loads.
+
+Not changed: neutral-site games (bubble, Tampa, international) are still
+placed in the home team's city, and jetlag keeps no direction. See
+`improvements_2_5.md`.
+
+Removed with it, without changing any value: a `sort_values` in
+`merge_home_away_data()` whose result was discarded.
+
+## 12. Season standard deviation is 0.0 after one game
+
+**Problem.** `compute_season_std` (`data_processing/statistics/statistics.py`)
+took the expanding standard deviation of a team's earlier games of the season
+at the same location with `ddof=0` and `min_periods=1`. After exactly one such
+game it returned 0.0, a team that never varies, instead of "not known yet":
+279 rows for home `PTS` in the 2026-10-16 closing file, and the same rows of
+every other `*_SEASON_BEFORE_STD` column. The previous-season fallback used
+the sample formula (`ddof=1`), so the two sources of one column were different
+statistics, and the population formula runs low on few games (7.0 against 9.9
+for two games of 118 and 104 points). `PTS_FORM_Z_*`, which divides by this
+column, reached -37.
+
+**Fix.** `ddof=1` for the expanding value. One prior game now gives NaN, which
+the existing fallback fills with the previous season's standard deviation of
+the same team and location; with no previous season in the frame it stays NaN.
+
+**Effect.** Every `*_SEASON_BEFORE_STD` value changes: by the factor
+`sqrt(n / (n - 1))` for `n` prior games (41% at two games, 5% at ten, 1.3% at
+forty), and from 0.0 to the fallback at one. Columns derived from it
+(`PTS_FORM_Z_*`) change with it.
 
 ## Accepted in 2_5 (not fixed)
 

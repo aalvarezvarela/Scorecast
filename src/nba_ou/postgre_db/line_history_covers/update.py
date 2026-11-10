@@ -372,6 +372,33 @@ def update_covers_line_history(
     return result
 
 
+def update_consensus(
+    targets: dict[date, list[ConsensusTarget]],
+    *,
+    conn: psycopg.Connection | None,
+    client: CoversClient,
+    archive: archive_mod.CoversArchive | None = None,
+    dry_run: bool = False,
+    progress: Callable[[str], None] = print,
+) -> UpdateResult:
+    """Fetch and store the pick counts of ``targets`` and nothing else, one
+    date at a time. The targets need not be games of this store."""
+    result = UpdateResult(consensus_planned=sum(len(t) for t in targets.values()))
+    for day in sorted(targets):
+        with log_group(f"{day}: consensus of {len(targets[day])} game(s)", progress):
+            _update_consensus(
+                day,
+                targets[day],
+                conn=conn,
+                client=client,
+                archive=None if dry_run else archive,
+                dry_run=dry_run,
+                result=result,
+                progress=progress,
+            )
+    return result
+
+
 def _update_consensus(
     day: date,
     targets: list[ConsensusTarget],

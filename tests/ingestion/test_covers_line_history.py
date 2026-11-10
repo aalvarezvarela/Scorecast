@@ -852,13 +852,24 @@ class TestSchemaWrites:
         (ddl,) = [s for s in conn.log if "lh_consensus" in s]
         assert "CREATE TABLE IF NOT EXISTS" in ddl
         assert "game_id           TEXT PRIMARY KEY" in ddl
-        assert 'REFERENCES "line_history_covers".lh_game (game_id)' in ddl
+        # No reference to lh_game: a game can have counts without stored lines.
+        assert "REFERENCES" not in ddl
         for column in store.CONSENSUS_COLUMNS[1:]:
             assert column in ddl
         assert "fetched_at        TIMESTAMPTZ" in ddl
-        # Created after lh_game, which it references.
-        game_ddl = next(i for i, s in enumerate(conn.log) if "lh_game (" in s)
-        assert conn.log.index(ddl) > game_ddl
+
+    def test_the_old_reference_to_lh_game_is_dropped(self):
+        conn = _Conn()
+        schema_mod.drop_consensus_game_reference(conn)
+        (statement,) = conn.log
+        assert 'ALTER TABLE "line_history_covers".lh_consensus' in statement
+        assert 'DROP CONSTRAINT IF EXISTS "lh_consensus_game_id_fkey"' in statement
+        assert conn.commits == 1
+
+    def test_sbr_games_are_read_for_a_consensus_backfill(self):
+        conn = _Conn(rows=[])
+        assert store.fetch_sbr_game_events(conn, 2023).empty
+        assert '"line_history".lh_game' in conn.log[0]
 
     def test_consensus_reads_and_writes_the_covers_schema(self):
         conn = _Conn(rows=[("0022600001",), ("0022600002",)])
