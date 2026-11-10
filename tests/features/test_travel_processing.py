@@ -1,12 +1,14 @@
 import numpy as np
 import pandas as pd
 import pytest
+from nba_ou.config.constants import CITY_TO_LATLON
 from nba_ou.data_processing.merged_home_away_data.add_features_after_merging import (
     add_high_value_features_for_team_points,
 )
 from nba_ou.data_processing.travel.travel_processing import (
     add_rolling_distances,
     compute_travel_features,
+    haversine_km,
     merge_travel_features,
 )
 
@@ -44,16 +46,62 @@ def test_compute_travel_features_adds_recent_jetlag_hours():
     result = compute_travel_features(df, log_scale=True)
 
     assert result.loc[0, "JETLAG_HOURS_FROM_LAST_GAME_HOME_TEAM"] == 0
-    assert result.loc[0, "JETLAG_HOURS_FROM_LAST_GAME_AWAY_TEAM"] == 0
+    # The Lakers open away: they flew in from Los Angeles the day before.
+    assert result.loc[0, "JETLAG_HOURS_FROM_LAST_GAME_AWAY_TEAM"] == 3
     assert result.loc[1, "JETLAG_HOURS_FROM_LAST_GAME_HOME_TEAM"] == 3
     assert result.loc[1, "JETLAG_HOURS_FROM_LAST_GAME_AWAY_TEAM"] == 3
     assert result.loc[2, "JETLAG_HOURS_FROM_LAST_GAME_HOME_TEAM"] == 0
     assert result.loc[2, "JETLAG_HOURS_FROM_LAST_GAME_AWAY_TEAM"] == 0
-    # Both teams made two equal Boston/LA trips in 14 days, one in the last 2.
-    for side in ("HOME", "AWAY"):
+    # Equal Boston/LA trips in 14 days, one of them in the last 2: Boston made
+    # two, the Lakers three (their away opener counts as a trip from home).
+    for side, fraction in (("HOME", 1 / 2), ("AWAY", 1 / 3)):
         assert result.loc[
             2, f"TRAVEL_RECENCY_RATIO_{side}_2D_OVER_14D_BEFORE"
-        ] == pytest.approx(0.5)
+        ] == pytest.approx(fraction)
+
+
+def test_season_opener_travel_ignores_the_previous_season():
+    def game(game_id, day, season, home, away):
+        cities = {"BOS": "Boston", "LAL": "Los Angeles", "MIA": "Miami"}
+        return {
+            "GAME_ID": game_id,
+            "GAME_DATE": day,
+            "SEASON_YEAR": season,
+            "TEAM_ID_TEAM_HOME": home,
+            "TEAM_CITY_TEAM_HOME": cities[home],
+            "TEAM_ID_TEAM_AWAY": away,
+            "TEAM_CITY_TEAM_AWAY": cities[away],
+        }
+
+    df = pd.DataFrame(
+        [
+            # Last season ends with Boston in Los Angeles.
+            game("001", "2025-06-10", 2024, "LAL", "BOS"),
+            # Boston opens at home, Miami away; then the Lakers open away.
+            game("002", "2025-10-21", 2025, "BOS", "MIA"),
+            game("003", "2025-10-22", 2025, "MIA", "LAL"),
+        ]
+    )
+
+    result = compute_travel_features(df, log_scale=False)
+
+    boston_miami = haversine_km(*CITY_TO_LATLON["Boston"], *CITY_TO_LATLON["Miami"])
+    la_miami = haversine_km(*CITY_TO_LATLON["Los Angeles"], *CITY_TO_LATLON["Miami"])
+    # Home opener: no trip from last season's final city.
+    assert result.loc[1, "TOTAL_KM_IN_LAST_1_DAYS_HOME_TEAM"] == 0
+    assert result.loc[1, "JETLAG_HOURS_FROM_LAST_GAME_HOME_TEAM"] == 0
+    # Away opener: one trip from the team's own city, the day before.
+    assert result.loc[1, "TOTAL_KM_IN_LAST_1_DAYS_AWAY_TEAM"] == pytest.approx(
+        boston_miami
+    )
+    assert result.loc[1, "JETLAG_HOURS_FROM_LAST_GAME_AWAY_TEAM"] == 0
+    assert result.loc[2, "TOTAL_KM_IN_LAST_1_DAYS_AWAY_TEAM"] == pytest.approx(la_miami)
+    assert result.loc[2, "JETLAG_HOURS_FROM_LAST_GAME_AWAY_TEAM"] == 3
+    # Miami's second game is its first at home: the opener trip to Boston the
+    # day before and the trip back.
+    assert result.loc[2, "TOTAL_KM_IN_LAST_1_DAYS_HOME_TEAM"] == pytest.approx(
+        2 * boston_miami
+    )
 
 
 def test_rolling_travel_includes_current_trip_and_left_boundary():

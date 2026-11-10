@@ -77,7 +77,7 @@ Sportsbook Review, Yahoo, refs and injuries) plus
 | Market features | wide closing and opening columns per book | snapshot panel read from line-history ticks |
 | Injuries | last report before tip, with fallback to realised absences | last report strictly before the snapshot timestamp |
 | Referees | always visible | masked before 09:00 ET on game day |
-| Same-day serving | yes (`todays_prediction=True`) | not implemented |
+| Same-day serving | yes (`todays_prediction=True`) | yes, every horizon (`prediction/intermediate_frame.py`) |
 | Leakage gate | `merged_home_away_data/select_train_columns.py` | `create_training_data/select_intermediate_columns.py` |
 | Closing lines | the target line | moved to a scoring sidecar CSV (`ODDS_CLOSING_*`), never in X |
 

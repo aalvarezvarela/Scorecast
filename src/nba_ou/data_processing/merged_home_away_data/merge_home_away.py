@@ -211,7 +211,6 @@ def merge_home_away_data(df, todays_prediction=False):
 
     # Finally, concatenate the new columns onto df_merged
     df_merged = pd.concat([df_merged, results_df], axis=1)
-    df_merged.sort_values(["TEAM_ID_TEAM_HOME", "GAME_DATE"], ascending=True)
 
     df_merged = df_merged.sort_values(by="GAME_DATE", ascending=False)
 

@@ -43,6 +43,13 @@ def haversine_km(lat1, lon1, lat2, lon2):
     return R * c
 
 
+def _team_season_keys(team_log):
+    """Group keys of one team's season; one group per team without SEASON_YEAR."""
+    if "SEASON_YEAR" in team_log.columns:
+        return ["TEAM_ID", "SEASON_YEAR"]
+    return ["TEAM_ID"]
+
+
 def build_team_game_log(df):
     """
     Convert game-level dataframe into team-centric game log.
@@ -58,6 +65,7 @@ def build_team_game_log(df):
             - TEAM_CITY_TEAM_HOME
             - TEAM_ID_TEAM_AWAY
             - TEAM_CITY_TEAM_AWAY
+            - SEASON_YEAR (optional): travel restarts with each season
 
     Returns:
         pd.DataFrame: Team-centric game log with columns:
@@ -65,35 +73,33 @@ def build_team_game_log(df):
             - GAME_DATE
             - TEAM_ID
             - CITY (where game is played)
+            - HOME_CITY (the team's own city)
             - IS_HOME
+            - SEASON_YEAR (when the input has it)
     """
-    # Home team: plays in their own city
-    home = df[
-        [
-            "GAME_ID",
-            "GAME_DATE",
-            "TEAM_ID_TEAM_HOME",
-            "TEAM_CITY_TEAM_HOME",
-        ]
-    ].copy()
+    # Both teams play in the home team's city; each keeps its own city as the
+    # place it starts the season from.
+    sides = (
+        ("TEAM_ID_TEAM_HOME", "TEAM_CITY_TEAM_HOME", True),
+        ("TEAM_ID_TEAM_AWAY", "TEAM_CITY_TEAM_AWAY", False),
+    )
+    logs = []
+    for team_col, own_city_col, is_home in sides:
+        side = pd.DataFrame(
+            {
+                "GAME_ID": df["GAME_ID"],
+                "GAME_DATE": df["GAME_DATE"],
+                "TEAM_ID": df[team_col],
+                "CITY": df["TEAM_CITY_TEAM_HOME"],
+                "HOME_CITY": df[own_city_col],
+            }
+        )
+        if "SEASON_YEAR" in df.columns:
+            side["SEASON_YEAR"] = df["SEASON_YEAR"]
+        side["IS_HOME"] = is_home
+        logs.append(side)
 
-    home.columns = ["GAME_ID", "GAME_DATE", "TEAM_ID", "CITY"]
-    home["IS_HOME"] = True
-
-    # Away team: plays in HOME TEAM'S city (travels TO opponent's city)
-    away = df[
-        [
-            "GAME_ID",
-            "GAME_DATE",
-            "TEAM_ID_TEAM_AWAY",
-            "TEAM_CITY_TEAM_HOME",  # Changed: away team plays in home team's city!
-        ]
-    ].copy()
-
-    away.columns = ["GAME_ID", "GAME_DATE", "TEAM_ID", "CITY"]
-    away["IS_HOME"] = False
-
-    team_log = pd.concat([home, away], ignore_index=True)
+    team_log = pd.concat(logs, ignore_index=True)
     team_log["GAME_DATE"] = pd.to_datetime(team_log["GAME_DATE"])
 
     return team_log.sort_values(["TEAM_ID", "GAME_DATE"]).reset_index(drop=True)
@@ -105,7 +111,9 @@ def add_travel_distance(team_log, city_coords=None):
 
     Rules:
     - If team name not in city_coords, distance = 0
-    - If previous city not available (first game), distance = 0
+    - A team's first game of a season does not follow the previous season's
+      last game: at home, distance = 0; away, the team travels from its own
+      city (HOME_CITY, when the log has it)
     - If both current and previous games are home games, distance = 0
     - Otherwise, distance = great-circle distance between cities
 
@@ -122,9 +130,19 @@ def add_travel_distance(team_log, city_coords=None):
 
     team_log = team_log.copy()
 
-    # Get previous game information
-    team_log["PREV_CITY"] = team_log.groupby("TEAM_ID")["CITY"].shift(1)
-    team_log["PREV_IS_HOME"] = team_log.groupby("TEAM_ID")["IS_HOME"].shift(1)
+    # Previous game of the same season: the last city of the previous season
+    # says nothing about where a team is months later.
+    by_team_season = team_log.groupby(_team_season_keys(team_log))
+    team_log["PREV_CITY"] = by_team_season["CITY"].shift(1)
+    team_log["PREV_IS_HOME"] = by_team_season["IS_HOME"].shift(1)
+    team_log["SEASON_OPENER"] = by_team_season.cumcount() == 0
+
+    # An away opener starts from the team's own city; a home opener keeps no
+    # previous city and so no travel.
+    if "HOME_CITY" in team_log.columns:
+        away_opener = team_log["SEASON_OPENER"] & ~team_log["IS_HOME"].astype(bool)
+        team_log.loc[away_opener, "PREV_CITY"] = team_log.loc[away_opener, "HOME_CITY"]
+        team_log.loc[away_opener, "PREV_IS_HOME"] = True
 
     def compute_distance(row):
         """Compute travel distance for a single game."""
@@ -180,8 +198,11 @@ def add_jetlag_hours(team_log, city_timezones=None, max_lookback_days=4):
     """
     Compute timezone-change hours from the team's most recent game location.
 
-    Only the immediately previous game is considered. If it is more than
-    max_lookback_days before the current game, jetlag hours are set to 0.
+    Only the immediately previous game of the same season is considered. If it
+    is more than max_lookback_days before the current game, jetlag hours are set
+    to 0. A season opener (SEASON_OPENER, set by add_travel_distance) played
+    away counts as travelled the day before from the team's own city; played
+    at home it has no jetlag.
     """
     if city_timezones is None:
         city_timezones = CITY_TO_TIMEZONE
@@ -189,10 +210,17 @@ def add_jetlag_hours(team_log, city_timezones=None, max_lookback_days=4):
     team_log = team_log.copy()
     team_log = team_log.sort_values(["TEAM_ID", "GAME_DATE", "GAME_ID"])
 
+    by_team_season = team_log.groupby(_team_season_keys(team_log))
     if "PREV_CITY" not in team_log.columns:
-        team_log["PREV_CITY"] = team_log.groupby("TEAM_ID")["CITY"].shift(1)
+        team_log["PREV_CITY"] = by_team_season["CITY"].shift(1)
 
-    team_log["PREV_GAME_DATE"] = team_log.groupby("TEAM_ID")["GAME_DATE"].shift(1)
+    team_log["PREV_GAME_DATE"] = by_team_season["GAME_DATE"].shift(1)
+    if "SEASON_OPENER" in team_log.columns:
+        # PREV_CITY of an away opener is the team's own city (None at home).
+        opener = team_log["SEASON_OPENER"] & team_log["PREV_CITY"].notna()
+        team_log.loc[opener, "PREV_GAME_DATE"] = team_log.loc[
+            opener, "GAME_DATE"
+        ] - pd.Timedelta(days=1)
 
     def compute_jetlag_hours(row):
         if pd.isna(row["PREV_CITY"]) or pd.isna(row["PREV_GAME_DATE"]):
@@ -374,6 +402,7 @@ def compute_travel_features(df, log_scale=True):
             - TEAM_CITY_TEAM_HOME
             - TEAM_ID_TEAM_AWAY
             - TEAM_CITY_TEAM_AWAY
+            - SEASON_YEAR (optional): each team's travel restarts every season
         log_scale (bool): Whether to apply log1p transformation to travel distances
 
     Returns:

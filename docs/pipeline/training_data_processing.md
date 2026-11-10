@@ -1516,8 +1516,15 @@ in `tests/test_intermediate_lineup_features.py`.
 travel log and uses city coordinates to estimate travel distance.
 
 For each team, it identifies the city where the current game is played and the
-city of the previous game. It then computes great-circle distance with the
-Haversine formula. Two consecutive home games are treated as zero travel.
+city of the previous game of the same season. It then computes great-circle
+distance with the Haversine formula. Two consecutive home games are treated as
+zero travel.
+
+A team's first game of a season does not follow the previous season's last
+game. At home it has no travel and no jetlag. Away, the team is taken to have
+travelled from its own city the day before: that trip enters every rolling
+window and its timezone change is the jetlag. Every game is placed in the home
+team's city, neutral sites included.
 
 Rolling travel sums are computed over calendar windows ending at the current
 game:
