@@ -1194,8 +1194,6 @@ def pg_conn():
 @pytest.mark.postgres
 @needs_db
 def test_consensus_insert_and_read(pg_conn):
-    import psycopg
-
     game_dim = _stored_games("0022500578", OTHER_ID)
     store.insert_games(pg_conn, game_dim)
     assert schema_mod.consensus_table_exists(pg_conn)
@@ -1232,7 +1230,12 @@ def test_consensus_insert_and_read(pg_conn):
     assert events["event_id"].tolist() == [COVERS_ID, OTHER_COVERS]
     assert update_mod.plan_consensus(events, set(), now=FETCHED)
 
-    # A game the store does not hold cannot get counts.
+    # A game the store holds no lines of can still get counts (the 2023-24
+    # backfill): lh_consensus does not reference lh_game.
     orphan = first.iloc[:1].assign(game_id="0022500001")
-    with pytest.raises(psycopg.errors.ForeignKeyViolation):
-        store.insert_consensus(pg_conn, orphan)
+    assert store.insert_consensus(pg_conn, orphan) == 1
+    assert store.stored_consensus_game_ids(pg_conn, 2025) == {
+        "0022500578",
+        OTHER_ID,
+        "0022500001",
+    }
