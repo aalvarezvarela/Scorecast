@@ -137,14 +137,21 @@ the KPI strip.
 Select **Betting hour · Madrid** in the Historical analysis view selector. It
 answers one question: **what would each model group have earned had we bet at
 12:00, 13:00 … 00:00 Madrid?** It shares the inclusive NBA slate range, season
-type, target, model-family filter, minimum edges and chart metric. The initial
-selected hour is **19:00**. The hours are **12:00–23:00 on each NBA slate date,
-then 00:00 at the following midnight**, inclusive. Cutoffs use `Europe/Madrid`,
+type, target, model-family filter, minimum edges and chart metric. The hours
+are **12:00–23:00 on each NBA slate date, then 00:00 at the following
+midnight**, inclusive. Cutoffs use `Europe/Madrid`,
 including daylight-saving changes, not a fixed UTC offset. Cutoffs at/after
 tip-off, or after the read time, are excluded rather than counted as missing
-predictions. The **Hours to compare** range narrows the chart and common-game
-cohort locally, without another database read. The selected-hour detail remains
-independent of this chart window.
+predictions. The **Hours to compare** range narrows the page and common-game
+cohort locally, without another database read.
+
+The page opens with the **four best hour and series pairs** by win %, among
+those with the minimum of settled bets (each card gives record, ROI and
+coverage), beside the coin-flip chance and the game-permutation p of the leader
+over all pairs tried. Below it is a **table with one row per hour and one column
+per series**, each cell giving win %, record and ROI: green above break-even at
+−110, red below, and grey text for a small sample. The chart and the long-form
+hourly results follow.
 
 There are four series: **XGBoost · Intermediate**, **XGBoost · Closing**,
 **TabPFN · Intermediate** and **TabPFN · Closing**. The model-family filter
@@ -169,9 +176,8 @@ the equal-weight mean of its slots that have an output by the cutoff; a Closing
 series is its closing slot's output, or missing if none exists by then. Hidden
 variants are excluded. In replay an intermediate slot has one snapshot per game,
 so it joins the mean only once that snapshot has passed. Live intermediate slots
-predict at every run, so the mean can use newer `latest` inputs. The number of
-models averaged is shown per bet, and the models used at the selected hour are
-listed.
+predict at every run, so the mean can use newer `latest` inputs. The mean number
+of models averaged per hour is in the hourly results.
 
 Outputs are converted to absolute points (home margin for spread) using their
 **original model anchors** before averaging. All series use the **same last
@@ -191,9 +197,7 @@ Missing predictions remain explicit rows. Coverage is final eligible games
 with both prediction and line / all final eligible games, including no-bet
 signals in the numerator. The **Compare common games only** filter requires
 a prediction and line for every displayed hour and series, without requiring
-a directional bet. It can produce an empty cohort. The selected-hour game audit
-always shows all eligible games at that hour, even when the chart uses the
-common cohort.
+a directional bet. It can produce an empty cohort.
 
 Reads (`repositories/clock.py`) return the eligible outputs of both sources plus
 one row per input carrying a quote, and the as-of selection runs locally
@@ -206,14 +210,14 @@ and 7,500 quotes, then under 2 s locally per source. Reads are read-only, bounde
 to 200,000 rows per query with a 45-second timeout, and cached for 15 minutes per
 range, target and season type. Exceeding the bound fails without displaying
 partial results; at the rate above that happens on a range of roughly 14 weeks.
-Hour, source, metric, edge and family changes reuse the read; Refresh invalidates
+Source, metric, edge and family changes reuse the read; Refresh invalidates
 the selected entry. No new predictions, remote inference, backfills or database
 writes are run.
 
-The highest historical hour is exploratory: cells share games, available
-horizons change, and selecting the maximum across hours introduces selection
-bias. Counts, coverage and uncertainty accompany the curves; small samples
-are labelled. No automatic claim of a profitable/best future hour is made.
+The best pairs are exploratory: cells share games, available horizons change,
+and selecting the maximum across hours introduces selection bias. Counts,
+coverage and uncertainty accompany them; small samples are labelled. No
+automatic claim of a profitable/best future hour is made.
 
 ## 4. Combining predictions across time (secondary)
 
@@ -279,7 +283,8 @@ placed** (time T), never at a later line.
 - Do not report an independent-sample χ² homogeneity test: rows and columns
   share games. Formal comparisons require a paired or game-clustered method.
   The heatmaps never highlight a "best" cell. The best-slot and combination
-  sections (§3, 1b–1c) are the only places a best is picked, at the user's
+  sections (§3, 1b–1c) and the best hour and series pairs are the only places a
+  best is picked, at the user's
   request; they always show the coin-flip chance and state that the pick
   flatters itself.
 - Cells in one column share games, so they are correlated. The CI holds per

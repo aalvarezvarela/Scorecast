@@ -6,12 +6,16 @@ import pandas as pd
 import pytest
 from nba_ou.dashboard.domain.clock import (
     SOURCES,
+    best_cells,
     clock_bets,
     clock_cutoffs,
     clock_members,
     clock_quotes,
     clock_summary,
+    common_cohort,
     hour_label,
+    hour_model_table,
+    leader_checks,
     madrid_cutoff,
     series_names,
 )
@@ -288,7 +292,7 @@ def test_common_games_require_every_hour_and_series_without_requiring_a_bet():
         hours=(19, 20),
     )
     assert clock_summary(bets)["eligible_games"].eq(2).all()
-    common = clock_summary(bets, common_games=True)
+    common = clock_summary(common_cohort(bets))
     assert len(common) == 8
     assert common["eligible_games"].eq(1).all()
     assert common["no_bet"].eq(1).all()
@@ -333,3 +337,75 @@ def test_family_filter_and_empty_source_keep_missing_coverage_visible():
     assert set(bets["result"]) == {"MISSING"}
     assert clock_summary(bets)["coverage"].eq(0).all()
     assert members.empty
+
+
+def summary_row(hour, series, wins, losses, roi=5.0):
+    return dict(
+        hour=hour,
+        hour_label=hour_label(hour),
+        series=series,
+        wins=wins,
+        losses=losses,
+        bets=wins + losses,
+        win_pct=100 * wins / (wins + losses) if wins + losses else float("nan"),
+        roi=roi,
+    )
+
+
+def test_best_cells_rank_by_win_rate_among_enough_settled_bets():
+    summary = pd.DataFrame(
+        [
+            summary_row(18, XGB_MEAN, 40, 20),
+            summary_row(19, TAB_MEAN, 21, 9),
+            summary_row(20, XGB_FINAL, 20, 9),  # 29 settled bets: too few
+            summary_row(21, TAB_FINAL, 33, 27),
+            summary_row(22, XGB_MEAN, 30, 30),
+            summary_row(23, TAB_MEAN, 25, 35),
+            summary_row(12, XGB_FINAL, 0, 0),
+        ]
+    )
+    best = best_cells(summary)
+    assert list(zip(best["hour"], best["series"], strict=True)) == [
+        (19, TAB_MEAN),
+        (18, XGB_MEAN),
+        (21, TAB_FINAL),
+        (22, XGB_MEAN),
+    ]
+    assert best_cells(summary.iloc[[2, 6]]).empty
+
+
+def test_hour_table_has_one_row_per_hour_and_one_column_per_series():
+    summary = pd.DataFrame(
+        [
+            summary_row(19, XGB_MEAN, 53, 39, roi=9.5),
+            summary_row(18, XGB_MEAN, 2, 1, roi=float("nan")),
+            summary_row(18, TAB_MEAN, 0, 0, roi=float("nan")),
+        ]
+    )
+    table = hour_model_table(summary, [XGB_MEAN, TAB_MEAN])
+    assert table.columns.tolist() == ["Hour (Madrid)", XGB_MEAN, TAB_MEAN]
+    assert table["Hour (Madrid)"].tolist() == ["18:00", "19:00"]
+    assert table[XGB_MEAN].tolist() == ["66.7% · 2-1", "57.6% · 53-39 · ROI +9.5%"]
+    assert table[TAB_MEAN].tolist() == ["—", "—"]
+
+
+def test_leader_checks_cover_every_eligible_cell():
+    rows = [
+        output(XGB_6H, game_id=game, prediction_value=2 if game < 26 else -2)
+        for game in range(40)
+    ]
+    bets, _ = evaluate(
+        rows,
+        games=[clock_game(game) for game in range(40)],
+        quotes=[quote(game_id=game) for game in range(40)],
+        hours=(19, 20),
+    )
+    summary = clock_summary(bets)
+    chance, permutation, tried = leader_checks(bets, summary)
+    assert tried == 2
+    assert 0 <= chance <= 1 and 0 < permutation <= 1
+    assert leader_checks(bets, summary.iloc[0:0]) == (
+        pytest.approx(float("nan"), nan_ok=True),
+        pytest.approx(float("nan"), nan_ok=True),
+        0,
+    )

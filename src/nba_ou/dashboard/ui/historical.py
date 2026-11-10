@@ -45,7 +45,11 @@ from nba_ou.dashboard.ui.analysis_charts import (
     strategy_chart,
 )
 from nba_ou.dashboard.ui.clock import render_clock_analysis
-from nba_ou.dashboard.ui.controls import minimum_edge_select
+from nba_ou.dashboard.ui.controls import (
+    coin_flip_metric,
+    minimum_edge_select,
+    permutation_metric,
+)
 from nba_ou.dashboard.ui.loaders import load_history
 
 METHOD_NOTES = """
@@ -216,37 +220,6 @@ def _profit_metric(wins, losses, **kwargs) -> None:
     )
 
 
-def _permutation_metric(p_value: float, tried: int, what: str) -> None:
-    st.metric(
-        "Game-permutation p",
-        # 2,000 simulations cannot resolve below 1/2001.
-        (
-            "—"
-            if pd.isna(p_value)
-            else "< 0.001" if p_value < 0.001 else f"{p_value:.3f}"
-        ),
-        border=True,
-        width="content",
-        help=f"Selection-aware p-value of the leader among {tried} {what}: each "
-        "game's result is flipped at random, the same flip for every "
-        f"{what[:-1]} that bet it, so shared games stay shared. Share of "
-        "simulations whose best reaches the observed win %. Small means the "
-        "leader is unlikely to be luck alone.",
-    )
-
-
-def _coin_flip_metric(chance: float, tried: int, win_pct: float, what: str) -> None:
-    st.metric(
-        "Coin-flip chance",
-        "—" if pd.isna(chance) else f"{100 * chance:.0f}%",
-        border=True,
-        width="content",
-        help=f"How often the best of {tried} coin-flip {what} with these bet counts "
-        f"reaches {win_pct:.1f}%. High means the leader is indistinguishable from "
-        "luck. Cells share games, so it is a conservative guide, not a p-value.",
-    )
-
-
 def _render_best_and_combinations(
     rows: pd.DataFrame,
     random_rows: pd.DataFrame,
@@ -290,8 +263,8 @@ def _render_best_and_combinations(
         for rank, (_, slot) in enumerate(top.iterrows()):
             _slot_card(rank, slot)
         with st.container(width="content", gap="small"):
-            _coin_flip_metric(chance, len(eligible), best["win_pct"], "slots")
-            _permutation_metric(permutation, len(eligible), "slots")
+            coin_flip_metric(chance, len(eligible), best["win_pct"], "slots")
+            permutation_metric(permutation, len(eligible), "slots")
     st.caption(
         f"Ranked among {len(eligible)} slots with at least {MIN_CELL_BETS} settled bets "
         f"in {source.lower()}."
@@ -421,10 +394,10 @@ def _render_best_and_combinations(
             f"{leader['losses']:.0f} losses / {leader['pushes']:.0f} pushes.",
         )
         _profit_metric(leader["wins"], leader["losses"], border=True, width="content")
-        _coin_flip_metric(
+        coin_flip_metric(
             combo_chance, len(eligible_combos), leader["win_pct"], "combinations"
         )
-        _permutation_metric(combo_permutation, len(eligible_combos), "combinations")
+        permutation_metric(combo_permutation, len(eligible_combos), "combinations")
     st.caption(
         f"Top {len(top_combos)} of {len(eligible_combos)} combinations with at least "
         f"{MIN_CELL_BETS} settled bets ({len(combo_ranking)} tried: subsets of 2–"
