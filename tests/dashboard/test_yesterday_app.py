@@ -26,7 +26,6 @@ from .test_clock import (
     XGB_MEAN,
     clock_game,
     output,
-    quote,
 )
 from .test_history import historical_slate
 
@@ -50,9 +49,7 @@ def yesterday_setup(monkeypatch):
         loaders,
         "read_clock_history",
         Mock(
-            return_value=ClockData(
-                pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), NOW.to_pydatetime()
-            )
+            return_value=ClockData(pd.DataFrame(), pd.DataFrame(), NOW.to_pydatetime())
         ),
     )
     monkeypatch.setattr(yesterday_ui, "datetime", FrozenDateTime)
@@ -582,7 +579,6 @@ def hour_data(yesterday_setup, monkeypatch):
                     for slot in (XGB_6H, XGB_8H, XGB_CLOSE, TAB_6H, TAB_CLOSE)
                 ]
             ),
-            pd.DataFrame([quote(source=source) for source in SOURCES]),
             AS_OF.to_pydatetime(),
         )
     )
@@ -608,8 +604,8 @@ def test_each_target_shows_every_hour_without_a_selector(hour_data):
     assert list(tables[0].columns) == [XGB_MEAN, XGB_FINAL, TAB_MEAN, TAB_FINAL]
     assert len(tables[0]) == 13
     assert tables[0].index[0] == "12:00" and tables[0].index[-1] == "00:00 (+1 day)"
-    assert tables[0].loc["12:00", XGB_MEAN] == "—"
-    assert tables[0].loc["23:00", XGB_MEAN] == "100.0% · 1-0 · 1/1"
+    assert tables[0].loc["12:00", XGB_MEAN] == "— · 0/1 (0.0%)"
+    assert tables[0].loc["18:00", XGB_MEAN] == "100.0% · 1-0 · 1/1 (100.0%)"
 
 
 def test_summary_shows_one_hour_table_per_target(hour_data):
