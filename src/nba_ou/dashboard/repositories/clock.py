@@ -1,4 +1,4 @@
-"""Bounded read of stored outputs and quotes for the Madrid hourly view."""
+"""Bounded read of stored predictions for the Madrid hourly view."""
 
 from configparser import Error as ConfigurationError
 from dataclasses import dataclass
@@ -26,7 +26,7 @@ CLOCK_GAMES_QUERY = """
     ORDER BY game_date, game_id
 """
 
-# Only outputs and one row per input carrying a quote leave PostgreSQL; the
+# Each output leaves PostgreSQL with its own line and prices, and the
 # hour-by-hour selection runs locally. Crossing every output with thirteen
 # cutoffs in SQL ran for minutes on a few weeks of games.
 _HIDDEN_AND_TRAINED = """
@@ -42,7 +42,8 @@ CLOCK_MODELS_QUERY = (
     + """
     SELECT s.game_id, s.source, s.kind, s.schema_version, s.target, s.dataset_type,
            s.model_horizon_minutes, s.variant, s.input_at, s.available_at,
-           s.predicted_at, s.prediction_value, s.model_line, s.tipoff_at_prediction,
+           s.predicted_at, s.prediction_value, s.model_line, s.bet_line_x2,
+           s.bet_price_over_home, s.bet_price_under_away, s.tipoff_at_prediction,
            s.run_id, s.input_id, s.model_build_id
     FROM sources s
     JOIN prediction.games g USING (game_id)
@@ -55,32 +56,11 @@ CLOCK_MODELS_QUERY = (
 """
 )
 
-CLOCK_QUOTES_QUERY = (
-    HISTORY_SOURCE_CTES
-    + """
-    SELECT s.game_id, s.source, s.input_id, s.input_at, s.tipoff_at_prediction,
-           s.bet_line_x2, s.bet_price_over_home, s.bet_price_under_away,
-           CASE WHEN s.target = 3 THEN i.spread_line_age_minutes
-                ELSE i.total_line_age_minutes END AS quote_age_at_input,
-           MIN(s.available_at) AS available_at
-    FROM sources s
-    JOIN prediction.games g USING (game_id)
-    JOIN prediction.inputs i USING (input_id)
-    JOIN prediction.model_builds m USING (model_build_id)
-    WHERE s.bet_line_x2 IS NOT NULL AND"""
-    + _HIDDEN_AND_TRAINED
-    + """
-    GROUP BY 1, 2, 3, 4, 5, 6, 7, 8, 9
-    LIMIT %s
-"""
-)
-
 
 @dataclass(frozen=True)
 class ClockData:
     games: pd.DataFrame
     predictions: pd.DataFrame
-    quotes: pd.DataFrame
     fetched_at: datetime
 
 
@@ -91,7 +71,7 @@ def read_clock_history(
     season_type: int | None = 2,
     dsn_override: str = "",
 ) -> ClockData:
-    """Every eligible output and every stored quote, in both sources."""
+    """Every eligible output with its own line and prices, in both sources."""
     if start > end or target not in (1, 2, 3):
         raise ValueError("Invalid date range or prediction target")
     if season_type is not None and season_type not in (1, 2, 3, 4, 5):
@@ -108,13 +88,12 @@ def read_clock_history(
                 cursor.execute(f"SET LOCAL statement_timeout = {ANALYSIS_TIMEOUT_MS}")
                 games = _frame(cursor, CLOCK_GAMES_QUERY, (start, end, types))
                 predictions = _frame(cursor, CLOCK_MODELS_QUERY, (*shared, *last))
-                quotes = _frame(cursor, CLOCK_QUOTES_QUERY, (*shared, *last))
-                if max(len(predictions), len(quotes)) > MAX_CLOCK_ROWS:
+                if len(predictions) > MAX_CLOCK_ROWS:
                     raise DashboardDataError(
                         "Too many hourly predictions. Choose a shorter date range; "
                         "no partial results have been displayed."
                     )
-        return ClockData(games, predictions, quotes, fetched_at)
+        return ClockData(games, predictions, fetched_at)
     except psycopg.errors.QueryCanceled:
         raise DashboardDataError(
             "The hourly read timed out. Choose a shorter date range."

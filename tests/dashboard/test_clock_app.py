@@ -1,4 +1,4 @@
-"""Hourly UI: four series, source separation, cached filters and audit tables."""
+"""Hourly UI: four series, coverage, source separation and cached filters."""
 
 from unittest.mock import Mock
 
@@ -25,7 +25,6 @@ from .test_clock import (
     XGB_MEAN,
     clock_game,
     output,
-    quote,
 )
 from .test_historical_app import history_setup as history_setup
 from .test_historical_app import open_history
@@ -43,9 +42,6 @@ def clock_read(games=(1,)):
                 for source in SOURCES
                 for slot in (XGB_6H, XGB_8H, XGB_CLOSE, TAB_6H, TAB_CLOSE)
             ]
-        ),
-        pd.DataFrame(
-            [quote(game_id=game, source=source) for game in games for source in SOURCES]
         ),
         AS_OF.to_pydatetime(),
     )
@@ -85,7 +81,9 @@ def test_hourly_view_has_a_table_by_hour_without_an_hour_selector(clock_setup):
         TAB_FINAL,
     ]
     assert len(table) == 13
-    assert table[XGB_MEAN].iloc[-1].startswith("100.0% · 1-0")
+    by_hour = table.set_index("Hour (Madrid)")[XGB_MEAN]
+    assert by_hour["18:00"] == "100.0% · 1-0 · 1/1 (100.0%)"
+    assert by_hour["12:00"] == "— · 0/1 (0.0%)"
     headers = [node.value for node in app.subheader]
     assert "Selected-hour game detail" not in headers
     assert "Best hours and models" in headers and "Results by hour" in headers
@@ -115,7 +113,7 @@ def test_hour_source_metric_threshold_and_kind_filters_reuse_cached_read(clock_s
     assert not any("retrospective simulation" in node.value for node in app.info)
     app.selectbox(key="history_kind").select(3).run()
     app.selectbox(key="history_min_edge_tabpfn").select(6.0).run()
-    app.select_slider(key="history_clock_range").set_value((19, 20)).run()
+    app.select_slider(key="history_clock_range").set_value((18, 19)).run()
     app.toggle(key="history_clock_common").set_value(True).run()
     assert not app.exception
     assert hour_table(app).columns.tolist() == [
@@ -152,7 +150,6 @@ def test_hourly_empty_games_or_predictions_do_not_crash(clock_setup, empty_games
     reader.return_value = ClockData(
         pd.DataFrame() if empty_games else pd.DataFrame([clock_game()]),
         pd.DataFrame(),
-        pd.DataFrame(),
         AS_OF.to_pydatetime(),
     )
     app = open_history(history_view=VIEW)
@@ -160,4 +157,4 @@ def test_hourly_empty_games_or_predictions_do_not_crash(clock_setup, empty_games
     if empty_games:
         assert any("No games were recorded" in node.value for node in app.info)
     else:
-        assert hour_table(app)[XGB_MEAN].eq("—").all()
+        assert hour_table(app)[XGB_MEAN].eq("— · 0/1 (0.0%)").all()

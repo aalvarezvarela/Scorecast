@@ -23,14 +23,14 @@ def test_clock_read_is_bounded_read_only_and_binds_all_filters(monkeypatch):
     conn = MagicMock()
     conn.__enter__.return_value = conn
     monkeypatch.setattr(clock, "open_connection", MagicMock(return_value=conn))
-    reader = MagicMock(side_effect=[pd.DataFrame()] * 3)
+    reader = MagicMock(side_effect=[pd.DataFrame()] * 2)
     monkeypatch.setattr(clock, "_frame", reader)
     data = read()
     assert (
         conn.read_only
         and conn.isolation_level == psycopg.IsolationLevel.REPEATABLE_READ
     )
-    assert reader.call_count == 3
+    assert reader.call_count == 2
     expected = (
         DAY,
         DAY,
@@ -42,13 +42,9 @@ def test_clock_read_is_bounded_read_only_and_binds_all_filters(monkeypatch):
         ["_thinking_high"],
         clock.MAX_CLOCK_ROWS + 1,
     )
-    assert [call.args[2] for call in reader.call_args_list[1:]] == [expected] * 2
+    assert reader.call_args_list[1].args[2] == expected
     monkeypatch.setattr(clock, "MAX_CLOCK_ROWS", 1)
-    reader.side_effect = [
-        pd.DataFrame(),
-        pd.DataFrame(),
-        pd.DataFrame({"game_id": [1, 2]}),
-    ]
+    reader.side_effect = [pd.DataFrame(), pd.DataFrame({"game_id": [1, 2]})]
     with pytest.raises(DashboardDataError, match="no partial results"):
         read()
 
@@ -268,7 +264,7 @@ def run(query, params):
 @pytest.mark.skipif(
     not os.getenv("NBA_OU_TEST_PG_DSN"), reason="NBA_OU_TEST_PG_DSN not set"
 )
-def test_postgres_reads_every_visible_model_and_one_row_per_quote():
+def test_postgres_reads_every_visible_model_with_its_own_line():
     localized, shared = clock_sql_fixture()
     params = (*shared, ["_thinking_high"], 200001)
     models = run(localized(clock.CLOCK_MODELS_QUERY), params)
@@ -277,8 +273,5 @@ def test_postgres_reads_every_visible_model_and_one_row_per_quote():
     replay = models.loc[models["source"].eq(SOURCES[1]), "prediction_value"]
     assert sorted(replay) == [242, 250, 252]
     assert not models["variant"].str.endswith("_thinking_high").any()
-    quotes = run(localized(clock.CLOCK_QUOTES_QUERY), params)
-    assert not quotes.duplicated(["source", "input_id"]).any()
-    assert not quotes["bet_line_x2"].isna().any()
-    assert set(quotes["bet_line_x2"]) == {460, 484}
-    assert quotes["quote_age_at_input"].eq(2).all()
+    assert set(models["bet_line_x2"]) == {460, 484}
+    assert set(models["bet_price_under_away"]) == {-105}

@@ -129,8 +129,8 @@ def _render_hour_tables(game_date, targets: list[int], source, thresholds) -> No
     """One table per target: every betting hour, one column per model group."""
     st.subheader("Results by betting hour")
     st.caption(
-        f"{source} · Madrid time. At each hour every model uses its previous available output; "
-        "Intermediate is the mean of its models. Each cell: win %, wins-losses, bets placed / final games at that hour. "
+        f"{source} · Madrid time. Each hour uses the prediction closest to it, within one hour before or after, with its original line, side and result. "
+        "Each cell: win %, wins-losses, final games with a valid prediction / final games at that hour (coverage). "
         "Green beats break-even at −110, red does not. One slate is a very small sample."
     )
     names = list(SERIES)
@@ -142,10 +142,9 @@ def _render_hour_tables(game_date, targets: list[int], source, thresholds) -> No
             except DashboardDataError as exc:
                 st.error(str(exc), icon=":material/database:")
                 return
-            bets, _ = clock_bets(
+            bets = clock_bets(
                 data.games,
                 data.predictions,
-                data.quotes,
                 source,
                 CLOCK_HOURS,
                 data.fetched_at,

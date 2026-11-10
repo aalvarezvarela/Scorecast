@@ -12,6 +12,7 @@ from nba_ou.dashboard.domain.clock import (
     clock_bets,
     clock_summary,
     common_cohort,
+    coverage_text,
     hour_label,
     hour_model_table,
     leader_checks,
@@ -39,15 +40,13 @@ SUMMARY_NAMES = {
     "priced_bets": "Priced bets",
     "mae": "MAE (pts)",
     "eligible_games": "Eligible final games",
-    "covered_games": "Games with prediction + line",
+    "covered_games": "Games with a valid prediction",
     "coverage": "Coverage %",
     "missing": "Missing predictions",
-    "no_line": "No line",
     "no_bet": "No bet",
     "pending": "Pending",
     "void": "Void",
-    "mean_members": "Mean models per prediction",
-    "median_quote_age_minutes": "Median quote age (min)",
+    "median_minutes_from_hour": "Median minutes from the hour",
 }
 
 
@@ -88,8 +87,7 @@ def _clock_chart(summary: pd.DataFrame, metric: str, names: list[str]):
                     "eligible_games",
                     "covered_games",
                     "mae",
-                    "mean_members",
-                    "median_quote_age_minutes",
+                    "median_minutes_from_hour",
                 )
             ],
         ],
@@ -157,7 +155,7 @@ def _render_best_cells(summary: pd.DataFrame, cohort: pd.DataFrame) -> None:
                 roi = "—" if pd.isna(row.roi) else f"{row.roi:+.1f}%"
                 st.caption(
                     f"{row.wins} W / {row.losses} L / {row.pushes} P · ROI {roi} · "
-                    f"Coverage {row.covered_games}/{row.eligible_games}"
+                    f"Coverage {coverage_text(row.covered_games, row.eligible_games)}"
                 )
         with st.container(width="content", gap="small"):
             coin_flip_metric(chance, tried, best.loc[0, "win_pct"], "cells")
@@ -179,10 +177,10 @@ def _render_hour_table(summary: pd.DataFrame, names: list[str]) -> None:
         column_config={
             HOUR_COLUMN: st.column_config.TextColumn(width="small", pinned=True)
         },
-        alt="Win %, record and bets placed by each series at each Madrid betting hour",
+        alt="Win %, record and coverage of each series at each Madrid betting hour",
     )
     st.caption(
-        f"Each cell: win %, wins-losses, bets placed / final games at that hour. Green beats the {BREAK_EVEN:.2f}% break-even at −110, red does not; "
+        f"Each cell: win %, wins-losses, final games with a valid prediction / final games at that hour (coverage). Green beats the {BREAK_EVEN:.2f}% break-even at −110, red does not; "
         f"grey text has fewer than {MIN_CELL_BETS} wins + losses."
     )
 
@@ -201,7 +199,7 @@ def render_clock_analysis(
         common = st.toggle(
             "Compare common games only",
             key="history_clock_common",
-            help="Requires a prediction and betting line for every displayed series at every displayed hour. No bet due to minimum edge still counts as covered.",
+            help="Requires a valid prediction for every displayed series at every displayed hour. No bet due to minimum edge still counts as covered. Closing predictions exist only near tip-off, so a wide hour range can leave no games.",
         )
     first_hour, last_hour = st.select_slider(
         "Hours to compare (Madrid)",
@@ -214,7 +212,7 @@ def render_clock_analysis(
     if refresh:
         load_clock_history.clear(start, end, target, season_type)
     try:
-        with st.spinner("Reading predictions available at each Madrid hour…"):
+        with st.spinner("Reading the predictions around each Madrid hour…"):
             data = load_clock_history(start, end, target, season_type)
     except DashboardDataError as exc:
         st.error(str(exc), icon=":material/database:")
@@ -228,15 +226,14 @@ def render_clock_analysis(
             "Saved inputs may contain later corrections; this is a retrospective simulation."
         )
     st.caption(
-        "At each betting hour every model contributes its previous available output. Intermediate series are the equal-weight mean of their models; closing series use the latest closing output, if there is one by then. "
-        "All series are compared with the same latest stored Bet365 quote for that game and hour. "
-        "12:00–23:00 uses the NBA slate date; 00:00 (+1 day) is the following midnight in Madrid. "
-        "Started games and future betting times are excluded. An old quote is an approximation to the market at the betting hour; its age is shown."
+        "For each hour and series, the one prediction closest to that hour, within one hour before or after it. "
+        "Live uses the time the prediction was generated; Snapshot replay uses the time of its snapshot, not when the backfill ran. "
+        "Each prediction keeps its original line, side and result: nothing is averaged or graded against the line of that hour. "
+        "A prediction can serve two neighbouring hours. 12:00–23:00 uses the NBA slate date; 00:00 (+1 day) is the following midnight in Madrid."
     )
-    bets, _ = clock_bets(
+    bets = clock_bets(
         data.games,
         data.predictions,
-        data.quotes,
         source,
         CLOCK_HOURS,
         data.fetched_at,
@@ -268,7 +265,7 @@ def render_clock_analysis(
             f"Win % intervals are Wilson 95% per cell. Fewer than {MIN_CELL_BETS} wins + losses is a small sample. "
             "Hours share games and are correlated; the highest historical hour is exploratory. "
             "ROI stakes one unit per priced bet; missing prices never receive assumed odds. "
-            "Coverage counts final games with a prediction and line, including no-bet signals."
+            "Coverage counts final games with a valid prediction in the window, including no-bet signals. Games without one are not losses."
         )
         with st.expander("Hourly results"):
             st.dataframe(
