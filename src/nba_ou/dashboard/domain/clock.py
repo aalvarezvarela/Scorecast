@@ -7,9 +7,17 @@ import numpy as np
 import pandas as pd
 
 from nba_ou.dashboard.config import DISPLAY_SCHEMA_VERSION, MADRID
-from nba_ou.dashboard.domain.analysis import prepare_analysis, wilson_interval
+from nba_ou.dashboard.domain.analysis import (
+    MIN_CELL_BETS,
+    prepare_analysis,
+    wilson_interval,
+)
 from nba_ou.dashboard.domain.comparisons import prediction_values
 from nba_ou.dashboard.domain.models import without_hidden_variants
+from nba_ou.dashboard.domain.strategies import (
+    game_permutation_pvalue,
+    selection_chance,
+)
 
 # Series name -> (model kind, dataset type: 1 closing, 2 intermediate).
 SERIES = {
@@ -19,6 +27,8 @@ SERIES = {
     "TabPFN · Closing": (3, 1),
 }
 SOURCES = ("Live predictions", "Snapshot replay")
+TOP_CELLS = 4
+HOUR_COLUMN = "Hour (Madrid)"
 SLOT = [
     "kind",
     "schema_version",
@@ -243,25 +253,29 @@ def clock_bets(
     return work, members
 
 
-def clock_summary(bets: pd.DataFrame, *, common_games: bool = False) -> pd.DataFrame:
-    """Pool W/L counts, with eligible final games as the coverage denominator.
+def common_cohort(bets: pd.DataFrame) -> pd.DataFrame:
+    """Games with a prediction and line at every displayed hour and series.
 
-    Common games means a prediction and line exist at every displayed hour
-    for every displayed series. It does not require a directional bet.
+    It does not require a directional bet.
     """
+    if bets.empty:
+        return bets
+    needed = len(bets["hour"].unique()) * len(bets["series"].unique())
+    valid = (
+        bets["available"]
+        & bets["reference_line"].notna()
+        & bets["status"].eq(1)
+        & bets["actual_value"].notna()
+    )
+    counts = bets.loc[valid].groupby("game_id").size()
+    return bets.loc[bets["game_id"].isin(counts.index[counts.eq(needed)])]
+
+
+def clock_summary(bets: pd.DataFrame) -> pd.DataFrame:
+    """Pool W/L counts, with eligible final games as the coverage denominator."""
     if bets.empty:
         return pd.DataFrame()
     work = bets
-    if common_games:
-        needed = len(work["hour"].unique()) * len(work["series"].unique())
-        valid = (
-            work["available"]
-            & work["reference_line"].notna()
-            & work["status"].eq(1)
-            & work["actual_value"].notna()
-        )
-        counts = work.loc[valid].groupby("game_id").size()
-        work = work.loc[work["game_id"].isin(counts.index[counts.eq(needed)])]
     rows = []
     for (hour, series), group in work.groupby(["hour", "series"], sort=True):
         counts = group["result"].value_counts()
@@ -307,3 +321,58 @@ def clock_summary(bets: pd.DataFrame, *, common_games: bool = False) -> pd.DataF
             )
         )
     return pd.DataFrame(rows)
+
+
+def _eligible_cells(summary: pd.DataFrame) -> pd.DataFrame:
+    if summary.empty:
+        return summary
+    return summary.loc[
+        summary["win_pct"].notna()
+        & summary["wins"].add(summary["losses"]).ge(MIN_CELL_BETS)
+    ]
+
+
+def best_cells(summary: pd.DataFrame, limit: int = TOP_CELLS) -> pd.DataFrame:
+    """The hour and series pairs with the highest win %, enough settled bets only."""
+    return (
+        _eligible_cells(summary)
+        .sort_values(["win_pct", "bets"], ascending=False)
+        .head(limit)
+        .reset_index(drop=True)
+    )
+
+
+def leader_checks(
+    cohort: pd.DataFrame, summary: pd.DataFrame
+) -> tuple[float, float, int]:
+    """Coin-flip chance and game-permutation p of the best cell, and cells tried."""
+    eligible = _eligible_cells(summary)
+    if eligible.empty:
+        return float("nan"), float("nan"), 0
+    best = float(eligible["win_pct"].max())
+    chance = selection_chance(eligible["wins"] + eligible["losses"], best)
+    cells = cohort.assign(cell=cohort["hour"].astype(str) + "|" + cohort["series"])
+    names = eligible["hour"].astype(str) + "|" + eligible["series"]
+    return chance, game_permutation_pvalue(cells, "cell", names, best), len(eligible)
+
+
+def _cell_text(row) -> str:
+    if pd.isna(row.win_pct):
+        return "—"
+    text = f"{row.win_pct:.1f}% · {row.wins}-{row.losses}"
+    return text if pd.isna(row.roi) else f"{text} · ROI {row.roi:+.1f}%"
+
+
+def hour_model_table(summary: pd.DataFrame, names: list[str]) -> pd.DataFrame:
+    """One row per hour and one column per series, as readable text."""
+    if summary.empty:
+        return pd.DataFrame()
+    table = (
+        summary.assign(cell=[_cell_text(row) for row in summary.itertuples()])
+        .pivot(index="hour", columns="series", values="cell")
+        .reindex(columns=names)
+        .fillna("—")
+        .sort_index()
+    )
+    table.insert(0, HOUR_COLUMN, [hour_label(hour) for hour in table.index])
+    return table.reset_index(drop=True).rename_axis(columns=None)

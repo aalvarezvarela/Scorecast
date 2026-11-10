@@ -4,18 +4,24 @@ import altair as alt
 import pandas as pd
 
 import streamlit as st
-from nba_ou.dashboard.domain.analysis import MIN_CELL_BETS
+from nba_ou.dashboard.domain.analysis import BREAK_EVEN, MIN_CELL_BETS
 from nba_ou.dashboard.domain.clock import (
+    HOUR_COLUMN,
     SOURCES,
+    best_cells,
     clock_bets,
     clock_summary,
+    common_cohort,
     hour_label,
+    hour_model_table,
+    leader_checks,
     series_names,
 )
 from nba_ou.dashboard.domain.dates import madrid_time
 from nba_ou.dashboard.repositories.clock import CLOCK_HOURS
 from nba_ou.dashboard.repositories.predictions import DashboardDataError
 from nba_ou.dashboard.ui.analysis_charts import METRICS, MODEL_COLORS
+from nba_ou.dashboard.ui.controls import coin_flip_metric, permutation_metric
 from nba_ou.dashboard.ui.loaders import load_clock_history
 
 SUMMARY_NAMES = {
@@ -41,37 +47,6 @@ SUMMARY_NAMES = {
     "void": "Void",
     "mean_members": "Mean models per prediction",
     "median_quote_age_minutes": "Median quote age (min)",
-}
-DETAIL_NAMES = {
-    "game_date": "NBA slate",
-    "away_team": "Away",
-    "home_team": "Home",
-    "series": "Series",
-    "cutoff_at": "Betting time (Madrid)",
-    "tipoff_at": "Tip-off (Madrid)",
-    "members": "Models",
-    "predicted_value": "Predicted points / margin",
-    "reference_line": "Betting line",
-    "comparison_edge": "Edge",
-    "signal": "Signal",
-    "result": "Result",
-    "bet_price": "American odds",
-    "unit_profit": "Profit (units)",
-    "input_at": "Oldest input (Madrid)",
-    "latest_input_at": "Newest input (Madrid)",
-    "quote_input_at": "Quote snapshot (Madrid)",
-    "quote_age_minutes": "Quote age (min)",
-}
-MEMBER_NAMES = {
-    "game_date": "NBA slate",
-    "away_team": "Away",
-    "home_team": "Home",
-    "series": "Series",
-    "model_horizon_minutes": "Model horizon (min)",
-    "variant": "Variant",
-    "input_at": "Input time (Madrid)",
-    "available_at": "Actual publication (Madrid)",
-    "implied_prediction": "Predicted points / margin",
 }
 
 
@@ -125,38 +100,81 @@ def _clock_chart(summary: pd.DataFrame, metric: str, names: list[str]):
     return line.properties(height=320)
 
 
-def _display_times(frame: pd.DataFrame, columns: list[str]) -> pd.DataFrame:
-    frame = frame.copy()
-    for column in columns:
-        frame[column] = (
-            pd.to_datetime(frame[column], utc=True)
-            .dt.tz_convert("Europe/Madrid")
-            .dt.strftime("%d/%m/%Y %H:%M %Z")
+def _cell_style(win_pct: float, settled: float) -> str:
+    if pd.isna(win_pct):
+        return ""
+    if settled < MIN_CELL_BETS:
+        return "color: #8a8f98"
+    distance = win_pct - BREAK_EVEN
+    alpha = min(0.55, 0.12 + abs(distance) / 25)
+    color = "46, 160, 67" if distance >= 0 else "218, 54, 51"
+    return f"background-color: rgba({color}, {alpha:.2f})"
+
+
+def _styled_table(summary: pd.DataFrame, table: pd.DataFrame, names: list[str]):
+    """Green above break-even, red below; grey text when the sample is small."""
+    cells = summary.assign(settled=summary["wins"] + summary["losses"])
+    win_pct = cells.pivot(index="hour", columns="series", values="win_pct")
+    settled = cells.pivot(index="hour", columns="series", values="settled")
+
+    def styles(frame: pd.DataFrame) -> pd.DataFrame:
+        css = pd.DataFrame("", index=frame.index, columns=frame.columns)
+        for position, hour in enumerate(sorted(win_pct.index)):
+            for name in names:
+                if name in win_pct:
+                    css.loc[position, name] = _cell_style(
+                        win_pct.loc[hour, name], settled.loc[hour, name]
+                    )
+        return css
+
+    return table.style.apply(styles, axis=None)
+
+
+def _render_best_cells(summary: pd.DataFrame, cohort: pd.DataFrame) -> None:
+    st.subheader("Best hours and models")
+    best = best_cells(summary)
+    if best.empty:
+        st.caption(
+            f"No hour and series has {MIN_CELL_BETS} settled bets for these filters yet."
         )
-    return frame
-
-
-def _render_hour_cards(at_hour: pd.DataFrame, hour: int) -> None:
-    with st.container(horizontal=True):
-        for row in at_hour.itertuples():
+        return
+    chance, permutation, tried = leader_checks(cohort, summary)
+    with st.container(horizontal=True, key="clock_best_cells"):
+        for rank, row in enumerate(best.itertuples(), start=1):
             with st.container(border=True):
-                st.caption(f"{row.series} · {hour_label(hour)} Madrid")
-                st.metric(
-                    "Win %", "—" if pd.isna(row.win_pct) else f"{row.win_pct:.1f}%"
-                )
-                roi = "—" if pd.isna(row.roi) else f"{row.roi:.1f}%"
+                st.caption(f"#{rank} · {row.hour_label} Madrid")
+                st.metric(row.series, f"{row.win_pct:.1f}%")
+                roi = "—" if pd.isna(row.roi) else f"{row.roi:+.1f}%"
                 st.caption(
-                    f"{row.wins} W / {row.losses} L / {row.pushes} P · "
-                    f"{row.priced_bets} priced bets · ROI {roi}"
+                    f"{row.wins} W / {row.losses} L / {row.pushes} P · ROI {roi} · "
+                    f"Coverage {row.covered_games}/{row.eligible_games}"
                 )
-                sample = (
-                    "Small sample"
-                    if row.wins + row.losses < MIN_CELL_BETS
-                    else f"≥ {MIN_CELL_BETS} settled bets"
-                )
-                st.caption(
-                    f"Coverage {row.covered_games}/{row.eligible_games} final games · {sample}"
-                )
+        with st.container(width="content", gap="small"):
+            coin_flip_metric(chance, tried, best.loc[0, "win_pct"], "cells")
+            permutation_metric(permutation, tried, "cells")
+    st.caption(
+        f"Picked from {tried} hour and series cells with at least {MIN_CELL_BETS} settled bets, "
+        "on the same games they are scored on, so they flatter themselves. Hours share games and are correlated."
+    )
+
+
+def _render_hour_table(summary: pd.DataFrame, names: list[str]) -> None:
+    st.subheader("Results by hour")
+    table = hour_model_table(summary, names)
+    st.dataframe(
+        _styled_table(summary, table, names),
+        hide_index=True,
+        width="stretch",
+        height=35 * (len(table) + 1) + 3,
+        column_config={
+            HOUR_COLUMN: st.column_config.TextColumn(width="small", pinned=True)
+        },
+        alt="Win %, record and ROI of each series at each Madrid betting hour",
+    )
+    st.caption(
+        f"Each cell: win %, wins-losses, ROI. Green beats the {BREAK_EVEN:.2f}% break-even at −110, red does not; "
+        f"grey text has fewer than {MIN_CELL_BETS} wins + losses."
+    )
 
 
 def render_clock_analysis(
@@ -169,14 +187,6 @@ def render_clock_analysis(
                 "Hourly source", SOURCES, default=SOURCES[1], key="history_clock_source"
             )
             or SOURCES[1]
-        )
-        hour = st.selectbox(
-            "Betting hour (Madrid)",
-            CLOCK_HOURS,
-            index=CLOCK_HOURS.index(19),
-            format_func=hour_label,
-            key="history_clock_hour",
-            width=230,
         )
         common = st.toggle(
             "Compare common games only",
@@ -213,7 +223,7 @@ def render_clock_analysis(
         "12:00–23:00 uses the NBA slate date; 00:00 (+1 day) is the following midnight in Madrid. "
         "Started games and future betting times are excluded. An old quote is an approximation to the market at the betting hour; its age is shown."
     )
-    bets, members = clock_bets(
+    bets, _ = clock_bets(
         data.games,
         data.predictions,
         data.quotes,
@@ -229,14 +239,18 @@ def render_clock_analysis(
         if not bets.empty
         else bets
     )
-    summary = clock_summary(comparison, common_games=common)
+    cohort = common_cohort(comparison) if common else comparison
+    summary = clock_summary(cohort)
     if summary.empty:
         st.info(
             "No eligible games for this comparison. Try a narrower hour window, another date range, source or model family, or turn off the common-games filter."
         )
     else:
+        names = series_names(kind)
+        _render_best_cells(summary, cohort)
+        _render_hour_table(summary, names)
         st.altair_chart(
-            _clock_chart(summary, metric, series_names(kind)),
+            _clock_chart(summary, metric, names),
             width="stretch",
             alt="Performance of XGBoost and TabPFN, intermediate and closing, by Madrid betting hour",
         )
@@ -246,51 +260,12 @@ def render_clock_analysis(
             "ROI stakes one unit per priced bet; missing prices never receive assumed odds. "
             "Coverage counts final games with a prediction and line, including no-bet signals."
         )
-        if hour < first_hour or hour > last_hour:
-            st.caption(
-                "The selected detail hour is outside the chart's comparison window."
-            )
-        _render_hour_cards(summary.loc[summary["hour"].eq(hour)], hour)
         with st.expander("Hourly results"):
             st.dataframe(
                 summary[list(SUMMARY_NAMES)].rename(columns=SUMMARY_NAMES).round(2),
                 hide_index=True,
                 width="stretch",
                 alt="Hourly results, uncertainty, coverage and missing outputs",
-            )
-    st.subheader("Selected-hour game detail")
-    st.caption(
-        "This audit table includes all eligible games at the selected hour, even when the chart is restricted to common games."
-    )
-    if bets.empty:
-        st.info("No elapsed pre-game betting times in this range.")
-        return
-    selected = bets.loc[bets["hour"].eq(hour)]
-    if selected.empty:
-        st.info("No eligible games at the selected hour.")
-        return
-    detail = _display_times(
-        selected,
-        ["cutoff_at", "tipoff_at", "input_at", "latest_input_at", "quote_input_at"],
-    )
-    st.dataframe(
-        detail[list(DETAIL_NAMES)].rename(columns=DETAIL_NAMES).round(2),
-        hide_index=True,
-        width="stretch",
-        alt="One row per eligible game and series, with prediction, quote, age, bet and result",
-    )
-    if not members.empty:
-        with st.expander("Models used at the selected hour"):
-            used = members.loc[members["hour"].eq(hour)].merge(
-                data.games[["game_id", "game_date", "away_team", "home_team"]],
-                on="game_id",
-            )
-            used = _display_times(used, ["input_at", "available_at"])
-            st.dataframe(
-                used[list(MEMBER_NAMES)].rename(columns=MEMBER_NAMES).round(2),
-                hide_index=True,
-                width="stretch",
-                alt="Each model's previous available output at the selected hour",
             )
     st.caption(
         f"Hourly predictions read {madrid_time(data.fetched_at)} · cached for 15 minutes. Refresh reloads the selected range and target."
