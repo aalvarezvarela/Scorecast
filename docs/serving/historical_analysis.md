@@ -6,9 +6,10 @@ windows, best slot, mean-of-predictions combinations and the random baseline
 2026-11-05. Consensus/agreement views across all slots and a full-season
 performance measurement remain.
 
-The **Betting hour · Madrid** view adds a separate clock-time analysis. Its
-selection and grading rules are documented below; the model/snapshot views
-retain their existing definitions.
+The **Betting hour · Madrid** view compares XGBoost and TabPFN, intermediate and
+closing, at each clock hour (reworked 2026-11-10). Its selection and grading
+rules are documented below; the model/snapshot views retain their existing
+definitions.
 
 ## Context
 
@@ -133,19 +134,23 @@ the KPI strip.
 
 ## Betting hour · Madrid
 
-Select **Betting hour · Madrid** in the Historical analysis view selector.
-It shares the inclusive NBA slate range, season type, target, model-family
-filter, minimum edges and chart metric. The initial selected hour is **19:00**.
-The hourly chart covers **12:00–23:00 on each NBA slate date, then 00:00
-at the following midnight**, inclusive. Hours after midnight are not offered.
-Cutoffs use `Europe/Madrid`, including daylight-saving changes, not a fixed UTC
-offset. Cutoffs at/after tip-off, or after the read time,
-are excluded rather than counted as missing predictions.
-The **Hours to compare** range narrows the chart and common-game cohort locally,
-without another database read. The selected-hour detail remains independent
-of this chart window.
+Select **Betting hour · Madrid** in the Historical analysis view selector. It
+answers one question: **what would each model group have earned had we bet at
+12:00, 13:00 … 00:00 Madrid?** It shares the inclusive NBA slate range, season
+type, target, model-family filter, minimum edges and chart metric. The initial
+selected hour is **19:00**. The hours are **12:00–23:00 on each NBA slate date,
+then 00:00 at the following midnight**, inclusive. Cutoffs use `Europe/Madrid`,
+including daylight-saving changes, not a fixed UTC offset. Cutoffs at/after
+tip-off, or after the read time, are excluded rather than counted as missing
+predictions. The **Hours to compare** range narrows the chart and common-game
+cohort locally, without another database read. The selected-hour detail remains
+independent of this chart window.
 
-Two sources are selectable and never fill each other's gaps:
+There are four series: **XGBoost · Intermediate**, **XGBoost · Closing**,
+**TabPFN · Intermediate** and **TabPFN · Closing**. The model-family filter
+keeps the two of one family. Two sources are selectable, Snapshot replay by
+default, and never fill each
+other's gaps:
 
 - **Live predictions** requires the input and completed publication to be
   available by the cutoff. Publication is `max(predicted_at, runs.finished_at)`.
@@ -155,53 +160,55 @@ Two sources are selectable and never fill each other's gaps:
   corrections, and the existing daily-training cutoff is not a guarantee
   that every previous-day game had finished at the snapshot time.
 
-There is at most one bet per game, hour, source and series:
+There is at most one bet per game, hour, source and series. At each cutoff every
+slot (kind, schema, target, phase, trained horizon and variant, not build/refit
+identity) contributes its **previous available output**: the latest by
+publication (live) or by input (replay). TabPFN republishes old snapshots, so
+its newest input decides, whenever it was published. An Intermediate series is
+the equal-weight mean of its slots that have an output by the cutoff; a Closing
+series is its closing slot's output, or missing if none exists by then. Hidden
+variants are excluded. In replay an intermediate slot has one snapshot per game,
+so it joins the mean only once that snapshot has passed. Live intermediate slots
+predict at every run, so the mean can use newer `latest` inputs. The number of
+models averaged is shown per bet, and the models used at the selected hour are
+listed.
 
-| Series | Selection |
-| --- | --- |
-| TabPFN | One output from the closest input snapshot at/before the cutoff, among outputs eligible for that source. No averaging across snapshots. |
-| Closing | Latest eligible output for each XGBoost closing slot; equal-weight mean if multiple active slots/variants exist. |
-| Intermediate | Latest eligible output for each XGBoost intermediate slot/horizon; equal-weight mean across those slots. Earlier outputs of the same slot are replaced. |
-
-A slot retains kind, schema, target, phase, trained horizon and variant, but
-not build/refit identity. TabPFN ties prefer later publication, then
-intermediate phase, longer horizon, variant and stored IDs. Hidden variants
-are excluded. Intermediate replay retains the existing own-horizon-only
-contract; live intermediate can use a newer `latest` input for each model.
-
-Convert line-error outputs using their **original model anchors** to absolute
-points (or home margin for spread) before averaging. All three series use the
-**same last stored Bet365 quote** for that game/hour/source: choose the newest
-eligible input with a quote, before reducing predictions to slots. Both line
-and prices come from that one quote. The chosen quote need not be exactly at
-the betting hour: display its input time and its stored age plus elapsed time
-since input. Unknown age stays unknown; missing prices never become −110.
-The page makes no claim that an old quote remained executable at the cutoff.
+Outputs are converted to absolute points (home margin for spread) using their
+**original model anchors** before averaging. All series use the **same last
+stored Bet365 quote** for that game/hour/source: the newest eligible input with
+a quote. Line and prices come from that one quote. The quote need not be exactly
+at the betting hour: its input time and its stored age plus the time since input
+are displayed. Unknown age stays unknown; missing prices never become −110. The
+page makes no claim that an old quote remained executable at the cutoff.
 
 The existing target-specific grader applies the per-kind minimum edge to the
-aggregate against this common line. One unit is staked per priced bet; ROI
-uses stored American odds, pushes return zero, and missing prices are excluded
-from ROI. Win % is W/(W+L), with per-cell Wilson 95% intervals. MAE includes
-available predictions on final games even without a bet/quote.
+mean against this common line. One unit is staked per priced bet; ROI uses
+stored American odds, pushes return zero, and missing prices are excluded from
+ROI. Win % is W/(W+L), with per-cell Wilson 95% intervals. MAE includes available
+predictions on final games even without a bet/quote.
 
 Missing predictions remain explicit rows. Coverage is final eligible games
 with both prediction and line / all final eligible games, including no-bet
 signals in the numerator. The **Compare common games only** filter requires
 a prediction and line for every displayed hour and series, without requiring
-a directional bet. It can produce an empty cohort, especially with sparse
-TabPFN coverage; filtering the model family narrows the required series.
-The selected-hour game audit and snapshot-member table always show all eligible
-games at that hour, even when the chart uses the common cohort.
+a directional bet. It can produce an empty cohort. The selected-hour game audit
+always shows all eligible games at that hour, even when the chart uses the
+common cohort.
 
-The hourly repository reuses the existing source-eligibility CTEs, but applies
-clock cutoffs **before** ranking outputs. It never selects from the already
-bucket-reduced model analysis. PostgreSQL returns at most one row per
-slot/game/source/hour; means and metrics are computed locally. Reads are
-read-only, bounded to 200,000 selected rows with a 45-second timeout, and
-cached for 15 minutes (four ranges/targets). Exceeding the bound fails without
-displaying partial results. Hour, source, metric, edge and family changes reuse
-that read; Refresh invalidates the selected range/target/season cache entry.
-No new predictions, remote inference, backfills or database writes are run.
+Reads (`repositories/clock.py`) return the eligible outputs of both sources plus
+one row per input carrying a quote, and the as-of selection runs locally
+(`domain/clock.py`). The first version crossed every output with the thirteen
+cutoffs in PostgreSQL; it ran for more than 170 s on a two-week range with only
+about 100,000 stored predictions, so the query shape, not the data volume, was
+the limit. No index or precomputed table is needed. Measured 2026-11-10 on
+2026-10-28 to 2026-11-10 (104 games): 10–14 s per read, about 30,000 output rows
+and 7,500 quotes, then under 2 s locally per source. Reads are read-only, bounded
+to 200,000 rows per query with a 45-second timeout, and cached for 15 minutes per
+range, target and season type. Exceeding the bound fails without displaying
+partial results; at the rate above that happens on a range of roughly 14 weeks.
+Hour, source, metric, edge and family changes reuse the read; Refresh invalidates
+the selected entry. No new predictions, remote inference, backfills or database
+writes are run.
 
 The highest historical hour is exploratory: cells share games, available
 horizons change, and selecting the maximum across hours introduces selection
