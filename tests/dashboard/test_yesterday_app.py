@@ -4,6 +4,7 @@ from unittest.mock import Mock
 import pandas as pd
 import pytest
 from bs4 import BeautifulSoup
+from nba_ou.dashboard.repositories.clock import ClockData
 from nba_ou.dashboard.repositories.predictions import DashboardDataError, TodayData
 from nba_ou.dashboard.ui import loaders
 from nba_ou.dashboard.ui import yesterday as yesterday_ui
@@ -11,6 +12,22 @@ from streamlit.testing.v1 import AppTest
 from streamlit.testing.v1.element_tree import ButtonGroup
 
 from .conftest import NOW, FrozenDateTime, rendered_images
+from .test_clock import (
+    AS_OF,
+    SOURCES,
+    TAB_6H,
+    TAB_CLOSE,
+    TAB_FINAL,
+    TAB_MEAN,
+    XGB_6H,
+    XGB_8H,
+    XGB_CLOSE,
+    XGB_FINAL,
+    XGB_MEAN,
+    clock_game,
+    output,
+    quote,
+)
 from .test_history import historical_slate
 
 ENTRYPOINT = Path(__file__).resolve().parents[2] / "streamlit/streamlit_app.py"
@@ -29,13 +46,24 @@ def yesterday_setup(monkeypatch):
     reader = Mock(return_value=data)
     monkeypatch.setattr(loaders, "read_yesterday", reader)
     monkeypatch.setattr(loaders, "read_today", Mock(return_value=data))
+    monkeypatch.setattr(
+        loaders,
+        "read_clock_history",
+        Mock(
+            return_value=ClockData(
+                pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), NOW.to_pydatetime()
+            )
+        ),
+    )
     monkeypatch.setattr(yesterday_ui, "datetime", FrozenDateTime)
     monkeypatch.setattr(yesterday_ui, "slate_date", lambda: NOW.date())
     loaders.load_today.clear()
     loaders.load_yesterday.clear()
+    loaders.load_clock_history.clear()
     yield reader, data
     loaders.load_today.clear()
     loaders.load_yesterday.clear()
+    loaders.load_clock_history.clear()
 
 
 def open_yesterday(source="Live predictions", target=1):
@@ -540,3 +568,67 @@ def test_slate_summary_tables_pool_first_then_checkpoints_by_order():
     assert table.loc["All checkpoints", "Spread"] == "—"
     assert table.loc["Intermediate at 2h", "Line error"] == "100.0% (2–0)"
     assert table.loc["Closing at closing", "Spread"] == "—"
+
+
+@pytest.fixture
+def hour_data(yesterday_setup, monkeypatch):
+    reader = Mock(
+        return_value=ClockData(
+            pd.DataFrame([clock_game()]),
+            pd.DataFrame(
+                [
+                    output(slot, source=source)
+                    for source in SOURCES
+                    for slot in (XGB_6H, XGB_8H, XGB_CLOSE, TAB_6H, TAB_CLOSE)
+                ]
+            ),
+            pd.DataFrame([quote(source=source) for source in SOURCES]),
+            AS_OF.to_pydatetime(),
+        )
+    )
+    monkeypatch.setattr(loaders, "read_clock_history", reader)
+    return reader
+
+
+def hour_tables(app):
+    return [
+        table.value for table in app.table if table.value.index.name == "Hour (Madrid)"
+    ]
+
+
+def test_each_target_shows_every_hour_without_a_selector(hour_data):
+    app = open_yesterday(source="Snapshot replay", target=1)
+    assert not app.exception
+    assert "Results by betting hour" in [node.value for node in app.subheader]
+    assert not any("hour" in str(box.key) for box in app.selectbox)
+    assert not app.select_slider
+    tables = hour_tables(app)
+    assert len(tables) == 1
+    assert hour_data.call_args.args[2:] == (1, None)
+    assert list(tables[0].columns) == [XGB_MEAN, XGB_FINAL, TAB_MEAN, TAB_FINAL]
+    assert len(tables[0]) == 13
+    assert tables[0].index[0] == "12:00" and tables[0].index[-1] == "00:00 (+1 day)"
+    assert tables[0].loc["12:00", XGB_MEAN] == "—"
+    assert tables[0].loc["23:00", XGB_MEAN] == "100.0% · 1-0 · 1/1"
+
+
+def test_summary_shows_one_hour_table_per_target(hour_data):
+    app = open_yesterday(source="Snapshot replay", target=0)
+    assert not app.exception
+    assert len(hour_tables(app)) == 3
+    assert [call.args[2] for call in hour_data.call_args_list] == [1, 2, 3]
+
+
+def test_refresh_also_rereads_the_hourly_tables(hour_data):
+    app = open_yesterday(source="Snapshot replay", target=1)
+    assert hour_data.call_count == 1
+    app.button(key="yesterday_refresh").click().run()
+    assert not app.exception and hour_data.call_count == 2
+
+
+def test_hour_table_errors_do_not_hide_the_page(hour_data):
+    hour_data.side_effect = DashboardDataError("Hourly fixture unavailable")
+    app = open_yesterday(source="Snapshot replay", target=1)
+    assert not app.exception
+    assert app.error[0].value == "Hourly fixture unavailable"
+    assert "Game results" in [node.value for node in app.subheader]

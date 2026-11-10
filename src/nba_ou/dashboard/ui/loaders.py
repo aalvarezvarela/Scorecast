@@ -42,7 +42,7 @@ def load_history(
     )
 
 
-@st.cache_data(ttl=900, max_entries=4, show_spinner=False)
+@st.cache_data(ttl=900, max_entries=12, show_spinner=False)
 def load_clock_history(
     start: date, end: date, target: int, season_type: int | None
 ) -> ClockData:

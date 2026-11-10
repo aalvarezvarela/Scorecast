@@ -357,22 +357,30 @@ def leader_checks(
 
 
 def _cell_text(row) -> str:
+    """Win %, record, and bets placed out of the final games at that hour."""
     if pd.isna(row.win_pct):
         return "—"
-    text = f"{row.win_pct:.1f}% · {row.wins}-{row.losses}"
-    return text if pd.isna(row.roi) else f"{text} · ROI {row.roi:+.1f}%"
+    return (
+        f"{row.win_pct:.1f}% · {row.wins}-{row.losses} · "
+        f"{row.bets}/{row.eligible_games}"
+    )
 
 
-def hour_model_table(summary: pd.DataFrame, names: list[str]) -> pd.DataFrame:
-    """One row per hour and one column per series, as readable text."""
+def hour_model_table(
+    summary: pd.DataFrame, names: list[str], hours: tuple[int, ...] | None = None
+) -> pd.DataFrame:
+    """One row per hour and one column per series, as readable text.
+
+    ``hours`` keeps a fixed list of rows, empty ones included.
+    """
     if summary.empty:
         return pd.DataFrame()
     table = (
         summary.assign(cell=[_cell_text(row) for row in summary.itertuples()])
         .pivot(index="hour", columns="series", values="cell")
         .reindex(columns=names)
-        .fillna("—")
-        .sort_index()
     )
+    table = table.sort_index() if hours is None else table.reindex(index=list(hours))
+    table = table.fillna("—")
     table.insert(0, HOUR_COLUMN, [hour_label(hour) for hour in table.index])
     return table.reset_index(drop=True).rename_axis(columns=None)

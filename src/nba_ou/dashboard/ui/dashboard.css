@@ -223,10 +223,41 @@
     color: var(--text-color, #afbcd4); opacity: 0.75; font-weight: 400;
 }
 
-/* Keep each summary label/value together; native content-sized cards wrap
-   onto another row when the complete table no longer fits. */
-.st-key-yesterday_performance [data-testid="stTable"] :is(th, td) {
+/* Yesterday's summary tables. Each label and value stays on one line;
+   native content-sized cards wrap onto another row when a table no longer fits. */
+:is(.st-key-yesterday_performance, .st-key-yesterday_summary, .st-key-yesterday_hours) [data-testid="stTable"] {
+    font-variant-numeric: tabular-nums;
+}
+:is(.st-key-yesterday_performance, .st-key-yesterday_summary, .st-key-yesterday_hours) [data-testid="stTable"] :is(th, td) {
     white-space: nowrap;
+    padding: 0.45rem 0.8rem;
+    border-color: rgba(128, 128, 128, 0.18);
+}
+:is(.st-key-yesterday_performance, .st-key-yesterday_summary, .st-key-yesterday_hours) [data-testid="stTable"] thead th {
+    font-size: 0.72rem;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    opacity: 0.75;
+}
+:is(.st-key-yesterday_performance, .st-key-yesterday_summary, .st-key-yesterday_hours) [data-testid="stTable"] tbody th {
+    font-weight: 600;
+    text-align: left;
+}
+:is(.st-key-yesterday_performance, .st-key-yesterday_summary, .st-key-yesterday_hours) [data-testid="stTable"] tbody tr:hover > * {
+    filter: brightness(1.15);
+}
+.history-comparison thead th {
+    font-size: 0.72rem;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    opacity: 0.75;
+}
+.history-comparison th, .history-comparison td {
+    border-bottom-color: rgba(128, 128, 128, 0.18);
+}
+.history-comparison tbody tr:hover > * {
+    background: rgba(128, 128, 128, 0.08);
 }
 
 /* Menu labels/options are 1.5 times their native 14px / 16px sizes.

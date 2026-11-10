@@ -252,6 +252,16 @@ then each checkpoint, with a column per target (`win % (wins–losses)`, `—`
 without settled bets). It uses the selected source and minimum edges; Display
 is disabled there.
 
+**Results by betting hour** appears in Summary (one table per target) and in
+each target view. It is the hourly table of
+[historical_analysis.md](historical_analysis.md) for that one slate: a row for
+every Madrid hour from 12:00 to 00:00, with no hour selector, and a column for
+XGBoost and TabPFN, intermediate and closing. It reads the same data and rules as
+that view, for the selected source and minimum edges. Each cell gives win %,
+record and bets placed out of the final games at that hour, tinted around
+break-even without a small-sample filter, since one slate is always small. All
+win-rate tables on the page are tinted the same way.
+
 The default source is **Snapshot replay**: stored exact intermediate and
 closing reconstructions, including Historical Backfill; it does not rerun any
 model or substitute live outputs for missing replays. **Live predictions**

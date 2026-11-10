@@ -22,6 +22,7 @@ from nba_ou.dashboard.repositories.clock import CLOCK_HOURS
 from nba_ou.dashboard.repositories.predictions import DashboardDataError
 from nba_ou.dashboard.ui.analysis_charts import METRICS, MODEL_COLORS
 from nba_ou.dashboard.ui.controls import coin_flip_metric, permutation_metric
+from nba_ou.dashboard.ui.formatting import rate_style
 from nba_ou.dashboard.ui.loaders import load_clock_history
 
 SUMMARY_NAMES = {
@@ -100,32 +101,41 @@ def _clock_chart(summary: pd.DataFrame, metric: str, names: list[str]):
     return line.properties(height=320)
 
 
-def _cell_style(win_pct: float, settled: float) -> str:
+def _cell_style(win_pct: float, settled: float, min_bets: int) -> str:
     if pd.isna(win_pct):
         return ""
-    if settled < MIN_CELL_BETS:
-        return "color: #8a8f98"
-    distance = win_pct - BREAK_EVEN
-    alpha = min(0.55, 0.12 + abs(distance) / 25)
-    color = "46, 160, 67" if distance >= 0 else "218, 54, 51"
-    return f"background-color: rgba({color}, {alpha:.2f})"
+    return "color: #8a8f98" if settled < min_bets else rate_style(win_pct)
 
 
-def _styled_table(summary: pd.DataFrame, table: pd.DataFrame, names: list[str]):
-    """Green above break-even, red below; grey text when the sample is small."""
+def styled_hour_table(
+    summary: pd.DataFrame,
+    table: pd.DataFrame,
+    names: list[str],
+    *,
+    hours: tuple[int, ...] | None = None,
+    min_bets: int = MIN_CELL_BETS,
+):
+    """Green above break-even, red below; grey text under ``min_bets``."""
     cells = summary.assign(settled=summary["wins"] + summary["losses"])
-    win_pct = cells.pivot(index="hour", columns="series", values="win_pct")
-    settled = cells.pivot(index="hour", columns="series", values="settled")
+    index = list(hours) if hours is not None else sorted(cells["hour"].unique())
+    win_pct, settled = (
+        cells.pivot(index="hour", columns="series", values=value).reindex(
+            index=index, columns=names
+        )
+        for value in ("win_pct", "settled")
+    )
+    css = [
+        [
+            _cell_style(win_pct.iat[row, column], settled.iat[row, column], min_bets)
+            for column in range(len(names))
+        ]
+        for row in range(len(index))
+    ]
 
     def styles(frame: pd.DataFrame) -> pd.DataFrame:
-        css = pd.DataFrame("", index=frame.index, columns=frame.columns)
-        for position, hour in enumerate(sorted(win_pct.index)):
-            for name in names:
-                if name in win_pct:
-                    css.loc[position, name] = _cell_style(
-                        win_pct.loc[hour, name], settled.loc[hour, name]
-                    )
-        return css
+        result = pd.DataFrame("", index=frame.index, columns=frame.columns)
+        result[names] = css
+        return result
 
     return table.style.apply(styles, axis=None)
 
@@ -162,17 +172,17 @@ def _render_hour_table(summary: pd.DataFrame, names: list[str]) -> None:
     st.subheader("Results by hour")
     table = hour_model_table(summary, names)
     st.dataframe(
-        _styled_table(summary, table, names),
+        styled_hour_table(summary, table, names),
         hide_index=True,
         width="stretch",
         height=35 * (len(table) + 1) + 3,
         column_config={
             HOUR_COLUMN: st.column_config.TextColumn(width="small", pinned=True)
         },
-        alt="Win %, record and ROI of each series at each Madrid betting hour",
+        alt="Win %, record and bets placed by each series at each Madrid betting hour",
     )
     st.caption(
-        f"Each cell: win %, wins-losses, ROI. Green beats the {BREAK_EVEN:.2f}% break-even at −110, red does not; "
+        f"Each cell: win %, wins-losses, bets placed / final games at that hour. Green beats the {BREAK_EVEN:.2f}% break-even at −110, red does not; "
         f"grey text has fewer than {MIN_CELL_BETS} wins + losses."
     )
 

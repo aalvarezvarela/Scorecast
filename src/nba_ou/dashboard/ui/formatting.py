@@ -5,6 +5,7 @@ import math
 import pandas as pd
 
 from nba_ou.dashboard.config import SIGNAL_COLORS, SIGNAL_HEX_COLORS
+from nba_ou.dashboard.domain.analysis import BREAK_EVEN
 from nba_ou.dashboard.domain.dates import horizon_label, madrid_time
 
 
@@ -78,3 +79,11 @@ def prediction_table(
 def signal_style(value) -> str:
     color = SIGNAL_HEX_COLORS.get(value, SIGNAL_HEX_COLORS["NO EDGE"])
     return f"color: {color}; font-weight: bold"
+
+
+def rate_style(win_pct: float) -> str:
+    """Cell tint around break-even at −110: stronger the further away it is."""
+    distance = win_pct - BREAK_EVEN
+    alpha = min(0.55, 0.12 + abs(distance) / 25)
+    color = "46, 160, 67" if distance >= 0 else "218, 54, 51"
+    return f"background-color: rgba({color}, {alpha:.2f})"

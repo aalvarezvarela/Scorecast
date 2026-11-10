@@ -149,7 +149,8 @@ The page opens with the **four best hour and series pairs** by win %, among
 those with the minimum of settled bets (each card gives record, ROI and
 coverage), beside the coin-flip chance and the game-permutation p of the leader
 over all pairs tried. Below it is a **table with one row per hour and one column
-per series**, each cell giving win %, record and ROI: green above break-even at
+per series**, each cell giving win %, record and bets placed out of the final
+games at that hour: green above break-even at
 −110, red below, and grey text for a small sample. The chart and the long-form
 hourly results follow.
 
