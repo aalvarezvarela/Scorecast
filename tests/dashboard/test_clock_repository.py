@@ -11,31 +11,46 @@ from nba_ou.dashboard.repositories import clock
 from nba_ou.dashboard.repositories.predictions import DashboardDataError
 from psycopg.types.json import Jsonb
 
-from .test_clock import AS_OF, DAY
+from .test_clock import AS_OF, DAY, SOURCES
 from .test_historical_repository import FIXTURE_COLUMNS
+
+
+def read(**kwargs):
+    return clock.read_clock_history(DAY, DAY, 1, None, **kwargs)
 
 
 def test_clock_read_is_bounded_read_only_and_binds_all_filters(monkeypatch):
     conn = MagicMock()
     conn.__enter__.return_value = conn
     monkeypatch.setattr(clock, "open_connection", MagicMock(return_value=conn))
-    reader = MagicMock(side_effect=[pd.DataFrame(), pd.DataFrame()])
+    reader = MagicMock(side_effect=[pd.DataFrame()] * 3)
     monkeypatch.setattr(clock, "_frame", reader)
-    data = clock.read_clock_history(DAY, DAY, 1, None)
+    data = read()
     assert (
         conn.read_only
         and conn.isolation_level == psycopg.IsolationLevel.REPEATABLE_READ
     )
-    assert reader.call_count == 2
-    params = reader.call_args.args[2]
-    assert params[:5] == (DAY, DAY, 1, [1, 2, 3, 4, 5], "2_5")
-    assert params[8] == list(range(12, 25))
-    assert params[-2:] == (data.fetched_at, clock.MAX_CLOCK_ROWS + 1)
-    assert params[7] == ["_thinking_high"]
+    assert reader.call_count == 3
+    expected = (
+        DAY,
+        DAY,
+        1,
+        [1, 2, 3, 4, 5],
+        "2_5",
+        data.fetched_at,
+        data.fetched_at,
+        ["_thinking_high"],
+        clock.MAX_CLOCK_ROWS + 1,
+    )
+    assert [call.args[2] for call in reader.call_args_list[1:]] == [expected] * 2
     monkeypatch.setattr(clock, "MAX_CLOCK_ROWS", 1)
-    reader.side_effect = [pd.DataFrame(), pd.DataFrame({"game_id": [1, 2]})]
+    reader.side_effect = [
+        pd.DataFrame(),
+        pd.DataFrame(),
+        pd.DataFrame({"game_id": [1, 2]}),
+    ]
     with pytest.raises(DashboardDataError, match="no partial results"):
-        clock.read_clock_history(DAY, DAY, 1)
+        read()
 
 
 @pytest.mark.parametrize(
@@ -51,7 +66,7 @@ def test_clock_read_is_bounded_read_only_and_binds_all_filters(monkeypatch):
 def test_clock_read_sanitizes_errors(monkeypatch, error, phrase):
     monkeypatch.setattr(clock, "open_connection", MagicMock(side_effect=error))
     with pytest.raises(DashboardDataError) as caught:
-        clock.read_clock_history(DAY, DAY, 1)
+        read()
     assert phrase in str(caught.value) and "sensitive" not in str(caught.value)
 
 
@@ -198,12 +213,18 @@ def clock_sql_fixture():
     ), base AS""".replace(
         "COLUMNS", FIXTURE_COLUMNS
     )
-    query = clock.CLOCK_QUERY.replace("WITH base AS", prefix)
-    for table in ("predictions_full", "runs", "games", "inputs", "model_builds"):
-        query = query.replace(
-            f"prediction.{table}",
-            f"fixture_{dict(predictions_full='predictions', model_builds='builds').get(table, table)}",
-        )
+
+    def localized(query):
+        query = query.replace("WITH base AS", prefix)
+        for table, fixture in (
+            ("predictions_full", "predictions"),
+            ("runs", "runs"),
+            ("games", "games"),
+            ("inputs", "inputs"),
+            ("model_builds", "builds"),
+        ):
+            query = query.replace(f"prediction.{table}", f"fixture_{fixture}")
+        return query
 
     def json_rows(rows):
         return Jsonb(
@@ -216,7 +237,7 @@ def clock_sql_fixture():
             ]
         )
 
-    params = (
+    shared = (
         json_rows(predictions),
         json_rows(runs),
         json_rows([game]),
@@ -229,39 +250,35 @@ def clock_sql_fixture():
         "2_5",
         AS_OF,
         AS_OF,
-        ["_thinking_high"],
-        [19, 29],
-        DAY,
-        DAY,
-        [2],
-        AS_OF,
-        200001,
     )
-    return query, params
+    return localized, shared
+
+
+def run(query, params):
+    with psycopg.connect(os.environ["NBA_OU_TEST_PG_DSN"]) as conn:
+        conn.read_only = True
+        with conn.cursor() as cursor:
+            cursor.execute(query, params)
+            return pd.DataFrame(
+                cursor.fetchall(), columns=[c.name for c in cursor.description]
+            )
 
 
 @pytest.mark.postgres
 @pytest.mark.skipif(
     not os.getenv("NBA_OU_TEST_PG_DSN"), reason="NBA_OU_TEST_PG_DSN not set"
 )
-def test_postgres_clock_selection_and_shared_quote_precede_reduction():
-    query, params = clock_sql_fixture()
-    with psycopg.connect(os.environ["NBA_OU_TEST_PG_DSN"]) as conn:
-        conn.read_only = True
-        with conn.cursor() as cursor:
-            cursor.execute(query, params)
-            frame = pd.DataFrame(
-                cursor.fetchall(), columns=[c.name for c in cursor.description]
-            )
-    assert frame["hour"].eq(19).all()  # 05:00 next day is after tip-off.
-    assert len(frame) == 6
-    live = frame.loc[frame["source"].eq("Live predictions")]
-    assert sorted(live["prediction_value"]) == [234, 236, 238, 240]
-    assert (
-        live["bet_line_x2"].eq(484).all()
-    )  # Common quote from closest eligible TabPFN input.
-    assert live["quote_age_minutes"].eq(17).all()
-    replay = frame.loc[frame["source"].eq("Snapshot replay")]
-    assert sorted(replay["prediction_value"]) == [242, 252]
-    assert replay["available_at"].gt(replay["cutoff_at"]).all()
-    assert not frame["prediction_value"].eq(999).any()
+def test_postgres_reads_every_visible_model_and_one_row_per_quote():
+    localized, shared = clock_sql_fixture()
+    params = (*shared, ["_thinking_high"], 200001)
+    models = run(localized(clock.CLOCK_MODELS_QUERY), params)
+    live = models.loc[models["source"].eq(SOURCES[0]), "prediction_value"]
+    assert sorted(live) == [226, 231, 234, 236, 238, 240, 999, 999, 999, 999]
+    replay = models.loc[models["source"].eq(SOURCES[1]), "prediction_value"]
+    assert sorted(replay) == [242, 250, 252]
+    assert not models["variant"].str.endswith("_thinking_high").any()
+    quotes = run(localized(clock.CLOCK_QUOTES_QUERY), params)
+    assert not quotes.duplicated(["source", "input_id"]).any()
+    assert not quotes["bet_line_x2"].isna().any()
+    assert set(quotes["bet_line_x2"]) == {460, 484}
+    assert quotes["quote_age_at_input"].eq(2).all()

@@ -1,4 +1,4 @@
-"""Select the last eligible output per slot and Madrid clock cutoff in SQL."""
+"""Bounded read of stored outputs and quotes for the Madrid hourly view."""
 
 from configparser import Error as ConfigurationError
 from dataclasses import dataclass
@@ -26,72 +26,51 @@ CLOCK_GAMES_QUERY = """
     ORDER BY game_date, game_id
 """
 
-CLOCK_QUERY = (
+# Only outputs and one row per input carrying a quote leave PostgreSQL; the
+# hour-by-hour selection runs locally. Crossing every output with thirteen
+# cutoffs in SQL ran for minutes on a few weeks of games.
+_HIDDEN_AND_TRAINED = """
+      NOT EXISTS (
+          SELECT 1 FROM unnest(%s::text[]) AS hidden(suffix)
+          WHERE right(s.variant, length(suffix)) = suffix
+      )
+      AND (s.source = 'Live predictions' OR m.train_date_max < g.game_date)
+"""
+
+CLOCK_MODELS_QUERY = (
     HISTORY_SOURCE_CTES
     + """
-    , clock_base AS (
-        SELECT s.*, g.game_date, g.home_team, g.away_team,
-               CASE WHEN s.target = 3 THEN i.spread_line_age_minutes
-                    ELSE i.total_line_age_minutes END AS quote_age_at_input,
-               CASE WHEN s.source = 'Live predictions' THEN s.available_at
-                    ELSE s.input_at END AS selection_at
-        FROM sources s
-        JOIN prediction.games g USING (game_id)
-        JOIN prediction.inputs i USING (input_id)
-        JOIN prediction.model_builds m USING (model_build_id)
-        WHERE NOT EXISTS (
-            SELECT 1 FROM unnest(%s::text[]) AS hidden(suffix)
-            WHERE right(s.variant, length(suffix)) = suffix
-        )
-          AND (s.source = 'Live predictions' OR m.train_date_max < g.game_date)
-    ), cutoffs AS (
-        SELECT g.game_id, hour,
-               ((g.game_date + (hour / 24)) + make_time(hour %% 24, 0, 0))
-                   AT TIME ZONE 'Europe/Madrid' AS cutoff_at
-        FROM prediction.games g
-        CROSS JOIN unnest(%s::integer[]) AS hours(hour)
-        WHERE g.game_date BETWEEN %s AND %s AND g.season_type = ANY(%s::smallint[])
-    ), candidates AS (
-        SELECT b.*, c.hour, c.cutoff_at
-        FROM clock_base b JOIN cutoffs c USING (game_id)
-        WHERE b.selection_at <= c.cutoff_at AND b.input_at <= c.cutoff_at
-          AND c.cutoff_at < b.tipoff_at AND c.cutoff_at < b.tipoff_at_prediction
-          AND c.cutoff_at <= %s
-    ), ranked AS (
-        SELECT candidates.*, ROW_NUMBER() OVER (
-            PARTITION BY game_id, source, hour, kind, schema_version, target,
-                         dataset_type, model_horizon_minutes, variant
-            ORDER BY CASE WHEN kind = 3 THEN input_at ELSE selection_at END DESC,
-                     input_at DESC, available_at DESC,
-                     predicted_at DESC, run_id DESC, input_id DESC, model_build_id DESC
-        ) AS priority FROM candidates
-    ), quotes AS (
-        SELECT DISTINCT ON (game_id, source, hour)
-               game_id, source, hour, bet_line_x2 AS clock_bet_line_x2,
-               bet_price_over_home AS clock_price_over_home,
-               bet_price_under_away AS clock_price_under_away,
-               input_at AS quote_input_at, quote_age_at_input
-        FROM candidates
-        WHERE bet_line_x2 IS NOT NULL
-        ORDER BY game_id, source, hour, input_at DESC, available_at DESC,
-                 predicted_at DESC, run_id DESC, input_id DESC, model_build_id DESC
-    )
-    SELECT r.game_id, r.game_date, r.home_team, r.away_team, r.tipoff_at,
-           r.status, r.home_points, r.away_points, r.kind, r.schema_version,
-           r.target, r.dataset_type, r.model_horizon_minutes, r.variant,
-           r.source, r.hour, r.cutoff_at, r.input_at, r.available_at,
-           r.selection_at, r.prediction_value, r.model_line,
-           r.run_id, r.input_id, r.model_build_id,
-           q.clock_bet_line_x2 AS bet_line_x2,
-           q.clock_price_over_home AS bet_price_over_home,
-           q.clock_price_under_away AS bet_price_under_away,
-           q.quote_input_at,
-           EXTRACT(EPOCH FROM (r.cutoff_at - q.quote_input_at)) / 60.0
-               + q.quote_age_at_input AS quote_age_minutes
-    FROM ranked r LEFT JOIN quotes q USING (game_id, source, hour)
-    WHERE priority = 1
-    ORDER BY r.game_date, r.game_id, r.source, r.hour, r.kind,
-             r.dataset_type, r.model_horizon_minutes, r.variant
+    SELECT s.game_id, s.source, s.kind, s.schema_version, s.target, s.dataset_type,
+           s.model_horizon_minutes, s.variant, s.input_at, s.available_at,
+           s.predicted_at, s.prediction_value, s.model_line, s.tipoff_at_prediction,
+           s.run_id, s.input_id, s.model_build_id
+    FROM sources s
+    JOIN prediction.games g USING (game_id)
+    JOIN prediction.model_builds m USING (model_build_id)
+    WHERE"""
+    + _HIDDEN_AND_TRAINED
+    + """
+    ORDER BY s.game_id, s.input_at, s.available_at
+    LIMIT %s
+"""
+)
+
+CLOCK_QUOTES_QUERY = (
+    HISTORY_SOURCE_CTES
+    + """
+    SELECT s.game_id, s.source, s.input_id, s.input_at, s.tipoff_at_prediction,
+           s.bet_line_x2, s.bet_price_over_home, s.bet_price_under_away,
+           CASE WHEN s.target = 3 THEN i.spread_line_age_minutes
+                ELSE i.total_line_age_minutes END AS quote_age_at_input,
+           MIN(s.available_at) AS available_at
+    FROM sources s
+    JOIN prediction.games g USING (game_id)
+    JOIN prediction.inputs i USING (input_id)
+    JOIN prediction.model_builds m USING (model_build_id)
+    WHERE s.bet_line_x2 IS NOT NULL AND"""
+    + _HIDDEN_AND_TRAINED
+    + """
+    GROUP BY 1, 2, 3, 4, 5, 6, 7, 8, 9
     LIMIT %s
 """
 )
@@ -101,6 +80,7 @@ CLOCK_QUERY = (
 class ClockData:
     games: pd.DataFrame
     predictions: pd.DataFrame
+    quotes: pd.DataFrame
     fetched_at: datetime
 
 
@@ -111,12 +91,15 @@ def read_clock_history(
     season_type: int | None = 2,
     dsn_override: str = "",
 ) -> ClockData:
+    """Every eligible output and every stored quote, in both sources."""
     if start > end or target not in (1, 2, 3):
         raise ValueError("Invalid date range or prediction target")
     if season_type is not None and season_type not in (1, 2, 3, 4, 5):
         raise ValueError("Unknown season type")
     types = [season_type] if season_type is not None else [1, 2, 3, 4, 5]
     fetched_at = datetime.now(UTC)
+    shared = (start, end, target, types, DISPLAY_SCHEMA_VERSION, fetched_at, fetched_at)
+    last = (list(HIDDEN_VARIANT_SUFFIXES), MAX_CLOCK_ROWS + 1)
     try:
         with open_connection(dsn_override) as conn:
             conn.isolation_level = psycopg.IsolationLevel.REPEATABLE_READ
@@ -124,32 +107,14 @@ def read_clock_history(
             with conn.cursor() as cursor:
                 cursor.execute(f"SET LOCAL statement_timeout = {ANALYSIS_TIMEOUT_MS}")
                 games = _frame(cursor, CLOCK_GAMES_QUERY, (start, end, types))
-                predictions = _frame(
-                    cursor,
-                    CLOCK_QUERY,
-                    (
-                        start,
-                        end,
-                        target,
-                        types,
-                        DISPLAY_SCHEMA_VERSION,
-                        fetched_at,
-                        fetched_at,
-                        list(HIDDEN_VARIANT_SUFFIXES),
-                        list(CLOCK_HOURS),
-                        start,
-                        end,
-                        types,
-                        fetched_at,
-                        MAX_CLOCK_ROWS + 1,
-                    ),
-                )
-                if len(predictions) > MAX_CLOCK_ROWS:
+                predictions = _frame(cursor, CLOCK_MODELS_QUERY, (*shared, *last))
+                quotes = _frame(cursor, CLOCK_QUOTES_QUERY, (*shared, *last))
+                if max(len(predictions), len(quotes)) > MAX_CLOCK_ROWS:
                     raise DashboardDataError(
                         "Too many hourly predictions. Choose a shorter date range; "
                         "no partial results have been displayed."
                     )
-        return ClockData(games, predictions, fetched_at)
+        return ClockData(games, predictions, quotes, fetched_at)
     except psycopg.errors.QueryCanceled:
         raise DashboardDataError(
             "The hourly read timed out. Choose a shorter date range."
