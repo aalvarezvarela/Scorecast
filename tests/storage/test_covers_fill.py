@@ -123,3 +123,34 @@ def test_nothing_from_covers_leaves_the_rows():
     )
     assert games == {"pct": [], "opener": []}
     pd.testing.assert_frame_equal(out, rows)
+
+
+def test_overwrite_replaces_sbr_percentages_with_covers():
+    from nba_ou.postgre_db.odds_sportsbook import covers_pct_overwrite
+
+    rows = pd.DataFrame(
+        {
+            "game_id": ["A", "B", "C", "D"],
+            # A: SBR's few-pick share; B: empty; C: already Covers'; D: no counts.
+            "total_consensus_pct_over": [100.0, np.nan, 57.0, 75.0],
+            "total_consensus_pct_under": [np.nan, np.nan, 43.0, 25.0],
+            "spread_consensus_pct_home": [50.0, np.nan, 64.0, 50.0],
+            "spread_consensus_pct_away": [50.0, np.nan, 36.0, 50.0],
+        }
+    )
+    percentages = pd.DataFrame(
+        {
+            "game_id": ["A", "B", "C"],
+            "total_consensus_pct_over": [57.0, 61.0, 57.0],
+            "total_consensus_pct_under": [43.0, 39.0, 43.0],
+            "spread_consensus_pct_home": [64.0, 48.0, 64.0],
+            "spread_consensus_pct_away": [36.0, 52.0, 36.0],
+        }
+    )
+
+    plan = covers_pct_overwrite.plan_overwrite(rows, percentages)
+
+    assert plan["game_id"].tolist() == ["A", "B"]
+    assert plan["had_sbr_value"].tolist() == [True, False]
+    assert plan["total_consensus_pct_over"].tolist() == [57.0, 61.0]
+    assert plan["total_consensus_pct_under"].tolist() == [43.0, 39.0]

@@ -215,10 +215,12 @@ def compute_season_std(df, param="PTS"):
 
     After calling this function, df will have a new column:
         f"{param}_SEASON_BEFORE_STD"
-    which contains the expanding standard deviation of `param` for each group,
-    computed using only games before the current one.
+    which contains the expanding sample standard deviation (ddof=1) of `param`
+    for each (TEAM_ID, SEASON_YEAR, HOME) group, computed using only games
+    before the current one.
 
-    If STD is NaN (not enough games in current season), falls back to previous season's STD.
+    With fewer than two prior games in the group the STD is NaN and falls back
+    to the previous season's STD of the same team and location.
 
     Parameters
     ----------
@@ -240,13 +242,15 @@ def compute_season_std(df, param="PTS"):
     # Ensure the column is float so pd.NA values become NaN (avoids TypeError in .std())
     df[param] = df[param].fillna(np.nan).astype(float)
 
-    # Compute expanding standard deviation after shifting by 1 to exclude the current game.
+    # Expanding sample standard deviation of the games before the current one.
+    # One prior game has no spread to measure: it stays NaN (not 0.0) and takes
+    # the previous season's value below, which is the same statistic (ddof=1).
     df[season_std_col] = _shifted_group_window(
         df[param],
         [df["TEAM_ID"], df["SEASON_YEAR"], df["HOME"]],
         window=None,
         how="std",
-        ddof=0,
+        ddof=1,
     )
 
     # Compute previous season's STD as fallback for missing values

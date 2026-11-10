@@ -347,8 +347,9 @@ Feature patterns include:
 - `*_LAST_5_WMA_BEFORE`: weighted moving average with more weight on recent games.
 - `*_SEASON_BEFORE_AVG`: season-to-date average before the current game, with a
   previous-season fallback.
-- `*_SEASON_BEFORE_STD`: expanding season-to-date standard deviation before the
-  current game, with a previous-season fallback.
+- `*_SEASON_BEFORE_STD`: expanding season-to-date sample standard deviation
+  (`ddof=1`) before the current game, per team and location (home or away).
+  With fewer than two prior games it takes the previous season's value.
 - `*_TREND_SLOPE_LAST_5_GAMES_BEFORE`: linear trend slope over prior games.
 - `*_TREND_SLOPE_LAST_10_GAMES_BEFORE` and
   `*_TREND_SLOPE_LAST_5_MINUS_LAST_10_GAMES_BEFORE`: trend comparison features.

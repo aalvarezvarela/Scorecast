@@ -33,6 +33,7 @@ from nba_ou.postgre_db.line_history_aiven.load import (
     STAGING_TABLE,
     _to_native,
 )
+from nba_ou.postgre_db.line_history_aiven.schema import SCHEMA as SBR_SCHEMA
 from nba_ou.postgre_db.line_history_aiven.transform import OUTPUT_COLUMNS
 
 from .schema import SCHEMA
@@ -453,6 +454,31 @@ def fetch_game_events(conn: psycopg.Connection, season_year: int) -> pd.DataFram
             ).format(
                 cols=sql.SQL(", ").join(map(sql.Identifier, GAME_EVENT_COLUMNS)),
                 schema=sql.Identifier(SCHEMA),
+            ),
+            (int(season_year),),
+        )
+        games = _rows_to_frame(cur, GAME_EVENT_COLUMNS)
+    if games.empty:
+        return games
+    games["game_id"] = games["game_id"].astype(str)
+    games["game_date"] = pd.to_datetime(games["game_date"]).dt.date
+    games["tipoff_utc"] = pd.to_datetime(games["tipoff_utc"], utc=True)
+    return games.reset_index(drop=True)
+
+
+def fetch_sbr_game_events(conn: psycopg.Connection, season_year: int) -> pd.DataFrame:
+    """The season's games of the **SBR** store, in ``GAME_EVENT_COLUMNS``.
+
+    SBR's event ids are Covers' game ids, so these rows are enough to ask for
+    the pick counts of a game this store holds no lines of."""
+    with conn.cursor() as cur:
+        cur.execute(
+            sql.SQL(
+                "SELECT {cols} FROM {schema}.lh_game WHERE season_year = %s "
+                "ORDER BY game_date, game_id"
+            ).format(
+                cols=sql.SQL(", ").join(map(sql.Identifier, GAME_EVENT_COLUMNS)),
+                schema=sql.Identifier(SBR_SCHEMA),
             ),
             (int(season_year),),
         )

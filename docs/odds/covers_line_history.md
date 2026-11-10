@@ -130,12 +130,14 @@ Code: `postgre_db/line_history_covers/`. The layout is the OddsLogic store's.
   by season) and `lh_load_meta`, from `line_history_aiven.schema.DDL_STATEMENTS`
   verbatim. `lh_game.event_id` is the Covers game id.
 - **`lh_consensus`** is this store's own table (`schema.COVERS_DDL_STATEMENTS`):
-  one row per stored game with its Covers Consensus pick counts, the counts
-  SBR's `*_consensus_pct_*` shares are taken from.
+  one row per game with its Covers Consensus pick counts, the counts SBR's
+  `*_consensus_pct_*` shares are taken from. It does not reference `lh_game`,
+  so a game can have counts without stored Covers lines (the
+  [2023-24 backfill](#consensus-backfill-of-2023-24)).
 
   | Column | Type | |
   |---|---|---|
-  | `game_id` | TEXT | primary key, references `lh_game` |
+  | `game_id` | TEXT | primary key (NBA game id) |
   | `season_year` | SMALLINT | |
   | `spread_away_picks`, `spread_home_picks` | INTEGER | ATS "Total Picks" |
   | `total_over_picks`, `total_under_picks` | INTEGER | O/U "Total Picks" |
@@ -464,6 +466,25 @@ The training side
     whose two prices are not both there is taken whole: a frozen day page
     leaves `0.0` lines with no price.
   - `repair_sportsbook_closes.py --game-id G [--redo]` repairs single games.
+  - <a id="consensus-backfill-of-2023-24"></a>**Consensus backfill of
+    2023-24** (`scripts/line_history/covers/backfill_consensus.py`, written
+    2026-11-10). SBR's percentages of that season are missing for about 60% of
+    the games and, where present, are shares of a handful of picks
+    (`docs/pipeline/improvements_2_5.md`, item 4), so filling the empty cells
+    is not enough.
+    - `fetch --season-year 2023` reads the season's games from the **SBR**
+      store (SBR's `event_id` is the Covers game id), asks Covers for the
+      counts of those without an `lh_consensus` row and stores them. The first
+      `--execute` drops the table's old reference to `lh_game`
+      (`schema.drop_consensus_game_reference`).
+    - `apply --season-year 2023` overwrites the four percentage columns of
+      `odds_sportsbook` for every game with stored counts
+      (`odds_sportsbook/covers_pct_overwrite.py`), SBR's values included. The
+      raw SBR rows stay in `odds_sportsbook_sbr_raw`; a later close repair,
+      `--redo` included, restores only per-book closes from them, so the
+      percentages stay Covers'.
+    - Both steps are dry runs without `--execute`. The training data changes
+      only when the season is rebuilt.
 - **Run 2026-10-25** (seasons 2018, 2023, 2026, plus `--redo` of the two
   2024-03-28 games), 58 games in all.
   - Every `odds_sportsbook` row of a Covers game now has closes, percentages

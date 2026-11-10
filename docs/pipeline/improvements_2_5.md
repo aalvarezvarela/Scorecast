@@ -111,11 +111,11 @@ several hundred picks each, and they disagree with the stored values (stored
 75, 100, 50, 60 against 68, 70, 58, 66 for the same day). The Covers store
 holds only 14 games of that season (`lh_consensus`).
 
-Proposal: backfill `lh_consensus` for 2023-24 (one matchups page per date to
-get the Covers ids, one consensus request per game, about 1,300 requests) and
-write the four percentage columns of that season from it. `fill_from_covers`
-only fills empty cells and never replaces an SBR value, so the 2023-24 values
-need an explicit overwrite for the season, not the standing fill. The rolling
-and league-level columns derived from the percentages change with it. Whether
-the percentages carry signal at all is a separate question (their correlation
-with line error is about -0.03).
+The backfill is written (`scripts/line_history/covers/backfill_consensus.py`,
+see `docs/odds/covers_line_history.md`) and not yet run against the database:
+`fetch` stores the counts of the season's games, one request each (SBR's event
+ids are Covers' game ids), and `apply` overwrites the four percentage columns
+of `odds_sportsbook` for that season, SBR's values included. The rolling and
+league-level columns derived from the percentages change with the rebuild.
+Whether the percentages carry signal at all is a separate question (their
+correlation with line error is about -0.03).
