@@ -6,6 +6,13 @@ import pandas as pd
 
 import streamlit as st
 from nba_ou.dashboard.config import MODEL_NAMES
+from nba_ou.dashboard.domain.clock import (
+    HOUR_COLUMN,
+    SERIES,
+    clock_bets,
+    clock_summary,
+    hour_model_table,
+)
 from nba_ou.dashboard.domain.dates import madrid_time, slate_date
 from nba_ou.dashboard.domain.history import (
     HISTORY_SOURCES,
@@ -15,7 +22,9 @@ from nba_ou.dashboard.domain.history import (
     pregame_line,
     select_history,
 )
+from nba_ou.dashboard.repositories.clock import CLOCK_HOURS
 from nba_ou.dashboard.repositories.predictions import DashboardDataError
+from nba_ou.dashboard.ui.clock import styled_hour_table
 from nba_ou.dashboard.ui.controls import minimum_edge_select
 from nba_ou.dashboard.ui.history_table import (
     checkpoint_summary_table,
@@ -23,8 +32,9 @@ from nba_ou.dashboard.ui.history_table import (
     history_details,
     history_table_html,
     slate_summary_tables,
+    styled_rates,
 )
-from nba_ou.dashboard.ui.loaders import load_yesterday
+from nba_ou.dashboard.ui.loaders import load_clock_history, load_yesterday
 from nba_ou.dashboard.ui.teams import render_game_header
 
 # Summary (the default) is the whole slate's win rate for every target; the
@@ -49,7 +59,7 @@ def _performance_summary(games: pd.DataFrame, rows: pd.DataFrame) -> None:
             with st.container(border=True, width="content"):
                 st.markdown(f"**{checkpoints['Model'].iloc[0]}**")
                 st.table(
-                    checkpoint_summary_table(checkpoints),
+                    styled_rates(checkpoint_summary_table(checkpoints), ["Win rate"]),
                     border="horizontal",
                     alt=f"Daily prediction coverage and betting results for {checkpoints['Model'].iloc[0]}",
                 )
@@ -109,10 +119,55 @@ def _slate_summary(data, games: pd.DataFrame, source: str, thresholds) -> None:
             with st.container(border=True, width="content"):
                 st.markdown(f"**{model}**")
                 st.table(
-                    table,
+                    styled_rates(table),
                     border="horizontal",
                     alt=f"Slate win rate by checkpoint and target for {model}",
                 )
+
+
+def _render_hour_tables(game_date, targets: list[int], source, thresholds) -> None:
+    """One table per target: every betting hour, one column per model group."""
+    st.subheader("Results by betting hour")
+    st.caption(
+        f"{source} · Madrid time. At each hour every model uses its previous available output; "
+        "Intermediate is the mean of its models. Each cell: win %, wins-losses, bets placed / final games at that hour. "
+        "Green beats break-even at −110, red does not. One slate is a very small sample."
+    )
+    names = list(SERIES)
+    shown = False
+    with st.container(horizontal=True, gap="medium", key="yesterday_hours"):
+        for target in targets:
+            try:
+                data = load_clock_history(game_date, game_date, target, None)
+            except DashboardDataError as exc:
+                st.error(str(exc), icon=":material/database:")
+                return
+            bets, _ = clock_bets(
+                data.games,
+                data.predictions,
+                data.quotes,
+                source,
+                CLOCK_HOURS,
+                data.fetched_at,
+                target=target,
+                thresholds=thresholds,
+            )
+            summary = clock_summary(bets)
+            if summary.empty:
+                continue
+            shown = True
+            table = hour_model_table(summary, names, CLOCK_HOURS).set_index(HOUR_COLUMN)
+            with st.container(border=True, width="content"):
+                st.markdown(f"**{TARGETS[target]}**")
+                st.table(
+                    styled_hour_table(
+                        summary, table, names, hours=CLOCK_HOURS, min_bets=1
+                    ),
+                    border="horizontal",
+                    alt=f"{TARGETS[target]} results by Madrid betting hour",
+                )
+    if not shown:
+        st.caption("No hourly predictions are available for this slate yet.")
 
 
 def _game_card(game, rows: pd.DataFrame, *, spread: bool) -> None:
@@ -198,6 +253,9 @@ def render_yesterday() -> None:
             width="stretch",
         ):
             load_yesterday.clear(game_date)
+            for option in TARGETS:
+                if option != SUMMARY:
+                    load_clock_history.clear(game_date, game_date, option, None)
     with (
         st.container(key="yesterday_settings"),
         st.popover("Settings", icon=":material/tune:"),
@@ -233,6 +291,9 @@ def render_yesterday() -> None:
         return
     if target == SUMMARY:
         _slate_summary(data, games, source, thresholds)
+        _render_hour_tables(
+            game_date, [key for key in TARGETS if key != SUMMARY], source, thresholds
+        )
         st.caption(
             f"Results and predictions read {madrid_time(data.fetched_at)} · updates every minute."
         )
@@ -242,6 +303,7 @@ def render_yesterday() -> None:
         min_edge=thresholds,
     )
     _performance_summary(games, rows)
+    _render_hour_tables(game_date, [target], source, thresholds)
     st.subheader("Game results")
     if rows.empty:
         st.info(

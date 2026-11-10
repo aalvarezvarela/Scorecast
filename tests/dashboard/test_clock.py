@@ -339,7 +339,7 @@ def test_family_filter_and_empty_source_keep_missing_coverage_visible():
     assert members.empty
 
 
-def summary_row(hour, series, wins, losses, roi=5.0):
+def summary_row(hour, series, wins, losses, roi=5.0, eligible=98):
     return dict(
         hour=hour,
         hour_label=hour_label(hour),
@@ -347,6 +347,7 @@ def summary_row(hour, series, wins, losses, roi=5.0):
         wins=wins,
         losses=losses,
         bets=wins + losses,
+        eligible_games=eligible,
         win_pct=100 * wins / (wins + losses) if wins + losses else float("nan"),
         roi=roi,
     )
@@ -385,7 +386,7 @@ def test_hour_table_has_one_row_per_hour_and_one_column_per_series():
     table = hour_model_table(summary, [XGB_MEAN, TAB_MEAN])
     assert table.columns.tolist() == ["Hour (Madrid)", XGB_MEAN, TAB_MEAN]
     assert table["Hour (Madrid)"].tolist() == ["18:00", "19:00"]
-    assert table[XGB_MEAN].tolist() == ["66.7% · 2-1", "57.6% · 53-39 · ROI +9.5%"]
+    assert table[XGB_MEAN].tolist() == ["66.7% · 2-1 · 3/98", "57.6% · 53-39 · 92/98"]
     assert table[TAB_MEAN].tolist() == ["—", "—"]
 
 
@@ -409,3 +410,11 @@ def test_leader_checks_cover_every_eligible_cell():
         pytest.approx(float("nan"), nan_ok=True),
         0,
     )
+
+
+def test_hour_table_can_keep_every_hour_row():
+    summary = pd.DataFrame([summary_row(19, XGB_MEAN, 3, 1, eligible=5)])
+    table = hour_model_table(summary, [XGB_MEAN, TAB_MEAN], (18, 19, 24))
+    assert table["Hour (Madrid)"].tolist() == ["18:00", "19:00", "00:00 (+1 day)"]
+    assert table[XGB_MEAN].tolist() == ["—", "75.0% · 3-1 · 4/5", "—"]
+    assert table[TAB_MEAN].eq("—").all()

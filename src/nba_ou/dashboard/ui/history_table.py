@@ -8,7 +8,7 @@ import pandas as pd
 from nba_ou.dashboard.config import SIGNAL_COLORS
 from nba_ou.dashboard.domain.dates import madrid_clock, madrid_time
 from nba_ou.dashboard.domain.picks import bet_text
-from nba_ou.dashboard.ui.formatting import number
+from nba_ou.dashboard.ui.formatting import number, rate_style
 
 RESULT_COLORS = {"WIN": "green", "LOSS": "red"}
 
@@ -27,6 +27,16 @@ def checkpoint_summary_table(summary: pd.DataFrame) -> pd.DataFrame:
         lambda n: f"{n:.2f} pts" if pd.notna(n) else "—"
     )
     return display.set_index("Snapshot")
+
+
+def _rate_cell_style(text) -> str:
+    """Tint a formatted ``62.5%`` or ``62.5% (5–3)`` cell; ``—`` stays plain."""
+    return rate_style(float(text.partition("%")[0])) if "%" in str(text) else ""
+
+
+def styled_rates(table: pd.DataFrame, columns: list[str] | None = None):
+    """The same table, with its win rates tinted around break-even."""
+    return table.style.map(_rate_cell_style, subset=columns or list(table.columns))
 
 
 ALL_CHECKPOINTS = "All checkpoints"
@@ -156,13 +166,13 @@ def history_details(rows: pd.DataFrame, *, spread: bool) -> pd.DataFrame:
     result = pd.DataFrame(index=rows.index)
     result["Matchup"] = rows["away_team"] + " @ " + rows["home_team"]
     result["Final score (away–home)"] = [
-        f"{int(row['away_points'])}–{int(row['home_points'])}"
-        if row["status"] == 1
-        and pd.notna(row["away_points"])
-        and pd.notna(row["home_points"])
-        else "Void"
-        if row["status"] == 2
-        else "Pending"
+        (
+            f"{int(row['away_points'])}–{int(row['home_points'])}"
+            if row["status"] == 1
+            and pd.notna(row["away_points"])
+            and pd.notna(row["home_points"])
+            else "Void" if row["status"] == 2 else "Pending"
+        )
         for _, row in rows.iterrows()
     ]
     result["Model"] = rows["model_label"]
