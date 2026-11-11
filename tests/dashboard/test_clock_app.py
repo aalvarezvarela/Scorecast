@@ -97,10 +97,40 @@ def test_best_cards_pick_four_hour_and_series_pairs(clock_setup):
     app = open_history(history_view=VIEW)
     assert not app.exception
     labels = [node.label for node in app.metric]
-    assert labels.count("Coin-flip chance") == 1
-    assert labels.count("Game-permutation p") == 1
-    assert len(labels) == 6
+    # Four best cells and their two checks, then the leading combination's
+    # win %, P(profitable) and the same two checks.
+    assert labels[4:6] == ["Coin-flip chance", "Game-permutation p"]
+    assert labels[6:] == [
+        "Best combination · win %",
+        "P(profitable)",
+        "Coin-flip chance",
+        "Game-permutation p",
+    ]
     assert set(labels[:4]) <= {XGB_MEAN, XGB_FINAL, TAB_MEAN, TAB_FINAL}
+
+
+def test_hourly_view_combines_the_series_chosen_at_each_hour(clock_setup):
+    reader, _ = clock_setup
+    reader.return_value = clock_read(games=range(35))
+    app = open_history(history_view=VIEW)
+    assert not app.exception
+    assert "Combinations by hour" in [node.value for node in app.subheader]
+    table = next(
+        frame.value for frame in app.dataframe if "Majority · Win %" in frame.value
+    )
+    assert table.columns.tolist() == [
+        "Hour (Madrid)",
+        "Slots",
+        "Games",
+        "Mean · Win %",
+        "Mean · Bets",
+        "Majority · Win %",
+        "Majority · Bets",
+    ]
+    assert set(table["Hour (Madrid)"]) <= {f"{hour:02d}:00" for hour in range(24)}
+    assert table["Slots"].str.contains(" + ", regex=False).all()
+    assert (table["Mean · Bets"] <= table["Games"]).all()
+    assert (table["Majority · Bets"] <= table["Games"]).all()
 
 
 def test_hour_source_metric_threshold_and_kind_filters_reuse_cached_read(clock_setup):

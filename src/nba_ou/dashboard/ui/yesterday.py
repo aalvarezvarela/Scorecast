@@ -191,7 +191,7 @@ def _game_card(game, rows: pd.DataFrame, *, spread: bool) -> None:
                 )
 
 
-@st.fragment(run_every="60s")
+@st.fragment(run_every="300s")
 def render_yesterday() -> None:
     default_date = slate_date() - timedelta(days=1)
     game_date = (
@@ -294,7 +294,7 @@ def render_yesterday() -> None:
             game_date, [key for key in TARGETS if key != SUMMARY], source, thresholds
         )
         st.caption(
-            f"Results and predictions read {madrid_time(data.fetched_at)} · updates every minute."
+            f"Results and predictions read {madrid_time(data.fetched_at)} · updates every 5 minutes."
         )
         return
     rows = grade_history(
@@ -330,5 +330,5 @@ def render_yesterday() -> None:
                 ):
                     _game_card(game, game_rows, spread=target == 3)
     st.caption(
-        f"Results and predictions read {madrid_time(data.fetched_at)} · updates every minute."
+        f"Results and predictions read {madrid_time(data.fetched_at)} · updates every 5 minutes."
     )

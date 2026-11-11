@@ -19,6 +19,7 @@ from nba_ou.dashboard.domain.analysis import (
 from nba_ou.dashboard.domain.models import without_hidden_variants
 from nba_ou.dashboard.domain.strategies import (
     game_permutation_pvalue,
+    same_timepoint_combinations,
     selection_chance,
 )
 
@@ -370,3 +371,20 @@ def hour_model_table(
     table = table.fillna("—")
     table.insert(0, HOUR_COLUMN, [hour_label(hour) for hour in table.index])
     return table.reset_index(drop=True).rename_axis(columns=None)
+
+
+def hour_combinations(
+    bets: pd.DataFrame, *, thresholds: Mapping[int, float] | None = None
+) -> pd.DataFrame:
+    """Graded rows of every combination of the series chosen at one hour.
+
+    At each hour, each subset of 2–4 series is scored on the games where all of
+    them have a chosen prediction with a line, as a mean edge and as a majority
+    vote, exactly as the same-timepoint combinations of the historical view.
+    """
+    if bets.empty:
+        return pd.DataFrame()
+    members = bets.loc[bets["available"]].assign(member=lambda f: f["series"])
+    return same_timepoint_combinations(
+        members, min_edge=thresholds, timepoint="hour", label=hour_label
+    )

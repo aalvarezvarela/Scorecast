@@ -11,6 +11,7 @@ from nba_ou.dashboard.domain.strategies import (
     MAJORITY_VOTE,
     MEAN_EDGE,
     candidate_rows,
+    combination_table,
     compare_with_best,
     cumulative_win_rate,
     game_permutation_pvalue,
@@ -23,7 +24,7 @@ from nba_ou.dashboard.domain.strategies import (
     timepoint_members,
     window_rows,
 )
-from nba_ou.dashboard.ui.analysis_charts import efficacy_chart, strategy_chart
+from nba_ou.dashboard.ui.analysis_charts import efficacy_chart
 
 from .conftest import NOW
 from .test_historical import analysis_row
@@ -234,6 +235,28 @@ def test_rank_combinations_puts_eligible_leaders_first():
     assert rank_combinations(pd.DataFrame()).empty
 
 
+def test_combination_table_puts_both_methods_of_a_set_side_by_side():
+    rows = []
+    for game in range(40):
+        rows.append(replay_row(game, 480, 240))
+        rows.append(replay_row(game, 480, 240 if game % 4 else 220, kind=3))
+    rows.append(replay_row(99, 360, 240))
+    rows.append(replay_row(99, 360, 220, kind=3))  # Few games: not eligible.
+    table = combination_table(same_timepoint_combinations(_members(rows)))
+    assert table["timepoint"].tolist() == [480, 360]
+    lead = table.iloc[0]
+    assert lead["games"] == 40
+    # Majority: 30 games agree, 30-0; no bet on the other 10. Mean: 30-10.
+    assert (lead["vote_wins"], lead["vote_losses"], lead["vote_bets"]) == (30, 0, 30)
+    assert (lead["mean_wins"], lead["mean_losses"], lead["mean_bets"]) == (30, 10, 40)
+    assert lead["vote_win_pct"] == 100 and lead["mean_win_pct"] == 75
+    assert lead["best_win_pct"] == 100 and lead["eligible"]
+    small = table.iloc[1]
+    assert not small["eligible"] and not small["vote_eligible"]
+    assert small["vote_bets"] == 0 and np.isnan(small["vote_win_pct"])
+    assert combination_table(pd.DataFrame()).empty
+
+
 def test_thinking_high_variant_is_hidden_everywhere():
     rows = pd.DataFrame(
         [
@@ -284,28 +307,6 @@ def test_cumulative_win_rate_runs_by_slate_date_with_coin_flip_band():
     assert cumulative_win_rate(frame.iloc[:0], dates, "best").empty
     chart = efficacy_chart(curve.assign(role="Best slot")).to_dict()
     assert chart["layer"]
-
-
-def test_strategy_chart_serializes_roles():
-    table = pd.DataFrame(
-        {
-            "strategy": ["best", "mean"],
-            "role": ["Best single slot", "Combination"],
-            "wins": [30, 20],
-            "losses": [10, 20],
-            "pushes": [0, 0],
-            "win_pct": [75.0, 50.0],
-            "ci_low": [60.0, 35.0],
-            "ci_high": [86.0, 65.0],
-            "roi": [40.0, -5.0],
-            "mae": [15.0, 14.0],
-            "matched_games": [40, 38],
-            "matched_delta_pp": [0.0, -20.0],
-            "low_sample": [False, False],
-        }
-    )
-    spec = strategy_chart(table).to_dict()
-    assert spec["layer"]
 
 
 def test_profit_probability_is_the_exact_beta_tail_with_a_skeptical_prior():

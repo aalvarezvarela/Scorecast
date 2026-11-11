@@ -115,7 +115,7 @@ book is always bet365. The bet is linked to the prediction backing that side
 with the largest edge, or to none when no model backs it.
 
 The form is opened by the page's full run, not by the section that refreshes
-every 30 seconds, whose next refresh would close it.
+every 5 minutes, whose next refresh would close it.
 
 ## Setup
 

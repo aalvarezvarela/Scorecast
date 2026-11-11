@@ -6,7 +6,7 @@ same rows it was selected from; the UI reports the selection reference with it.
 
 import itertools
 import math
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 
 import numpy as np
 import pandas as pd
@@ -178,7 +178,10 @@ def timepoint_members(
 
 
 def _combined_rows(
-    part: pd.DataFrame, subset: tuple[str, ...], timepoint: int
+    part: pd.DataFrame,
+    subset: tuple[str, ...],
+    timepoint: int,
+    label: Callable[[int], str] = bucket_label,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """One mean-edge and one majority-vote row per game with every member.
 
@@ -208,7 +211,7 @@ def _combined_rows(
         members=size,
         member_names=" + ".join(subset),
     )
-    point = bucket_label(int(timepoint))
+    point = label(int(timepoint))
     names = " + ".join(subset)
     mean = base.assign(
         prediction_value=grouped["comparison_edge"].mean(),
@@ -224,10 +227,16 @@ def _combined_rows(
 
 
 def same_timepoint_combinations(
-    members: pd.DataFrame, *, min_edge: Mapping[int, float] | None = None
+    members: pd.DataFrame,
+    *,
+    min_edge: Mapping[int, float] | None = None,
+    timepoint: str = "bucket",
+    label: Callable[[int], str] = bucket_label,
 ) -> pd.DataFrame:
     """Graded rows of every combination of members sharing a timepoint.
 
+    The timepoint is the column ``timepoint`` (the input bucket by default, the
+    Madrid hour in the hourly view) and ``label`` names it in the strategy.
     Per timepoint, each subset of 2 to ``MAX_COMBINATION_SIZE`` members is
     scored on the games where all of them have a line, as the mean of their
     edges (graded with the betting member's minimum edge) and as a strict
@@ -239,7 +248,7 @@ def same_timepoint_combinations(
         return pd.DataFrame()
     means, votes = [], []
     usable = members.loc[np.isfinite(members["comparison_edge"])]
-    for timepoint, group in usable.groupby("bucket", sort=True):
+    for point, group in usable.groupby(timepoint, sort=True):
         settled = group["result"].isin(["WIN", "LOSS"]).groupby(group["member"]).sum()
         names = sorted(
             settled.sort_values(ascending=False, kind="stable")
@@ -253,7 +262,7 @@ def same_timepoint_combinations(
                 part = part.loc[complete.eq(size)]
                 if part.empty:
                     continue
-                mean, vote = _combined_rows(part, subset, int(timepoint))
+                mean, vote = _combined_rows(part, subset, int(point), label)
                 means.append(mean)
                 votes.append(vote)
     if not means:
@@ -295,6 +304,77 @@ def rank_combinations(combined: pd.DataFrame) -> pd.DataFrame:
             na_position="last",
             kind="stable",
         )
+        .reset_index(drop=True)
+    )
+
+
+_METHOD_PREFIX = {MEAN_EDGE: "mean", MAJORITY_VOTE: "vote"}
+FINAL_RESULTS = ("WIN", "LOSS", "PUSH", "NO BET")
+
+
+def combination_table(combined: pd.DataFrame) -> pd.DataFrame:
+    """One row per timepoint and set of members, mean edge and vote side by side.
+
+    ``games``: final games where every member had a line. Per method, ``bets``
+    are the settled bets it placed (wins, losses and pushes) and ``win_pct``
+    wins / (wins + losses); ``eligible`` needs ``MIN_CELL_BETS`` wins + losses.
+    Rows with an eligible method come first, by their best eligible win %.
+    """
+    if combined.empty:
+        return pd.DataFrame()
+    keys = ["timepoint", "member_names"]
+    results = combined["result"]
+    counts = combined.assign(
+        win=results.eq("WIN"),
+        loss=results.eq("LOSS"),
+        push=results.eq("PUSH"),
+        final=results.isin(FINAL_RESULTS),
+    )
+    grouped = (
+        counts.groupby([*keys, "method"])
+        .agg(
+            members=("members", "first"),
+            wins=("win", "sum"),
+            losses=("loss", "sum"),
+            pushes=("push", "sum"),
+            games=("final", "sum"),
+        )
+        .reset_index()
+    )
+    decided = grouped["wins"] + grouped["losses"]
+    grouped["bets"] = decided + grouped["pushes"]
+    grouped["win_pct"] = (100 * grouped["wins"] / decided).where(decided.gt(0))
+    grouped["eligible"] = decided.ge(MIN_CELL_BETS) & grouped["win_pct"].notna()
+    table = grouped.groupby(keys)[["members", "games"]].max()
+    for method, prefix in _METHOD_PREFIX.items():
+        part = grouped.loc[grouped["method"].eq(method)].set_index(keys)
+        for column in ("wins", "losses", "pushes", "bets", "win_pct", "eligible"):
+            table[f"{prefix}_{column}"] = part[column]
+    for prefix in _METHOD_PREFIX.values():
+        table[f"{prefix}_eligible"] = (
+            table[f"{prefix}_eligible"].astype("boolean").fillna(False).astype(bool)
+        )
+    best = pd.concat(
+        [
+            table[f"{prefix}_win_pct"].where(table[f"{prefix}_eligible"])
+            for prefix in _METHOD_PREFIX.values()
+        ],
+        axis=1,
+    ).max(axis=1)
+    table = table.assign(
+        best_win_pct=best,
+        eligible=best.notna(),
+        most_bets=table[[f"{p}_bets" for p in _METHOD_PREFIX.values()]].max(axis=1),
+    )
+    return (
+        table.reset_index()
+        .sort_values(
+            ["eligible", "best_win_pct", "most_bets", "timepoint", "member_names"],
+            ascending=[False, False, False, True, True],
+            na_position="last",
+            kind="stable",
+        )
+        .drop(columns="most_bets")
         .reset_index(drop=True)
     )
 

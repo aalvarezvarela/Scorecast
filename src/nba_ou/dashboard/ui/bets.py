@@ -588,7 +588,7 @@ def _bet_option(bets: pd.DataFrame, bet_id: int) -> str:
 # -- page ------------------------------------------------------------------------
 
 
-@st.fragment(run_every="30s")
+@st.fragment(run_every="300s")
 def _live_sections(user: AppUser, game_date, games: pd.DataFrame) -> None:
     # Fragment runs skip the gate in streamlit_app.py.
     if not still_allowed():
