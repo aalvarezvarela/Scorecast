@@ -169,7 +169,7 @@ Streamlit 1.66.1 used by the standalone deployment requirements.
    stored observations, not live quotes. Old predictions/quotes are marked.
 10. Source reads are cached for 60 seconds, with a maximum of eight entries.
     Target/model filters and nearest-horizon selection run outside the cache.
-    Today's fragment refreshes every minute while the session is active;
+    Today's fragment refreshes every 5 minutes while the session is active;
     Refresh data clears that slate's cached read without launching inference.
 11. Directional badges require `abs(market_edge) > minimum_edge`; equality and
     smaller values show NO EDGE while the numeric values remain visible.
@@ -351,7 +351,7 @@ the games query includes final scores and the output query includes workflows
 in the read, then separated in the domain layer. Both sources are fetched in
 one cached read per selected date, so changing source, target or thresholds
 needs no extra SQL. Refresh clears only the selected date's cache entry.
-Results refresh every minute; the dashboard never calls the NBA API or the
+Results refresh every 5 minutes; the dashboard never calls the NBA API or the
 result updater, and no database migration is needed.
 
 ## Read path and freshness timestamps

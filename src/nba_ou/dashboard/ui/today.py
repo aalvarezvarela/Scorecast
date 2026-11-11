@@ -71,7 +71,7 @@ def _picks_summary(games, picks, markets_by_game, reference) -> None:
             )
 
 
-@st.fragment(run_every="60s")
+@st.fragment(run_every="300s")
 def render_today() -> None:
     game_date = slate_date()
     st.caption(f"NBA slate · {game_date.strftime('%d %b %Y')} · All times in Madrid")
@@ -106,7 +106,7 @@ def render_today() -> None:
     spread = target == 3
     targets = TARGET_GROUPS[target]
     try:
-        # Only the session's first read shows a spinner, not each minute's refresh.
+        # Only the session's first read shows a spinner, not each 5-minute refresh.
         if st.session_state.get("today_loaded"):
             data = load_today(game_date)
         else:
@@ -192,7 +192,7 @@ def render_today() -> None:
     st.caption(
         f"A prediction bets when |edge vs {reference}| clears its minimum ({thresholds} pts); "
         "a game follows the majority of directional votes; tied votes mean no bet. "
-        f"Latest prediction {madrid_time(latest)} · read {madrid_clock(data.fetched_at)} · updates every minute."
+        f"Latest prediction {madrid_time(latest)} · read {madrid_clock(data.fetched_at)} · updates every 5 minutes."
     )
 
     if not families:

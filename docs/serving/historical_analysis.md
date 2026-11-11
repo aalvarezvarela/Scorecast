@@ -3,7 +3,8 @@
 Status: **Partial** — main historical views implemented 2026-10-28; ≥/< 6h
 windows, best slot, mean-of-predictions combinations and the random baseline
 2026-11-02; three best slots and same-timepoint mean/majority combinations
-2026-11-05. Consensus/agreement views across all slots and a full-season
+2026-11-05; combinations shown as a heatmap table, also by Madrid hour,
+2026-11-11. Consensus/agreement views across all slots and a full-season
 performance measurement remain.
 
 The **Betting hour · Madrid** view compares XGBoost and TabPFN, intermediate and
@@ -150,7 +151,13 @@ coverage), beside the coin-flip chance and the game-permutation p of the leader
 over all pairs tried. Below it is a **table with one row per hour and one column
 per series**, each cell giving win %, wins-losses and coverage, for example
 `58.5% · 55-39 · 94/120 (78.3%)`: green above break-even at −110, red below, and
-grey text for a small sample. The chart and the long-form hourly results follow.
+grey text for a small sample. Below it, **Combinations by hour** combines the
+series chosen at each hour exactly as §4 combines the slots of one timepoint
+(every subset of 2–4 series, on the games where all of them have a chosen
+prediction with a line, as a mean edge and as a majority vote), with the
+leader's win %, P(profitable), coin-flip chance and game-permutation p over all
+combinations, and the same heatmap table as §4 (one row per hour and set of
+series). The chart and the long-form hourly results follow.
 
 There are four series: **XGBoost · Intermediate**, **XGBoost · Closing**,
 **TabPFN · Intermediate** and **TabPFN · Closing**. The model-family filter
@@ -230,13 +237,19 @@ placed** (time T), never at a later line.
     bet when more than half of the members take one side (with two, both
     must agree), otherwise no bet. A vote has no point prediction, so no MAE.
   Both bet at the line and price of the member published last, when the
-  whole combination is known. The ten best with at least 30 settled bets are
-  compared with the three best single slots and the random baseline, paired
-  with the best slot on the games both bet (W/L only) with an exact two-sided
-  sign test on the games only one of them won. The leader is picked from all
-  combinations tried, so cards report its win %, P(profitable), and its
-  coin-flip chance and game-permutation p over all of them; the combination
-  table adds P(profitable) per row; "All combinations tried" lists every one. The previous fixed family
+  whole combination is known. The leader is picked from all combinations
+  tried, so cards report its win %, P(profitable), and its coin-flip chance
+  and game-permutation p over all of them. Every combination is then listed
+  in a **heatmap table** (2026-11-11, `ui/combination_table.py`), one row per
+  timepoint and set of slots: final games where all of them had a line, and
+  per method (mean, majority) the win % (green above 52.38%, red below, grey
+  text under 30 wins + losses) and the settled bets placed (shaded blue by
+  count; for the vote, the games where a majority agreed). Rows with an
+  eligible method come first, by their best eligible win %. An expander pairs
+  the ten best, the three best single slots and the random baseline with the
+  best slot on the games both bet (W/L only), with an exact two-sided sign
+  test on the games only one of them won and P(profitable) per row. The
+  forest chart of those rows was replaced by the table. The previous fixed family
   (per-model means across horizons, 2026-11-02) is replaced: it mixed
   snapshots that are never available together at a betting time.
   First read of that family (2026-11-02, 92 games, replay): no combination

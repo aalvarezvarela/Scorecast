@@ -400,9 +400,9 @@ def test_best_slot_combinations_random_and_six_hour_windows(history_setup, targe
     assert any(
         "No combination beats the best single slot" in node.value for node in app.info
     )
-    # Efficacy, combinations, closing replay, intermediate replay, live
-    # heatmap, own snapshot.
-    assert len(rendered_charts(app)) == 6
+    # Efficacy, closing replay, intermediate replay, live heatmap, own
+    # snapshot; the combinations are a table.
+    assert len(rendered_charts(app)) == 5
     combinations = next(t.value for t in app.dataframe if "Strategy" in t.value)
     strategies = set(combinations["Strategy"])
     assert "XGBoost · 2.5 · Intermediate · T−6h (slot)" in strategies
@@ -412,9 +412,20 @@ def test_best_slot_combinations_random_and_six_hour_windows(history_setup, targe
     )
     assert not any("T−2h ·" in name for name in strategies)  # Alone at T−2h.
     assert ("Random baseline" in strategies) is (target != 3)
-    tried = next(t.value for t in app.dataframe if "Method" in t.value)
-    assert set(tried["Method"]) == {"Mean edge", "Majority vote"}
-    assert set(tried["Timepoint (min; 0 = Final)"]) == {360, 480}
+    tried = next(t.value for t in app.dataframe if "Majority · Win %" in t.value)
+    assert tried.columns.tolist() == [
+        "Timepoint",
+        "Slots",
+        "Games",
+        "Mean · Win %",
+        "Mean · Bets",
+        "Majority · Win %",
+        "Majority · Bets",
+    ]
+    assert set(tried["Timepoint"]) == {"T−6h", "T−8h"}
+    # One row per set of slots: both methods side by side.
+    assert not tried.duplicated(["Timepoint", "Slots"]).any()
+    assert (tried["Majority · Bets"] <= tried["Games"]).all()
     # TabPFN live cells stay out of the model × time view and its margins.
     live_tables = [
         t.value
@@ -437,7 +448,7 @@ def test_cross_target_combinations_read_the_other_totals_target(history_setup):
     app.toggle(key="history_cross_target").set_value(True).run()
     assert not app.exception
     assert [call.args[2] for call in reader.call_args_list] == [1, 2]
-    tried = next(t.value for t in app.dataframe if "Method" in t.value)
+    tried = next(t.value for t in app.dataframe if "Majority · Win %" in t.value)
     assert any(
         "XGBoost 2.5 intermediate (line error)" in names
         and "XGBoost 2.5 intermediate (total points)" in names

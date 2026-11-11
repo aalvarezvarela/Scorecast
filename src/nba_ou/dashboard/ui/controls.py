@@ -8,6 +8,7 @@ from nba_ou.dashboard.config import (
     MIN_EDGE_LEVELS,
     MODEL_NAMES,
 )
+from nba_ou.dashboard.domain.strategies import profit_probability
 
 
 def minimum_edge_select(kind: int, *, page: str) -> float:
@@ -50,4 +51,17 @@ def coin_flip_metric(chance: float, tried: int, win_pct: float, what: str) -> No
         help=f"How often the best of {tried} coin-flip {what} with these bet counts "
         f"reaches {win_pct:.1f}%. High means the leader is indistinguishable from "
         "luck. Cells share games, so it is a conservative guide, not a p-value.",
+    )
+
+
+def profit_metric(wins, losses, **kwargs) -> None:
+    st.metric(
+        "P(profitable)",
+        f"{100 * profit_probability(wins, losses):.0f}%",
+        help="Probability that the true win rate beats 52.38% (break-even at "
+        "−110), from these wins and losses and a skeptical prior centred on a "
+        "coin flip (Beta(50, 50), worth 100 bets). It ignores that this was "
+        "picked as one of the best: read it with the coin-flip chance and the "
+        "game-permutation p.",
+        **kwargs,
     )

@@ -11,6 +11,7 @@ from nba_ou.dashboard.domain.analysis import (
     MIN_CELL_BETS,
     SEASON_TYPES,
     aggregate_cells,
+    bucket_label,
     history_default_start,
     paired_snapshot_summary,
     prepare_analysis,
@@ -22,6 +23,7 @@ from nba_ou.dashboard.domain.strategies import (
     TOP_COMBINATIONS,
     TOP_SLOTS,
     candidate_rows,
+    combination_table,
     compare_with_best,
     cumulative_win_rate,
     game_permutation_pvalue,
@@ -42,13 +44,17 @@ from nba_ou.dashboard.ui.analysis_charts import (
     intermediate_replay_timeline,
     live_heatmap,
     snapshot_comparison,
-    strategy_chart,
 )
 from nba_ou.dashboard.ui.clock import render_clock_analysis
+from nba_ou.dashboard.ui.combination_table import (
+    combination_leader_metrics,
+    render_combination_table,
+)
 from nba_ou.dashboard.ui.controls import (
     coin_flip_metric,
     minimum_edge_select,
     permutation_metric,
+    profit_metric,
 )
 from nba_ou.dashboard.ui.loaders import load_history
 
@@ -105,10 +111,12 @@ METHOD_NOTES = """
   a line, is scored two ways: the **mean edge** (an edge is a prediction minus the line it
   was graded at; bet with the minimum edge of the member published last) and a **majority
   vote** of the members' own signals (more than half of the members on one side; with two,
-  both must agree). Both bet at the line and price of the member published last. The ten
-  best combinations with the minimum settled bets are shown; they are picked from many, so
-  the coin-flip chance counts all of them. The paired columns compare each with the best
-  slot on the games both bet; the sign test uses the games only one of them won.
+  both must agree). Both bet at the line and price of the member published last. The
+  table lists every combination once, with each method's win % and settled bets side by
+  side; the leader is picked from all of them, so the coin-flip chance counts them all.
+  The paired table compares the ten best with the best slot on the games both bet; the
+  sign test uses the games only one of them won. The Betting hour view combines the four
+  series chosen at each Madrid hour the same way.
 - **Hidden variants:** TabPFN thinking-high outputs are deprecated and not shown.
 """
 
@@ -204,20 +212,7 @@ def _slot_card(rank: int, slot) -> None:
                 "—" if pd.isna(slot["roi"]) else f"{slot['roi']:+.1f}%",
                 help=f"{slot['priced_bets']:.0f} bets with a recorded price.",
             )
-            _profit_metric(slot["wins"], slot["losses"])
-
-
-def _profit_metric(wins, losses, **kwargs) -> None:
-    st.metric(
-        "P(profitable)",
-        f"{100 * profit_probability(wins, losses):.0f}%",
-        help="Probability that the true win rate beats 52.38% (break-even at "
-        "−110), from these wins and losses and a skeptical prior centred on a "
-        "coin flip (Beta(50, 50), worth 100 bets). It ignores that this was "
-        "picked as one of the best: read it with the coin-flip chance and the "
-        "game-permutation p.",
-        **kwargs,
-    )
+            profit_metric(slot["wins"], slot["losses"])
 
 
 def _render_best_and_combinations(
@@ -340,10 +335,14 @@ def _render_best_and_combinations(
             "No timepoint has two slots with lines on the same games in this source."
         )
         return
+    combos = combination_table(combined)
+    tried = (
+        f"{len(combos)} sets of 2–{MAX_COMBINATION_SIZE} slots at one timepoint, each "
+        "as a mean edge and a majority vote"
+    )
     if top_combos.empty:
-        st.caption(
-            f"{len(combo_ranking)} combinations tried; none has {MIN_CELL_BETS} settled bets yet."
-        )
+        st.caption(f"{tried}; none has {MIN_CELL_BETS} settled bets yet.")
+        _combination_heatmap(combos)
         return
     leader = top_combos.iloc[0]
     combo_chance = selection_chance(
@@ -360,9 +359,6 @@ def _render_best_and_combinations(
         },
         best_rows,
     )
-    table["role"] = "Combination"
-    table.loc[table["strategy"].str.endswith(" (slot)"), "role"] = "Single slot"
-    table.loc[table["strategy"].eq("Random baseline"), "role"] = "Random baseline"
     first = table.loc[table["strategy"].eq(leader["strategy"])].iloc[0]
     if leader["win_pct"] <= best["win_pct"]:
         st.info(
@@ -384,48 +380,21 @@ def _render_best_and_combinations(
             f"{first['matched_delta_pp']:+.1f} pp (sign test p = {p_value:.2f}), "
             f"{verdict}. It is plotted above as the best combination."
         )
-    with st.container(horizontal=True, key="history_top_combination"):
-        st.metric(
-            "Best combination · win %",
-            f"{leader['win_pct']:.1f}%",
-            border=True,
-            width="content",
-            help=f"{leader['strategy']}: {leader['wins']:.0f} wins / "
-            f"{leader['losses']:.0f} losses / {leader['pushes']:.0f} pushes.",
-        )
-        _profit_metric(leader["wins"], leader["losses"], border=True, width="content")
-        coin_flip_metric(
-            combo_chance, len(eligible_combos), leader["win_pct"], "combinations"
-        )
-        permutation_metric(combo_permutation, len(eligible_combos), "combinations")
-    st.caption(
-        f"Top {len(top_combos)} of {len(eligible_combos)} combinations with at least "
-        f"{MIN_CELL_BETS} settled bets ({len(combo_ranking)} tried: subsets of 2–"
-        f"{MAX_COMBINATION_SIZE} slots at one timepoint, mean edge and majority vote)."
+    combination_leader_metrics(
+        leader, combo_chance, combo_permutation, len(eligible_combos)
     )
-    ordered = pd.concat(
-        [
-            table.loc[table["role"].eq("Single slot")],
-            table.loc[table["role"].eq("Combination")],
-            table.loc[table["role"].eq("Random baseline")],
+    st.caption(
+        f"{tried} ({len(eligible_combos)} of {len(combo_ranking)} with at least "
+        f"{MIN_CELL_BETS} settled bets). The leader is picked from all of them."
+    )
+    _combination_heatmap(combos)
+    with st.expander("Top combinations vs best slot"):
+        table["profit_pct"] = [
+            100 * profit_probability(wins, losses)
+            for wins, losses in zip(table["wins"], table["losses"], strict=True)
         ]
-    )
-    ordered["profit_pct"] = [
-        100 * profit_probability(wins, losses)
-        for wins, losses in zip(ordered["wins"], ordered["losses"], strict=True)
-    ]
-    st.altair_chart(
-        strategy_chart(ordered),
-        width="stretch",
-        alt="Win % of the three best single slots, the ten best combinations and the random baseline",
-    )
-    st.caption(
-        "Each combination uses only slots available at that timepoint and bets at the line "
-        "of the member published last. Dashed rule: 52.38% break-even."
-    )
-    with st.expander("Combination data"):
         st.dataframe(
-            ordered.drop(columns=["role", "low_sample"])
+            table.drop(columns=["low_sample"])
             .rename(
                 columns={
                     "strategy": "Strategy",
@@ -450,25 +419,24 @@ def _render_best_and_combinations(
             hide_index=True,
             width="stretch",
         )
-    with st.expander("All combinations tried"):
-        st.dataframe(
-            combo_ranking.rename(
-                columns={
-                    "strategy": "Strategy",
-                    "method": "Method",
-                    "timepoint": "Timepoint (min; 0 = Final)",
-                    "members": "Members",
-                    "member_names": "Slots",
-                    "wins": "Wins",
-                    "losses": "Losses",
-                    "pushes": "Pushes",
-                    "win_pct": "Win %",
-                    "eligible": f"≥ {MIN_CELL_BETS} settled bets",
-                }
-            ).round(2),
-            hide_index=True,
-            width="stretch",
+        st.caption(
+            f"The three best slots, the {len(top_combos)} best combinations and the "
+            "random baseline, each paired with the best slot on the games both bet."
         )
+
+
+def _combination_heatmap(combos: pd.DataFrame) -> None:
+    render_combination_table(
+        combos,
+        label=bucket_label,
+        timepoint_title="Timepoint",
+        alt="Win % and bets of every same-timepoint combination, as a mean edge "
+        "and as a majority vote",
+    )
+    st.caption(
+        "Each combination uses only slots available at that timepoint and bets at "
+        "the line of the member published last."
+    )
 
 
 def render_historical() -> None:

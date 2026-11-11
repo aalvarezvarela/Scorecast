@@ -13,15 +13,27 @@ from nba_ou.dashboard.domain.clock import (
     clock_summary,
     common_cohort,
     coverage_text,
+    hour_combinations,
     hour_label,
     hour_model_table,
     leader_checks,
     series_names,
 )
 from nba_ou.dashboard.domain.dates import madrid_time
+from nba_ou.dashboard.domain.strategies import (
+    MAX_COMBINATION_SIZE,
+    combination_table,
+    game_permutation_pvalue,
+    rank_combinations,
+    selection_chance,
+)
 from nba_ou.dashboard.repositories.clock import CLOCK_HOURS
 from nba_ou.dashboard.repositories.predictions import DashboardDataError
 from nba_ou.dashboard.ui.analysis_charts import METRICS, MODEL_COLORS
+from nba_ou.dashboard.ui.combination_table import (
+    combination_leader_metrics,
+    render_combination_table,
+)
 from nba_ou.dashboard.ui.controls import coin_flip_metric, permutation_metric
 from nba_ou.dashboard.ui.formatting import rate_style
 from nba_ou.dashboard.ui.loaders import load_clock_history
@@ -185,6 +197,48 @@ def _render_hour_table(summary: pd.DataFrame, names: list[str]) -> None:
     )
 
 
+def _render_hour_combinations(cohort: pd.DataFrame, thresholds) -> None:
+    st.subheader("Combinations by hour")
+    combined = hour_combinations(cohort, thresholds=thresholds)
+    if combined.empty:
+        st.caption("No hour has two series with lines on the same games.")
+        return
+    ranking = rank_combinations(combined)
+    eligible = ranking.loc[ranking["eligible"]]
+    combos = combination_table(combined)
+    tried = (
+        f"{len(combos)} sets of 2–{MAX_COMBINATION_SIZE} series at one hour, each "
+        "as a mean edge and a majority vote"
+    )
+    if eligible.empty:
+        st.caption(f"{tried}; none has {MIN_CELL_BETS} settled bets yet.")
+    else:
+        leader = eligible.iloc[0]
+        chance = selection_chance(
+            eligible["wins"] + eligible["losses"], leader["win_pct"]
+        )
+        permutation = game_permutation_pvalue(
+            combined, "strategy", eligible["strategy"], leader["win_pct"]
+        )
+        combination_leader_metrics(leader, chance, permutation, len(eligible))
+        st.caption(
+            f"{tried} ({len(eligible)} of {len(ranking)} with at least "
+            f"{MIN_CELL_BETS} settled bets). The leader is picked from all of them."
+        )
+    render_combination_table(
+        combos,
+        label=hour_label,
+        timepoint_title=HOUR_COLUMN,
+        alt="Win % and bets of every combination of series at each Madrid hour, "
+        "as a mean edge and as a majority vote",
+    )
+    st.caption(
+        "At each hour the series combine the predictions chosen for that hour, on the "
+        "games where all of them have one with a line, and bet at the line and price "
+        "of the member published last."
+    )
+
+
 def render_clock_analysis(
     start, end, target, season_type, kind, thresholds, metric, refresh
 ):
@@ -256,6 +310,7 @@ def render_clock_analysis(
         names = series_names(kind)
         _render_best_cells(summary, cohort)
         _render_hour_table(summary, names)
+        _render_hour_combinations(cohort, thresholds)
         st.altair_chart(
             _clock_chart(summary, metric, names),
             width="stretch",
