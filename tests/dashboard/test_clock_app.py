@@ -124,13 +124,19 @@ def test_hourly_view_combines_the_series_chosen_at_each_hour(clock_setup):
         "Games",
         "Mean · Win %",
         "Mean · Bets",
+        "Mean · Bets % of games",
         "Majority · Win %",
         "Majority · Bets",
+        "Majority · Bets % of games",
     ]
     assert set(table["Hour (Madrid)"]) <= {f"{hour:02d}:00" for hour in range(24)}
     assert table["Slots"].str.contains(" + ", regex=False).all()
     assert (table["Mean · Bets"] <= table["Games"]).all()
     assert (table["Majority · Bets"] <= table["Games"]).all()
+    # Four series give 11 sets per hour: only the top 10 rows are shown.
+    assert len(table) == 10
+    share = 100 * table["Majority · Bets"] / table["Games"]
+    assert table["Majority · Bets % of games"].round(6).equals(share.round(6))
 
 
 def test_hour_source_metric_threshold_and_kind_filters_reuse_cached_read(clock_setup):

@@ -419,8 +419,10 @@ def test_best_slot_combinations_random_and_six_hour_windows(history_setup, targe
         "Games",
         "Mean · Win %",
         "Mean · Bets",
+        "Mean · Bets % of games",
         "Majority · Win %",
         "Majority · Bets",
+        "Majority · Bets % of games",
     ]
     assert set(tried["Timepoint"]) == {"T−6h", "T−8h"}
     # One row per set of slots: both methods side by side.

@@ -112,8 +112,9 @@ METHOD_NOTES = """
   was graded at; bet with the minimum edge of the member published last) and a **majority
   vote** of the members' own signals (more than half of the members on one side; with two,
   both must agree). Both bet at the line and price of the member published last. The
-  table lists every combination once, with each method's win % and settled bets side by
-  side; the leader is picked from all of them, so the coin-flip chance counts them all.
+  table lists the ten best combinations, with each method's win %, settled bets and bets
+  as a share of the games side by side; the leader is picked from every combination tried,
+  so the coin-flip chance counts them all.
   The paired table compares the ten best with the best slot on the games both bet; the
   sign test uses the games only one of them won. The Betting hour view combines the four
   series chosen at each Madrid hour the same way.
