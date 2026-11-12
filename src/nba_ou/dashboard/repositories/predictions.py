@@ -22,6 +22,31 @@ GAMES_QUERY = """
     ORDER BY tipoff_at, game_id
 """
 
+# Per game, whether each team's injury report is filed at this moment (the
+# pipeline's own rule: a team-game without a filing span has not filed), and
+# the newest parsed report the store holds. Read apart from the slate: an
+# account without access to the injury-report store still gets its games.
+REPORT_FILINGS_QUERY = """
+    SELECT g.game_id,
+           COALESCE(bool_or(f.submitted)
+                    FILTER (WHERE t.nba_team_id = g.home_team_id), FALSE)
+               AS home_report_filed,
+           COALESCE(bool_or(f.submitted)
+                    FILTER (WHERE t.nba_team_id = g.away_team_id), FALSE)
+               AS away_report_filed,
+           (SELECT max(observed_at) FROM injury_report.ir_report WHERE parse_ok)
+               AS reports_read_at
+    FROM prediction.games g
+    LEFT JOIN injury_report.ir_filing_span f
+           ON f.game_id = lpad(g.game_id::text, 10, '0')
+          AND f.valid_from < LEAST(%s, g.tipoff_at)
+          AND f.valid_to >= LEAST(%s, g.tipoff_at)
+    LEFT JOIN injury_report.ir_team t ON t.team_id = f.team_id
+    WHERE g.game_date = %s
+    GROUP BY g.game_id
+"""
+REPORT_COLUMNS = ["home_report_filed", "away_report_filed", "reports_read_at"]
+
 PREDICTIONS_SELECT = """
     SELECT v.*, m.anchor_book, r.finished_at AS run_finished_at,
            CASE WHEN v.input_mode = 0 AND v.snapshot_horizon_minutes IS NULL
@@ -87,8 +112,28 @@ def _frame(cursor, query: str, params: tuple) -> pd.DataFrame:
 
 
 def read_today(game_date: date, dsn_override: str = "") -> TodayData:
-    """No DDL, writes, external APIs, model loads or Supabase fallback."""
-    return _read_slate(game_date, dsn_override, PREDICTIONS_QUERY)
+    """No DDL, writes, external APIs, model loads or Supabase fallback.
+
+    The games also say whether each team's injury report is filed
+    (``REPORT_COLUMNS``), when the injury-report store can be read.
+    """
+    return _read_slate(game_date, dsn_override, PREDICTIONS_QUERY, reports=True)
+
+
+def _with_report_filings(
+    conn, cursor, games: pd.DataFrame, game_date, now
+) -> pd.DataFrame:
+    """``games`` with ``REPORT_COLUMNS``; unchanged when the injury-report
+    store cannot be read (the cards then show no report flag)."""
+    if games.empty:
+        return games
+    try:
+        # A savepoint: a refused read must not end the slate's transaction.
+        with conn.transaction():
+            filings = _frame(cursor, REPORT_FILINGS_QUERY, (now, now, game_date))
+    except psycopg.Error:
+        return games
+    return games.merge(filings, on="game_id", how="left")
 
 
 def read_yesterday(game_date: date, dsn_override: str = "") -> TodayData:
@@ -96,7 +141,9 @@ def read_yesterday(game_date: date, dsn_override: str = "") -> TodayData:
     return _read_slate(game_date, dsn_override, HISTORY_QUERY)
 
 
-def _read_slate(game_date: date, dsn_override: str, query: str) -> TodayData:
+def _read_slate(
+    game_date: date, dsn_override: str, query: str, *, reports: bool = False
+) -> TodayData:
     fetched_at = datetime.now(UTC)
     try:
         with open_connection(dsn_override) as conn:
@@ -105,6 +152,10 @@ def _read_slate(game_date: date, dsn_override: str, query: str) -> TodayData:
             with conn.cursor() as cursor:
                 games = _frame(cursor, GAMES_QUERY, (game_date,))
                 predictions = _frame(cursor, query, (game_date, fetched_at, fetched_at))
+                if reports:
+                    games = _with_report_filings(
+                        conn, cursor, games, game_date, fetched_at
+                    )
         return TodayData(games, predictions, fetched_at)
     except psycopg.errors.UndefinedTable:
         raise DashboardDataError(

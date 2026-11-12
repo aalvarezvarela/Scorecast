@@ -21,10 +21,73 @@ def test_reader_uses_one_read_only_snapshot_and_parameterized_slate(monkeypatch)
     assert data.games["game_id"].tolist() == [1]
     assert conn.read_only is True
     assert conn.isolation_level == psycopg.IsolationLevel.REPEATABLE_READ
-    assert cursor.execute.call_count == 2
+    # The games, the predictions and the injury-report filings of the slate.
+    assert cursor.execute.call_count == 3
     assert cursor.execute.call_args_list[0].args[1] == (NOW.date(),)
     assert cursor.execute.call_args_list[1].args[1][0] == NOW.date()
+    assert cursor.execute.call_args_list[2].args[1][-1] == NOW.date()
     assert all("%s" in call.args[0] for call in cursor.execute.call_args_list)
+
+
+def _slate_connection(monkeypatch, results):
+    """A connection whose queries return ``results`` in turn: rows with their
+    columns, or an exception to raise."""
+    conn = MagicMock()
+    conn.__enter__.return_value = conn
+    cursor = conn.cursor.return_value.__enter__.return_value
+    pending = iter(results)
+
+    def execute(query, params):
+        result = next(pending)
+        if isinstance(result, Exception):
+            raise result
+        columns, rows = result
+        cursor.description = [SimpleNamespace(name=name) for name in columns]
+        cursor.fetchall.return_value = rows
+
+    cursor.execute.side_effect = execute
+    monkeypatch.setattr(predictions, "open_connection", MagicMock(return_value=conn))
+    return conn
+
+
+def test_todays_games_say_which_injury_reports_are_filed(monkeypatch):
+    conn = _slate_connection(
+        monkeypatch,
+        [
+            (["game_id"], [(1,), (2,)]),
+            (["game_id"], []),
+            (
+                predictions.REPORT_COLUMNS[:0]
+                + ["game_id", *predictions.REPORT_COLUMNS],
+                [(1, True, False, NOW), (2, True, True, NOW)],
+            ),
+        ],
+    )
+    games = predictions.read_today(NOW.date()).games
+    assert games["home_report_filed"].tolist() == [True, True]
+    assert games["away_report_filed"].tolist() == [False, True]
+    # In a savepoint, so a refused read leaves the slate's transaction alive.
+    conn.transaction.assert_called_once()
+
+
+def test_an_unreadable_report_store_leaves_the_games_unflagged(monkeypatch):
+    _slate_connection(
+        monkeypatch,
+        [
+            (["game_id"], [(1,)]),
+            (["game_id"], []),
+            psycopg.errors.InsufficientPrivilege("injury_report"),
+        ],
+    )
+    games = predictions.read_today(NOW.date()).games
+    assert games["game_id"].tolist() == [1]
+    assert "home_report_filed" not in games
+
+
+def test_yesterday_does_not_read_the_report_filings(monkeypatch):
+    conn = _slate_connection(monkeypatch, [(["game_id"], [(1,)]), (["game_id"], [])])
+    predictions.read_yesterday(NOW.date())
+    conn.transaction.assert_not_called()
 
 
 def test_connection_explicitly_resolves_only_aiven(monkeypatch):

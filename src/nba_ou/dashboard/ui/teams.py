@@ -3,7 +3,8 @@
 import pandas as pd
 
 import streamlit as st
-from nba_ou.dashboard.domain.dates import madrid_time, time_remaining
+from nba_ou.dashboard.domain.dates import madrid_clock, madrid_time, time_remaining
+from nba_ou.dashboard.domain.reports import report_flag
 from nba_ou.dashboard.domain.teams import full_team_name, team_logo_url
 
 
@@ -19,7 +20,8 @@ def render_game_header(
 
     A final game adds a result strip: total points and home margin, plus the
     given pre-game ``line`` (totals, or the implied home margin when
-    ``spread``) and how the game finished against it.
+    ``spread``) and how the game finished against it. An upcoming game (with
+    ``now``) is flagged while a team's injury report is not filed.
     """
     game_id = int(game["game_id"])
     final = (
@@ -66,6 +68,27 @@ def render_game_header(
             elif now is not None and game["status"] != 2:
                 timing += f" · {time_remaining(game['tipoff_at'], now)}"
             st.caption(timing)
+            if now is not None:
+                _report_badge(game, now)
+
+
+def _report_badge(game, now) -> None:
+    flag = report_flag(game, now)
+    if flag is None:
+        return
+    if flag.filed:
+        st.badge("Injury reports filed", icon=":material/check:", color="green")
+        return
+    teams = " and ".join(
+        _nickname(game[f"{side}_team"], game.get(f"{side}_team_id"))
+        for side in flag.missing
+    )
+    checked = "" if flag.read_at is None else f" · as of {madrid_clock(flag.read_at)}"
+    st.badge(
+        f"No injury report yet: {teams}{checked}",
+        icon=":material/warning:",
+        color="orange",
+    )
 
 
 def _nickname(name: str, team_id) -> str:

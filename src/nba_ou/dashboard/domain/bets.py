@@ -61,6 +61,19 @@ def newest_quote(rows: pd.DataFrame) -> pd.Series:
     return source.sort_values("predicted_at", kind="stable").iloc[-1]
 
 
+def lines_differ(rows: pd.DataFrame) -> bool:
+    """Whether a card's predictions were made against more than one line."""
+    return rows["bet_line_x2"].dropna().nunique() > 1
+
+
+def line_text(target: int, bet_line_x2: float | None) -> str:
+    """A prediction's line as books print it: ``224.5``, home handicap ``-3.5``."""
+    line = proposed_line(target, bet_line_x2)
+    if line is None:
+        return "—"
+    return f"{line:+g}" if market_of_target(target) == MARKET_SPREAD else f"{line:g}"
+
+
 def followed_prediction(rows: pd.DataFrame, side: int) -> pd.Series | None:
     """The prediction backing ``side`` with the largest edge, None without one."""
     edges = pd.to_numeric(rows["bet_edge"], errors="coerce")

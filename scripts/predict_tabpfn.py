@@ -40,6 +40,13 @@ TabPFN's own NaN budget (800 per row) instead of the spec's
    The run goes to the prediction store (S3 run archive + Aiven) with
    ``runs.workflow`` 3 and ``model_builds.kind`` 3.
 
+``--with-closing`` (with ``--line intermediate --input latest``; the
+dashboard's joint request) predicts the closing line in the same run: the
+schedule, the reports and the latest snapshot frame are read once for both
+lines and the closing rows reuse the history the intermediate build loaded.
+Each line is its own stored run and answers its own request
+(``--request-id``, ``--closing-request-id``).
+
 The closing rows keep no raw quote. As in the daily predictor, a closing run
 also builds each game's latest snapshot row, only for the store: the bet line,
 prices and cross-book lines of this moment come from it
@@ -54,7 +61,7 @@ import argparse
 import gc
 import os
 from collections.abc import Sequence
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from datetime import date, datetime
 from zoneinfo import ZoneInfo
 
@@ -88,10 +95,12 @@ from nba_ou.prediction.prediction_tabpfn_client import (
 from nba_ou.prediction.tabpfn_run import (
     DEFAULT_MAX_FRAME_AGE_DAYS,
     DEFAULT_TARGETS,
+    FitInputs,
     JobOutcome,
     TabPFNJob,
     TabPFNUnavailable,
     TonightRows,
+    build_latest_frame,
     fit_and_store,
     latest_rows,
     load_fit_inputs,
@@ -130,24 +139,29 @@ def predict_tabpfn(**kwargs) -> None:
     """
     log = RunLog()
     timer = PhaseTimer()
-    request_id = kwargs.get("request_id")
-    report_request(request_id, REQUEST_RUNNING)
+    # A joint run answers two requests: the intermediate one and the closing one.
+    request_ids = (kwargs.get("request_id"), kwargs.get("closing_request_id"))
+    for request_id in request_ids:
+        report_request(request_id, REQUEST_RUNNING)
     with timer.report("TabPFN phase timings"):
         try:
             result = run_tabpfn(log, timer=timer, **kwargs)
         except BaseException as exc:
             # A no-op when the run already wrote its final status.
-            report_request(
-                request_id, REQUEST_FAILED, error=f"{type(exc).__name__}: {exc}"
-            )
+            for request_id in request_ids:
+                report_request(
+                    request_id, REQUEST_FAILED, error=f"{type(exc).__name__}: {exc}"
+                )
             raise
         finally:
             # Timings and tracebacks stay outside the step's group.
             log.end_group()
-    if result is None:
-        report_request(request_id, REQUEST_FAILED, error="Nothing to predict")
-    else:
-        report_request(request_id, REQUEST_DONE)
+    # No-ops for a request the run already finished.
+    for request_id in request_ids:
+        if result is None:
+            report_request(request_id, REQUEST_FAILED, error="Nothing to predict")
+        else:
+            report_request(request_id, REQUEST_DONE)
     return result
 
 
@@ -174,6 +188,8 @@ def run_tabpfn(
     input_mode: str = "own",
     nearest: bool = False,
     request_id: int | None = None,
+    with_closing: bool = False,
+    closing_request_id: int | None = None,
 ) -> bool | None:
     """Fit TabPFN for each target and predict shared tonight's rows at ``line``.
 
@@ -201,9 +217,23 @@ def run_tabpfn(
     whole slate, including started/final games. Without it, the live schedule
     keeps only games not yet started.
     ``game_ids`` (manual runs) keeps only those games.
+
+    ``with_closing`` (latest input only; the dashboard's joint request) also
+    predicts the closing line in this run: the schedule, the reports and the
+    latest snapshot frame are read once for both lines, the closing rows are
+    built in the same history scope, and the closing fits follow the
+    intermediate ones. The closing line is its own stored run and answers
+    ``closing_request_id``; a closing failure leaves the intermediate
+    predictions as they are.
     """
     dataset_type = LINES[line]
     latest = input_mode == "latest"
+    if with_closing and not (dataset_type == INTERMEDIATE_LINE and latest):
+        raise SystemExit("--with-closing requires --line intermediate --input latest.")
+    if with_closing and feature_slot is not None:
+        raise SystemExit("--with-closing picks its own feature slots.")
+    if closing_request_id is not None and not with_closing:
+        raise SystemExit("--closing-request-id requires --with-closing.")
     if dataset_type == CLOSING_LINE:
         if horizon_minutes is not None or nearest:
             raise SystemExit("--horizon-minutes applies to --line intermediate only.")
@@ -245,6 +275,8 @@ def run_tabpfn(
         else datetime.now(ZoneInfo("US/Pacific")).strftime("%Y-%m-%d")
     )
     at = "each game's nearest horizon" if nearest else format_horizon(horizon)
+    if with_closing:
+        at += " + closing line"
     print(
         f"TabPFN {model_version} ({job.plan}) at {at}"
         + (", latest snapshots" if latest else "")
@@ -310,6 +342,47 @@ def run_tabpfn(
     if job.wanted_games is not None:
         scheduled_data = restrict_to_games(scheduled_data, job.wanted_games)
 
+    # A joint run builds both lines' rows first, in one history scope: the
+    # latest snapshot frame once, then the closing rows on the loads it left.
+    latest_frame = None
+    closing = None
+    with history_cache(), kept_connections():
+        if with_closing and not scheduled_data["scheduled_games"].empty:
+            log.step("Preparing Tonight's Latest Snapshot Rows")
+            with timer.phase("tonight's latest snapshot rows"):
+                latest_frame = build_latest_frame(
+                    scheduled_data, date_to_predict=date_to_predict
+                )
+            closing = prepare_closing(
+                replace(
+                    job,
+                    dataset_type=CLOSING_LINE,
+                    horizon=0,
+                    latest_input=False,
+                ),
+                scheduled_data,
+                latest_frame,
+                s3_client=s3,
+                bucket=bucket,
+                date_to_predict=date_to_predict,
+                max_frame_age_days=max_frame_age_days,
+                timer=timer,
+                log=log,
+            )
+        rows = None
+        if not nearest:
+            # The build's two reads of the closing odds (base features,
+            # referees) load once, and its reads share their connections.
+            with timer.phase("tonight's rows"):
+                rows = tonight_rows(
+                    job,
+                    scheduled_data,
+                    inputs.specs,
+                    date_to_predict=date_to_predict,
+                    log=log,
+                    latest_frame=latest_frame,
+                )
+
     if nearest:
         outcome = fit_nearest(
             job,
@@ -322,23 +395,11 @@ def run_tabpfn(
             log=log,
             persist=persist,
             request_id=request_id,
+            latest_frame=latest_frame,
         )
-        if outcome is None:
-            return None
+    elif rows is None:
+        outcome = None
     else:
-        # The build's two reads of the closing odds (base features, referees)
-        # load once, and its reads share their connections.
-        with timer.phase("tonight's rows"), history_cache(), kept_connections():
-            rows = tonight_rows(
-                job,
-                scheduled_data,
-                inputs.specs,
-                date_to_predict=date_to_predict,
-                log=log,
-            )
-        if rows is None:
-            return None
-
         outcome = fit_and_store(
             job,
             inputs,
@@ -352,6 +413,38 @@ def run_tabpfn(
             persist=persist,
             request_id=request_id,
         )
+    if not with_closing:
+        if outcome is None:
+            return None
+    else:
+        # Each line answers its own request, the intermediate one as soon as
+        # its fits end.
+        report_outcome(request_id, outcome)
+        closing_outcome = closing
+        if isinstance(closing, ClosingPart):
+            closing_outcome = fit_and_store(
+                closing.job,
+                closing.inputs,
+                closing.rows,
+                closing.scheduled_data,
+                s3_client=s3,
+                bucket=bucket,
+                date_to_predict=date_to_predict,
+                timer=timer,
+                log=log,
+                persist=persist,
+                step_prefix="closing: ",
+                request_id=closing_request_id,
+            )
+        report_outcome(closing_request_id, closing_outcome)
+        parts = [part for part in (outcome, closing_outcome) if part is not None]
+        if not parts:
+            return None
+        outcome = JobOutcome(
+            predicted=[label for part in parts for label in part.predicted],
+            failures=[failure for part in parts for failure in part.failures],
+            n_fits=sum(part.n_fits for part in parts),
+        )
     failures = outcome.failures
     log.step("Summary", group=False)
     print_status(f"{len(outcome.predicted)} of {outcome.n_fits} model(s) predicted")
@@ -361,8 +454,7 @@ def run_tabpfn(
     log.summary(
         "\n".join(
             [
-                f"### TabPFN {model_version} ({job.plan}) for "
-                f"{date_to_predict}, {at}",
+                f"### TabPFN {model_version} ({job.plan}) for {date_to_predict}, {at}",
                 "",
                 f"{len(outcome.predicted)} of {outcome.n_fits} model(s) predicted, "
                 f"{len(failures)} failure(s)"
@@ -372,15 +464,89 @@ def run_tabpfn(
             ]
         )
     )
-    if request_id is not None:
-        report_request(
-            request_id,
-            final_status(failures, len(outcome.predicted)),
-            error="; ".join(failures) or None,
-        )
+    if not with_closing:
+        report_outcome(request_id, outcome)
     if failures:
         raise SystemExit(1)
     return True
+
+
+def report_outcome(request_id: int | None, outcome: JobOutcome | None) -> None:
+    """The final status of the request a line of the run answered (a no-op
+    without one); None is a line with nothing to predict."""
+    if request_id is None:
+        return
+    if outcome is None:
+        report_request(request_id, REQUEST_FAILED, error="Nothing to predict")
+        return
+    report_request(
+        request_id,
+        final_status(outcome.failures, len(outcome.predicted)),
+        error="; ".join(outcome.failures) or None,
+    )
+
+
+@dataclass
+class ClosingPart:
+    """The closing line of a joint run, ready to fit."""
+
+    job: TabPFNJob
+    inputs: FitInputs
+    rows: TonightRows
+    scheduled_data: dict
+
+
+def prepare_closing(
+    job: TabPFNJob,
+    scheduled_data: dict,
+    latest_frame: pd.DataFrame,
+    *,
+    s3_client,
+    bucket: str,
+    date_to_predict: str,
+    max_frame_age_days: int,
+    timer: PhaseTimer,
+    log: RunLog,
+) -> ClosingPart | JobOutcome | None:
+    """The closing job's spec, training rows and tonight's closing rows.
+
+    ``scheduled_data`` was read for the intermediate line, which keeps every
+    game; the closing rows leave out the games missing an injury report, as a
+    closing run does. None when there is no closing row to predict; a failure
+    comes back as the line's outcome, so the intermediate line still runs.
+    """
+    closing_data = dict(
+        scheduled_data,
+        games_not_updated=list(scheduled_data.get("games_missing_injury_reports", [])),
+    )
+    try:
+        log.step("closing: Loading the Feature Spec and Training Frame")
+        with timer.phase("closing: spec and training rows"):
+            inputs = load_fit_inputs(
+                job,
+                s3_client=s3_client,
+                bucket=bucket,
+                slots=SETTINGS.prediction_model_slots,
+                date_to_predict=date_to_predict,
+                max_frame_age_days=max_frame_age_days,
+            )
+        with timer.phase("closing: tonight's rows"):
+            rows = tonight_rows(
+                job,
+                closing_data,
+                inputs.specs,
+                date_to_predict=date_to_predict,
+                log=log,
+                step_prefix="closing: ",
+                latest_frame=latest_frame,
+            )
+    except Exception as exc:  # noqa: BLE001 -- the intermediate line still runs
+        failure = f"closing: {type(exc).__name__}: {exc}"
+        print_status(failure, ok=False)
+        return JobOutcome(predicted=[], failures=[failure], n_fits=len(job.fits))
+    if rows is None:
+        return None
+    return ClosingPart(job=job, inputs=inputs, rows=rows, scheduled_data=closing_data)
 
 
 def fit_nearest(
@@ -395,18 +561,24 @@ def fit_nearest(
     log: RunLog,
     persist: bool,
     request_id: int | None,
+    latest_frame: pd.DataFrame | None = None,
 ) -> JobOutcome | None:
     """Each game's latest snapshot, predicted by TabPFN fitted on the rows of
     its nearest horizon: one fit (and one stored run) per group of games.
 
-    The latest rows are built once for the slate; a group whose spec or
-    training rows cannot be read fails alone. None when no game is left
+    The latest rows are built once for the slate (or filtered from
+    ``latest_frame``, when a joint run already built it); a group whose spec
+    or training rows cannot be read fails alone. None when no game is left
     before tip-off.
     """
-    log.step("Preparing Tonight's Latest Snapshot Rows")
+    if latest_frame is None:
+        log.step("Preparing Tonight's Latest Snapshot Rows")
     with timer.phase("tonight's rows"), history_cache(), kept_connections():
         rows = latest_rows(
-            scheduled_data, date_to_predict=date_to_predict, games=job.wanted_games
+            scheduled_data,
+            date_to_predict=date_to_predict,
+            games=job.wanted_games,
+            frame=latest_frame,
         )
     if rows.empty:
         print_status("No game left before tip-off; nothing to predict.", ok=False)
@@ -534,6 +706,20 @@ def main(argv: Sequence[str] | None = None) -> None:
         help="The dashboard request this run answers (stored as runs.request_id).",
     )
     parser.add_argument(
+        "--with-closing",
+        action="store_true",
+        help=(
+            "With --line intermediate --input latest: also predict the closing "
+            "line in this run, on the same schedule, reports and latest "
+            "snapshot rows (its own stored run)."
+        ),
+    )
+    parser.add_argument(
+        "--closing-request-id",
+        type=int,
+        help="With --with-closing: the dashboard request the closing line answers.",
+    )
+    parser.add_argument(
         "--game-date",
         type=date.fromisoformat,
         help="Game date YYYY-MM-DD (default: today's Pacific date).",
@@ -631,6 +817,10 @@ def main(argv: Sequence[str] | None = None) -> None:
         args.line != "intermediate" or args.as_of is not None
     ):
         parser.error("--input latest requires --line intermediate and no --as-of.")
+    if args.with_closing and args.input_mode != "latest":
+        parser.error("--with-closing requires --line intermediate --input latest.")
+    if args.closing_request_id is not None and not args.with_closing:
+        parser.error("--closing-request-id requires --with-closing.")
     try:
         if args.fits is not None:
             if args.targets is not None or args.modes is not None:
@@ -680,6 +870,8 @@ def main(argv: Sequence[str] | None = None) -> None:
         input_mode=args.input_mode,
         nearest=nearest,
         request_id=args.request_id,
+        with_closing=args.with_closing,
+        closing_request_id=args.closing_request_id,
     )
 
 

@@ -3,7 +3,7 @@
 1. New prediction: the models to run (TabPFN intermediate by default), the
    targets (line error by default) and, for the intermediate models, each
    game's own horizon or a fixed one. Each model is a request dispatched to
-   GitHub Actions.
+   GitHub Actions; TabPFN intermediate and closing together share one run.
 2. Today's requests and their status.
 3. One card per game with the predictions of those requests (optionally
    every live prediction of the slate). A click on Over or Under, or on Home
@@ -42,7 +42,11 @@ from nba_ou.dashboard.ui.app_loaders import (
     load_requests,
 )
 from nba_ou.dashboard.ui.auth import app_secrets, still_allowed
-from nba_ou.dashboard.ui.bet_table import BetTableRow, bet_predictions_html
+from nba_ou.dashboard.ui.bet_table import (
+    BetTableRow,
+    bet_line_html,
+    bet_predictions_html,
+)
 from nba_ou.dashboard.ui.formatting import number
 from nba_ou.dashboard.ui.game_card import STALE_SNAPSHOT_MINUTES
 from nba_ou.dashboard.ui.loaders import load_today
@@ -60,6 +64,9 @@ CANDIDATE_KEY = [
     "model_horizon_minutes",
 ]
 FLASH_KEY = "bets_flash"
+#: The requests and the bet cards are read again this often: a request's
+#: status and its predictions should show as soon as they are stored.
+LIVE_REFRESH_SECONDS = 15
 #: What a bet button offered, for the page's next full run to open.
 BET_OFFER_KEY = "bets_offer"
 SIDE_ICONS = {
@@ -96,9 +103,11 @@ def _launch(
 ) -> None:
     secrets = app_secrets()
     launched, failed = [], []
+    joint = manual.runs_jointly(choices)
+    intermediate_key, closing_key = manual.JOINT_TABPFN
     with open_app_connection(secrets.app_db_url) as conn:
-        for key in choices:
-            choice = manual.CHOICES_BY_KEY[key]
+
+        def create(choice: manual.ModelChoice) -> tuple[int, int | None]:
             request_horizon = (
                 horizon if choice.dataset_type == manual.INTERMEDIATE else None
             )
@@ -110,20 +119,39 @@ def _launch(
                 horizon_minutes=request_horizon,
                 game_date=game_date,
             )
+            return request_id, request_horizon
+
+        for key in choices:
+            if joint and key == closing_key:
+                continue  # answered by the intermediate request's run
+            choice = manual.CHOICES_BY_KEY[key]
+            request_id, request_horizon = create(choice)
+            request_ids = [request_id]
+            label = manual.request_label(
+                choice.kind, choice.dataset_type, request_horizon
+            )
+            closing_id = None
+            if joint and key == intermediate_key:
+                closing = manual.CHOICES_BY_KEY[closing_key]
+                closing_id, _ = create(closing)
+                request_ids.append(closing_id)
+                label += f" + {closing.label} (one run)"
             workflow, inputs = manual.dispatch_inputs(
-                request_id, choice.kind, choice.dataset_type, request_horizon, targets
+                request_id,
+                choice.kind,
+                choice.dataset_type,
+                request_horizon,
+                targets,
+                closing_request_id=closing_id,
             )
             try:
                 dispatch_workflow(secrets.dispatch_token, workflow, inputs)
             except DispatchError as exc:
-                app_store.fail_request(conn, request_id, str(exc))
-                failed.append(f"{choice.label}: {exc}")
+                for failed_id in request_ids:
+                    app_store.fail_request(conn, failed_id, str(exc))
+                failed.append(f"{label}: {exc}")
             else:
-                launched.append(
-                    manual.request_label(
-                        choice.kind, choice.dataset_type, request_horizon
-                    )
-                )
+                launched.append(label)
     clear_requests()
     if launched:
         names = ", ".join(
@@ -276,7 +304,9 @@ def _pick(row: pd.Series) -> str:
     return bet_rules.SIDE_LABELS[market][int(side)].upper()
 
 
-def _table_row(row: pd.Series) -> BetTableRow:
+def _table_row(row: pd.Series, card_line_x2: float | None = None) -> BetTableRow:
+    """``card_line_x2``: the line the card offers, to mark a prediction made
+    against another one."""
     target = PREDICTION_TARGET_LABELS[int(row["target"])]
     spread = bet_rules.market_of_target(row["target"]) == MARKET_SPREAD
     pick = _pick(row)
@@ -287,6 +317,13 @@ def _table_row(row: pd.Series) -> BetTableRow:
         edge=number(row["bet_edge"], signed=True),
         pick=pick,
         color=SIGNAL_COLORS.get(pick, "gray"),
+        line=bet_rules.line_text(row["target"], row["bet_line_x2"]),
+        line_differs=(
+            card_line_x2 is not None
+            and pd.notna(card_line_x2)
+            and pd.notna(row["bet_line_x2"])
+            and float(row["bet_line_x2"]) != float(card_line_x2)
+        ),
     )
 
 
@@ -366,8 +403,7 @@ def _bet_dialog(offer: dict, user: AppUser, stake: float) -> None:
             placeholder="Enter the line",
             key=f"bet_line_{form}",
             help=(
-                "The line you got, as the book shows the home side "
-                "(home -3.5 is -3.5)."
+                "The line you got, as the book shows the home side (home -3.5 is -3.5)."
                 if market == MARKET_SPREAD
                 else "The total you got."
             ),
@@ -440,9 +476,10 @@ def _market_section(game: pd.Series, rows: pd.DataFrame, market: int, now) -> No
     home, away = game["home_team"], game["away_team"]
     quote = bet_rules.newest_quote(rows)
     line = bet_rules.proposed_line(quote["target"], quote["bet_line_x2"])
-    title = f"**{bet_rules.MARKET_LABELS[market]}**"
+    label = f"{bet_rules.MARKET_LABELS[market]} · Bet365 line"
+    differ = bet_rules.lines_differ(rows)
     if line is None:
-        st.markdown(title)
+        st.html(bet_line_html(label, None))
         st.caption("No stored Bet365 line: enter the one you get.")
     else:
         shown = (
@@ -450,9 +487,19 @@ def _market_section(game: pd.Series, rows: pd.DataFrame, market: int, now) -> No
             if market == MARKET_SPREAD
             else f"{line:g}"
         )
-        st.markdown(f"{title} · Bet365 **{shown}**")
+        st.html(bet_line_html(label, shown))
         st.caption(_quote_read(quote["predicted_at"], now))
-    st.html(bet_predictions_html([_table_row(row) for _, row in rows.iterrows()]))
+        if differ:
+            st.caption(
+                ":orange[The predictions were made against different lines "
+                "(Line column). The newest is the one shown.]"
+            )
+    st.html(
+        bet_predictions_html(
+            [_table_row(row, quote["bet_line_x2"]) for _, row in rows.iterrows()],
+            show_line=differ,
+        )
+    )
     favored = bet_rules.favored_side(rows)
     with st.container(horizontal=True):
         for side in (1, -1):
@@ -588,7 +635,7 @@ def _bet_option(bets: pd.DataFrame, bet_id: int) -> str:
 # -- page ------------------------------------------------------------------------
 
 
-@st.fragment(run_every="300s")
+@st.fragment(run_every=f"{LIVE_REFRESH_SECONDS}s")
 def _live_sections(user: AppUser, game_date, games: pd.DataFrame) -> None:
     # Fragment runs skip the gate in streamlit_app.py.
     if not still_allowed():

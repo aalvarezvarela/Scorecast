@@ -16,6 +16,8 @@ self-hosted runner, as cron-job.org does for the scheduled runs
 1. **Request.** The Bets page inserts a row in `app.prediction_requests`
    (status `queued`) per chosen model and dispatches its workflow with
    `request_id`. A dispatch GitHub refuses marks the request `failed`.
+   TabPFN intermediate and TabPFN closing chosen together are two requests
+   and **one dispatch** (see "One run for both TabPFN lines").
 2. **Run.** The workflow queues behind any scheduled run (same concurrency
    group, `queue: max`) and respects `PREDICTIONS_ENABLED`. The script marks
    the request `running` when it starts and `done`, `partial` (some model
@@ -71,6 +73,29 @@ The scheduled runs are unchanged: `predict_nba_games.py` without `--slots`
 runs every enabled slot, `predict_tabpfn.py` without `--input` reads the
 horizon's own row.
 
+### One run for both TabPFN lines
+
+A TabPFN closing run builds everything a TabPFN intermediate run builds (the
+schedule and injury reports, and the latest snapshot frame it stores the bet
+line from) plus the closing rows. As two jobs they also queue one behind the
+other. Measured on 2026-11-12 (line error, 4 games): intermediate 7 min, of
+which 4 min 11 s building tonight's rows; closing 8 min 30 s, of which
+7 min 16 s; the fits take about 35 s each.
+
+So when a launch holds both, the dashboard inserts the two requests and
+dispatches the TabPFN workflow once, as the intermediate request with
+`closing_request_id` set (`manual.JOINT_TABPFN`). The workflow passes
+`--with-closing --closing-request-id` to `predict_tabpfn.py`, which reads the
+schedule and reports once, builds the latest snapshot frame once (the
+intermediate rows and the closing run's stored quotes) and the closing rows
+in the same history scope, then fits the intermediate line and the closing
+line. Each line is stored as its own run under its own request, and the
+intermediate request is marked finished before the closing fits start. A
+closing line that fails or has no game with both injury reports filed fails
+only its own request. The scheduled `include_closing` step is another thing:
+a second run of the script in the same job, kept for the scheduled snapshot
+reconstructions.
+
 ## Schema `app`
 
 DDL in `nba_ou.postgre_db.app_aiven.schema`, created by
@@ -103,8 +128,21 @@ A card has a section per market with predictions: totals (Over/Under) and,
 only when the game has spread-error predictions, spread (Home/Away). Each
 section lists the models with their target, prediction, edge and pick, and
 highlights the side most of them back. Its line and prices are those of the
-market's newest prediction with a stored line. Each model's edge stays the one
-stored against its own line.
+market's newest prediction with a stored line, shown large at the top of the
+section (`bet_line_html`). Each model's edge stays the one stored against its
+own line: when the section's predictions were made against more than one
+line, the table gains a Line column with each prediction's own, the ones that
+differ from the card's highlighted, and a note says the newest is the one
+shown.
+
+The game header of an upcoming game (Bets and Today) flags the injury
+reports: orange with the teams that have not filed, green once both have.
+The slate read takes it from `injury_report.ir_filing_span` at the moment of
+the read, with the pipeline's rule (no filing span = not filed), and shows
+the time of the newest parsed report. That store is only as fresh as the last
+run that synchronized it. The read is a separate guarded query: a database
+account without `SELECT` on schema `injury_report` gets the games without the
+flag.
 
 A click on a side opens a short form, editable before saving: the stake (the
 user's last stake or 10 €), the bet365 line (spread shown as the home
@@ -115,7 +153,8 @@ book is always bet365. The bet is linked to the prediction backing that side
 with the largest edge, or to none when no model backs it.
 
 The form is opened by the page's full run, not by the section that refreshes
-every 5 minutes, whose next refresh would close it.
+every 15 seconds (the requests and the cards; the other pages keep their 5
+minutes), whose next refresh would close it.
 
 ## Setup
 
@@ -154,7 +193,8 @@ every 5 minutes, whose next refresh would close it.
 - `scripts/predict_nba_games.py` `--slots`, `--targets`, `--skip-db-update`,
   `--request-id`;
   `scripts/predict_tabpfn.py` `--input latest`, `--horizon-minutes nearest`,
-  `--request-id` (`fit_nearest`, `tabpfn_run.latest_rows`).
+  `--request-id`, `--with-closing`, `--closing-request-id` (`fit_nearest`,
+  `prepare_closing`, `tabpfn_run.latest_rows`, `tabpfn_run.build_latest_frame`).
 - `nba_ou.postgre_db.app_aiven`: schema and request status writes.
 - `nba_ou.dashboard.domain.{access,manual,bets}`,
   `repositories.{app_store,dispatch}`,

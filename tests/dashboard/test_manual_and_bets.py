@@ -66,6 +66,24 @@ def test_dispatch_inputs(kind, dataset_type, horizon, workflow, inputs):
     assert all(isinstance(value, str) for value in got.values())
 
 
+def test_both_tabpfn_lines_share_one_run():
+    assert manual.runs_jointly(["tabpfn_closing", "tabpfn_intermediate"])
+    assert not manual.runs_jointly(["tabpfn_intermediate", "xgboost_closing"])
+    workflow, inputs = manual.dispatch_inputs(
+        12, 3, 2, None, ("line_error",), closing_request_id=13
+    )
+    assert workflow == manual.TABPFN_WORKFLOW
+    assert inputs["request_id"] == "12"
+    assert inputs["closing_request_id"] == "13"
+    assert inputs["line"] == "intermediate" and inputs["input"] == "latest"
+    # Only the TabPFN intermediate run builds what the closing line needs.
+    for kind, dataset_type in [(3, 1), (1, 2), (1, 1)]:
+        with pytest.raises(ValueError, match="closing line"):
+            manual.dispatch_inputs(
+                12, kind, dataset_type, None, ("line_error",), closing_request_id=13
+            )
+
+
 def test_dispatch_rejects_bad_requests():
     target = ("line_error",)
     with pytest.raises(ValueError):
@@ -96,6 +114,11 @@ def test_workflow_inputs_exist():
         assert spec["run-name"].endswith("}}"), workflow
         declared = spec[True]["workflow_dispatch"]["inputs"]
         assert set(inputs) <= set(declared), workflow
+    workflow, inputs = manual.dispatch_inputs(
+        1, 3, 2, None, manual.DEFAULT_TARGETS, closing_request_id=2
+    )
+    spec = yaml.safe_load((REPO_ROOT / ".github/workflows" / workflow).read_text())
+    assert set(inputs) <= set(spec[True]["workflow_dispatch"]["inputs"])
 
 
 def test_queued_requests_expire():
@@ -221,3 +244,94 @@ def test_summary_counts_only_settled_bets():
     assert totals["profit"] == pytest.approx(-0.91)
     assert totals["pending"] == 1
     assert (totals["wins"], totals["losses"]) == (1, 1)
+
+
+def _line_rows(*lines_x2, target=1) -> pd.DataFrame:
+    return pd.DataFrame({"bet_line_x2": list(lines_x2), "target": target})
+
+
+def test_a_card_knows_when_its_predictions_used_different_lines():
+    assert not bet_rules.lines_differ(_line_rows(449, 449))
+    assert bet_rules.lines_differ(_line_rows(449, 451))
+    # A prediction without a stored line is not another line.
+    assert not bet_rules.lines_differ(_line_rows(449, None))
+
+
+def test_a_predictions_line_reads_as_the_book_prints_it():
+    assert bet_rules.line_text(1, 449) == "224.5"
+    assert bet_rules.line_text(2, 450) == "225"
+    # Stored as the implied home margin: +3.5 is the home handicap -3.5.
+    assert bet_rules.line_text(3, 7) == "-3.5"
+    assert bet_rules.line_text(3, -7) == "+3.5"
+    assert bet_rules.line_text(1, None) == "—"
+
+
+def test_the_line_column_appears_only_when_asked_and_marks_other_lines():
+    from nba_ou.dashboard.ui.bet_table import (
+        BetTableRow,
+        bet_line_html,
+        bet_predictions_html,
+    )
+
+    rows = [
+        BetTableRow(
+            "TabPFN closing", "Line error", "226.0", "+1.5", "OVER", "red", line="224.5"
+        ),
+        BetTableRow(
+            "TabPFN T−6h",
+            "Line error",
+            "226.0",
+            "+0.5",
+            "OVER",
+            "red",
+            line="225.5",
+            line_differs=True,
+        ),
+    ]
+    plain = bet_predictions_html(rows)
+    assert "Line</th>" not in plain and "225.5" not in plain
+    with_lines = bet_predictions_html(rows, show_line=True)
+    assert with_lines.count('<th scope="col">') == 5
+    assert "<td>224.5</td>" in with_lines
+    assert '<td class="line-differs">225.5</td>' in with_lines
+    assert ">224.5<" in bet_line_html("Totals · Bet365 line", "224.5")
+    assert "bet-line-missing" in bet_line_html("Totals · Bet365 line", None)
+
+
+def _upcoming_game(**changes) -> pd.Series:
+    now = datetime(2026, 11, 12, 15, 0, tzinfo=UTC)
+    game = {
+        "status": 0,
+        "tipoff_at": now + timedelta(hours=6),
+        "home_report_filed": True,
+        "away_report_filed": False,
+        "reports_read_at": now - timedelta(minutes=20),
+    }
+    return pd.Series({**game, **changes}), now
+
+
+def test_an_upcoming_game_is_flagged_while_a_report_is_missing():
+    from nba_ou.dashboard.domain.reports import report_flag
+
+    game, now = _upcoming_game()
+    flag = report_flag(game, now)
+    assert flag.missing == ("away",) and not flag.filed
+    assert flag.read_at == pd.Timestamp(now - timedelta(minutes=20))
+    game, now = _upcoming_game(away_report_filed=True)
+    assert report_flag(game, now).filed
+
+
+def test_no_report_flag_without_filing_state_or_after_tip_off():
+    from nba_ou.dashboard.domain.reports import report_flag
+
+    game, now = _upcoming_game()
+    # The injury-report store was not readable: nothing is claimed.
+    assert (
+        report_flag(game.drop(["home_report_filed", "away_report_filed"]), now) is None
+    )
+    assert report_flag(_upcoming_game(home_report_filed=None)[0], now) is None
+    assert report_flag(_upcoming_game(status=1)[0], now) is None
+    assert (
+        report_flag(_upcoming_game(tipoff_at=now - timedelta(minutes=1))[0], now)
+        is None
+    )

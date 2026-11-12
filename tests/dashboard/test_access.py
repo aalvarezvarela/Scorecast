@@ -131,6 +131,44 @@ def test_bets_page_lists_requests_and_candidates(bets_page, today_data):
     assert app.button(key="bet_1_2_-1").label == "New York Knicks +3.5"
 
 
+def test_a_card_shows_its_line_large_and_each_predictions_own_when_they_differ(
+    bets_page, monkeypatch, today_data
+):
+    rows = _manual_rows(today_data)
+    game_one = rows["game_id"].eq(1) & rows["target"].isin([1, 2])
+    older = rows.index[game_one][0]
+    # One totals prediction of game 1 was made earlier, against 229.5.
+    rows.loc[older, "bet_line_x2"] = 459
+    rows.loc[older, "predicted_at"] -= pd.Timedelta(minutes=30)
+    monkeypatch.setattr(bets_ui, "load_manual_predictions", lambda user_id, d: rows)
+    app = AppTest.from_file(str(ENTRYPOINT)).run()
+    app.switch_page(BETS_PAGE).run()
+    assert not app.exception
+    html = [element.proto.body for element in app.get("html")]
+    lines = [body for body in html if 'class="bet-line"' in body]
+    # The newest quote is the card's line, on every market section.
+    assert any(">230.5<" in body for body in lines)
+    with_column = [body for body in html if "Line</th>" in body]
+    # Only game 1's totals section lists the lines, the older one marked.
+    assert len(with_column) == 1
+    assert '<td class="line-differs">229.5</td>' in with_column[0]
+    assert "<td>230.5</td>" in with_column[0]
+    assert any("different lines" in text.value for text in app.caption)
+
+
+def test_upcoming_games_flag_a_missing_injury_report(bets_page, today_data):
+    games = today_data.games
+    games["home_report_filed"] = True
+    games["away_report_filed"] = games["game_id"].ne(1)
+    games["reports_read_at"] = NOW - pd.Timedelta(minutes=30)
+    app = AppTest.from_file(str(ENTRYPOINT)).run()
+    app.switch_page(BETS_PAGE).run()
+    assert not app.exception
+    badges = [text.value for text in app.markdown if "badge" in text.value]
+    assert sum("No injury report yet: Knicks" in badge for badge in badges) == 1
+    assert sum("Injury reports filed" in badge for badge in badges) == 1
+
+
 def test_launch_creates_a_request_and_dispatches_it(bets_page, monkeypatch):
     @contextmanager
     def connection(dsn):
@@ -157,6 +195,54 @@ def test_launch_creates_a_request_and_dispatches_it(bets_page, monkeypatch):
     assert inputs["horizon_minutes"] == "nearest"
     assert inputs["target"] == "line_error"
     assert any("Launched" in text.value for text in app.success)
+
+
+def test_both_tabpfn_lines_launch_as_two_requests_and_one_run(bets_page, monkeypatch):
+    @contextmanager
+    def connection(dsn):
+        yield object()
+
+    created, dispatched = Mock(side_effect=[41, 42]), Mock()
+    monkeypatch.setattr(bets_ui, "open_app_connection", connection)
+    monkeypatch.setattr(bets_ui.app_store, "create_request", created)
+    monkeypatch.setattr(bets_ui, "dispatch_workflow", dispatched)
+    app = AppTest.from_file(str(ENTRYPOINT)).run()
+    app.switch_page(BETS_PAGE).run()
+    # Closing picked first: the intermediate request still carries the run.
+    app.session_state["manual_models"] = ["tabpfn_closing", "tabpfn_intermediate"]
+    app.run()
+    app.button(key="manual_launch").click().run()
+    assert not app.exception
+    assert [call.kwargs["dataset_type"] for call in created.call_args_list] == [2, 1]
+    dispatched.assert_called_once()
+    _, workflow, inputs = dispatched.call_args.args
+    assert workflow == "nba_predictor_daily_tabpfn_client.yml"
+    assert inputs["request_id"] == "41"
+    assert inputs["closing_request_id"] == "42"
+    assert inputs["line"] == "intermediate"
+    assert any("one run" in text.value for text in app.success)
+
+
+def test_a_failed_joint_dispatch_fails_both_requests(bets_page, monkeypatch):
+    @contextmanager
+    def connection(dsn):
+        yield object()
+
+    failed = Mock()
+    monkeypatch.setattr(bets_ui, "open_app_connection", connection)
+    monkeypatch.setattr(bets_ui.app_store, "create_request", Mock(side_effect=[8, 9]))
+    monkeypatch.setattr(bets_ui.app_store, "fail_request", failed)
+    monkeypatch.setattr(
+        bets_ui,
+        "dispatch_workflow",
+        Mock(side_effect=bets_ui.DispatchError("GitHub refused (HTTP 403)")),
+    )
+    app = AppTest.from_file(str(ENTRYPOINT)).run()
+    app.switch_page(BETS_PAGE).run()
+    app.session_state["manual_models"] = ["tabpfn_intermediate", "tabpfn_closing"]
+    app.run()
+    app.button(key="manual_launch").click().run()
+    assert [call.args[1] for call in failed.call_args_list] == [8, 9]
 
 
 def test_failed_dispatch_marks_the_request_failed(bets_page, monkeypatch):
