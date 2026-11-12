@@ -335,3 +335,33 @@ def test_no_report_flag_without_filing_state_or_after_tip_off():
         report_flag(_upcoming_game(tipoff_at=now - timedelta(minutes=1))[0], now)
         is None
     )
+
+
+def test_a_spread_bets_line_is_the_backed_teams_handicap():
+    # Stored as the home handicap whichever side was taken.
+    assert bet_rules.side_line(2, 1, -3.5) == -3.5
+    assert bet_rules.side_line(2, -1, -3.5) == 3.5
+    assert bet_rules.side_line(1, -1, 224.5) == 224.5
+    # Its own inverse: what the user types for their side goes back as stored.
+    assert bet_rules.side_line(2, -1, bet_rules.side_line(2, -1, -3.5)) == -3.5
+    assert bet_rules.side_name(2, -1, "Celtics", "Knicks") == "Knicks"
+    assert bet_rules.side_name(1, -1, "Celtics", "Knicks") == "Under"
+
+
+def test_a_slates_summary_counts_stakes_and_what_pending_bets_would_win():
+    bets = pd.DataFrame(
+        {
+            "result": ["pending", "pending", "win", "loss"],
+            "stake": [10.0, 20.0, 10.0, 5.0],
+            "odds_decimal": [2.0, 1.5, 1.9, 1.9],
+            "profit": [None, None, 9.0, -5.0],
+        }
+    )
+    totals = bet_rules.slate_summary(bets)
+    assert totals == {
+        "bets": 4,
+        "staked": 45.0,
+        "to_win": 20.0,
+        "settled": 2,
+        "profit": 4.0,
+    }

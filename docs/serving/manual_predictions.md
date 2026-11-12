@@ -37,7 +37,9 @@ self-hosted runner, as cron-job.org does for the scheduled runs
    listed. Only an active account can store a bet. A bet records side, line,
    decimal odds, stake and book in `app.bets`, with the prediction it
    followed (`model_build_id`, `input_id`, `request_id`). `app.bets_full`
-   grades it against `prediction.games`.
+   grades it against `prediction.games`. Below the cards, "Tonight's bets"
+   lists the user's bets on this slate only; the bet history is not on this
+   page.
 
 ## Model choices
 
@@ -111,8 +113,9 @@ DDL in `nba_ou.postgre_db.app_aiven.schema`, created by
 - `bets`: `market` (1 totals, 2 spread), `side` (+1 OVER/HOME, −1
   UNDER/AWAY), `line` (totals: the total; spread: the **home handicap** as
   books print it, home −3.5 is `-3.5`), `odds_decimal`, `stake`, `book`,
-  the optional prediction references, `placed_at`, `voided_at`. A bet can be
-  voided until tip-off; nothing is deleted.
+  the optional prediction references, `placed_at`, `voided_at`. Until tip-off
+  a bet's line, odds and stake can be corrected and the bet voided (the
+  page's Delete); nothing is deleted.
 - `bets_full`: `result` (`pending`, `win`, `loss`, `push`, `void`) and
   `profit` (stake × (odds − 1) won, −stake lost, 0 push/void). The same rules
   are in `nba_ou.dashboard.domain.bets`, and a test checks both agree.
@@ -144,17 +147,35 @@ run that synchronized it. The read is a separate guarded query: a database
 account without `SELECT` on schema `injury_report` gets the games without the
 flag.
 
-A click on a side opens a short form, editable before saving: the stake (the
-user's last stake or 10 €), the bet365 line (spread shown as the home
-handicap) and, in a small field, the decimal odds (the stored bet365 price of
-that side, or −110 when missing, and the form says so). Without a stored line
-the field starts empty and the bet cannot be saved until it is filled. The
+A click on a side opens a short form inside the card, under that market's
+buttons (one form at a time), editable before saving: the stake (the
+session's last stake, else the user's last stored one, else 10 €), the bet365
+line (spread shown as the home handicap) and the decimal odds (the stored
+bet365 price of that side, or −110 when missing, and the form says so).
+Without a stored line the field starts empty and Confirm asks for it. The
 book is always bet365. The bet is linked to the prediction backing that side
 with the largest edge, or to none when no model backs it.
 
-The form is opened by the page's full run, not by the section that refreshes
-every 15 seconds (the requests and the cards; the other pages keep their 5
-minutes), whose next refresh would close it.
+Placing a bet does not rerun the page. The side buttons and the form's
+Confirm and Cancel are widget callbacks inside the live fragment (requests,
+cards and tonight's bets, which also refreshes every 15 seconds; the other
+pages keep their 5 minutes): a click reruns that fragment once, with the form
+opened or the bet stored and confirmed by a toast. The inputs are an
+`st.form`, so typing reruns nothing. The form's key names its quote, so a
+refresh keeps what was typed.
+
+### Tonight's bets
+
+The user's bets on the slate's games (`app_store.slate_bets`), with what is
+staked and what the pending ones would win. Bets whose game has not started
+are an editable table: line (the total, or the handicap of the team that was
+backed; stored back as the home handicap), odds and stake, and a Delete
+tick. One Save applies every change in one connection
+(`app_store.update_bet`, `void_bet`); the database refuses a change once the
+game has tipped off. Deleting is voiding (`voided_at`): the row stays in
+`app.bets` for the history, since the dashboard role has no DELETE, and
+leaves this list. Started and finished bets are listed below, read-only,
+with their result.
 
 ## Setup
 

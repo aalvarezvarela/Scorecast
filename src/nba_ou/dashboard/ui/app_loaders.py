@@ -35,9 +35,10 @@ def load_manual_predictions(user_id: int, game_date: date) -> pd.DataFrame:
 
 
 @st.cache_data(ttl=60, max_entries=32, show_spinner=False)
-def load_bets(user_id: int) -> pd.DataFrame:
+def load_bets(user_id: int, game_date: date) -> pd.DataFrame:
+    """The user's bets on the slate (voided ones left out)."""
     with open_app_connection(_dsn()) as conn:
-        return app_store.user_bets(conn, user_id)
+        return app_store.slate_bets(conn, user_id, game_date)
 
 
 @st.cache_data(ttl=60, max_entries=32, show_spinner=False)
@@ -59,4 +60,3 @@ def clear_requests() -> None:
 
 def clear_bets() -> None:
     load_bets.clear()
-    load_last_stake.clear()
