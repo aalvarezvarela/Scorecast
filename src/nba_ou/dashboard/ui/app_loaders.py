@@ -41,6 +41,12 @@ def load_bets(user_id: int, game_date: date) -> pd.DataFrame:
         return app_store.slate_bets(conn, user_id, game_date)
 
 
+@st.cache_data(ttl=120, max_entries=16, show_spinner=False)
+def load_bet_history(user_id: int) -> pd.DataFrame:
+    with open_app_connection(_dsn()) as conn:
+        return app_store.bet_history(conn, user_id)
+
+
 @st.cache_data(ttl=60, max_entries=32, show_spinner=False)
 def load_last_stake(user_id: int) -> float | None:
     with open_app_connection(_dsn()) as conn:
@@ -60,3 +66,4 @@ def clear_requests() -> None:
 
 def clear_bets() -> None:
     load_bets.clear()
+    load_bet_history.clear()

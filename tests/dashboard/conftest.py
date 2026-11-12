@@ -110,3 +110,18 @@ def signed_in(monkeypatch):
     from nba_ou.dashboard.ui import auth
 
     monkeypatch.setattr(auth, "current_user", lambda: ACTIVE_USER)
+
+
+@pytest.fixture(autouse=True)
+def no_account_store(monkeypatch):
+    """Page tests never reach a real account store: its cached reads fail as
+    an unconfigured one does, unless a test fakes them."""
+    from nba_ou.dashboard.ui import app_loaders
+
+    def refuse(dsn):
+        raise ValueError("AIVEN_APP_DB_URL is not configured")
+
+    monkeypatch.setattr(app_loaders, "open_app_connection", refuse)
+    monkeypatch.setattr(app_loaders, "_dsn", lambda: "")
+    for loader in (app_loaders.load_bets, app_loaders.load_bet_history):
+        loader.clear()

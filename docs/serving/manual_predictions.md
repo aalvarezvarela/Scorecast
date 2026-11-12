@@ -38,8 +38,8 @@ self-hosted runner, as cron-job.org does for the scheduled runs
    decimal odds, stake and book in `app.bets`, with the prediction it
    followed (`model_build_id`, `input_id`, `request_id`). `app.bets_full`
    grades it against `prediction.games`. Below the cards, "Tonight's bets"
-   lists the user's bets on this slate only; the bet history is not on this
-   page.
+   lists the user's bets on this slate only. A past slate's bets show on
+   Yesterday, and the whole record on the Bet history page.
 
 ## Model choices
 
@@ -177,6 +177,33 @@ game has tipped off. Deleting is voiding (`voided_at`): the row stays in
 leaves this list. Started and finished bets are listed below, read-only,
 with their result.
 
+### Bets on Yesterday
+
+When the signed-in user has bets on the selected slate, Yesterday adds "Your
+bets" above the model results (bets, staked, profit, record and the graded
+list) and, in a target's cards, one line per bet of that market on the game
+(totals for line error and total points, spread for spread). They are the
+user's own bets only (`app_store.slate_bets`); without bets, or when the
+account store cannot be read, the page is as before.
+
+### Bet history
+
+The Bet history page (`ui/bet_history.py`, `domain/bet_history.py`) reads
+every live bet of the user (`app_store.bet_history`, deleted ones left out)
+with the model its followed prediction came from. Filters: slate dates and
+market.
+
+- Money: staked, returned (stake + profit), profit and ROI over the
+  **settled** bets (win, loss, push), the record, the win rate
+  (wins / (wins + losses)) and the average odds. Pending bets are counted
+  apart with their stake; a void bet (postponed game) is in the list and in
+  no figure.
+- Profit over time: each slate's profit as bars and the running profit as a
+  line.
+- Breakdown by market and side, by model followed (model kind and closing or
+  intermediate; "No model" when none backed the side) or by month.
+- All bets, newest first.
+
 ## Setup
 
 1. Google Cloud: an OAuth client of type *Web application* with the redirect
@@ -217,7 +244,7 @@ with their result.
   `--request-id`, `--with-closing`, `--closing-request-id` (`fit_nearest`,
   `prepare_closing`, `tabpfn_run.latest_rows`, `tabpfn_run.build_latest_frame`).
 - `nba_ou.postgre_db.app_aiven`: schema and request status writes.
-- `nba_ou.dashboard.domain.{access,manual,bets}`,
+- `nba_ou.dashboard.domain.{access,manual,bets,bet_history,reports}`,
   `repositories.{app_store,dispatch}`,
-  `ui.{auth,bets,bet_table,admin,app_loaders}`,
-  pages `welcome`, `pending`, `bets`, `admin`.
+  `ui.{auth,bets,bet_table,bet_summary,bet_history,admin,app_loaders}`,
+  pages `welcome`, `pending`, `bets`, `bet_history`, `admin`.

@@ -56,6 +56,7 @@ else:
             default=True,
         ),
         _page("bets", "Bets", ":material/payments:"),
+        _page("bet_history", "Bet history", ":material/receipt_long:"),
         _page("yesterday", "Yesterday's predictions", ":material/history:"),
         _page("historical", "Historical analysis", ":material/analytics:"),
     ]

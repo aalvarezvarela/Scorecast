@@ -399,6 +399,57 @@ def test_summary_separates_evaluated_games_from_bets_when_a_model_abstains(
     assert any("Win rate = Wins / Bets" in caption.value for caption in app.caption)
 
 
+def _slate_bets(data) -> pd.DataFrame:
+    game = data.games.iloc[0]
+    return pd.DataFrame(
+        {
+            "bet_id": [1, 2],
+            "game_id": [game["game_id"]] * 2,
+            "game_date": game["game_date"],
+            "tipoff_at": game["tipoff_at"],
+            "home_team": game["home_team"],
+            "away_team": game["away_team"],
+            "market": [1, 2],
+            "side": [1, 1],
+            "line": [224.5, -3.5],
+            "odds_decimal": [2.0, 1.9],
+            "stake": [10.0, 20.0],
+            "result": ["win", "loss"],
+            "profit": [10.0, -20.0],
+        }
+    )
+
+
+def test_the_users_bets_on_the_slate_are_shown_with_the_results(
+    yesterday_setup, monkeypatch
+):
+    _, data = yesterday_setup
+    monkeypatch.setattr(
+        yesterday_ui, "load_bets", lambda user_id, game_date: _slate_bets(data)
+    )
+    app = AppTest.from_file(str(ENTRYPOINT)).run()
+    app.switch_page("app_pages/yesterday.py").run()
+    assert not app.exception
+    assert "Your bets" in [header.value for header in app.subheader]
+    metrics = {metric.label: metric.value for metric in app.metric}
+    assert metrics["Staked"] == "30.00 €"
+    assert metrics["Profit"] == "-10.00 €"
+    assert metrics["W-L-P"] == "1-1-0"
+    # A target's cards list the bets of its market on each game.
+    app.session_state["yesterday_target"] = 3
+    app.run()
+    assert not app.exception
+    lines = [text.value for text in app.markdown if "€ at" in text.value]
+    assert len(lines) == 1 and ":red[**Loss -20.00 €**]" in lines[0]
+
+
+def test_yesterday_without_bets_shows_no_bets_section(yesterday_setup):
+    app = AppTest.from_file(str(ENTRYPOINT)).run()
+    app.switch_page("app_pages/yesterday.py").run()
+    assert not app.exception
+    assert "Your bets" not in [header.value for header in app.subheader]
+
+
 def test_missing_source_rows_pending_and_void_games_remain_visible(yesterday_setup):
     reader, data = yesterday_setup
     data.games.loc[

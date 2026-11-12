@@ -75,7 +75,7 @@ removed. Their historical implementations remain available in Git history.
 
 - signed out: only a welcome page with "Sign in with Google" (`st.login`);
 - signed in, not approved (or disabled): only an "Access pending" page;
-- approved: Today, Bets, Yesterday and Historical analysis, plus Accounts for
+- approved: Today, Bets, Bet history, Yesterday and Historical analysis, plus Accounts for
   admins, where pending accounts are approved or disabled.
 
 A first sign-in creates the `app.users` row as pending; emails in
