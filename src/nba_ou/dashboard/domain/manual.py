@@ -10,6 +10,10 @@ each game's latest snapshot. An intermediate request chooses, by default, the
 model (XGBoost) or training rows (TabPFN) of each game's nearest horizon, or
 one fixed horizon for every game. A run predicts only the request's targets
 (line error by default) and skips the database update.
+
+TabPFN intermediate and TabPFN closing launched together are two requests
+answered by one run (``JOINT_TABPFN``): both lines read the same schedule,
+reports and latest snapshot rows, so one job builds them once.
 """
 
 from __future__ import annotations
@@ -85,6 +89,9 @@ MODEL_CHOICES = (
 )
 CHOICES_BY_KEY = {choice.key: choice for choice in MODEL_CHOICES}
 DEFAULT_CHOICES = ("tabpfn_intermediate",)
+#: Launched together, these two share one run: the intermediate request's
+#: dispatch carries the closing request (``closing_request_id``).
+JOINT_TABPFN = ("tabpfn_intermediate", "tabpfn_closing")
 #: The targets a request may predict, as the workflows name them.
 TARGETS = tuple(TARGET_CODES)
 DEFAULT_TARGETS = ("line_error",)
@@ -123,16 +130,32 @@ def request_label(kind: int, dataset_type: int, horizon: int | None) -> str:
     return label
 
 
+def runs_jointly(choices: Sequence[str]) -> bool:
+    """Whether the launch holds both TabPFN lines, which share one run."""
+    return set(JOINT_TABPFN) <= set(choices)
+
+
 def dispatch_inputs(
     request_id: int,
     kind: int,
     dataset_type: int,
     horizon: int | None,
     targets: Sequence[str],
+    *,
+    closing_request_id: int | None = None,
 ) -> tuple[str, dict[str, str]]:
-    """The workflow file and ``workflow_dispatch`` inputs of a request."""
+    """The workflow file and ``workflow_dispatch`` inputs of a request.
+
+    ``closing_request_id`` (TabPFN intermediate only): the TabPFN closing
+    request the same run also answers.
+    """
     if dataset_type == CLOSING and horizon is not None:
         raise ValueError("A closing request has no horizon.")
+    if closing_request_id is not None and (kind, dataset_type) != (
+        KIND_TABPFN,
+        INTERMEDIATE,
+    ):
+        raise ValueError("Only a TabPFN intermediate run can carry the closing line.")
     if horizon is not None and int(horizon) not in HORIZONS:
         raise ValueError(f"T-{horizon} is not an enabled horizon.")
     rid = str(int(request_id))
@@ -158,6 +181,8 @@ def dispatch_inputs(
                 input="latest",
                 horizon_minutes="nearest" if horizon is None else str(int(horizon)),
             )
+            if closing_request_id is not None:
+                inputs["closing_request_id"] = str(int(closing_request_id))
         return TABPFN_WORKFLOW, inputs
     raise ValueError(f"Unknown model kind {kind!r}")
 

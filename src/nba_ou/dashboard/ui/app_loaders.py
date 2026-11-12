@@ -1,7 +1,9 @@
 """Cached reads of schema ``app`` for the signed-in pages.
 
-Short TTLs: a request's status moves within minutes. Every write clears the
-cache it changes (``clear_requests``, ``clear_bets``).
+Short TTLs: a request's status moves within minutes, and the Bets page reads
+its requests and their predictions every 15 seconds (below that, so each
+refresh reads the store). Every write clears the cache it changes
+(``clear_requests``, ``clear_bets``).
 """
 
 from __future__ import annotations
@@ -20,22 +22,23 @@ def _dsn() -> str:
     return app_secrets().app_db_url
 
 
-@st.cache_data(ttl=20, max_entries=32, show_spinner=False)
+@st.cache_data(ttl=10, max_entries=32, show_spinner=False)
 def load_requests(user_id: int, game_date: date) -> pd.DataFrame:
     with open_app_connection(_dsn()) as conn:
         return app_store.user_requests(conn, user_id, game_date)
 
 
-@st.cache_data(ttl=30, max_entries=32, show_spinner=False)
+@st.cache_data(ttl=10, max_entries=32, show_spinner=False)
 def load_manual_predictions(user_id: int, game_date: date) -> pd.DataFrame:
     with open_app_connection(_dsn()) as conn:
         return app_store.manual_predictions(conn, user_id, game_date)
 
 
 @st.cache_data(ttl=60, max_entries=32, show_spinner=False)
-def load_bets(user_id: int) -> pd.DataFrame:
+def load_bets(user_id: int, game_date: date) -> pd.DataFrame:
+    """The user's bets on the slate (voided ones left out)."""
     with open_app_connection(_dsn()) as conn:
-        return app_store.user_bets(conn, user_id)
+        return app_store.slate_bets(conn, user_id, game_date)
 
 
 @st.cache_data(ttl=60, max_entries=32, show_spinner=False)
@@ -57,4 +60,3 @@ def clear_requests() -> None:
 
 def clear_bets() -> None:
     load_bets.clear()
-    load_last_stake.clear()

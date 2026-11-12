@@ -95,6 +95,29 @@ USER_BETS = """
     LIMIT %s
 """
 
+#: The Bets page: the user's live bets on one slate. A voided bet is a
+#: deleted one there; it stays in ``app.bets`` for the history.
+SLATE_BETS = """
+    SELECT bet_id, game_id, game_date, tipoff_at, home_team, away_team, market,
+           side, line, odds_decimal, stake, book, placed_at, voided_at,
+           home_points, away_points, game_status, result, profit,
+           model_build_id, request_id
+    FROM app.bets_full
+    WHERE user_id = %s AND game_date = %s AND voided_at IS NULL
+    ORDER BY tipoff_at, game_id, placed_at
+"""
+
+#: Line, odds and stake can be corrected until the game tips off.
+UPDATE_BET = """
+    UPDATE app.bets b
+    SET line = %(line)s::numeric, odds_decimal = %(odds_decimal)s::numeric,
+        stake = %(stake)s::numeric
+    FROM prediction.games g
+    WHERE b.bet_id = %(bet_id)s AND b.user_id = %(user_id)s
+      AND b.voided_at IS NULL
+      AND g.game_id = b.game_id AND g.tipoff_at > now()
+"""
+
 #: A bet can be voided until its game tips off.
 VOID_BET = """
     UPDATE app.bets b SET voided_at = now()
@@ -232,6 +255,36 @@ def insert_bet(conn: psycopg.Connection, bet: dict) -> int | None:
 def user_bets(conn: psycopg.Connection, user_id: int, limit: int = 500) -> pd.DataFrame:
     with conn.cursor() as cur:
         return _frame(cur, USER_BETS, (user_id, limit))
+
+
+def slate_bets(conn: psycopg.Connection, user_id: int, game_date: date) -> pd.DataFrame:
+    """The user's bets on the games of ``game_date``, voided ones left out."""
+    with conn.cursor() as cur:
+        return _frame(cur, SLATE_BETS, (user_id, game_date))
+
+
+def update_bet(
+    conn: psycopg.Connection,
+    bet_id: int,
+    user_id: int,
+    *,
+    line: float,
+    odds_decimal: float,
+    stake: float,
+) -> bool:
+    """False when the bet is not the user's, is void or its game started."""
+    values = {
+        "bet_id": bet_id,
+        "user_id": user_id,
+        "line": line,
+        "odds_decimal": odds_decimal,
+        "stake": stake,
+    }
+    with conn.cursor() as cur:
+        cur.execute(UPDATE_BET, values)
+        updated = cur.rowcount > 0
+    conn.commit()
+    return updated
 
 
 def void_bet(conn: psycopg.Connection, bet_id: int, user_id: int) -> bool:

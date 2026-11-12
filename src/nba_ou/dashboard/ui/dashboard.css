@@ -218,6 +218,29 @@
 .bet-predictions thead th:first-child { text-align: left; }
 .bet-predictions thead th:not(:first-child) { text-align: right; }
 .bet-predictions tbody th { font-weight: 600; }
+/* The shared table rules separate a fifth column; here it is only the pick. */
+.bet-predictions tr > :nth-child(5) { border-left: 0; }
+.bet-predictions .line-differs { color: #ffb86b; font-weight: 600; }
+
+/* The line a bet card offers: the number to check against the book. */
+.bet-line {
+    display: flex; align-items: baseline; justify-content: space-between;
+    flex-wrap: wrap; gap: 0.25rem 0.75rem;
+    padding: 0.5rem 0.75rem; border-radius: 0.5rem;
+    border: 1px solid var(--border-color, #3a5790);
+    border-left: 0.3rem solid #ffd166;
+    background: #ffd16614;
+}
+.bet-line-label {
+    font-size: 0.75rem; font-weight: 600; letter-spacing: 0.06em;
+    text-transform: uppercase; opacity: 0.8;
+}
+.bet-line-value {
+    font-size: 1.75rem; font-weight: 700; line-height: 1.1;
+    font-variant-numeric: tabular-nums; color: #ffd166;
+}
+.bet-line-missing { border-left-color: #afbcd4; background: #afbcd414; }
+.bet-line-missing .bet-line-value { font-size: 1.125rem; color: #afbcd4; }
 :is(.history-comparison, .bet-predictions) small {
     display: block; margin-top: 0.15rem; font-size: 0.75rem;
     color: var(--text-color, #afbcd4); opacity: 0.75; font-weight: 400;

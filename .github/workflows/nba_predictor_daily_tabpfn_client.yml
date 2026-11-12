@@ -1,6 +1,6 @@
 name: Predictions - Upcoming Games with TabPFN
 # A dashboard request names itself in the run list (docs/serving/manual_predictions.md).
-run-name: "${{ inputs.request_id && format('Manual request #{0} (TabPFN {1})', inputs.request_id, inputs.line) || '' }}"
+run-name: "${{ inputs.request_id && format('Manual request #{0}{1} (TabPFN {2}{3})', inputs.request_id, inputs.closing_request_id && format(' + #{0}', inputs.closing_request_id) || '', inputs.line, inputs.closing_request_id && ' + closing' || '') || '' }}"
 
 # TabPFN on its own: one or more targets and one line per run, each fitted on
 # the rows and features of its slot's production build (closing: the frame the daily refit
@@ -16,6 +16,11 @@ run-name: "${{ inputs.request_id && format('Manual request #{0} (TabPFN {1})', i
 #         -f modes="standard thinking_high"
 #     gh workflow run nba_predictor_daily_tabpfn_client.yml \
 #         -f fits="standard=line_error,total_points thinking_high=line_error"
+#
+# A dashboard launch of TabPFN intermediate and closing together is one
+# dispatch (line=intermediate input=latest, request_id and closing_request_id):
+# both lines in one process, on one build of tonight's inputs
+# (docs/serving/manual_predictions.md).
 on:
     workflow_dispatch:
         inputs:
@@ -91,6 +96,10 @@ on:
                 default: own
             request_id:
                 description: "The dashboard request this run answers (app.prediction_requests); empty = a scheduled run"
+                type: string
+                default: ""
+            closing_request_id:
+                description: "With line=intermediate input=latest: also predict the closing line in the same run, answering this dashboard request (one build of tonight's inputs for both lines)"
                 type: string
                 default: ""
 
@@ -181,12 +190,17 @@ jobs:
                   TABPFN_SNAPSHOT_GAME_IDS: ${{ inputs.snapshot_game_ids }}
                   TABPFN_INPUT: ${{ inputs.input || 'own' }}
                   REQUEST_ID: ${{ inputs.request_id }}
+                  CLOSING_REQUEST_ID: ${{ inputs.closing_request_id }}
               run: |
                   args=()
                   if [[ "$TABPFN_LINE" == intermediate ]]; then
                       args+=(--horizon-minutes "$TABPFN_HORIZON" --input "${TABPFN_INPUT:-own}")
                   fi
                   if [[ -n "$REQUEST_ID" ]]; then args+=(--request-id "$REQUEST_ID"); fi
+                  # A joint dashboard request: both lines in this one process.
+                  if [[ -n "$CLOSING_REQUEST_ID" ]]; then
+                      args+=(--with-closing --closing-request-id "$CLOSING_REQUEST_ID")
+                  fi
                   if [[ -n "$TABPFN_GAME_DATE" ]]; then args+=(--game-date "$TABPFN_GAME_DATE"); fi
                   if [[ -n "$TABPFN_GAME_IDS" ]]; then args+=(--game-ids "$TABPFN_GAME_IDS"); fi
                   if [[ -n "$TABPFN_AS_OF" ]]; then args+=(--as-of "$TABPFN_AS_OF"); fi
@@ -231,7 +245,11 @@ jobs:
               if: ${{ (failure() || cancelled()) && inputs.request_id != '' }}
               env:
                   REQUEST_ID: ${{ inputs.request_id }}
+                  CLOSING_REQUEST_ID: ${{ inputs.closing_request_id }}
               run: |
-                  python -m nba_ou.postgre_db.app_aiven.requests \
-                      --request-id "$REQUEST_ID" --status failed \
-                      --error "Workflow run ${{ github.run_id }} failed or was cancelled"
+                  for id in "$REQUEST_ID" "$CLOSING_REQUEST_ID"; do
+                      if [[ -z "$id" ]]; then continue; fi
+                      python -m nba_ou.postgre_db.app_aiven.requests \
+                          --request-id "$id" --status failed \
+                          --error "Workflow run ${{ github.run_id }} failed or was cancelled"
+                  done

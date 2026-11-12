@@ -61,6 +61,19 @@ def newest_quote(rows: pd.DataFrame) -> pd.Series:
     return source.sort_values("predicted_at", kind="stable").iloc[-1]
 
 
+def lines_differ(rows: pd.DataFrame) -> bool:
+    """Whether a card's predictions were made against more than one line."""
+    return rows["bet_line_x2"].dropna().nunique() > 1
+
+
+def line_text(target: int, bet_line_x2: float | None) -> str:
+    """A prediction's line as books print it: ``224.5``, home handicap ``-3.5``."""
+    line = proposed_line(target, bet_line_x2)
+    if line is None:
+        return "—"
+    return f"{line:+g}" if market_of_target(target) == MARKET_SPREAD else f"{line:g}"
+
+
 def followed_prediction(rows: pd.DataFrame, side: int) -> pd.Series | None:
     """The prediction backing ``side`` with the largest edge, None without one."""
     edges = pd.to_numeric(rows["bet_edge"], errors="coerce")
@@ -163,6 +176,41 @@ def describe_bet(market: int, side: int, line: float, home: str, away: str) -> s
         return f"{SIDE_LABELS[market][side]} {line:g}"
     team, handicap = (home, line) if side == 1 else (away, -line)
     return f"{team} {handicap:+g}"
+
+
+def side_line(market: int, side: int, line: float) -> float:
+    """The line of the side that was bet: the total, or that team's handicap.
+
+    A spread bet stores the HOME handicap whichever side was taken, so the
+    away side's is its negation. Its own inverse: it also turns the line a
+    user typed for their side into the stored one.
+    """
+    return 0.0 - float(line) if market == MARKET_SPREAD and side == -1 else float(line)
+
+
+def side_name(market: int, side: int, home: str, away: str) -> str:
+    """``Over``, ``Under`` or the team a spread side backs."""
+    if market == MARKET_SPREAD:
+        return home if side == 1 else away
+    return SIDE_LABELS[market][side]
+
+
+def slate_summary(bets) -> dict[str, float]:
+    """A slate's live bets: how many, what is staked, what the pending ones
+    would win and what the settled ones returned."""
+    pending = bets[bets["result"].eq("pending")]
+    settled = bets[bets["result"].isin(["win", "loss", "push"])]
+    to_win = sum(
+        profit("win", float(stake), float(odds)) or 0.0
+        for stake, odds in pending[["stake", "odds_decimal"]].itertuples(index=False)
+    )
+    return {
+        "bets": int(len(bets)),
+        "staked": float(bets["stake"].astype(float).sum()),
+        "to_win": float(to_win),
+        "settled": int(len(settled)),
+        "profit": float(settled["profit"].astype(float).sum()),
+    }
 
 
 def summary(bets) -> dict[str, float]:

@@ -169,6 +169,42 @@ def test_only_active_accounts_store_bets(conn):
     assert len(app_store.user_bets(conn, fan.user_id)) == 1
 
 
+def test_slate_bets_are_one_days_live_bets_and_can_be_corrected(conn):
+    fan = _active_fan(conn)
+    first = app_store.insert_bet(conn, _bet(fan, stake=10))
+    second = app_store.insert_bet(conn, _bet(fan, stake=25))
+    assert app_store.update_bet(
+        conn, first, fan.user_id, line=226.0, odds_decimal=1.95, stake=12
+    )
+    other = app_store.ensure_user(conn, "other@example.com", None, admins=ADMINS)
+    assert not app_store.update_bet(
+        conn, first, other.user_id, line=1, odds_decimal=2, stake=1
+    )
+    assert app_store.void_bet(conn, second, fan.user_id)
+    # A deleted (voided) bet can no longer be changed and leaves the slate.
+    assert not app_store.update_bet(
+        conn, second, fan.user_id, line=1, odds_decimal=2, stake=1
+    )
+    bets = app_store.slate_bets(conn, fan.user_id, date(2026, 11, 6))
+    assert bets["bet_id"].tolist() == [first]
+    row = bets.iloc[0]
+    assert (float(row["line"]), float(row["odds_decimal"]), float(row["stake"])) == (
+        226.0,
+        1.95,
+        12.0,
+    )
+    assert app_store.slate_bets(conn, fan.user_id, date(2026, 11, 7)).empty
+    # Once the game tips off the bet is fixed.
+    with conn.cursor() as cur:
+        cur.execute(
+            "UPDATE prediction.games SET tipoff_at = now() - interval '1 minute'"
+        )
+    conn.commit()
+    assert not app_store.update_bet(
+        conn, first, fan.user_id, line=230, odds_decimal=2, stake=1
+    )
+
+
 def test_last_stake_and_void_before_tip(conn):
     fan = _active_fan(conn)
     assert app_store.last_stake(conn, fan.user_id) is None

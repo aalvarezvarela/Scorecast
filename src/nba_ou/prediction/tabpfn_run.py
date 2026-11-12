@@ -505,9 +505,15 @@ def tonight_rows(
     date_to_predict: str,
     log: RunLog,
     step_prefix: str = "",
+    latest_frame: pd.DataFrame | None = None,
 ) -> TonightRows | None:
     """Tonight's rows of the job's line; None (with the reason printed) when
-    there is nothing to predict."""
+    there is nothing to predict.
+
+    ``latest_frame`` (``build_latest_frame``) is the slate's latest snapshot
+    frame when the run already built it: a latest-input job filters its rows
+    from it and a closing job stores its quotes, neither building it again.
+    """
     if job.as_of is not None and job.snapshot_games is not None:
         games, refs = _slate_schedule(date_to_predict)
         scheduled_data = dict(
@@ -536,14 +542,12 @@ def tonight_rows(
         # The closing rows keep no raw quote: the store takes the bet line,
         # prices and cross-book lines from each game's latest snapshot, as
         # in the daily predictor. No model reads these rows.
-        latest_quotes = None
+        latest_quotes = latest_frame
         try:
-            latest_quotes = tonight_intermediate_frame(
-                scheduled_data,
-                game_date=date_to_predict,
-                latest_input=True,
-                latest_only=True,
-            )
+            if latest_quotes is None:
+                latest_quotes = build_latest_frame(
+                    scheduled_data, date_to_predict=date_to_predict
+                )
         except Exception as exc:  # noqa: BLE001 -- only the bet line is lost
             _status(
                 f"Latest snapshot rows failed ({type(exc).__name__}: {exc}); "
@@ -556,7 +560,10 @@ def tonight_rows(
     if job.latest_input:
         log.step(f"{step_prefix}Preparing Tonight's Latest Snapshot Rows")
         df = latest_rows(
-            scheduled_data, date_to_predict=date_to_predict, games=job.wanted_games
+            scheduled_data,
+            date_to_predict=date_to_predict,
+            games=job.wanted_games,
+            frame=latest_frame,
         )
         if df.empty:
             _status("No game left before tip-off; nothing to predict.")
@@ -600,20 +607,33 @@ def tonight_rows(
     )
 
 
+def build_latest_frame(scheduled_data: dict, *, date_to_predict: str) -> pd.DataFrame:
+    """The slate's latest snapshot frame at this moment: the rows a manual
+    intermediate run predicts (``latest_rows``) and the quotes a closing run
+    stores beside its rows."""
+    return tonight_intermediate_frame(
+        scheduled_data,
+        game_date=date_to_predict,
+        latest_input=True,
+        latest_only=True,
+    )
+
+
 def latest_rows(
     scheduled_data: dict,
     *,
     date_to_predict: str,
     games: Collection[str] | None = None,
+    frame: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
     """Each game's latest snapshot row at this moment, for games not yet
     started (and among ``games`` when given): the rows a manual run predicts.
+    ``frame`` is the latest snapshot frame when the run already built it.
     """
-    df = tonight_intermediate_frame(
-        scheduled_data,
-        game_date=date_to_predict,
-        latest_input=True,
-        latest_only=True,
+    df = (
+        build_latest_frame(scheduled_data, date_to_predict=date_to_predict)
+        if frame is None
+        else frame
     )
     df = df.loc[
         df[LATEST_INPUT_COLUMN].fillna(False).astype(bool)

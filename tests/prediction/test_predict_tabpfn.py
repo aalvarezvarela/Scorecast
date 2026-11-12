@@ -1071,9 +1071,9 @@ def test_scheduled_tabpfn_predicts_every_game_at_its_exact_snapshot_when_queued(
     monkeypatch.setattr(
         job.datetime,
         "now",
-        lambda tz: pd.Timestamp("2026-10-21 20:00", tz="UTC")
-        .to_pydatetime()
-        .astimezone(tz),
+        lambda tz: (
+            pd.Timestamp("2026-10-21 20:00", tz="UTC").to_pydatetime().astimezone(tz)
+        ),
     )
     cutoff = pd.to_datetime(_tonight()["GAME_TIME"], utc=True).iloc[0] - pd.Timedelta(
         minutes=horizon
@@ -1118,9 +1118,9 @@ def test_explicit_game_date_survives_a_change_of_pacific_date(monkeypatch):
     monkeypatch.setattr(
         job.datetime,
         "now",
-        lambda tz: pd.Timestamp("2026-10-21 06:30", tz="UTC")
-        .to_pydatetime()
-        .astimezone(tz),
+        lambda tz: (
+            pd.Timestamp("2026-10-21 06:30", tz="UTC").to_pydatetime().astimezone(tz)
+        ),
     )
     job.predict_tabpfn(
         line="intermediate",
@@ -1572,6 +1572,131 @@ def test_started_games_are_left_out_of_a_manual_run(monkeypatch):
     assert reports.call_args_list[-1].args[1] == 4  # failed: nothing to predict
 
 
+def _joint_dependencies(monkeypatch):
+    """A manual intermediate run that also carries the closing line."""
+    deps, reports = _nearest_dependencies(monkeypatch)
+    closing = {
+        target: _spec(target=target)
+        for target in ("line_error", "total_points", "spread_error")
+    }
+    job.SETTINGS.prediction_model_slots += [s.identity.slot() for s in closing.values()]
+    by_horizon = deps["resolve_channel"].side_effect
+    deps["resolve_channel"].side_effect = lambda **kw: (
+        by_horizon(**kw)
+        if kw["slot"].horizon_minutes
+        else SimpleNamespace(spec=closing[kw["slot"].target.value])
+    )
+    snapshots = deps["resolve_training_frame"].return_value
+    games = SimpleNamespace(
+        df=_history().assign(
+            HOME_MARGIN=np.arange(8, dtype=float), ODDS_SPREAD_LINE_HOME_bet365=-4.5
+        ),
+        build_id="closing frame",
+        checksum="sha256:test",
+    )
+    deps["resolve_training_frame"].side_effect = lambda spec, **kw: (
+        snapshots if spec.identity.horizon_minutes else games
+    )
+    deps["tonight_closing_rows"].return_value = _tonight().assign(
+        ODDS_SPREAD_LINE_HOME_bet365=-4.5
+    )
+    deps["get_all_info_for_scheduled_games"].return_value = {
+        "scheduled_games": _schedule(),
+        "games_not_updated": [],
+        "games_missing_injury_reports": [],
+    }
+    return deps, reports
+
+
+def _request_statuses(reports) -> dict[int, list[int]]:
+    statuses: dict[int, list[int]] = {}
+    for call in reports.call_args_list:
+        if call.args[0] is not None:
+            statuses.setdefault(call.args[0], []).append(call.args[1])
+    return statuses
+
+
+def test_a_joint_run_predicts_both_lines_on_one_latest_build(monkeypatch):
+    deps, reports = _joint_dependencies(monkeypatch)
+    job.predict_tabpfn(
+        targets=["line_error"],
+        line="intermediate",
+        input_mode="latest",
+        nearest=True,
+        request_id=9,
+        with_closing=True,
+        closing_request_id=10,
+    )
+    # One fetch of the slate and one latest build serve both lines.
+    deps["get_all_info_for_scheduled_games"].assert_called_once()
+    assert (
+        deps["get_all_info_for_scheduled_games"].call_args.kwargs["dataset_type"]
+        == "intermediate_line"
+    )
+    deps["tonight_intermediate_frame"].assert_called_once()
+    deps["tonight_closing_rows"].assert_called_once()
+    assert deps["fit_tabpfn"].call_count == 3
+    runs = [call.args[0] for call in deps["persist_prediction_run"].call_args_list]
+    # The intermediate groups first, each line under its own request.
+    assert [run.request_id for run in runs] == [9, 9, 10]
+    closing = runs[-1].tables(status=store_schema.RUN_STATUS_OK)
+    assert closing.model_builds["horizon_minutes"].isna().all() or (
+        closing.model_builds["horizon_minutes"].tolist() == [0]
+    )
+    assert (
+        closing.inputs["input_mode"].tolist() == [store_schema.INPUT_MODE_CLOSING] * 2
+    )
+    statuses = _request_statuses(reports)
+    assert statuses[9][0] == statuses[10][0] == 1  # running
+    assert 2 in statuses[9] and 2 in statuses[10]  # done
+    # The intermediate request is finished before the closing fit starts.
+    order = [call.args[:2] for call in reports.call_args_list]
+    assert order.index((9, 2)) < order.index((10, 2))
+
+
+def test_a_joint_run_skips_closing_games_without_both_reports(monkeypatch):
+    deps, reports = _joint_dependencies(monkeypatch)
+    deps["get_all_info_for_scheduled_games"].return_value[
+        "games_missing_injury_reports"
+    ] = ["0022600001", "0022600002"]
+    job.predict_tabpfn(
+        targets=["line_error"],
+        line="intermediate",
+        horizon_minutes=480,
+        input_mode="latest",
+        request_id=9,
+        with_closing=True,
+        closing_request_id=10,
+    )
+    deps["tonight_closing_rows"].assert_not_called()
+    assert deps["fit_tabpfn"].call_count == 1
+    [run] = [call.args[0] for call in deps["persist_prediction_run"].call_args_list]
+    assert run.request_id == 9
+    statuses = _request_statuses(reports)
+    assert statuses[9][-1] == 2  # done
+    assert 4 in statuses[10]  # failed: nothing to predict
+
+
+def test_a_closing_failure_keeps_the_intermediate_predictions(monkeypatch):
+    deps, reports = _joint_dependencies(monkeypatch)
+    deps["tonight_closing_rows"].side_effect = RuntimeError("no closing odds")
+    with pytest.raises(SystemExit):
+        job.predict_tabpfn(
+            targets=["line_error"],
+            line="intermediate",
+            horizon_minutes=480,
+            input_mode="latest",
+            request_id=9,
+            with_closing=True,
+            closing_request_id=10,
+        )
+    [run] = [call.args[0] for call in deps["persist_prediction_run"].call_args_list]
+    assert run.request_id == 9
+    statuses = _request_statuses(reports)
+    assert statuses[9][1] == 2  # done, written before the closing line failed
+    assert statuses[10][1] == 4
+
+
 @pytest.mark.parametrize(
     ("args", "expected"),
     [
@@ -1585,6 +1710,20 @@ def test_started_games_are_left_out_of_a_manual_run(monkeypatch):
                 "nearest",
             ],
             {"input_mode": "latest", "nearest": True, "horizon_minutes": None},
+        ),
+        (
+            [
+                "--line",
+                "intermediate",
+                "--input",
+                "latest",
+                "--with-closing",
+                "--request-id",
+                "4",
+                "--closing-request-id",
+                "5",
+            ],
+            {"with_closing": True, "request_id": 4, "closing_request_id": 5},
         ),
         (
             ["--line", "intermediate", "--horizon-minutes", "480", "--request-id", "4"],
@@ -1608,6 +1747,9 @@ def test_cli_reads_manual_run_inputs(monkeypatch, args, expected):
     "args",
     [
         ["--line", "closing", "--input", "latest"],
+        ["--line", "closing", "--with-closing"],
+        ["--line", "intermediate", "--with-closing"],
+        ["--line", "intermediate", "--input", "latest", "--closing-request-id", "5"],
         ["--line", "intermediate", "--horizon-minutes", "soon"],
         [
             "--line",

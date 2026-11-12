@@ -259,8 +259,11 @@ results. In short:
   (`--slots closing|nearest|H`) or TabPFN (`--input latest`,
   `--horizon-minutes nearest|H`) with a `--request-id`. Every game reads its
   latest snapshot; `nearest` gives each game the model (or TabPFN training
-  rows) of the horizon nearest its time to tip. Stored like any run with
-  `runs.request_id`, which keeps them out of Yesterday/Historical. Bets go to
+  rows) of the horizon nearest its time to tip. TabPFN intermediate and
+  closing requested together are two requests answered by one run
+  (`--with-closing`, workflow input `closing_request_id`): one build of the
+  schedule, reports and latest snapshot rows for both lines. Stored like any
+  run with `runs.request_id`, which keeps them out of Yesterday/Historical. Bets go to
   `app.bets` (graded in `app.bets_full`); schema `app` in
   `postgre_db/app_aiven/`.
 - TabPFN runs on its own (`scripts/predict_tabpfn.py`, dispatch-only workflow
