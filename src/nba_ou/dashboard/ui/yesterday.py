@@ -1,11 +1,17 @@
-"""Date-selectable slates: fixed checkpoints, stored quotes, and final scores."""
+"""Date-selectable slates: fixed checkpoints, stored quotes, and final scores.
+
+The signed-in user's own bets on the slate, when there are any, are listed
+above the model results and inside each game's card.
+"""
 
 from datetime import UTC, datetime, timedelta
 
 import pandas as pd
+import psycopg
 
 import streamlit as st
 from nba_ou.dashboard.config import MODEL_NAMES
+from nba_ou.dashboard.domain.bets import market_of_target
 from nba_ou.dashboard.domain.clock import (
     HOUR_COLUMN,
     SERIES,
@@ -24,6 +30,8 @@ from nba_ou.dashboard.domain.history import (
 )
 from nba_ou.dashboard.repositories.clock import CLOCK_HOURS
 from nba_ou.dashboard.repositories.predictions import DashboardDataError
+from nba_ou.dashboard.ui.app_loaders import load_bets
+from nba_ou.dashboard.ui.bet_summary import bet_line, render_slate_bets
 from nba_ou.dashboard.ui.clock import styled_hour_table
 from nba_ou.dashboard.ui.controls import minimum_edge_select
 from nba_ou.dashboard.ui.history_table import (
@@ -169,11 +177,40 @@ def _render_hour_tables(game_date, targets: list[int], source, thresholds) -> No
         st.caption("No hourly predictions are available for this slate yet.")
 
 
-def _game_card(game, rows: pd.DataFrame, *, spread: bool) -> None:
+def _user_bets(game_date) -> pd.DataFrame:
+    """The signed-in user's bets on the slate; empty when there are none or
+    the account store cannot be read (the page is about the models)."""
+    user = st.session_state.get("current_user")
+    if user is None:
+        return pd.DataFrame()
+    try:
+        return load_bets(user.user_id, game_date)
+    except (psycopg.Error, ValueError):
+        return pd.DataFrame()
+
+
+def _game_bets(bets: pd.DataFrame, game_id, target: int) -> pd.DataFrame:
+    """The user's bets on a game in the market of ``target``."""
+    if bets.empty:
+        return bets
+    return bets.loc[
+        bets["game_id"].eq(game_id)
+        & bets["market"].astype(int).eq(market_of_target(target))
+    ]
+
+
+def _game_card(game, rows: pd.DataFrame, bets: pd.DataFrame, *, spread: bool) -> None:
     with st.container(border=True):
         render_game_header(
             game, show_result=True, line=pregame_line(rows), spread=spread
         )
+        if not bets.empty:
+            with st.container(
+                gap="xxsmall", key=f"yesterday_bets_{int(game['game_id'])}"
+            ):
+                st.caption("Your bets")
+                for _, bet in bets.iterrows():
+                    st.markdown(bet_line(bet))
         if rows.empty:
             st.caption("No stored predictions for this target.")
         else:
@@ -288,6 +325,9 @@ def render_yesterday() -> None:
     if games.empty:
         st.info("No games were recorded in Aiven for the selected NBA slate.")
         return
+    bets = _user_bets(game_date)
+    if not bets.empty:
+        render_slate_bets(bets)
     if target == SUMMARY:
         _slate_summary(data, games, source, thresholds)
         _render_hour_tables(
@@ -328,7 +368,12 @@ def render_yesterday() -> None:
                 with st.container(
                     width="content", key=f"yesterday_game_slot_{int(game['game_id'])}"
                 ):
-                    _game_card(game, game_rows, spread=target == 3)
+                    _game_card(
+                        game,
+                        game_rows,
+                        _game_bets(bets, game["game_id"], target),
+                        spread=target == 3,
+                    )
     st.caption(
         f"Results and predictions read {madrid_time(data.fetched_at)} · updates every 5 minutes."
     )

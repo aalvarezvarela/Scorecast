@@ -11,7 +11,8 @@
    card: stake, line and odds, which start from the last stake and the stored
    bet365 quote. Saving it reruns only the live sections.
 4. Tonight's bets: the user's bets on this slate, editable (line, odds,
-   stake) and deletable until tip-off. The history is not on this page.
+   stake) and deletable until tip-off. The history has its own page
+   (``ui/bet_history.py``); a past slate's bets also show on Yesterday.
 """
 
 from __future__ import annotations
@@ -45,6 +46,7 @@ from nba_ou.dashboard.ui.app_loaders import (
     load_requests,
 )
 from nba_ou.dashboard.ui.auth import app_secrets, still_allowed
+from nba_ou.dashboard.ui.bet_summary import graded_bets_table
 from nba_ou.dashboard.ui.bet_table import (
     BetTableRow,
     bet_line_html,
@@ -801,22 +803,9 @@ def _tonight_bets(user: AppUser, game_date, now) -> None:
     if started.empty:
         return
     st.caption("Started or finished: no longer editable.")
-    table = pd.DataFrame(
-        {
-            "Game": started["away_team"] + " @ " + started["home_team"],
-            "Bet": [
-                bet_rules.describe_bet(int(m), int(s), float(line), h, a)
-                for m, s, line, h, a in started[
-                    ["market", "side", "line", "home_team", "away_team"]
-                ].itertuples(index=False)
-            ],
-            "Odds": started["odds_decimal"].astype(float),
-            "Stake (€)": started["stake"].astype(float),
-            "Result": started["result"].str.capitalize(),
-            "Profit (€)": started["profit"].astype(float),
-        }
+    st.dataframe(
+        graded_bets_table(started), hide_index=True, width="stretch", alt="Started bets"
     )
-    st.dataframe(table, hide_index=True, width="stretch", alt="Started bets")
 
 
 # -- page ------------------------------------------------------------------------

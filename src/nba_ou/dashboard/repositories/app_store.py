@@ -95,6 +95,22 @@ USER_BETS = """
     LIMIT %s
 """
 
+#: The bet history: every live bet of the user, oldest first, with the model
+#: its followed prediction came from (NULL when no model backed the side).
+BET_HISTORY = """
+    SELECT b.bet_id, b.game_id, b.game_date, b.tipoff_at, b.home_team,
+           b.away_team, b.market, b.side, b.line, b.odds_decimal, b.stake,
+           b.book, b.placed_at, b.home_points, b.away_points, b.game_status,
+           b.result, b.profit, b.model_build_id, b.request_id,
+           m.kind AS model_kind, m.dataset_type AS model_dataset_type,
+           m.horizon_minutes AS model_horizon_minutes, m.target AS model_target
+    FROM app.bets_full b
+    LEFT JOIN prediction.model_builds m ON m.model_build_id = b.model_build_id
+    WHERE b.user_id = %s AND b.voided_at IS NULL
+    ORDER BY b.tipoff_at, b.bet_id
+    LIMIT %s
+"""
+
 #: The Bets page: the user's live bets on one slate. A voided bet is a
 #: deleted one there; it stays in ``app.bets`` for the history.
 SLATE_BETS = """
@@ -255,6 +271,14 @@ def insert_bet(conn: psycopg.Connection, bet: dict) -> int | None:
 def user_bets(conn: psycopg.Connection, user_id: int, limit: int = 500) -> pd.DataFrame:
     with conn.cursor() as cur:
         return _frame(cur, USER_BETS, (user_id, limit))
+
+
+def bet_history(
+    conn: psycopg.Connection, user_id: int, limit: int = 20000
+) -> pd.DataFrame:
+    """Every bet of the user, deleted (voided) ones left out, oldest first."""
+    with conn.cursor() as cur:
+        return _frame(cur, BET_HISTORY, (user_id, limit))
 
 
 def slate_bets(conn: psycopg.Connection, user_id: int, game_date: date) -> pd.DataFrame:
