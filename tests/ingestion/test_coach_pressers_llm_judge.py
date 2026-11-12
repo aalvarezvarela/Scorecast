@@ -36,16 +36,28 @@ class FakeClient:
 
 
 def labelled(payload):
-    case = next(c for c in CASES if c["input"] == payload)
+    original = {
+        **payload,
+        "candidates": [
+            {
+                **candidate,
+                "chapters": [
+                    {k: v for k, v in ch.items() if k != "chapter_id"}
+                    for ch in candidate["chapters"]
+                ],
+            }
+            for candidate in payload["candidates"]
+        ],
+    }
+    case = next(c for c in CASES if c["input"] == original)
     expected = case["expected"]
-    chapter = "Darko Rajakovic" if case["name"] == "combined_with_chapter" else None
+    chapter = "v0_ch0" if case["name"] == "combined_with_chapter" else None
     return {
         "video_id": expected["video_id"],
         "kind": expected["kind"],
         "coach_name": None if expected["kind"] == "none" else "Coach",
         "coach_chapter": chapter,
         "confidence": 0.9,
-        "reason": "Label.",
     }
 
 
@@ -74,11 +86,23 @@ def test_request_uses_a_strict_schema_with_the_candidates(tmp_path):
     assert fmt["type"] == "json_schema" and fmt["strict"] is True
     properties = fmt["schema"]["properties"]
     assert properties["video_id"]["anyOf"][0]["enum"] == ["m2"]
-    assert properties["coach_chapter"]["anyOf"][0]["enum"] == sorted(
-        ["Darko Rajakovic", "Scottie Barnes", "RJ Barrett"]
-    )
+    assert properties["coach_chapter"]["anyOf"][0]["enum"] == [
+        "v0_ch0",
+        "v0_ch1",
+        "v0_ch2",
+    ]
+    sent = json.loads(request["input"])
+    assert sent["candidates"][0]["chapters"][0] == {
+        "start_s": 0,
+        "title": "Darko Rajakovic",
+        "chapter_id": "v0_ch0",
+    }
     assert fmt["schema"]["additionalProperties"] is False
     assert set(fmt["schema"]["required"]) == set(properties)
+    assert "reason" not in properties
+    assert request["input"] == json.dumps(
+        sent, ensure_ascii=False, separators=(",", ":")
+    )
     assert request["store"] is False and request["model"] == "gpt-6-luna"
     assert request["reasoning"] == {"effort": "none"}
 
@@ -90,6 +114,84 @@ def test_cache_hit_costs_nothing(tmp_path):
     again = llm_judge.Judge(j.config, client=FakeClient(labelled))
     again.ask(case["input"])
     assert again.calls == 0 and again.cached == 1 and again.spent_usd == 0
+
+
+@pytest.mark.parametrize("title", ['Coach "Kenny"', "Coach \\ Name\n🎤"])
+def test_free_form_chapter_titles_are_decoded_cached_and_trimmed(tmp_path, title):
+    case = next(c for c in CASES if c["name"] == "combined_with_chapter")
+    payload = json.loads(json.dumps(case["input"]))
+    payload["candidates"][0]["chapters"][0]["title"] = title
+    original = json.dumps(payload, sort_keys=True)
+
+    def choose_coach(sent):
+        assert sent["candidates"][0]["chapters"][0]["title"] == title
+        return {
+            "video_id": "m2",
+            "kind": "combined",
+            "coach_name": "Darko Rajaković",
+            "coach_chapter": "v0_ch0",
+            "confidence": 0.9,
+        }
+
+    j = judge(tmp_path, choose_coach)
+    decision = j.ask(payload)
+    assert decision["error"] is None
+    assert decision["answer"]["coach_chapter"] == title
+    assert json.dumps(payload, sort_keys=True) == original
+    fmt = j.client.responses.calls[0]["text"]["format"]
+    assert fmt["schema"]["properties"]["coach_chapter"]["anyOf"][0]["enum"] == [
+        "v0_ch0",
+        "v0_ch1",
+        "v0_ch2",
+    ]
+
+    entry = {"coach_expected": "Darko Rajaković"}
+    llm_judge.apply_decision(entry, found_for({"input": payload}), decision)
+    assert entry["selection"]["coach_chapter"] == title
+    assert entry["selection"]["trim_start_s"] == 0
+    assert entry["selection"]["trim_end_s"] == 100
+
+    cached = llm_judge.Judge(j.config, client=FakeClient(choose_coach))
+    assert cached.ask(payload) == decision
+    assert cached.cached == 1 and cached.calls == 0
+
+
+def test_chapter_reference_cannot_belong_to_another_video(tmp_path):
+    payload = json.loads(json.dumps(CASES[0]["input"]))
+    for candidate in payload["candidates"]:
+        candidate["chapters"] = [{"title": 'Coach "Name"', "start_s": 0}]
+
+    def wrong_video(sent):
+        return {
+            "video_id": sent["candidates"][1]["video_id"],
+            "kind": "combined",
+            "coach_name": "Jordan Ott",
+            "coach_chapter": "v0_ch0",
+            "confidence": 0.9,
+        }
+
+    j = judge(tmp_path, wrong_video)
+    assert "not a chapter of the chosen video" in j.ask(payload)["error"]
+
+
+def test_pre_fix_cached_chapter_title_is_reused(tmp_path):
+    case = next(c for c in CASES if c["name"] == "combined_with_chapter")
+    j = judge(tmp_path, labelled)
+    key = llm_judge.input_hash(case["input"], j.config.llm_model, "none")
+    cached = {
+        "input_hash": key,
+        "answer": {
+            "video_id": "m2",
+            "kind": "combined",
+            "coach_name": "Darko Rajaković",
+            "coach_chapter": "Darko Rajakovic",
+            "confidence": 0.9,
+        },
+        "error": None,
+    }
+    j.cache.add(cached)
+    assert j.ask(case["input"]) == cached
+    assert j.calls == 0 and j.cached == 1
 
 
 def test_budget_stop(tmp_path):
@@ -143,6 +245,51 @@ def found_for(case):
     ]
 
 
+def test_compact_input_keeps_game_identity_and_coach_chapter():
+    case = next(c for c in CASES if c["name"] == "combined_with_chapter")
+    found = found_for(case)
+    found[0]["description"] = (
+        "Subscribe: https://example.com/subscribe\n"
+        "Follow us on Instagram https://example.com/social\n"
+        "Darko Rajakovic after Raptors at Nuggets, March 11, 2024.\n"
+        "0:00 Darko Rajakovic https://example.com/watch\n"
+    )
+    entry = {
+        **case["input"]["game"],
+        "game_id": "g1",
+        "team": "TOR",
+        "opponent": "DEN",
+        "is_home": False,
+        "team_score": 110,
+        "opponent_score": 104,
+        "status": "pending",
+        "coach_expected": "Darko Rajaković",
+    }
+    following = {
+        **entry,
+        "game_id": "g2",
+        "date": "2024-03-12",
+        "tip_utc": "2024-03-13T02:00:00Z",
+        "opponent": "PHX",
+    }
+    payload = llm_judge.build_input(
+        entry,
+        found,
+        {"entries": {"g1:TOR": entry, "g2:TOR": following}},
+        {"staff": case["input"]["staff"]},
+    )
+    candidate = payload["candidates"][0]
+    assert candidate["description"] == (
+        "Darko Rajakovic after Raptors at Nuggets, March 11, 2024. "
+        "0:00 Darko Rajakovic"
+    )
+    assert candidate["title"] == found[0]["title"]
+    assert candidate["chapters"] == case["input"]["candidates"][0]["chapters"]
+    assert payload["staff"] == case["input"]["staff"]
+    assert payload["other_games_within_3_days"][0]["date"] == "2024-03-12"
+    assert payload["game"]["date"] == "2024-03-11"
+
+
 def record(answer, error=None):
     return {"model": "m", "input_hash": "h", "answer": answer, "error": error}
 
@@ -156,13 +303,17 @@ def test_apply_decision():
         "coach_name": "Darko Rajaković",
         "coach_chapter": "Darko Rajakovic",
         "confidence": 0.92,
-        "reason": "Chapter one is the coach.",
     }
     llm_judge.apply_decision(entry, found_for(case), record(answer))
     assert entry["status"] == "selected"
     selection = entry["selection"]
     assert selection["decided_by"] == "llm" and selection["trim_start_s"] == 0
     assert selection["trim_end_s"] == 100 and selection["confidence"] == 0.92
+    assert selection["reason"] == ""
+
+    legacy = {**answer, "reason": "Previously cached explanation."}
+    llm_judge.apply_decision(entry, found_for(case), record(legacy))
+    assert entry["selection"]["reason"] == legacy["reason"]
 
     low = {**answer, "confidence": 0.5}
     entry = {"coach_expected": "x"}

@@ -73,7 +73,6 @@ def first_candidate(payload):
         "coach_name": "Alvin Gentry",
         "coach_chapter": None,
         "confidence": 0.9,
-        "reason": "Coach-only postgame video.",
     }
 
 

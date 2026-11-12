@@ -192,7 +192,6 @@ def none(payload):
         "coach_name": None,
         "coach_chapter": None,
         "confidence": 0.9,
-        "reason": "No presser.",
     }
 
 
@@ -204,7 +203,6 @@ def pick(video_id):
             "coach_name": "Alvin Gentry",
             "coach_chapter": None,
             "confidence": 0.8,
-            "reason": "Full availability.",
         }
 
     return answer

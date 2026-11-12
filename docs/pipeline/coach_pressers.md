@@ -344,8 +344,13 @@ skipped with `--dry-run`. Deterministic rules decide whenever they can; the LLM
    - **Model:** GPT-6 Luna (`gpt-6-luna`) through the OpenAI Responses API
      (`client.responses.create`, `store=False`) with Structured Outputs:
      `text.format` is a strict `json_schema` built per call, so `video_id` is
-     an enum of the candidates (or null) and `coach_chapter` an enum of their
-     chapter titles. Reasoning effort is `none` (`--llm-reasoning`; the model
+     an enum of the candidates (or null) and `coach_chapter` an enum of safe
+     references such as `v0_ch0`. Original chapter titles stay in the input,
+     outside the schema, so quotes and other free-form text do not invalidate
+     the strict enum. References are checked against the selected video and
+     decoded back to original titles before validation, caching and trimming.
+     Existing cached decisions remain reusable. Reasoning effort is `none`
+     (`--llm-reasoning`; the model
      accepts none, low, medium, high, xhigh, max, not minimal) and is part of
      the cache key. Model and spending cap are CLI options (`--llm-model`,
      `--llm-budget`); the key is `OPENAI_API_KEY` (env var, or `[OpenAI]` in
@@ -355,7 +360,8 @@ skipped with `--dry-run`. Deterministic rules decide whenever they can; the LLM
      tip-off, home/away, opponent, score, phase, playoff game number), the
      team's other games within 3 days, `coach_expected`, the team's staff list,
      and each candidate: video_id, channel, title, publication instant,
-     duration, the first 500 characters of the description, the chapter
+     duration, up to 400 characters of the description after removing URLs,
+     common promotional lines and redundant whitespace, the chapter
      titles, `requires_llm` and `rule_flags` explaining the classifier's doubts.
    - **Instruction:** pick the video in which this team's head coach (or the
      acting coach that night) speaks to the media after this game, or answer
@@ -371,7 +377,9 @@ skipped with `--dry-run`. Deterministic rules decide whenever they can; the LLM
      availability with the coach in a chapter.
    - **Output** (strict JSON schema / structured outputs): `video_id` or null,
      `kind` (coach, combined, none), `coach_name`, `coach_chapter` or null,
-     `confidence` 0-1, `reason` (one sentence).
+     `confidence` 0-1. No explanation or `reason` is requested. The instruction
+     is shortened and input JSON omits optional whitespace. Legacy cached
+     answers with `reason` remain readable; new selections leave it empty.
    - **Guardrails:** reject any `video_id` not among the candidates;
      `confidence` under 0.6 goes to `review.csv`, not to `selected`; append
      every answer to `llm_decisions.jsonl` keyed by a hash of the input (with

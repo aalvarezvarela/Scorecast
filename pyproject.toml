@@ -73,6 +73,7 @@ yt-dlp-ejs = "0.8.0"
 openai = "^2"
 
 # training_pipeline: campaign configs, Optuna search, reports.
+curl-cffi = "^0.17.0"
 [tool.poetry.group.train.dependencies]
 optuna = "^4.7.0"
 pyyaml = "^6.0"

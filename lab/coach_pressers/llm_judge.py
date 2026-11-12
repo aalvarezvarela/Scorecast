@@ -13,6 +13,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import re
 from datetime import timedelta
 from pathlib import Path
 
@@ -29,51 +30,57 @@ from lab.game_reports.season_reports import utc_now
 
 log = logging.getLogger("coach_pressers")
 
-PROMPT_VERSION = 3
+PROMPT_VERSION = 4
 MIN_CONFIDENCE = 0.6
 SYSTEM = """\
-You match NBA team YouTube videos to postgame press conferences.
+Match NBA YouTube videos to this team's coach speaking to media after THIS
+game, including interim, acting or assistant coaches. Compare publication time,
+title/description dates, opponent, playoff game number, score and nearby games
+to distinguish back-to-backs. Reject actual pregame, practice, shootaround,
+highlights, recaps and player-only content. If none fits, return video_id null
+and kind "none".
 
-You get one game of one team and the candidate videos from that team's
-channels. Pick the video in which this team's head coach - or whoever coached
-the team that night (an interim, acting or assistant coach) - speaks to the
-media after THIS game. Use the publication time, the dates, opponent and game
-numbers written in titles and descriptions, and the team's other games within
-three days (back-to-backs). Pregame, practice, shootaround, highlight, recap
-and player-only videos are not the answer. If no candidate is the coach's
-postgame press conference for this game, answer video_id null and kind "none".
+requires_llm and rule_flags are warnings, not rejection rules. Postgame coaches
+may discuss the locker room, quarters, tonight's win or the next opponent.
+Missing postgame keywords or unusual duration alone do not disqualify a video.
+Use all context. gap_fill candidates include unrelated uploads near the game:
+require evidence of the coach's postgame media appearance. A player-titled video
+can include the coach in its description or chapters.
 
-Some candidates have requires_llm and rule_flags because title keywords or
-duration would previously have filtered them out. These flags are warnings,
-not proof that a video is unsuitable. For example, a postgame coach can discuss
-the locker room, the fourth quarter, tonight's win or preview the next opponent.
-A coach's name without a postgame keyword, or a short or long duration, is not
-enough to reject a video. Decide from all the available context; actual pregame,
-practice and player-only content must still be rejected.
-
-Candidates flagged gap_fill come from a second look at a game where no title
-looked like a coach presser: they are all the uploads of the team's channels
-published around the game. Most are not the answer. Pick one only if its title,
-description, chapters, duration or timing show this team's coach speaking to
-the media after this game; a video titled after a player can still be the full
-postgame availability with the coach in a chapter or in the description.
-
-kind is "coach" for a coach-only video and "combined" when coach and players
-share one video; for "combined", coach_chapter is the exact title of the
-chapter where the coach speaks, or null if there are no chapters or none is
-the coach. coach_name is the person who speaks as coach. confidence is your
-probability (0 to 1) that the answer is right. reason is one sentence.
+kind is "coach" for coach-only or "combined" for coach and players together.
+coach_name is the actual speaker as coach. For combined videos, coach_chapter
+is the coach chapter's chapter_id, or null when absent or unidentified.
+confidence is your probability (0-1) that the answer is right.
+Return only the schema fields, without explanation.
 """
+
+PROMOTIONAL_LINE = re.compile(
+    r"^(?:subscribe\b|follow (?:us|our)\b|connect with us\b|visit our\b|"
+    r"(?:instagram|twitter|facebook|tiktok)\s*[:»])",
+    re.IGNORECASE,
+)
+
+
+def compact_description(description: str) -> str:
+    """Remove links and common promotional lines; retain up to 400 characters."""
+    lines = []
+    for line in description.splitlines():
+        line = line.strip()
+        if PROMOTIONAL_LINE.match(line):
+            continue
+        line = re.sub(r"https?://\S+", "", line)
+        lines.append(line)
+    return " ".join(" ".join(lines).split())[:400]
 
 
 class BudgetExceeded(RuntimeError):
     pass
 
 
-def schema(candidate_ids: list[str], chapter_titles: list[str]) -> dict:
+def schema(candidate_ids: list[str], chapter_ids: list[str]) -> dict:
     chapter = (
-        {"anyOf": [{"type": "string", "enum": chapter_titles}, {"type": "null"}]}
-        if chapter_titles
+        {"anyOf": [{"type": "string", "enum": chapter_ids}, {"type": "null"}]}
+        if chapter_ids
         else {"type": "null"}
     )
     return {
@@ -86,7 +93,6 @@ def schema(candidate_ids: list[str], chapter_titles: list[str]) -> dict:
             "coach_name": {"anyOf": [{"type": "string"}, {"type": "null"}]},
             "coach_chapter": chapter,
             "confidence": {"type": "number"},
-            "reason": {"type": "string"},
         },
         "required": [
             "video_id",
@@ -94,10 +100,22 @@ def schema(candidate_ids: list[str], chapter_titles: list[str]) -> dict:
             "coach_name",
             "coach_chapter",
             "confidence",
-            "reason",
         ],
         "additionalProperties": False,
     }
+
+
+def encode_chapters(payload: dict) -> tuple[dict, dict[str, tuple[str, str]]]:
+    """Keep free-form titles in input, using safe references in the strict enum."""
+    candidates, references = [], {}
+    for video_index, candidate in enumerate(payload["candidates"]):
+        chapters = []
+        for chapter_index, chapter in enumerate(candidate["chapters"]):
+            reference = f"v{video_index}_ch{chapter_index}"
+            references[reference] = (candidate["video_id"], chapter["title"])
+            chapters.append({**chapter, "chapter_id": reference})
+        candidates.append({**candidate, "chapters": chapters})
+    return {**payload, "candidates": candidates}, references
 
 
 def build_input(
@@ -145,7 +163,7 @@ def build_input(
                 "duration_s": c["duration_s"],
                 "requires_llm": c.get("requires_llm", False),
                 "rule_flags": c.get("notes", []),
-                "description": (c.get("description") or "")[:500],
+                "description": compact_description(c.get("description") or ""),
                 "chapters": [
                     {"start_s": ch["start_time"], "title": ch["title"]}
                     for ch in c.get("chapters") or []
@@ -252,20 +270,22 @@ class Judge:
                 f"LLM spending cap of ${self.config.llm_budget_usd:.2f} reached"
             )
         ids = [c["video_id"] for c in payload["candidates"]]
-        chapters = sorted(
-            {ch["title"] for c in payload["candidates"] for ch in c["chapters"]}
-        )
+        # This only changes the API representation. Cache keys and stored answers
+        # still use the original titles, so existing decisions remain reusable.
+        request_payload, chapter_refs = encode_chapters(payload)
         response = self.client.responses.create(
             model=self.config.llm_model,
             instructions=SYSTEM,
-            input=json.dumps(payload, ensure_ascii=False),
+            input=json.dumps(
+                request_payload, ensure_ascii=False, separators=(",", ":")
+            ),
             reasoning={"effort": self.config.llm_reasoning},
             text={
                 "format": {
                     "type": "json_schema",
                     "name": "presser_choice",
                     "strict": True,
-                    "schema": schema(ids, chapters),
+                    "schema": schema(ids, list(chapter_refs)),
                 }
             },
             store=False,
@@ -300,7 +320,17 @@ class Judge:
         else:
             try:
                 answer = json.loads(response.output_text)
-                record["error"] = validate(answer, payload)
+                reference = answer["coach_chapter"]
+                if reference is not None:
+                    chapter = chapter_refs.get(reference)
+                    if chapter is None or chapter[0] != answer["video_id"]:
+                        record["error"] = (
+                            "coach_chapter is not a chapter of the chosen video"
+                        )
+                    else:
+                        answer["coach_chapter"] = chapter[1]
+                if record["error"] is None:
+                    record["error"] = validate(answer, payload)
                 record["answer"] = answer
             except (json.JSONDecodeError, KeyError, TypeError) as exc:
                 record["error"] = f"unparseable answer: {exc}"
@@ -349,7 +379,7 @@ def apply_decision(
             kind=answer["kind"],
             chapter=chapter,
             confidence=answer["confidence"],
-            reason=answer["reason"],
+            reason=answer.get("reason", ""),
         ),
         llm=llm,
         error="",
