@@ -63,6 +63,7 @@ the folder of its topic, with a status line, and gets a row here.
 | [feature_engineering_round2.md](intermediate/feature_engineering_round2.md) | Partial | Round-2 market features ranked by measured evidence | `data_processing/line_history/` |
 | [market_dynamics.md](intermediate/market_dynamics.md) | Implemented | G1–G4: injury news, news reaction, cross-market coherence, move-to-close Ridges | `create_training_data/intermediate_market_dynamics.py` |
 | [live_prediction.md](intermediate/live_prediction.md) | Implemented | Serving the intermediate slots from tonight's data, without storing a partial game | `prediction/intermediate_frame.py` |
+| [history_analogues_and_line_move_study.md](intermediate/history_analogues_and_line_move_study.md) | Research | 2026-11: analogue/kNN features and team market memory are null; line-move target is the one weak positive lead; the production recipe is at 50–51% over four seasons | `lab/analog_history_2026_11/` |
 
 ## injuries/ — injury reports, availability and rosters
 
