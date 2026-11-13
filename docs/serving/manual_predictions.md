@@ -27,9 +27,13 @@ self-hosted runner, as cron-job.org does for the scheduled runs
    still queued after 3 hours shows as expired.
 3. **Store.** The predictions go to the prediction store like any run
    (`runs.workflow` 1 or 3) with `runs.request_id` set. Today shows them, the
-   card details say "Manual #id"; Yesterday and Historical analysis leave
-   them out (`r.request_id IS NULL`), so the evaluated series stays the
-   scheduled runs.
+   card details say "Manual #id". Since 2026-11-13 Yesterday, the hourly
+   tables and Historical analysis count them too: a manual prediction is a
+   candidate for its checkpoint or hour like a scheduled one, and each cell
+   still takes the single nearest prediction, graded on its own stored line
+   (Yesterday's details name its origin). A manual intermediate run reads the
+   latest snapshot (`input_mode` 2) with the horizon nearest the tip, so it
+   can add TabPFN checkpoints the schedule does not run (e.g. T−9h).
 4. **Bet.** The Bets page shows one card per game not yet started, with the
    user's own manual predictions, newest per game, model, target and horizon.
    Optionally it adds the scheduled predictions Today selects (each closing

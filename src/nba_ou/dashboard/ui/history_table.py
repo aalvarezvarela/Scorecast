@@ -214,4 +214,11 @@ def history_details(rows: pd.DataFrame, *, spread: bool) -> pd.DataFrame:
         ("fit_id", "Fit"),
     ):
         result[label] = rows[column] if column in rows else None
+    result["Origin"] = (
+        rows["request_id"].map(
+            lambda rid: "Scheduled" if pd.isna(rid) else f"Manual #{int(rid)}"
+        )
+        if "request_id" in rows
+        else None
+    )
     return result
