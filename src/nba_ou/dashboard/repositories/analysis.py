@@ -59,8 +59,8 @@ HISTORY_SOURCE_CTES = """
           AND (v.dataset_type = 1 AND v.model_horizon_minutes = 0
                OR v.dataset_type = 2 AND v.model_horizon_minutes > 0)
           AND v.predicted_at <= %s AND r.finished_at <= %s
-          -- Manual (dashboard-requested) runs stay out of the evaluated series.
-          AND r.request_id IS NULL
+          -- Manual (dashboard-requested) runs count like scheduled ones: each
+          -- cell still takes the single nearest prediction.
     ), sources AS (
         SELECT base.*, sources.source
         FROM base

@@ -137,7 +137,7 @@ def _render_hour_tables(game_date, targets: list[int], source, thresholds) -> No
     """One table per target: every betting hour, one column per model group."""
     st.subheader("Results by betting hour")
     st.caption(
-        f"{source} · Madrid time. Each hour uses the prediction closest to it, within one hour before or after, with its original line, side and result. "
+        f"{source} · Madrid time. Each hour uses the prediction closest to it (scheduled or manual), within one hour before or after, with its original line, side and result. "
         "Each cell: win %, wins-losses, final games with a valid prediction / final games at that hour (coverage). "
         "Green beats break-even at −110, red does not. One slate is a very small sample."
     )

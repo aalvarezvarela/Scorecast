@@ -86,8 +86,8 @@ HISTORY_QUERY = (
       AND (v.dataset_type = 1
            OR v.kind = 3
            OR v.model_horizon_minutes IN ({_HISTORY_HORIZONS}))
-      -- Manual (dashboard-requested) runs stay out of the evaluated series.
-      AND r.request_id IS NULL
+      -- Manual (dashboard-requested) runs count like scheduled ones: each
+      -- checkpoint and hour still takes the single nearest prediction.
       AND v.predicted_at <= %s
       AND r.finished_at <= %s
     ORDER BY v.predicted_at, v.run_id, v.input_id, v.model_build_id
